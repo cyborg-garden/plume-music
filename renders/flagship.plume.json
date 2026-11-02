@@ -1,0 +1,328 @@
+{
+  "bpm": 120.0,
+  "plume_version": 0,
+  "humanize_ms": 4.0,
+  "humanize_vel": 0.08,
+  "key": "C min",
+  "master": {
+    "drive": 0.25,
+    "gain_db": 0.0,
+    "limit_db": -1.0,
+    "lofi": 0.6,
+    "reverb": 0.45
+  },
+  "movements": [
+    {
+      "name": "establish",
+      "sections": [
+        {
+          "bars": 16,
+          "chords": [
+            "Cm",
+            "D#",
+            "G#",
+            "A#"
+          ],
+          "energy": 0.25,
+          "fill": true,
+          "name": "establish-a",
+          "plays": {
+            "bass": "sparse",
+            "crackle": "main",
+            "kick": "sparse",
+            "pad": "sparse"
+          }
+        },
+        {
+          "bars": 16,
+          "chords": [
+            "Cm",
+            "D#",
+            "G#",
+            "A#"
+          ],
+          "energy": 0.5,
+          "fill": true,
+          "name": "establish-b",
+          "plays": {
+            "arp": "main",
+            "bass": "main",
+            "crackle": "main",
+            "hat": "main",
+            "kick": "main",
+            "openhat": "main",
+            "pad": "main"
+          }
+        }
+      ]
+    },
+    {
+      "name": "peak",
+      "sections": [
+        {
+          "bars": 16,
+          "chords": [
+            "Cm",
+            "D#",
+            "G#",
+            "A#"
+          ],
+          "energy": 0.7,
+          "fill": true,
+          "name": "peak-a",
+          "plays": {
+            "arp": "main",
+            "bass": "main",
+            "clap": "main",
+            "crackle": "main",
+            "hat": "main",
+            "kick": "main",
+            "lead": "main",
+            "openhat": "main",
+            "pad": "main",
+            "snare": "main"
+          }
+        },
+        {
+          "bars": 16,
+          "chords": [
+            "Cm",
+            "D#",
+            "G#",
+            "A#"
+          ],
+          "energy": 0.9,
+          "fill": true,
+          "name": "peak-b",
+          "plays": {
+            "arp": "main",
+            "bass": "main",
+            "clap": "main",
+            "crackle": "main",
+            "hat": "main",
+            "kick": "main",
+            "lead": "main",
+            "openhat": "main",
+            "pad": "main",
+            "snare": "main"
+          }
+        }
+      ]
+    },
+    {
+      "name": "reprise",
+      "sections": [
+        {
+          "bars": 16,
+          "chords": [
+            "Cm",
+            "D#",
+            "G#",
+            "A#"
+          ],
+          "energy": 0.55,
+          "fill": true,
+          "name": "reprise-a",
+          "plays": {
+            "arp": "main",
+            "bass": "main",
+            "crackle": "main",
+            "hat": "main",
+            "kick": "main",
+            "openhat": "main",
+            "pad": "main"
+          }
+        },
+        {
+          "bars": 16,
+          "chords": [
+            "Cm",
+            "D#",
+            "G#",
+            "A#"
+          ],
+          "energy": 0.2,
+          "fill": false,
+          "name": "reprise-b-outro",
+          "plays": {
+            "crackle": "main",
+            "pad": "main"
+          }
+        }
+      ]
+    }
+  ],
+  "name": "flagship",
+  "seed": 7,
+  "style": "trap",
+  "swing": 0.52,
+  "timing_bias_ms": {},
+  "tracks": [
+    {
+      "fx": {},
+      "gain_db": 0.0,
+      "kind": "drum",
+      "name": "kick",
+      "pan": 0.0,
+      "params": {},
+      "patterns": {
+        "alt": "bd ~ ~ bd ~ ~ bd ~ ~ ~ bd ~ ~ bd ~ ~",
+        "fill": "bd ~ ~ ~ ~ ~ ~ bd ~ ~ bd ~ ~ ~ bd ~",
+        "main": "bd ~ ~ ~ ~ ~ ~ bd ~ ~ bd ~ ~ ~ bd ~",
+        "sparse": "bd ~ ~ ~ ~ ~ ~ bd ~ ~ bd ~ ~ ~ ~ ~"
+      },
+      "voice": "808kick"
+    },
+    {
+      "fx": {},
+      "gain_db": -2.0,
+      "kind": "drum",
+      "name": "snare",
+      "pan": 0.0,
+      "params": {},
+      "patterns": {
+        "alt": "~ ~ ~ ~ ~ ~ ~ ~ sd ~ ~ ~ ~ ~ ~ ~",
+        "fill": "~ ~ ~ ~ ~ ~ ~ ~ sd ~ ~ ~ ~ ~ [sd:v0.5 sd:v0.7] sd",
+        "main": "~ ~ ~ ~ ~ ~ ~ ~ sd ~ ~ ~ ~ ~ ~ sd:v0.35",
+        "sparse": "~ ~ ~ ~ ~ ~ ~ ~ sd ~ ~ ~ ~ ~ ~ sd:v0.35"
+      },
+      "voice": "snare"
+    },
+    {
+      "fx": {},
+      "gain_db": -4.0,
+      "kind": "drum",
+      "name": "clap",
+      "pan": -0.1,
+      "params": {},
+      "patterns": {
+        "alt": "~ ~ ~ ~ ~ ~ ~ ~ cp ~ ~ ~ ~ ~ ~ ~",
+        "fill": "~ ~ ~ ~ ~ ~ ~ ~ cp ~ ~ ~ ~ ~ ~ ~",
+        "main": "~ ~ ~ ~ ~ ~ ~ ~ cp ~ ~ ~ ~ ~ ~ ~",
+        "sparse": "~ ~ ~ ~ ~ ~ ~ ~ cp ~ ~ ~ ~ ~ ~ ~"
+      },
+      "voice": "clap"
+    },
+    {
+      "fx": {
+        "chorus": 0.35,
+        "hpf_hz": 500.0
+      },
+      "gain_db": -5.0,
+      "kind": "drum",
+      "name": "hat",
+      "pan": 0.25,
+      "params": {},
+      "patterns": {
+        "alt": "hh hh:v0.55 hh:v0.75 hh:v0.55 hh hh:v0.55 hh:v0.75 hh:v0.55 hh hh:v0.55 hh:v0.75 hh:v0.55 hh hh:v0.55 hh:v0.75 hh:v0.55",
+        "fill": "[hh*4] [hh*4] [hh*3] [hh*8]",
+        "main": "hh hh:v0.6 hh hh:v0.6 hh hh:v0.6 [hh*2] hh:v0.6 hh hh:v0.6 hh hh:v0.6 hh [hh*2] hh:v0.6",
+        "sparse": "hh hh:v0.6 hh hh:v0.6 hh hh:v0.6 [hh*2] hh:v0.6 hh hh:v0.6 hh hh:v0.6 hh [hh*2] hh:v0.6"
+      },
+      "voice": "hat"
+    },
+    {
+      "fx": {},
+      "gain_db": -9.0,
+      "kind": "drum",
+      "name": "openhat",
+      "pan": 0.2,
+      "params": {},
+      "patterns": {
+        "alt": "~ ~ ~ ~ ~ ~ oh ~ ~ ~ ~ ~ ~ ~ oh ~",
+        "fill": "~ ~ ~ ~ ~ ~ oh ~ ~ ~ ~ ~ ~ ~ oh ~",
+        "main": "~ ~ ~ ~ ~ ~ oh ~ ~ ~ ~ ~ ~ ~ oh ~",
+        "sparse": "~ ~ ~ ~ ~ ~ oh ~ ~ ~ ~ ~ ~ ~ oh ~"
+      },
+      "voice": "openhat"
+    },
+    {
+      "fx": {
+        "drive": 0.25
+      },
+      "gain_db": -1.0,
+      "kind": "tonal",
+      "name": "bass",
+      "pan": 0.0,
+      "params": {},
+      "patterns": {
+        "alt": "<c1 ds1 gs1 as1>@3 ~ ~ ~ <c1 ds1 gs1 as1>@2 ~ ~ <ds1 fs1 b1 cs2> <c1 ds1 gs1 as1>@2 ~ <c2 ds2 gs2 as2>@2",
+        "fill": "<c1 ds1 gs1 as1>@3 ~ ~ ~ <c1 ds1 gs1 as1>@2 ~ ~ <ds1 fs1 b1 cs2> <c1 ds1 gs1 as1>@2 ~ <c2 ds2 gs2 as2>@2",
+        "main": "<c1 ds1 gs1 as1>@3 ~ ~ <c2 ds2 gs2 as2> ~ ~ <c1 ds1 gs1 as1>@2 ~ ~ <ds1 fs1 b1 cs2> <c1 ds1 gs1 as1>@3",
+        "sparse": "<c1 ds1 gs1 as1>@4 ~ ~ ~ ~ <c1 ds1 gs1 as1>@4 ~ ~ ~ ~"
+      },
+      "voice": "808sub"
+    },
+    {
+      "fx": {
+        "delay": 0.15,
+        "lpf_hz": 2600.0,
+        "reverb": 0.3
+      },
+      "gain_db": -7.0,
+      "kind": "tonal",
+      "name": "pad",
+      "pan": 0.0,
+      "params": {},
+      "patterns": {
+        "alt": "<Cm D# G# A#> ~ ~ ~ ~ ~ ~ <Cm D# G# A#> ~ ~ <Cm D# G# A#> ~ ~ ~ ~ ~",
+        "fill": "~ ~ ~ <Cm D# G# A#> ~ ~ ~ <Cm D# G# A#> ~ ~ ~ <Cm D# G# A#> ~ ~ <Cm D# G# A#> ~",
+        "main": "~ ~ ~ <Cm D# G# A#> ~ ~ ~ <Cm D# G# A#> ~ ~ ~ <Cm D# G# A#> ~ ~ <Cm D# G# A#> ~",
+        "sparse": "<Cm D# G# A#>"
+      },
+      "voice": "pluck"
+    },
+    {
+      "fx": {
+        "delay": 0.2,
+        "reverb": 0.25
+      },
+      "gain_db": -6.0,
+      "kind": "tonal",
+      "name": "lead",
+      "pan": -0.15,
+      "params": {},
+      "patterns": {
+        "alt": "<c5 ds5 gs4 as4> ~ <ds5:v0.75 f5:v0.75 as4:v0.75 c5:v0.75> ~ <g5:v0.75 gs5:v0.75 ds5:v0.75 f5:v0.75> ~ ~ ~ ~ ~ ~ <gs5:v0.75 gs5:v0.75 ds5:v0.75 f5:v0.75> ~ ~ ~ ~",
+        "fill": "<c5 ds5 gs4 as4> ~ <as4:v0.75 c5:v0.75 f4:v0.75 gs4:v0.75> ~ ~ ~ ~ ~ ~ ~ <c5:v0.75 ds5:v0.75 gs4:v0.75 as4:v0.75> ~ ~ <ds5:v0.75 f5:v0.75 as4:v0.75 c5:v0.75> <g5:v0.75 gs5:v0.75 ds5:v0.75 f5:v0.75> ~",
+        "main": "<c5 ds5 gs4 as4> ~ <as4:v0.75 c5:v0.75 f4:v0.75 gs4:v0.75> ~ ~ ~ ~ ~ ~ ~ <c5:v0.75 ds5:v0.75 gs4:v0.75 as4:v0.75> ~ ~ <ds5:v0.75 f5:v0.75 as4:v0.75 c5:v0.75> <g5:v0.75 gs5:v0.75 ds5:v0.75 f5:v0.75> ~",
+        "sparse": "<c5 ds5 gs4 as4> ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~"
+      },
+      "voice": "lead"
+    },
+    {
+      "fx": {},
+      "gain_db": -18.0,
+      "kind": "drum",
+      "name": "crackle",
+      "pan": 0.0,
+      "params": {},
+      "patterns": {
+        "alt": "x",
+        "fill": "x",
+        "main": "x",
+        "sparse": "x"
+      },
+      "voice": "crackle"
+    },
+    {
+      "fx": {
+        "delay": 0.3,
+        "duck": 0.3,
+        "reverb": 0.25
+      },
+      "gain_db": -9.0,
+      "kind": "tonal",
+      "name": "arp",
+      "pan": 0.2,
+      "params": {},
+      "patterns": {
+        "alt": "<c4 ds4 gs4 as4> <ds4 g4 c5 d5> <g4 as4 ds5 f5> <c5 ds5 gs5 as5> <ds5 g5 c6 d6> <g5 as5 ds6 f6> <c4 ds4 gs4 as4> <ds4 g4 c5 d5> <g4 as4 ds5 f5> <c5 ds5 gs5 as5> <ds5 g5 c6 d6> <g5 as5 ds6 f6> <c4 ds4 gs4 as4> <ds4 g4 c5 d5> <g4 as4 ds5 f5> <c5 ds5 gs5 as5>",
+        "fill": "<c4 ds4 gs4 as4> <ds4 g4 c5 d5> <g4 as4 ds5 f5> <c5 ds5 gs5 as5> <ds5 g5 c6 d6> <g5 as5 ds6 f6> <c4 ds4 gs4 as4> <ds4 g4 c5 d5> <g4 as4 ds5 f5> <c5 ds5 gs5 as5> <ds5 g5 c6 d6> <g5 as5 ds6 f6> <c4 ds4 gs4 as4> <ds4 g4 c5 d5> <g4 as4 ds5 f5> <c5 ds5 gs5 as5>",
+        "main": "<c4 ds4 gs4 as4> <ds4 g4 c5 d5> <g4 as4 ds5 f5> <c5 ds5 gs5 as5> <ds5 g5 c6 d6> <g5 as5 ds6 f6> <c4 ds4 gs4 as4> <ds4 g4 c5 d5> <g4 as4 ds5 f5> <c5 ds5 gs5 as5> <ds5 g5 c6 d6> <g5 as5 ds6 f6> <c4 ds4 gs4 as4> <ds4 g4 c5 d5> <g4 as4 ds5 f5> <c5 ds5 gs5 as5>",
+        "sparse": "<c4 ds4 gs4 as4> <g4 as4 ds5 f5> <ds5 g5 c6 d6> <c4 ds4 gs4 as4> <g4 as4 ds5 f5> <ds5 g5 c6 d6> <c4 ds4 gs4 as4> <g4 as4 ds5 f5>"
+      },
+      "voice": "pluck"
+    }
+  ]
+}

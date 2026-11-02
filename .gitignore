@@ -1,0 +1,35 @@
+# python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+dist/
+build/
+.pytest_cache/
+.ruff_cache/
+
+# audio scratch — rendered takes live in sessions/, not git
+#
+# NO AUDIO IS TRACKED, and nothing may depend on audio that isn't.  Tests
+# synthesize every input they need (tests/fixtures_gen.py, or plume's own
+# compose + engine.render into tmp_path); tests/duet_qa.py synthesizes the
+# flagship demo input via make_flagship_input().  A test that reads a WAV
+# from renders/ passes on the machine that made it and skips everywhere
+# else — which is how --bpm-hint shipped with zero coverage on a clean
+# clone.  If you find yourself wanting to un-ignore a WAV to make a test
+# run, write a generator instead.
+#
+# (The old `!tests/fixtures/**/*.wav` negation is gone: that directory never
+# existed, so it was a standing invitation to commit binary test inputs.)
+*.wav
+*.aiff
+*.mp3
+sessions/
+
+# os
+.DS_Store
+
+# live recordings stay on the machine that made them
+takes*/
+keepers/

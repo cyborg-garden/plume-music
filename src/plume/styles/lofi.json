@@ -1,0 +1,96 @@
+{
+  "name": "lofi",
+  "bpm_range": [70, 90],
+  "default_mode": "major",
+  "swing": 0.57,
+  "timing_bias_ms": {"kick": -15, "snare": 20},
+  "progressions": {
+    "major": [
+      {"numerals": ["ii7", "V7", "Imaj7", "Imaj7"], "weight": 3},
+      {"numerals": ["Imaj7", "vi7", "ii7", "V7"], "weight": 2},
+      {"numerals": ["vi7", "ii7", "V7", "Imaj7"], "weight": 2},
+      {"numerals": ["Imaj7", "vi7", "IVmaj7", "V7"], "weight": 2},
+      {"numerals": ["Imaj9", "Imaj9", "IVmaj7", "IVmaj7"], "weight": 1},
+      {"numerals": ["Imaj7", "iv7", "bVII7", "Imaj7"], "weight": 1}
+    ],
+    "minor": [
+      {"numerals": ["i7", "iv7", "VII7", "IIImaj7"], "weight": 3},
+      {"numerals": ["i7", "VImaj7", "ii7b5", "V7"], "weight": 2},
+      {"numerals": ["ii7b5", "V7", "i7", "i7"], "weight": 2},
+      {"numerals": ["i9", "iv9", "VImaj7", "V7"], "weight": 1},
+      {"numerals": ["i7", "VII7", "VImaj7", "V7"], "weight": 1}
+    ]
+  },
+  "drum_patterns": {
+    "kick": [
+      "bd ~ ~ ~ ~ ~ [~ bd] ~ ~ ~ bd ~ ~ ~ ~ ~",
+      "bd ~ ~ ~ ~ ~ ~ bd ~ ~ bd ~ ~ ~ ~ ~",
+      "bd ~ ~ bd ~ ~ ~ ~ ~ ~ bd ~ ~ ~ ~ ~"
+    ],
+    "snare": [
+      "~ ~ ~ ~ sd ~ ~ ~ ~ ~ ~ ~ sd ~ ~ ~",
+      "~ ~ ~ ~ sd ~ ~ sd:v0.3 ~ ~ ~ ~ sd ~ sd:v0.25 ~"
+    ],
+    "hat": [
+      "hh ~ hh hh ~ hh hh ~ hh ~ hh hh ~ hh ~ hh",
+      "hh hh:v0.5 hh:v0.7 hh:v0.45 hh hh:v0.5 hh:v0.75 hh:v0.5 hh hh:v0.45 hh:v0.7 hh:v0.5 hh hh:v0.55 hh:v0.7 hh:v0.4",
+      "hh ~ hh ~ hh ~ hh ~ hh ~ hh ~ hh ~ hh ~"
+    ]
+  },
+  "fills": {
+    "hat": [
+      "[hh*4] [hh*6]",
+      "hh*8",
+      "[hh*4] [hh*4] [hh*3] [hh*6]"
+    ],
+    "snare": [
+      "~ ~ ~ ~ sd ~ ~ ~ ~ ~ sd:v0.4 ~ sd ~ [sd:v0.5 sd:v0.35] ~"
+    ]
+  },
+  "bass_style": "roots_eighths",
+  "pad_style": "held",
+  "melody": {"density": 0.4, "octave": 4, "rhythm_grid": "8"},
+  "voices": {
+    "kick": "808kick",
+    "snare": "snare",
+    "hat": "hat",
+    "bass": "808sub",
+    "pad": "epiano",
+    "lead": "pluck",
+    "crackle": "crackle"
+  },
+  "fx_defaults": {
+    "pad": {"lpf_hz": 1800, "reverb": 0.4, "chorus": 0.5},
+    "hat": {"lpf_hz": 8000},
+    "lead": {"lpf_hz": 4000, "reverb": 0.35, "delay": 0.25},
+    "bass": {"lpf_hz": 700}
+  },
+  "fades": {
+    "fade_in_bars": 2.0,
+    "fade_out_bars": 2.0,
+    "texture_xfade_beats": 2.0,
+    "announce_gain_db": -18.0,
+    "announce_beats": 2.0
+  },
+  "master": {"reverb": 0.18, "drive": 0.12, "lofi": 0.6},
+  "arrangement_templates": {
+    "1": [
+      {"name": "arc", "energy_curve": [0.25, 0.45, 0.6, 0.3], "bars": 32}
+    ],
+    "2": [
+      {"name": "settle", "energy_curve": [0.25, 0.45], "bars": 32},
+      {"name": "drift", "energy_curve": [0.6, 0.3], "bars": 32}
+    ],
+    "3": [
+      {"name": "settle", "energy_curve": [0.25, 0.4], "bars": 32},
+      {"name": "drift", "energy_curve": [0.5, 0.65], "bars": 32},
+      {"name": "dusk", "energy_curve": [0.45, 0.2], "bars": 32}
+    ],
+    "4": [
+      {"name": "settle", "energy_curve": [0.25, 0.4], "bars": 32},
+      {"name": "lift", "energy_curve": [0.45, 0.55], "bars": 16},
+      {"name": "drift", "energy_curve": [0.65, 0.55], "bars": 32},
+      {"name": "dusk", "energy_curve": [0.4, 0.2], "bars": 32}
+    ]
+  }
+}

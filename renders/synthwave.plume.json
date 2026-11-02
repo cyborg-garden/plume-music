@@ -1,0 +1,275 @@
+{
+  "bpm": 100.0,
+  "plume_version": 0,
+  "humanize_ms": 4.0,
+  "humanize_vel": 0.08,
+  "key": "C min",
+  "master": {
+    "drive": 0.2,
+    "gain_db": 0.0,
+    "limit_db": -1.0,
+    "lofi": 0.0,
+    "reverb": 0.3
+  },
+  "movements": [
+    {
+      "name": "neon-rise",
+      "sections": [
+        {
+          "bars": 16,
+          "chords": [
+            "Cm",
+            "G#sus2",
+            "D#",
+            "A#sus4"
+          ],
+          "energy": 0.3,
+          "fill": true,
+          "name": "neon-rise-a",
+          "plays": {
+            "arp": "main",
+            "bass": "main",
+            "hat": "main",
+            "kick": "main",
+            "pad": "main"
+          }
+        },
+        {
+          "bars": 16,
+          "chords": [
+            "Cm",
+            "G#sus2",
+            "D#",
+            "A#sus4"
+          ],
+          "energy": 0.55,
+          "fill": true,
+          "name": "neon-rise-b",
+          "plays": {
+            "arp": "main",
+            "bass": "main",
+            "hat": "main",
+            "kick": "main",
+            "pad": "main"
+          }
+        }
+      ]
+    },
+    {
+      "name": "apex",
+      "sections": [
+        {
+          "bars": 16,
+          "chords": [
+            "Cm",
+            "G#sus2",
+            "D#",
+            "A#sus4"
+          ],
+          "energy": 0.75,
+          "fill": true,
+          "name": "apex-a",
+          "plays": {
+            "arp": "main",
+            "bass": "main",
+            "hat": "main",
+            "kick": "main",
+            "lead": "main",
+            "pad": "main",
+            "snare": "main"
+          }
+        },
+        {
+          "bars": 16,
+          "chords": [
+            "Cm",
+            "G#sus2",
+            "D#",
+            "A#sus4"
+          ],
+          "energy": 0.9,
+          "fill": true,
+          "name": "apex-b",
+          "plays": {
+            "arp": "main",
+            "bass": "main",
+            "hat": "main",
+            "kick": "main",
+            "lead": "main",
+            "pad": "main",
+            "snare": "main"
+          }
+        }
+      ]
+    },
+    {
+      "name": "afterglow",
+      "sections": [
+        {
+          "bars": 16,
+          "chords": [
+            "Cm",
+            "G#sus2",
+            "D#",
+            "A#sus4"
+          ],
+          "energy": 0.5,
+          "fill": true,
+          "name": "afterglow-a",
+          "plays": {
+            "arp": "main",
+            "bass": "main",
+            "hat": "main",
+            "kick": "main",
+            "pad": "main"
+          }
+        },
+        {
+          "bars": 16,
+          "chords": [
+            "Cm",
+            "G#sus2",
+            "D#",
+            "A#sus4"
+          ],
+          "energy": 0.2,
+          "fill": false,
+          "name": "afterglow-b-outro",
+          "plays": {
+            "pad": "main"
+          }
+        }
+      ]
+    }
+  ],
+  "name": "synthwave",
+  "seed": 7,
+  "style": "synthwave",
+  "swing": 0.5,
+  "timing_bias_ms": {},
+  "tracks": [
+    {
+      "fx": {},
+      "gain_db": 0.0,
+      "kind": "drum",
+      "name": "kick",
+      "pan": 0.0,
+      "params": {},
+      "patterns": {
+        "alt": "bd ~ ~ ~ bd ~ ~ ~ bd ~ ~ ~ bd ~ ~ ~",
+        "fill": "bd ~ ~ ~ bd ~ ~ ~ bd ~ ~ ~ bd ~ ~ bd:v0.5",
+        "main": "bd ~ ~ ~ bd ~ ~ ~ bd ~ ~ ~ bd ~ ~ bd:v0.5",
+        "sparse": "bd ~ ~ ~ bd ~ ~ ~ bd ~ ~ ~ ~ ~ ~ bd:v0.5"
+      },
+      "voice": "808kick"
+    },
+    {
+      "fx": {
+        "reverb": 0.55
+      },
+      "gain_db": -2.0,
+      "kind": "drum",
+      "name": "snare",
+      "pan": 0.0,
+      "params": {},
+      "patterns": {
+        "alt": "~ ~ ~ ~ sd ~ ~ ~ ~ ~ ~ ~ sd ~ ~ ~",
+        "fill": "~ ~ ~ ~ sd ~ ~ ~ sd:v0.5 ~ sd:v0.6 ~ sd:v0.7 ~ sd:v0.85 ~",
+        "main": "~ ~ ~ ~ sd ~ ~ ~ ~ ~ ~ ~ sd ~ ~ ~",
+        "sparse": "~ ~ ~ ~ sd ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~"
+      },
+      "voice": "snare"
+    },
+    {
+      "fx": {},
+      "gain_db": -8.0,
+      "kind": "drum",
+      "name": "hat",
+      "pan": 0.25,
+      "params": {},
+      "patterns": {
+        "alt": "hh hh:v0.6 hh hh:v0.6 hh hh:v0.6 hh hh:v0.6 hh hh:v0.6 hh hh:v0.6 hh hh:v0.6 hh hh:v0.6",
+        "fill": "[hh*4] [hh*4] [hh*4] [hh*8]",
+        "main": "~ ~ hh ~ ~ ~ hh ~ ~ ~ hh ~ ~ ~ hh ~",
+        "sparse": "~ ~ hh ~ ~ ~ hh ~ ~ ~ hh ~ ~ ~ hh ~"
+      },
+      "voice": "hat"
+    },
+    {
+      "fx": {
+        "drive": 0.2,
+        "duck": 0.6,
+        "lpf_hz": 900.0
+      },
+      "gain_db": -1.0,
+      "kind": "tonal",
+      "name": "bass",
+      "pan": 0.0,
+      "params": {},
+      "patterns": {
+        "alt": "<c1 gs1 ds1 as1> <c1:v0.85 gs1:v0.85 ds1:v0.85 as1:v0.85> <c1 gs1 ds1 as1> <c1:v0.85 gs1:v0.85 ds1:v0.85 as1:v0.85> <c1 gs1 ds1 as1> <c1:v0.85 gs1:v0.85 ds1:v0.85 as1:v0.85> <c1 gs1 ds1 as1> <c1:v0.85 gs1:v0.85 ds1:v0.85 as1:v0.85>",
+        "fill": "<c1 gs1 ds1 as1> <c1:v0.85 gs1:v0.85 ds1:v0.85 as1:v0.85> <c1 gs1 ds1 as1> <c1:v0.85 gs1:v0.85 ds1:v0.85 as1:v0.85> <c1 gs1 ds1 as1> <c1:v0.85 gs1:v0.85 ds1:v0.85 as1:v0.85> <c1 gs1 ds1 as1> <c1:v0.85 gs1:v0.85 ds1:v0.85 as1:v0.85>",
+        "main": "<c1 gs1 ds1 as1> <c1:v0.85 gs1:v0.85 ds1:v0.85 as1:v0.85> <c1 gs1 ds1 as1> <c1:v0.85 gs1:v0.85 ds1:v0.85 as1:v0.85> <c1 gs1 ds1 as1> <c1:v0.85 gs1:v0.85 ds1:v0.85 as1:v0.85> <c1 gs1 ds1 as1> <c1:v0.85 gs1:v0.85 ds1:v0.85 as1:v0.85>",
+        "sparse": "<c1 gs1 ds1 as1> ~ <c1 gs1 ds1 as1> ~ <c1 gs1 ds1 as1> ~ <c1 gs1 ds1 as1> ~"
+      },
+      "voice": "808sub"
+    },
+    {
+      "fx": {
+        "chorus": 0.6,
+        "duck": 0.3,
+        "lpf_hz": 2400.0,
+        "reverb": 0.4
+      },
+      "gain_db": -7.0,
+      "kind": "tonal",
+      "name": "pad",
+      "pan": 0.0,
+      "params": {},
+      "patterns": {
+        "alt": "<Cm G#sus2 D# A#sus4>",
+        "fill": "<Cm G#sus2 D# A#sus4>",
+        "main": "<Cm G#sus2 D# A#sus4>",
+        "sparse": "<Cm G#sus2 D# A#sus4>"
+      },
+      "voice": "pad"
+    },
+    {
+      "fx": {
+        "delay": 0.3,
+        "duck": 0.3,
+        "reverb": 0.25
+      },
+      "gain_db": -9.0,
+      "kind": "tonal",
+      "name": "arp",
+      "pan": 0.2,
+      "params": {},
+      "patterns": {
+        "alt": "<c4 gs4 ds4 as4> <ds4 as4 g4 ds5> <g4 ds5 as4 f5> <c5 gs5 ds5 as5> <ds5 as5 g5 ds6> <g5 ds6 as5 f6> <c4 gs4 ds4 as4> <ds4 as4 g4 ds5> <g4 ds5 as4 f5> <c5 gs5 ds5 as5> <ds5 as5 g5 ds6> <g5 ds6 as5 f6> <c4 gs4 ds4 as4> <ds4 as4 g4 ds5> <g4 ds5 as4 f5> <c5 gs5 ds5 as5>",
+        "fill": "<c4 gs4 ds4 as4> <ds4 as4 g4 ds5> <g4 ds5 as4 f5> <c5 gs5 ds5 as5> <ds5 as5 g5 ds6> <g5 ds6 as5 f6> <c4 gs4 ds4 as4> <ds4 as4 g4 ds5> <g4 ds5 as4 f5> <c5 gs5 ds5 as5> <ds5 as5 g5 ds6> <g5 ds6 as5 f6> <c4 gs4 ds4 as4> <ds4 as4 g4 ds5> <g4 ds5 as4 f5> <c5 gs5 ds5 as5>",
+        "main": "<c4 gs4 ds4 as4> <ds4 as4 g4 ds5> <g4 ds5 as4 f5> <c5 gs5 ds5 as5> <ds5 as5 g5 ds6> <g5 ds6 as5 f6> <c4 gs4 ds4 as4> <ds4 as4 g4 ds5> <g4 ds5 as4 f5> <c5 gs5 ds5 as5> <ds5 as5 g5 ds6> <g5 ds6 as5 f6> <c4 gs4 ds4 as4> <ds4 as4 g4 ds5> <g4 ds5 as4 f5> <c5 gs5 ds5 as5>",
+        "sparse": "<c4 gs4 ds4 as4> <g4 ds5 as4 f5> <ds5 as5 g5 ds6> <c4 gs4 ds4 as4> <g4 ds5 as4 f5> <ds5 as5 g5 ds6> <c4 gs4 ds4 as4> <g4 ds5 as4 f5>"
+      },
+      "voice": "pluck"
+    },
+    {
+      "fx": {
+        "delay": 0.25,
+        "reverb": 0.3
+      },
+      "gain_db": -6.0,
+      "kind": "tonal",
+      "name": "lead",
+      "pan": -0.15,
+      "params": {},
+      "patterns": {
+        "alt": "<c5 gs4 ds5 as4> ~ ~ ~ <ds5 as4 ds5 as4> ~ <g5:v0.75 ds5:v0.75 gs5:v0.75 f5:v0.75> <gs5:v0.75 f5:v0.75 gs5:v0.75 g5:v0.75>",
+        "fill": "<c5 gs4 ds5 as4> <ds5:v0.75 as4:v0.75 f5:v0.75 c5:v0.75> <g5:v0.75 ds5:v0.75 gs5:v0.75 f5:v0.75> ~ <c5 gs4 ds5 as4> ~ ~ ~",
+        "main": "<c5 gs4 ds5 as4> <ds5:v0.75 as4:v0.75 f5:v0.75 c5:v0.75> <g5:v0.75 ds5:v0.75 gs5:v0.75 f5:v0.75> ~ <c5 gs4 ds5 as4> ~ ~ ~",
+        "sparse": "<c5 gs4 ds5 as4> ~ ~ ~ <c5 gs4 ds5 as4> ~ ~ ~"
+      },
+      "voice": "lead"
+    }
+  ]
+}

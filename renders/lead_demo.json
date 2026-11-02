@@ -1,0 +1,344 @@
+{
+ "cmd": "plume simlead renders/lead_demo_input.wav --role lead --seed 5 --bars 32 --human-offset 16.000 --out renders/lead_demo.wav",
+ "human_truth": {
+  "bars": 32,
+  "key": "A minor",
+  "kind": "rushing",
+  "mean_offset_ms": 30.36423818621093
+ },
+ "input_from": "tests/lead_demo.py: make_joiner('rushing', machine_bpm=120.0, machine_key='A minor', bars=32, seed=1) -> renders/lead_demo_input.wav (gitignored; regenerate with .venv/bin/python tests/lead_demo.py)",
+ "manifest": {
+  "bars": 32,
+  "composed_bpm": 120.0,
+  "composed_key": "A minor",
+  "cues_applied": [],
+  "cues_dropped": [],
+  "cues_never_applied": [],
+  "cues_undelivered": [],
+  "decisions": "renders/lead_demo.ndjson",
+  "duration_s": 80.0,
+  "final_bpm": 120.0,
+  "final_clock_authority": 0.9,
+  "final_role": "lead",
+  "final_tempo_offset_pct": 0.0,
+  "form_params": {
+   "energy_bars": 2,
+   "energy_down_db": 3.0,
+   "energy_fast_alpha": 0.5,
+   "energy_margin": 0.05,
+   "energy_slow_alpha": 0.1,
+   "energy_up_db": 3.0,
+   "extend_unit_bars": 4,
+   "form_authority_min": 0.5,
+   "loop_form": true,
+   "max_extend_bars": 16,
+   "phrase_bars": 4,
+   "phrase_rise_db": 3.0,
+   "phrase_rise_density": 0.15,
+   "ritard_bars": 2,
+   "ritard_pct": 4.0,
+   "ritard_step_max_pct": 10.0
+  },
+  "human_final_bpm": 120.0369,
+  "human_final_key": "C major",
+  "human_notes": [],
+  "human_offset_s": 16.0,
+  "input": "renders/lead_demo_input.wav",
+  "machine_duration_s": 65.173,
+  "machine_key": "A minor",
+  "mix_human_db": 0.0,
+  "mode": "lead",
+  "out": "renders/lead_demo.wav",
+  "params": {
+   "conf_floor": 0.3,
+   "density_high": 2.5,
+   "density_hysteresis": 0.8,
+   "energy_alpha": 0.5,
+   "enter_under_db": -8.0,
+   "entry_boundary_bars": 4,
+   "entry_conf": 0.45,
+   "min_listen_bars": 4,
+   "ramp_bars": 3,
+   "register_margin_st": 5.0,
+   "silence_fade_bars": 6,
+   "silence_rms_db": -45.0,
+   "silence_tacet_bars": 10,
+   "silence_thin_bars": 2
+  },
+  "peak_db": -1.0,
+  "per_bus_rms_db": {
+   "human": -16.6144,
+   "machine": -5.9298
+  },
+  "pre_limiter_peak_db": 7.9451,
+  "rms_db": -6.6314,
+  "role_events": [
+   "tempo_hold"
+  ],
+  "role_params": {
+   "clock_authority": null,
+   "concede_bars": 2,
+   "concede_drift_ms": 12.0,
+   "concede_max_pct": 8.0,
+   "concede_min_conf": 0.45,
+   "concede_ms": 25.0,
+   "concede_plausible_frac": 0.2,
+   "concede_plausible_unit_frac": 0.4,
+   "concede_rate": 0.25,
+   "concede_spread_ms": 25.0,
+   "conform_bars": 4,
+   "conform_enabled": true,
+   "conform_key_conf": 0.4,
+   "conform_semitones": 2,
+   "form_authority": null,
+   "handoff_density": 2.0,
+   "handoff_density_ratio": 1.5,
+   "handoff_hysteresis_bars": 4,
+   "handoff_silence_bars": 8,
+   "role": "lead",
+   "tempo_policy": null,
+   "trade_bars": 4
+  },
+  "seed": 5,
+  "session": "lead-demo",
+  "sr": 48000,
+  "style": "trap",
+  "transpose_semitones": 0
+ },
+ "measured": {
+  "bars_rendered": 32,
+  "bpm_by_bar": [
+   120.0,
+   120.0,
+   120.0,
+   120.0,
+   120.0,
+   120.0,
+   120.0,
+   120.0,
+   120.0,
+   120.0,
+   120.0,
+   120.0,
+   120.0,
+   120.0,
+   120.0,
+   120.0,
+   120.0,
+   120.0,
+   120.0,
+   120.0,
+   120.0,
+   120.0,
+   120.0,
+   120.0,
+   120.0,
+   120.0,
+   120.0,
+   120.0,
+   120.0,
+   120.0,
+   120.0,
+   120.0
+  ],
+  "duration_s": 80.0,
+  "final_phase_gap_beats": 0.0,
+  "machine_bus_rms_db_by_bar": [
+   -6.46,
+   -6.11,
+   -6.72,
+   -6.51,
+   -5.95,
+   -5.99,
+   -6.44,
+   -7.11,
+   -4.44,
+   -5.67,
+   -5.37,
+   -5.63,
+   -5.58,
+   -5.32,
+   -5.89,
+   -6.28,
+   -3.98,
+   -5.83,
+   -5.39,
+   -5.59,
+   -5.45,
+   -4.73,
+   -5.09,
+   -5.47,
+   -7.0,
+   -5.95,
+   -5.39,
+   -6.14,
+   -5.99,
+   -6.38,
+   -6.24,
+   -6.5
+  ],
+  "role_events": [
+   [
+    10,
+    "tempo_hold"
+   ],
+   [
+    11,
+    "tempo_hold"
+   ],
+   [
+    12,
+    "tempo_hold"
+   ],
+   [
+    13,
+    "tempo_hold"
+   ],
+   [
+    14,
+    "tempo_hold"
+   ],
+   [
+    15,
+    "tempo_hold"
+   ],
+   [
+    16,
+    "tempo_hold"
+   ],
+   [
+    17,
+    "tempo_hold"
+   ],
+   [
+    18,
+    "tempo_hold"
+   ],
+   [
+    19,
+    "tempo_hold"
+   ],
+   [
+    20,
+    "tempo_hold"
+   ],
+   [
+    21,
+    "tempo_hold"
+   ],
+   [
+    22,
+    "tempo_hold"
+   ],
+   [
+    23,
+    "tempo_hold"
+   ],
+   [
+    24,
+    "tempo_hold"
+   ],
+   [
+    25,
+    "tempo_hold"
+   ],
+   [
+    26,
+    "tempo_hold"
+   ],
+   [
+    27,
+    "tempo_hold"
+   ],
+   [
+    28,
+    "tempo_hold"
+   ],
+   [
+    29,
+    "tempo_hold"
+   ],
+   [
+    30,
+    "tempo_hold"
+   ],
+   [
+    31,
+    "tempo_hold"
+   ]
+  ],
+  "roles_by_bar": [
+   "lead",
+   "lead",
+   "lead",
+   "lead",
+   "lead",
+   "lead",
+   "lead",
+   "lead",
+   "lead",
+   "lead",
+   "lead",
+   "lead",
+   "lead",
+   "lead",
+   "lead",
+   "lead",
+   "lead",
+   "lead",
+   "lead",
+   "lead",
+   "lead",
+   "lead",
+   "lead",
+   "lead",
+   "lead",
+   "lead",
+   "lead",
+   "lead",
+   "lead",
+   "lead",
+   "lead",
+   "lead"
+  ],
+  "states_by_bar": [
+   "comping",
+   "comping",
+   "comping",
+   "comping",
+   "comping",
+   "comping",
+   "comping",
+   "comping",
+   "comping",
+   "comping",
+   "comping",
+   "comping",
+   "comping",
+   "comping",
+   "comping",
+   "comping",
+   "comping",
+   "comping",
+   "comping",
+   "comping",
+   "comping",
+   "comping",
+   "comping",
+   "comping",
+   "comping",
+   "comping",
+   "comping",
+   "comping",
+   "comping",
+   "comping",
+   "comping",
+   "comping"
+  ],
+  "tempo_offset_pct_extremes": [
+   0.0,
+   0.0
+  ]
+ },
+ "what": "the machine leads a 120bpm trap session; the human joins at bar 8 pushing 30ms in front, and the machine HOLDS the tempo (v2.2 default) \u2014 the reference does not move, the push stays audible, and the human can come back to it"
+}

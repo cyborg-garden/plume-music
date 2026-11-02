@@ -1,0 +1,251 @@
+{
+ "cmd": "plume simlead renders/trade_demo_input.wav --role trade --seed 5 --bars 32 --human-offset 0.000 --out renders/trade_demo.wav",
+ "human_truth": {
+  "bars": 24,
+  "key": "A minor",
+  "kind": "takes_over",
+  "mean_offset_ms": 0.25548434991439967
+ },
+ "input_from": "tests/lead_demo.py: make_joiner('takes_over', machine_bpm=120.0, machine_key='A minor', bars=24, seed=1) -> renders/trade_demo_input.wav (gitignored; regenerate with .venv/bin/python tests/lead_demo.py)",
+ "manifest": {
+  "bars": 32,
+  "composed_bpm": 120.0,
+  "composed_key": "A minor",
+  "cues_applied": [
+   "take it out"
+  ],
+  "cues_dropped": [],
+  "cues_never_applied": [],
+  "cues_undelivered": [],
+  "decisions": "renders/trade_demo.ndjson",
+  "duration_s": 48.0,
+  "final_bpm": 120.0,
+  "final_clock_authority": 0.15,
+  "final_role": "trade",
+  "final_tempo_offset_pct": 0.0,
+  "form_params": {
+   "energy_bars": 2,
+   "energy_down_db": 3.0,
+   "energy_fast_alpha": 0.5,
+   "energy_margin": 0.05,
+   "energy_slow_alpha": 0.1,
+   "energy_up_db": 3.0,
+   "extend_unit_bars": 4,
+   "form_authority_min": 0.5,
+   "loop_form": true,
+   "max_extend_bars": 16,
+   "phrase_bars": 4,
+   "phrase_rise_db": 3.0,
+   "phrase_rise_density": 0.15,
+   "ritard_bars": 2,
+   "ritard_pct": 4.0,
+   "ritard_step_max_pct": 10.0
+  },
+  "human_final_bpm": 119.9843,
+  "human_final_key": "A minor",
+  "human_notes": [],
+  "human_offset_s": 0.0,
+  "input": "renders/trade_demo_input.wav",
+  "machine_duration_s": 44.0,
+  "machine_key": "A minor",
+  "mix_human_db": 0.0,
+  "mode": "lead",
+  "out": "renders/trade_demo.wav",
+  "params": {
+   "conf_floor": 0.3,
+   "density_high": 2.5,
+   "density_hysteresis": 0.8,
+   "energy_alpha": 0.5,
+   "enter_under_db": -8.0,
+   "entry_boundary_bars": 4,
+   "entry_conf": 0.45,
+   "min_listen_bars": 4,
+   "ramp_bars": 3,
+   "register_margin_st": 5.0,
+   "silence_fade_bars": 6,
+   "silence_rms_db": -45.0,
+   "silence_tacet_bars": 10,
+   "silence_thin_bars": 2
+  },
+  "peak_db": -1.0,
+  "per_bus_rms_db": {
+   "human": -15.1831,
+   "machine": -8.9822
+  },
+  "pre_limiter_peak_db": 7.7638,
+  "rms_db": -8.8615,
+  "role_events": [
+   "trade",
+   "trade_collision"
+  ],
+  "role_params": {
+   "clock_authority": null,
+   "concede_bars": 2,
+   "concede_drift_ms": 12.0,
+   "concede_max_pct": 8.0,
+   "concede_min_conf": 0.45,
+   "concede_ms": 25.0,
+   "concede_plausible_frac": 0.2,
+   "concede_plausible_unit_frac": 0.4,
+   "concede_rate": 0.25,
+   "concede_spread_ms": 25.0,
+   "conform_bars": 4,
+   "conform_enabled": true,
+   "conform_key_conf": 0.4,
+   "conform_semitones": 2,
+   "form_authority": null,
+   "handoff_density": 2.0,
+   "handoff_density_ratio": 1.5,
+   "handoff_hysteresis_bars": 4,
+   "handoff_silence_bars": 8,
+   "role": "trade",
+   "tempo_policy": null,
+   "trade_bars": 4
+  },
+  "seed": 5,
+  "session": "trade-demo",
+  "sr": 48000,
+  "style": "trap",
+  "transpose_semitones": 0
+ },
+ "measured": {
+  "bars_rendered": 22,
+  "bpm_by_bar": [
+   120.0,
+   120.0,
+   120.0,
+   120.0,
+   120.0,
+   120.0,
+   120.0,
+   120.0,
+   120.0,
+   120.0,
+   120.0,
+   120.0,
+   120.0,
+   120.0,
+   120.0,
+   120.0,
+   120.0,
+   120.0,
+   120.0,
+   120.0,
+   120.0,
+   120.0
+  ],
+  "duration_s": 48.0,
+  "final_phase_gap_beats": 0.0,
+  "machine_bus_rms_db_by_bar": [
+   -6.29,
+   -6.03,
+   -6.53,
+   -6.32,
+   -11.99,
+   -11.68,
+   -11.62,
+   -11.86,
+   -4.53,
+   -5.31,
+   -5.05,
+   -5.19,
+   -8.51,
+   -12.86,
+   -13.95,
+   -13.72,
+   -13.33,
+   -13.37,
+   -13.28,
+   -12.95,
+   -12.66,
+   -12.64
+  ],
+  "role_events": [
+   [
+    0,
+    "trade"
+   ],
+   [
+    4,
+    "trade"
+   ],
+   [
+    8,
+    "trade"
+   ],
+   [
+    12,
+    "trade"
+   ],
+   [
+    16,
+    "trade_collision"
+   ],
+   [
+    17,
+    "trade_collision"
+   ],
+   [
+    18,
+    "trade_collision"
+   ],
+   [
+    19,
+    "trade_collision"
+   ]
+  ],
+  "roles_by_bar": [
+   "trade",
+   "trade",
+   "trade",
+   "trade",
+   "trade",
+   "trade",
+   "trade",
+   "trade",
+   "trade",
+   "trade",
+   "trade",
+   "trade",
+   "trade",
+   "trade",
+   "trade",
+   "trade",
+   "trade",
+   "trade",
+   "trade",
+   "trade",
+   "trade",
+   "trade"
+  ],
+  "states_by_bar": [
+   "comping",
+   "comping",
+   "comping",
+   "comping",
+   "comping",
+   "comping",
+   "comping",
+   "comping",
+   "comping",
+   "comping",
+   "comping",
+   "comping",
+   "comping",
+   "thinned",
+   "thinned",
+   "thinned",
+   "thinned",
+   "thinned",
+   "thinned",
+   "thinned",
+   "thinned",
+   "thinned"
+  ],
+  "tempo_offset_pct_extremes": [
+   0.0,
+   0.0
+  ]
+ },
+ "what": "trading fours: authority alternates every 4 bars at the boundary, the human playing over the machine's bars makes it back off, and a cue takes the tune out"
+}

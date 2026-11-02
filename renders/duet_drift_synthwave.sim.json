@@ -1,0 +1,41 @@
+{
+ "bars_planned": 21,
+ "bpm_hint": null,
+ "decisions": "renders/duet_drift_synthwave.ndjson",
+ "duration_s": 59.598687,
+ "entered_bar": 4,
+ "final_bpm": 101.7341,
+ "final_key": "A minor",
+ "input": "renders/qa/fixture_drift.wav",
+ "mix_human_db": 0.0,
+ "no_entry_reason": null,
+ "out": "renders/duet_drift_synthwave.wav",
+ "params": {
+  "conf_floor": 0.3,
+  "density_high": 2.5,
+  "density_hysteresis": 0.8,
+  "energy_alpha": 0.5,
+  "enter_under_db": -8.0,
+  "entry_boundary_bars": 4,
+  "entry_conf": 0.45,
+  "min_listen_bars": 4,
+  "ramp_bars": 3,
+  "register_margin_st": 5.0,
+  "silence_fade_bars": 6,
+  "silence_rms_db": -45.0,
+  "silence_tacet_bars": 10,
+  "silence_thin_bars": 2
+ },
+ "peak_db": -1.0548,
+ "per_bus_rms_db": {
+  "human": -17.4524,
+  "machine": -18.9401
+ },
+ "pre_limiter_peak_db": 1.7222,
+ "rms_db": -15.1409,
+ "seed": 5,
+ "sr": 48000,
+ "style": "synthwave",
+ "taps_s": [],
+ "tightness": null
+}

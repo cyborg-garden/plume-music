@@ -1,0 +1,132 @@
+{
+ "kit_kick": [
+  [
+   "kit_kick_1_0.flac",
+   "kit_kick_1_1.flac"
+  ],
+  [
+   "kit_kick_2_0.flac",
+   "kit_kick_2_1.flac"
+  ],
+  [
+   "kit_kick_3_0.flac",
+   "kit_kick_3_1.flac"
+  ],
+  [
+   "kit_kick_4_0.flac",
+   "kit_kick_4_1.flac"
+  ]
+ ],
+ "kit_snare": [
+  [
+   "kit_snare_2_0.flac"
+  ],
+  [
+   "kit_snare_4_0.flac"
+  ],
+  [
+   "kit_snare_5_0.flac"
+  ],
+  [
+   "kit_snare_8_0.flac"
+  ],
+  [
+   "kit_snare_11_0.flac"
+  ],
+  [
+   "kit_snare_16_0.flac"
+  ],
+  [
+   "kit_snare_20_0.flac"
+  ],
+  [
+   "kit_snare_28_0.flac"
+  ],
+  [
+   "kit_snare_32_0.flac"
+  ],
+  [
+   "kit_snare_36_0.flac"
+  ]
+ ],
+ "kit_rim": [
+  [
+   "kit_rim_2_0.flac"
+  ],
+  [
+   "kit_rim_4_0.flac"
+  ]
+ ],
+ "kit_hat": [
+  [
+   "kit_hat_1_0.flac",
+   "kit_hat_1_1.flac"
+  ],
+  [
+   "kit_hat_2_0.flac",
+   "kit_hat_2_1.flac"
+  ],
+  [
+   "kit_hat_3_0.flac",
+   "kit_hat_3_1.flac"
+  ],
+  [
+   "kit_hat_4_0.flac",
+   "kit_hat_4_1.flac"
+  ]
+ ],
+ "kit_halfhat": [
+  [
+   "kit_halfhat_2_0.flac"
+  ],
+  [
+   "kit_halfhat_4_0.flac"
+  ]
+ ],
+ "kit_openhat": [
+  [
+   "kit_openhat_2_0.flac"
+  ],
+  [
+   "kit_openhat_3_0.flac"
+  ]
+ ],
+ "kit_ride": [
+  [
+   "kit_ride_1_0.flac",
+   "kit_ride_1_1.flac"
+  ],
+  [
+   "kit_ride_2_0.flac",
+   "kit_ride_2_1.flac"
+  ],
+  [
+   "kit_ride_3_0.flac",
+   "kit_ride_3_1.flac"
+  ]
+ ],
+ "kit_crash": [
+  [
+   "kit_crash_2_0.flac"
+  ],
+  [
+   "kit_crash_3_0.flac"
+  ]
+ ],
+ "kit_htom": [
+  [
+   "kit_htom_6_0.flac"
+  ],
+  [
+   "kit_htom_12_0.flac"
+  ]
+ ],
+ "kit_ltom": [
+  [
+   "kit_ltom_6_0.flac"
+  ],
+  [
+   "kit_ltom_12_0.flac"
+  ]
+ ]
+}

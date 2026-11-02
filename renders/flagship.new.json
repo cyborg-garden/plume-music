@@ -1,0 +1,130 @@
+{
+  "hash": "9f9e3c5a4a93",
+  "path": "renders/flagship.plume.json",
+  "summary": {
+    "bpm": 120.0,
+    "key": "C min",
+    "movements": [
+      {
+        "bars": 32,
+        "name": "establish",
+        "sections": [
+          {
+            "bars": 16,
+            "energy": 0.25,
+            "name": "establish-a"
+          },
+          {
+            "bars": 16,
+            "energy": 0.5,
+            "name": "establish-b"
+          }
+        ]
+      },
+      {
+        "bars": 32,
+        "name": "peak",
+        "sections": [
+          {
+            "bars": 16,
+            "energy": 0.7,
+            "name": "peak-a"
+          },
+          {
+            "bars": 16,
+            "energy": 0.9,
+            "name": "peak-b"
+          }
+        ]
+      },
+      {
+        "bars": 32,
+        "name": "reprise",
+        "sections": [
+          {
+            "bars": 16,
+            "energy": 0.55,
+            "name": "reprise-a"
+          },
+          {
+            "bars": 16,
+            "energy": 0.2,
+            "name": "reprise-b-outro"
+          }
+        ]
+      }
+    ],
+    "name": "flagship",
+    "progression": [
+      "Cm",
+      "D#",
+      "G#",
+      "A#"
+    ],
+    "seed": 7,
+    "style": "trap",
+    "swing": 0.52,
+    "tracks": [
+      {
+        "kind": "drum",
+        "name": "kick",
+        "unused": false,
+        "voice": "808kick"
+      },
+      {
+        "kind": "drum",
+        "name": "snare",
+        "unused": false,
+        "voice": "snare"
+      },
+      {
+        "kind": "drum",
+        "name": "clap",
+        "unused": false,
+        "voice": "clap"
+      },
+      {
+        "kind": "drum",
+        "name": "hat",
+        "unused": false,
+        "voice": "hat"
+      },
+      {
+        "kind": "drum",
+        "name": "openhat",
+        "unused": false,
+        "voice": "openhat"
+      },
+      {
+        "kind": "tonal",
+        "name": "bass",
+        "unused": false,
+        "voice": "808sub"
+      },
+      {
+        "kind": "tonal",
+        "name": "pad",
+        "unused": false,
+        "voice": "pluck"
+      },
+      {
+        "kind": "tonal",
+        "name": "lead",
+        "unused": false,
+        "voice": "lead"
+      },
+      {
+        "kind": "drum",
+        "name": "crackle",
+        "unused": false,
+        "voice": "crackle"
+      },
+      {
+        "kind": "tonal",
+        "name": "arp",
+        "unused": false,
+        "voice": "pluck"
+      }
+    ]
+  }
+}

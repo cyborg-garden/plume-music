@@ -1,0 +1,272 @@
+"""When the band joins a tap-started take: drums first, then you, then them.
+
+The order is Juniper's (2026-11-02).  She taps four, the drums start and hold
+that tempo, and she plays over them for a while.  Only once plume has heard her
+settle in one key do the bass and chords come in, in that key, with the melody
+a few bars after them.
+
+Pure: a function of the (bar, harmony, playing) stream, so it is testable
+without a device.  Key commitment itself is :class:`HarmonyGovernor`'s job; what
+this adds is that bars she sat out are no evidence of a key.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass
+from types import SimpleNamespace
+
+import numpy as np
+
+from .governor import HarmonyGovernor
+from .listen.harmony import HarmonyState
+
+HARMONY_ROLES = ("bass", "pad", "keys", "shimmer")
+MELODY_ROLES = ("lead", "arp")
+
+DRUMS, BAND, FULL = "drums", "band", "full"
+
+
+@dataclass(frozen=True)
+class EntryState:
+    stage: str               # drums | band | full
+    held_back: tuple[str, ...]   # roles not allowed to sound yet; the rest play
+    key: str | None          # committed key, None until the band is in
+    chord: str | None        # chord from the committed progression
+    reason: str
+
+
+_NOTHING_HEARD = HarmonyState(t_s=0.0, key=None, key_conf=0.0, chord=None,
+                              chord_conf=0.0, register_low_midi=None,
+                              register_high_midi=None)
+
+
+#: How much of a bar's pitch energy its three strongest notes must hold for the bar
+#: to count as someone playing.  Drums barely favour any note: bars measured with
+#: nobody playing (a real take, 2026-11-02) held 0.29-0.37, with guitar 0.46-0.76.
+TONAL_TOP3 = 0.42
+
+
+class GuitarEar:
+    """Hear a guitar over drums alone.  It only works before the band comes in: once
+    bass and chords are in the room, the mic's pitches are mostly theirs."""
+
+    def __init__(self):
+        self._heard = np.zeros(12)
+        self._since_tonal = 99
+        #: This bar alone sounded played, confirmed or not.  A fade needs this: a
+        #: player coming back must not wait a bar for confirmation.
+        self.last_bar_tonal = False
+
+    def bar(self, chromas) -> bool:
+        """Is someone playing?  One tonal bar could be a drum ringing near the
+        threshold, so it takes two within three bars.  Notes of a tonal bar are
+        remembered."""
+        frames = [c for c in chromas if float(np.sum(c)) > 0.0]
+        mean = np.mean(frames, axis=0) if frames else None
+        self.last_bar_tonal = (mean is not None
+                               and float(np.sort(mean)[-3:].sum()) >= TONAL_TOP3)
+        if not self.last_bar_tonal:
+            self._since_tonal += 1
+            return False
+        confirmed = self._since_tonal <= 2
+        self._since_tonal = 1
+        self._heard += mean
+        return confirmed
+
+    def notes(self, count: int = 5) -> tuple[int, ...]:
+        """Her most-played pitch classes, strongest first; empty if none heard."""
+        if not np.any(self._heard):
+            return ()
+        order = np.argsort(self._heard)[::-1][:count]
+        return tuple(int(i) for i in order if self._heard[i] > 0.0)
+
+
+class BandEntry:
+    def __init__(self, style: str, *, min_drum_bars: int = 8, key_bars: int = 4,
+                 melody_delay_bars: int = 4, release_bars: int = 8,
+                 known_key: str | None = None, after_first_heard_bars: int = 5):
+        """``after_first_heard_bars`` counts from when she is confirmed, which is
+        about three bars after her first note, so she gets about eight bars."""
+        self._min_drum_bars = int(min_drum_bars)
+        self._melody_delay = int(melody_delay_bars)
+        self._gov = HarmonyGovernor(style, SimpleNamespace(
+            harmony_commit_bars=int(key_bars),
+            harmony_release_bars=int(release_bars)))
+        self._band_bar: int | None = None
+        self._heard = 0
+        self._known_key = known_key
+        self._after_heard = int(after_first_heard_bars)
+        self._first_heard: int | None = None
+        self.bars_in = 0
+
+    @property
+    def band_is_in(self) -> bool:
+        return self._band_bar is not None
+
+    def update(self, bar: int, harmony, playing: bool) -> EntryState:
+        if playing:
+            self._heard += 1
+            if self._first_heard is None:
+                self._first_heard = bar
+        ready = (self._first_heard is not None and bar >= max(
+            self._min_drum_bars, self._first_heard + self._after_heard))
+        if self._known_key is not None:
+            # She told us the key, so nothing heard can change it.  The band still
+            # waits for her to start: drums alone are for playing over.
+            if not ready and self._band_bar is None:
+                return EntryState(DRUMS, HARMONY_ROLES + MELODY_ROLES, None, None,
+                                  f"drums: waiting to bring in {self._known_key}")
+            if self._gov.committed_key is None:
+                self._gov.commit(self._known_key, bar)
+            playing, harmony = False, _NOTHING_HEARD
+        committed = self._gov.committed_key is not None
+        # A bar she sat out says nothing about her key.  Before commitment it
+        # never reaches the governor.  Afterwards it has to, because the chord
+        # cycle keeps advancing while she rests, but a rest must neither let the
+        # tracker's stale belief change key nor interrupt a real key change.
+        if playing:
+            governed = self._gov.govern(bar, harmony)
+        elif committed:
+            governed = self._gov.govern(bar, harmony, resting=True)
+        else:
+            governed = None
+        key = self._gov.committed_key
+        if key is None or (not ready and self._band_bar is None):
+            return EntryState(DRUMS, HARMONY_ROLES + MELODY_ROLES, None, None,
+                              f"drums: heard {self._heard} bars, no settled key")
+        if self._band_bar is None:
+            self._band_bar = bar
+        self.bars_in = bar - self._band_bar
+        chord = None if governed is None else governed.chord
+        if bar - self._band_bar < self._melody_delay:
+            return EntryState(BAND, MELODY_ROLES, key, chord,
+                              f"band: bass and chords in {key}")
+        return EntryState(FULL, (), key, chord, f"full: melody over {key}")
+
+
+#: The shape of the song once the band is in: (name, bars, density).  Density
+#: picks how busy the hats, keys and melody are; the kick and snare never change,
+#: so the song grows without the groove being rewritten under her.
+SONG_ARC = (("verse", 16, 0.45), ("lift", 16, 0.85), ("verse", 8, 0.5),
+            ("break", 4, 0.3), ("lift", 16, 0.9), ("verse", 16, 0.45),
+            ("break", 4, 0.3), ("lift", 24, 0.9))
+#: Roles sitting out a section.  A break drops the kick and snare, so the band
+#: coming back reads as an event; the high pad is saved for the lifts.
+_SECTION_RESTS = {"verse": ("shimmer",), "break": ("kick", "snare", "shimmer", "lead"),
+                  "lift": ()}
+
+
+def song_section(bars_in: int) -> tuple[str, float, tuple[str, ...]]:
+    """(section name, density, roles resting) ``bars_in`` bars after the band came
+    in.  The arc repeats, so a long take keeps moving."""
+    total = sum(bars for _, bars, _ in SONG_ARC)
+    at = max(0, int(bars_in)) % total
+    for name, bars, density in SONG_ARC:
+        if at < bars:
+            return name, density, _SECTION_RESTS[name]
+        at -= bars
+    raise AssertionError("unreachable: at is reduced modulo the arc's length")
+
+
+OUTRO_SIGNAL_BARS = 4
+OUTRO_FADE_BARS = 6
+
+
+def outro(seconds_in: float, wind_down_s: float | None, bar_s: float):
+    """Where a timed song is in its ending, or None before it.
+
+    (bars into the outro, gain offset in dB, whether the take ends).  It signals
+    first, with a crash and the drums thinning out, so the player can wind down
+    with the band; only then does it fade.
+    """
+    if wind_down_s is None or seconds_in < wind_down_s:
+        return None
+    bars = int((seconds_in - wind_down_s) / bar_s)
+    fading = max(0, bars - OUTRO_SIGNAL_BARS + 1)
+    gain = -36.0 * min(fading, OUTRO_FADE_BARS) / OUTRO_FADE_BARS
+    return bars, gain, fading >= OUTRO_FADE_BARS
+
+
+class SilenceEnding:
+    """Nobody playing: wait, then fade out and end (Juniper, 2026-11-02).
+
+    Times are bar starts in stream seconds.  A bar of playing during the fade
+    brings the band straight back, so a long rest is not punished.  Bars are read
+    two bars late, so the take stays open ``listen_bars`` past the fade: a return
+    in the last bars of the fade is still heard.
+    """
+
+    def __init__(self, *, silence_s: float = 30.0, fade_bars: int = 4,
+                 floor_db: float = -36.0, listen_bars: int = 2):
+        self._silence_s = float(silence_s)
+        self._fade_bars = int(fade_bars)
+        self._floor_db = float(floor_db)
+        self._listen_bars = int(listen_bars)
+        self._last_heard: float | None = None
+        self._fade = 0
+
+    def update(self, t_bar: float, playing: bool) -> tuple[float, bool]:
+        """(gain offset in dB for this bar, whether the take should end)."""
+        if playing or self._last_heard is None:
+            self._last_heard = float(t_bar)
+            self._fade = 0
+            if playing:
+                return 0.0, False
+        if t_bar - self._last_heard < self._silence_s:
+            return 0.0, False
+        self._fade += 1
+        gain = self._floor_db * min(self._fade, self._fade_bars) / self._fade_bars
+        return gain, self._fade >= self._fade_bars + self._listen_bars
+
+
+def count_start(taps, soft_hits, *, tol_frac: float = 0.15,
+                max_back: int = 12) -> list[float]:
+    """The whole count, including knocks too quiet to have confirmed it.
+
+    A count is confirmed by its four clearest knocks, which need not be its
+    first four: on 2026-11-02 the first three of a count were quiet, the band
+    counted from the fourth, and the drums came in three beats late.  So walk
+    back along the confirmed spacing through quieter hits, until a beat is
+    missing.  The first knock found is where she started counting.
+    """
+    knocks = sorted(float(t) for t in taps)
+    gaps = sorted(b - a for a, b in zip(knocks, knocks[1:]))
+    period = gaps[len(gaps) // 2]
+    soft = sorted(float(t) for t in soft_hits)
+    anchor = knocks[0]
+    for beats_back in range(1, max_back + 1):
+        # Measured from the confirmed knock each time: stepping from each soft hit
+        # would let stray room noise walk the grid away.
+        want = anchor - beats_back * period
+        near = [t for t in soft if abs(t - want) <= tol_frac * period]
+        if not near:
+            break
+        knocks.insert(0, want)     # the grid's time: a hit only proves the beat
+    return knocks
+
+
+def tap_tempo(taps) -> tuple[float, float]:
+    """(bpm, next beat time) from a confirmed count-in's tap times.
+
+    Median interval, so one rushed first knock does not set the tempo.
+    """
+    ts = sorted(float(t) for t in taps)
+    if len(ts) < 2:
+        raise ValueError(f"tap_tempo needs at least 2 taps, got {len(ts)}")
+    gaps = sorted(b - a for a, b in zip(ts, ts[1:]))
+    n = len(gaps)
+    period = gaps[n // 2] if n % 2 else 0.5 * (gaps[n // 2 - 1] + gaps[n // 2])
+    return 60.0 / period, ts[-1] + period
+
+
+def first_bar_time(next_beat_s: float, bar_s: float, playhead_s: float,
+                   comp_s: float, *, margin_s: float = 0.15) -> float:
+    """The first downbeat still far enough ahead to place, on the tapped grid.
+
+    Placing early by ``comp_s`` at a fast tempo can land the next beat in the
+    past.  Rather than clip it, or start on a beat that puts the "one" somewhere
+    else, come in a whole bar later.
+    """
+    t = float(next_beat_s)
+    while t - comp_s < playhead_s + margin_s:
+        t += bar_s
+    return t

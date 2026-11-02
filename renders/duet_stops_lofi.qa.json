@@ -1,0 +1,228 @@
+{
+ "checks": {
+  "bass_roots": {
+   "bars_checked": 17,
+   "bars_decisive": 12,
+   "decisive_frac": 0.706,
+   "detail": [
+    {
+     "bar": 4,
+     "belief_chord": "C",
+     "chroma_conf": 0.365,
+     "decisive": true,
+     "in_key": true,
+     "level_db": -25.7,
+     "pc": "G"
+    },
+    {
+     "bar": 5,
+     "belief_chord": "G",
+     "chroma_conf": 0.699,
+     "decisive": true,
+     "in_key": true,
+     "level_db": -21.6,
+     "pc": "D"
+    },
+    {
+     "bar": 6,
+     "belief_chord": "Am",
+     "chroma_conf": 0.576,
+     "decisive": true,
+     "in_key": true,
+     "level_db": -19.1,
+     "pc": "A"
+    },
+    {
+     "bar": 7,
+     "belief_chord": "F",
+     "chroma_conf": 0.356,
+     "decisive": true,
+     "in_key": true,
+     "level_db": -16.7,
+     "pc": "C"
+    },
+    {
+     "bar": 8,
+     "belief_chord": "C",
+     "chroma_conf": 0.247,
+     "decisive": false,
+     "in_key": true,
+     "level_db": -17.1,
+     "pc": "E"
+    },
+    {
+     "bar": 9,
+     "belief_chord": null,
+     "chroma_conf": 0.663,
+     "decisive": true,
+     "in_key": true,
+     "level_db": -15.8,
+     "pc": "A"
+    },
+    {
+     "bar": 10,
+     "belief_chord": null,
+     "chroma_conf": 0.747,
+     "decisive": true,
+     "in_key": true,
+     "level_db": -25.0,
+     "pc": "A"
+    },
+    {
+     "bar": 11,
+     "belief_chord": "F",
+     "chroma_conf": 0.361,
+     "decisive": true,
+     "in_key": true,
+     "level_db": -17.2,
+     "pc": "C"
+    },
+    {
+     "bar": 12,
+     "belief_chord": "C",
+     "chroma_conf": 0.243,
+     "decisive": false,
+     "in_key": true,
+     "level_db": -17.5,
+     "pc": "E"
+    },
+    {
+     "bar": 13,
+     "belief_chord": "G",
+     "chroma_conf": 0.24,
+     "decisive": false,
+     "in_key": true,
+     "level_db": -16.9,
+     "pc": "D"
+    },
+    {
+     "bar": 14,
+     "belief_chord": "Am",
+     "chroma_conf": 0.403,
+     "decisive": true,
+     "in_key": true,
+     "level_db": -17.7,
+     "pc": "A"
+    },
+    {
+     "bar": 15,
+     "belief_chord": "F",
+     "chroma_conf": 0.366,
+     "decisive": true,
+     "in_key": true,
+     "level_db": -16.5,
+     "pc": "C"
+    },
+    {
+     "bar": 16,
+     "belief_chord": "C",
+     "chroma_conf": 0.257,
+     "decisive": false,
+     "in_key": true,
+     "level_db": -17.5,
+     "pc": "E"
+    },
+    {
+     "bar": 17,
+     "belief_chord": "G",
+     "chroma_conf": 0.307,
+     "decisive": true,
+     "in_key": true,
+     "level_db": -16.5,
+     "pc": "D"
+    },
+    {
+     "bar": 18,
+     "belief_chord": "Am",
+     "chroma_conf": 0.473,
+     "decisive": true,
+     "in_key": true,
+     "level_db": -16.5,
+     "pc": "A"
+    },
+    {
+     "bar": 19,
+     "belief_chord": "F",
+     "chroma_conf": 0.344,
+     "decisive": true,
+     "in_key": true,
+     "level_db": -16.8,
+     "pc": "C"
+    },
+    {
+     "bar": 20,
+     "belief_chord": "C",
+     "chroma_conf": 0.232,
+     "decisive": false,
+     "in_key": true,
+     "level_db": -17.1,
+     "pc": "E"
+    }
+   ],
+   "enough_decisive": true,
+   "in_key": 12,
+   "match_belief_root": 3,
+   "min_decisive_bars": 4,
+   "min_decisive_frac": 0.2,
+   "non_decisive_out_of_key": [],
+   "pass": true
+  },
+  "chord_belief_in_key": {
+   "bars_checked": 15,
+   "distinct": [
+    "Am",
+    "C",
+    "F",
+    "G"
+   ],
+   "out_of_key": [],
+   "pass": true
+  },
+  "enter_under": {
+   "bars_skipped_human_silent": [
+    {
+     "bar_after_entry": 4,
+     "human_bar_db": -79.1
+    },
+    {
+     "bar_after_entry": 5,
+     "human_bar_db": -240.0
+    }
+   ],
+   "converges": true,
+   "delta_db": -8.3,
+   "human_entry_bar_db": -17.4,
+   "later_comping_delta_db": [
+    0.8,
+    -8.6,
+    0.7,
+    -1.1,
+    0.7,
+    -0.7,
+    1.5,
+    -1.3,
+    1.5,
+    0.6,
+    0.8,
+    0.1
+   ],
+   "later_mean_delta_db": -0.42,
+   "machine_entry_bar_db": -25.7,
+   "pass": true
+  },
+  "entry_on_boundary": {
+   "err_ms": 3.0,
+   "first_audible_s": 17.51,
+   "nearest_truth_bar_s": 17.472,
+   "pass": true,
+   "planned_entry_t_s": 17.507
+  },
+  "silent_before_entry": {
+   "machine_pre_max_10ms_frame_db": -240.0,
+   "machine_pre_rms_db": -240.0,
+   "pass": true
+  }
+ },
+ "name": "duet_stops_lofi",
+ "pass_all": true
+}

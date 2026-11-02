@@ -1,0 +1,112 @@
+{
+  "hash": "c8b83b460c7f",
+  "path": "renders/synthwave.plume.json",
+  "summary": {
+    "bpm": 100.0,
+    "key": "C min",
+    "movements": [
+      {
+        "bars": 32,
+        "name": "neon-rise",
+        "sections": [
+          {
+            "bars": 16,
+            "energy": 0.3,
+            "name": "neon-rise-a"
+          },
+          {
+            "bars": 16,
+            "energy": 0.55,
+            "name": "neon-rise-b"
+          }
+        ]
+      },
+      {
+        "bars": 32,
+        "name": "apex",
+        "sections": [
+          {
+            "bars": 16,
+            "energy": 0.75,
+            "name": "apex-a"
+          },
+          {
+            "bars": 16,
+            "energy": 0.9,
+            "name": "apex-b"
+          }
+        ]
+      },
+      {
+        "bars": 32,
+        "name": "afterglow",
+        "sections": [
+          {
+            "bars": 16,
+            "energy": 0.5,
+            "name": "afterglow-a"
+          },
+          {
+            "bars": 16,
+            "energy": 0.2,
+            "name": "afterglow-b-outro"
+          }
+        ]
+      }
+    ],
+    "name": "synthwave",
+    "progression": [
+      "Cm",
+      "G#sus2",
+      "D#",
+      "A#sus4"
+    ],
+    "seed": 7,
+    "style": "synthwave",
+    "swing": 0.5,
+    "tracks": [
+      {
+        "kind": "drum",
+        "name": "kick",
+        "unused": false,
+        "voice": "808kick"
+      },
+      {
+        "kind": "drum",
+        "name": "snare",
+        "unused": false,
+        "voice": "snare"
+      },
+      {
+        "kind": "drum",
+        "name": "hat",
+        "unused": false,
+        "voice": "hat"
+      },
+      {
+        "kind": "tonal",
+        "name": "bass",
+        "unused": false,
+        "voice": "808sub"
+      },
+      {
+        "kind": "tonal",
+        "name": "pad",
+        "unused": false,
+        "voice": "pad"
+      },
+      {
+        "kind": "tonal",
+        "name": "arp",
+        "unused": false,
+        "voice": "pluck"
+      },
+      {
+        "kind": "tonal",
+        "name": "lead",
+        "unused": false,
+        "voice": "lead"
+      }
+    ]
+  }
+}

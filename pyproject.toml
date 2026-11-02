@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "plume-music"
+version = "0.1.0"
+description = "An LLM-native music partner: prompt -> session -> deterministic WAV render -> analysis."
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.11"
+dependencies = [
+    "numpy",
+    "scipy",
+    "soundfile",
+]
+
+[project.optional-dependencies]
+play = ["sounddevice"]
+voice = ["sounddevice", "mlx-whisper"]
+
+[project.scripts]
+plume = "plume.cli:main"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+plume = ["styles/*.json", "samples/README.md", "samples/kit/*", "samples/tuned/*"]

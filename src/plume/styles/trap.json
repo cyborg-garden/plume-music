@@ -1,0 +1,104 @@
+{
+  "name": "trap",
+  "bpm_range": [130, 150],
+  "default_mode": "minor",
+  "swing": 0.5,
+  "timing_bias_ms": {},
+  "progressions": {
+    "minor": [
+      {"numerals": ["i", "VI", "III", "VII"], "weight": 3},
+      {"numerals": ["i", "VI", "V", "V"], "weight": 2},
+      {"numerals": ["i", "i", "iv", "v"], "weight": 2},
+      {"numerals": ["i", "VII", "VI", "VII"], "weight": 2},
+      {"numerals": ["i", "III", "VI", "VII"], "weight": 1},
+      {"numerals": ["i", "v", "iv", "VII"], "weight": 1}
+    ],
+    "major": [
+      {"numerals": ["I", "V", "vi", "IV"], "weight": 3},
+      {"numerals": ["I", "vi", "IV", "V"], "weight": 2},
+      {"numerals": ["I", "IV", "vi", "V"], "weight": 1}
+    ]
+  },
+  "drum_patterns": {
+    "kick": [
+      "bd ~ ~ ~ ~ ~ bd bd ~ ~ bd ~ ~ bd ~ ~",
+      "bd ~ ~ ~ ~ ~ ~ bd ~ ~ bd ~ ~ ~ bd ~",
+      "bd ~ ~ bd ~ ~ bd ~ ~ ~ bd ~ ~ bd ~ ~"
+    ],
+    "snare": [
+      "~ ~ ~ ~ ~ ~ ~ ~ sd ~ ~ ~ ~ ~ ~ ~",
+      "~ ~ ~ ~ ~ ~ ~ ~ sd ~ ~ ~ ~ ~ ~ sd:v0.35"
+    ],
+    "clap": [
+      "~ ~ ~ ~ ~ ~ ~ ~ cp ~ ~ ~ ~ ~ ~ ~"
+    ],
+    "hat": [
+      "hh hh:v0.55 hh:v0.75 hh:v0.55 hh hh:v0.55 hh:v0.75 hh:v0.55 hh hh:v0.55 hh:v0.75 hh:v0.55 hh hh:v0.55 hh:v0.75 hh:v0.55",
+      "hh ~ hh ~ hh ~ hh ~ hh ~ hh ~ hh ~ hh ~",
+      "hh hh:v0.6 hh hh:v0.6 hh hh:v0.6 [hh*2] hh:v0.6 hh hh:v0.6 hh hh:v0.6 hh [hh*2] hh:v0.6"
+    ],
+    "openhat": [
+      "~ ~ ~ ~ ~ ~ oh ~ ~ ~ ~ ~ ~ ~ oh ~"
+    ]
+  },
+  "fills": {
+    "hat": [
+      "[hh*4] [hh*4] [hh*3] [hh*8]",
+      "[hh*4] [hh*3] [hh*6] [hh*8]",
+      "[hh*8] [hh*4] [hh*3] [hh*3]",
+      "[hh*4] [hh*6] [hh*8] [hh*8]"
+    ],
+    "snare": [
+      "~ ~ ~ ~ ~ ~ ~ ~ sd ~ ~ ~ ~ ~ [sd:v0.5 sd:v0.7] sd",
+      "~ ~ ~ ~ ~ ~ ~ ~ sd ~ ~ ~ [sd*2] ~ [sd*4] ~"
+    ]
+  },
+  "bass_style": "sub_hits",
+  "pad_style": "stabs",
+  "melody": {"density": 0.3, "octave": 5, "rhythm_grid": "16"},
+  "voices": {
+    "kick": "808kick",
+    "snare": "snare",
+    "clap": "clap",
+    "hat": "hat",
+    "openhat": "openhat",
+    "bass": "808sub",
+    "pad": "pluck",
+    "lead": "lead"
+  },
+  "fx_defaults": {
+    "bass": {"drive": 0.25},
+    "pad": {"lpf_hz": 2600, "reverb": 0.3, "delay": 0.15},
+    "lead": {"reverb": 0.25, "delay": 0.2},
+    "hat": {"hpf_hz": 500, "chorus": 0.35}
+  },
+  "fades": {
+    "fade_in_bars": 0.5,
+    "fade_out_bars": 0.5,
+    "texture_xfade_beats": 0.5,
+    "announce_gain_db": -15.0,
+    "announce_beats": 1.0
+  },
+  "gain_db": {"hat": -5.0},
+  "master": {"reverb": 0.08, "drive": 0.25, "lofi": 0.0},
+  "arrangement_templates": {
+    "1": [
+      {"name": "arc", "energy_curve": [0.3, 0.6, 0.85, 0.4], "bars": 32}
+    ],
+    "2": [
+      {"name": "establish", "energy_curve": [0.3, 0.55], "bars": 32},
+      {"name": "peak", "energy_curve": [0.8, 0.45], "bars": 32}
+    ],
+    "3": [
+      {"name": "establish", "energy_curve": [0.25, 0.5], "bars": 32},
+      {"name": "peak", "energy_curve": [0.7, 0.9], "bars": 32},
+      {"name": "reprise", "energy_curve": [0.55, 0.2], "bars": 32}
+    ],
+    "4": [
+      {"name": "establish", "energy_curve": [0.25, 0.5], "bars": 32},
+      {"name": "build", "energy_curve": [0.55, 0.65], "bars": 16},
+      {"name": "peak", "energy_curve": [0.75, 0.9], "bars": 32},
+      {"name": "reprise", "energy_curve": [0.5, 0.2], "bars": 32}
+    ]
+  }
+}

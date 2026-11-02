@@ -1,0 +1,112 @@
+{
+  "hash": "4dcac4da47b1",
+  "path": "renders/lofi.plume.json",
+  "summary": {
+    "bpm": 78.0,
+    "key": "C maj",
+    "movements": [
+      {
+        "bars": 32,
+        "name": "settle",
+        "sections": [
+          {
+            "bars": 16,
+            "energy": 0.25,
+            "name": "settle-a"
+          },
+          {
+            "bars": 16,
+            "energy": 0.4,
+            "name": "settle-b"
+          }
+        ]
+      },
+      {
+        "bars": 32,
+        "name": "drift",
+        "sections": [
+          {
+            "bars": 16,
+            "energy": 0.5,
+            "name": "drift-a"
+          },
+          {
+            "bars": 16,
+            "energy": 0.65,
+            "name": "drift-b"
+          }
+        ]
+      },
+      {
+        "bars": 32,
+        "name": "dusk",
+        "sections": [
+          {
+            "bars": 16,
+            "energy": 0.45,
+            "name": "dusk-a"
+          },
+          {
+            "bars": 16,
+            "energy": 0.2,
+            "name": "dusk-b-outro"
+          }
+        ]
+      }
+    ],
+    "name": "lofi",
+    "progression": [
+      "Cmaj9",
+      "Cmaj9",
+      "Fmaj7",
+      "Fmaj7"
+    ],
+    "seed": 7,
+    "style": "lofi",
+    "swing": 0.57,
+    "tracks": [
+      {
+        "kind": "drum",
+        "name": "kick",
+        "unused": false,
+        "voice": "808kick"
+      },
+      {
+        "kind": "drum",
+        "name": "snare",
+        "unused": false,
+        "voice": "snare"
+      },
+      {
+        "kind": "drum",
+        "name": "hat",
+        "unused": false,
+        "voice": "hat"
+      },
+      {
+        "kind": "tonal",
+        "name": "bass",
+        "unused": false,
+        "voice": "808sub"
+      },
+      {
+        "kind": "tonal",
+        "name": "pad",
+        "unused": false,
+        "voice": "epiano"
+      },
+      {
+        "kind": "tonal",
+        "name": "lead",
+        "unused": false,
+        "voice": "pluck"
+      },
+      {
+        "kind": "drum",
+        "name": "crackle",
+        "unused": false,
+        "voice": "crackle"
+      }
+    ]
+  }
+}

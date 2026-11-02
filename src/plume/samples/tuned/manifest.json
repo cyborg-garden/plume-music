@@ -1,0 +1,278 @@
+{
+ "fingerbass": [
+  {
+   "midi": 28,
+   "layer": 0,
+   "file": "fingerbass_28_0_0.flac"
+  },
+  {
+   "midi": 28,
+   "layer": 0,
+   "file": "fingerbass_28_0_1.flac"
+  },
+  {
+   "midi": 31,
+   "layer": 0,
+   "file": "fingerbass_31_0_0.flac"
+  },
+  {
+   "midi": 31,
+   "layer": 0,
+   "file": "fingerbass_31_0_1.flac"
+  },
+  {
+   "midi": 33,
+   "layer": 0,
+   "file": "fingerbass_33_0_0.flac"
+  },
+  {
+   "midi": 33,
+   "layer": 0,
+   "file": "fingerbass_33_0_1.flac"
+  },
+  {
+   "midi": 36,
+   "layer": 0,
+   "file": "fingerbass_36_0_0.flac"
+  },
+  {
+   "midi": 36,
+   "layer": 0,
+   "file": "fingerbass_36_0_1.flac"
+  },
+  {
+   "midi": 40,
+   "layer": 0,
+   "file": "fingerbass_40_0_0.flac"
+  },
+  {
+   "midi": 40,
+   "layer": 0,
+   "file": "fingerbass_40_0_1.flac"
+  },
+  {
+   "midi": 43,
+   "layer": 0,
+   "file": "fingerbass_43_0_0.flac"
+  },
+  {
+   "midi": 43,
+   "layer": 0,
+   "file": "fingerbass_43_0_1.flac"
+  },
+  {
+   "midi": 45,
+   "layer": 0,
+   "file": "fingerbass_45_0_0.flac"
+  },
+  {
+   "midi": 45,
+   "layer": 0,
+   "file": "fingerbass_45_0_1.flac"
+  },
+  {
+   "midi": 48,
+   "layer": 0,
+   "file": "fingerbass_48_0_0.flac"
+  },
+  {
+   "midi": 48,
+   "layer": 0,
+   "file": "fingerbass_48_0_1.flac"
+  }
+ ],
+ "vibes": [
+  {
+   "midi": 53,
+   "layer": 0,
+   "file": "vibes_53_0_0.flac"
+  },
+  {
+   "midi": 53,
+   "layer": 1,
+   "file": "vibes_53_1_0.flac"
+  },
+  {
+   "midi": 57,
+   "layer": 0,
+   "file": "vibes_57_0_0.flac"
+  },
+  {
+   "midi": 57,
+   "layer": 1,
+   "file": "vibes_57_1_0.flac"
+  },
+  {
+   "midi": 60,
+   "layer": 1,
+   "file": "vibes_60_1_0.flac"
+  },
+  {
+   "midi": 64,
+   "layer": 1,
+   "file": "vibes_64_1_0.flac"
+  },
+  {
+   "midi": 67,
+   "layer": 0,
+   "file": "vibes_67_0_0.flac"
+  },
+  {
+   "midi": 67,
+   "layer": 1,
+   "file": "vibes_67_1_0.flac"
+  },
+  {
+   "midi": 71,
+   "layer": 0,
+   "file": "vibes_71_0_0.flac"
+  },
+  {
+   "midi": 71,
+   "layer": 1,
+   "file": "vibes_71_1_0.flac"
+  },
+  {
+   "midi": 74,
+   "layer": 0,
+   "file": "vibes_74_0_0.flac"
+  },
+  {
+   "midi": 74,
+   "layer": 1,
+   "file": "vibes_74_1_0.flac"
+  },
+  {
+   "midi": 77,
+   "layer": 0,
+   "file": "vibes_77_0_0.flac"
+  },
+  {
+   "midi": 77,
+   "layer": 1,
+   "file": "vibes_77_1_0.flac"
+  },
+  {
+   "midi": 81,
+   "layer": 0,
+   "file": "vibes_81_0_0.flac"
+  },
+  {
+   "midi": 81,
+   "layer": 1,
+   "file": "vibes_81_1_0.flac"
+  },
+  {
+   "midi": 84,
+   "layer": 0,
+   "file": "vibes_84_0_0.flac"
+  },
+  {
+   "midi": 84,
+   "layer": 1,
+   "file": "vibes_84_1_0.flac"
+  },
+  {
+   "midi": 88,
+   "layer": 0,
+   "file": "vibes_88_0_0.flac"
+  },
+  {
+   "midi": 88,
+   "layer": 1,
+   "file": "vibes_88_1_0.flac"
+  }
+ ],
+ "wurli": [
+  {
+   "midi": 33,
+   "layer": 0,
+   "file": "wurli_33_0_0.flac"
+  },
+  {
+   "midi": 33,
+   "layer": 1,
+   "file": "wurli_33_1_0.flac"
+  },
+  {
+   "midi": 41,
+   "layer": 1,
+   "file": "wurli_41_1_0.flac"
+  },
+  {
+   "midi": 45,
+   "layer": 0,
+   "file": "wurli_45_0_0.flac"
+  },
+  {
+   "midi": 47,
+   "layer": 1,
+   "file": "wurli_47_1_0.flac"
+  },
+  {
+   "midi": 52,
+   "layer": 1,
+   "file": "wurli_52_1_0.flac"
+  },
+  {
+   "midi": 56,
+   "layer": 0,
+   "file": "wurli_56_0_0.flac"
+  },
+  {
+   "midi": 56,
+   "layer": 1,
+   "file": "wurli_56_1_0.flac"
+  },
+  {
+   "midi": 61,
+   "layer": 0,
+   "file": "wurli_61_0_0.flac"
+  },
+  {
+   "midi": 61,
+   "layer": 1,
+   "file": "wurli_61_1_0.flac"
+  },
+  {
+   "midi": 66,
+   "layer": 0,
+   "file": "wurli_66_0_0.flac"
+  },
+  {
+   "midi": 68,
+   "layer": 1,
+   "file": "wurli_68_1_0.flac"
+  },
+  {
+   "midi": 73,
+   "layer": 0,
+   "file": "wurli_73_0_0.flac"
+  },
+  {
+   "midi": 73,
+   "layer": 1,
+   "file": "wurli_73_1_0.flac"
+  },
+  {
+   "midi": 79,
+   "layer": 0,
+   "file": "wurli_79_0_0.flac"
+  },
+  {
+   "midi": 79,
+   "layer": 1,
+   "file": "wurli_79_1_0.flac"
+  },
+  {
+   "midi": 92,
+   "layer": 0,
+   "file": "wurli_92_0_0.flac"
+  },
+  {
+   "midi": 92,
+   "layer": 1,
+   "file": "wurli_92_1_0.flac"
+  }
+ ]
+}

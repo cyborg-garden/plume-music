@@ -1,7 +1,7 @@
 """A live session must be findable and stoppable without hunting for a PID.
 
 Twice during development an automated agent started a live plume session on a
-human's machine and left it running, audible across the house,
+human's machine and left it running, still audible,
 stoppable only by finding the process.  ``tests/test_audio_consent.py`` guards
 the *start* of that story: nothing opens the speakers unattended.  This file
 guards the rest of it:

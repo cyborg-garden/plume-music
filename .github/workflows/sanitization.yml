@@ -1,0 +1,26 @@
+name: sanitization
+
+# The sanitization gate is canonical: one script and one reusable workflow, both
+# in cyborg-garden/swarm-map. This repo keeps only its caller and
+# sanitize.config.json. Do not vendor the script in.
+#
+# Runs on every PR, scanning only the PR's diff. The full-tree audit lives in
+# sanitization-scheduled.yml.
+#
+# Pinned to a release tag, never @main. The check "sanitize / sanitize" must stay
+# required on main: a pin to a missing tag fails with no check on the PR, which
+# can look green.
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  sanitize:
+    uses: cyborg-garden/swarm-map/.github/workflows/sanitization-gate.yml@sanitization-gate-v1.0.0
+    with:
+      mode: pr
+    secrets:
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}

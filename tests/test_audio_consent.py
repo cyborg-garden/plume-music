@@ -1,7 +1,7 @@
 """No process may play out of a human's speakers without consent.
 
 Twice during development an automated agent started a live session and left it
-running, audible across the house, stoppable only by finding the
+running, still audible, stoppable only by finding the
 PID.  Every path that opens the audio device is guarded here: an interactive
 terminal, or an explicit ``PLUME_ALLOW_AUDIO=1``.  Nothing else.
 

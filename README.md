@@ -123,8 +123,7 @@ demoable:
 ## Live sessions are findable, stoppable, and time-bounded
 
 Live mode makes sound in a real room. Twice during development an automated
-agent started a session and left it running, audible across the
-house, stoppable only by finding the PID. So a live session is opt-in to
+agent started a session and left it running, still audible, stoppable only by finding the PID. So a live session is opt-in to
 start, and it can always be found and ended without hunting a process.
 
 ```bash

@@ -6,7 +6,7 @@ and `simlead` prove the *music*, but the threads, the ring buffers, the
 schedule, the socket, the recorder and the ending all live in code that only
 runs when an audio device is open.  There is no audio device in CI, and there
 must never be one in a test — an agent left a live session playing in a
-human's house, and `tests/test_audio_consent.py` exists because of it.
+human's room, and `tests/test_audio_consent.py` exists because of it.
 
 So every live-path test drives the real transport through
 :class:`FakeAudioStream`: a duplex stream stand-in pumped by an ordinary

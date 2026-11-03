@@ -1,0 +1,55 @@
+{
+  "$comment": "Sanitization gate config for plume, a public live music partner. Plume grew out of real playing sessions, so its risk is personal rather than credential-shaped: who played, where, on what rig, and what was said about them.",
+  "package_name": "plume",
+  "package_kind": "PUBLIC, open-source music software",
+  "sensitive_prefixes": [
+    "src/",
+    "docs/",
+    "renders/",
+    "tests/",
+    "pyproject.toml"
+  ],
+  "$comment_prefixes": "Top-level *.md files are always included. tests/ and renders/ are here because fixtures and saved session output are the likeliest home for details copied from a real session.",
+  "semantic": {
+    "domain_noun": "player",
+    "flag_examples": [
+      "a real person's name, handle, social account, email, or contact detail, including a player, collaborator, or anyone named in a session note",
+      "biographical or profile material about a real person, including anything drawn from their social media, their health, their schedule, or their relationships",
+      "a home, venue, city, or other location tied to a real person or session, or any detail of when and where someone played",
+      "a private repository, internal organization, agent fleet, hostname, machine name, or deployment detail",
+      "a local filesystem path that exposes a username or a private project",
+      "a transcript or quoted remark from a real person in a session, unless it is plainly generic instruction text",
+      "a recording, sample, or lyric described as coming from a named person without stated permission"
+    ],
+    "do_not_flag_examples": [
+      "this project's own name and identity: plume, plume-music, this repo's GitHub URLs, and the PLUME_* identifiers",
+      "musical vocabulary: keys, tunings such as FACGCE, tempos, genres, styles, instruments, rhythms, and chord names",
+      "generic audio engineering: latency figures, sample rates, thresholds, and hardware classes or product names used generically, such as a laptop mic, projector, audio interface, or AirPods",
+      "generic role nouns such as player, guitarist, drummer, or human, with no named person attached",
+      "library, tool, and research citations, including published papers and their authors, and public drum machines or software named as reference points",
+      "synthetic fixtures and placeholder values that are plainly invented",
+      "references to this repo's own issues and pull requests"
+    ],
+    "model": "moonshotai/kimi-k3"
+  },
+  "deterministic": {
+    "$comment": "Layer 1 cannot be switched off. skip_paths must stay: the scanner defaults it to empty, and tests hold credential-shaped fixtures.",
+    "enabled": true,
+    "allow_substrings": [
+      "noreply@anthropic.com",
+      "example.com",
+      "127.0.0.1",
+      "0.0.0.0",
+      "4128749260617304",
+      "5449401137557235",
+      "2539800589468015",
+      "5364954534771313",
+      "W@p.wf",
+      "Z@Y.hV"
+    ],
+    "skip_paths": [
+      "tests/"
+    ],
+    "$comment_false_positives": "The four digit runs are fractional parts of floats in renders/*.analysis.json, read as card numbers. W@p.wf and Z@Y.hV are random bytes inside compressed FLAC samples, read as emails. Each is an exact value, checked by hand."
+  }
+}

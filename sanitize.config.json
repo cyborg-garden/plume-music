@@ -27,6 +27,7 @@
       "engineering notes from the maintainer's own playing sessions: session dates, her short quoted feedback about the software, measured take data, tempos, and tunings",
       "relative names of gitignored recording folders such as takes5/ and takes6/, which contain no private detail in themselves",
       "the name Fable when it signs a document: it is an AI model, not a person",
+      "generic mentions that AI coding agents or parallel builders helped write this code, such as 'builder C' or 'an agent', with no named fleet, host, or organization",
       "synthetic fixture names such as jn_on_grid and jn_takes_over",
       "musical vocabulary: keys, tunings such as FACGCE, tempos, genres, styles, instruments, rhythms, and chord names",
       "generic audio engineering: latency figures, sample rates, thresholds, and hardware classes or product names used generically, such as a laptop mic, projector, audio interface, or AirPods",

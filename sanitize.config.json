@@ -33,7 +33,7 @@
     "model": "moonshotai/kimi-k3"
   },
   "deterministic": {
-    "$comment": "Layer 1 cannot be switched off. skip_paths must stay: the scanner defaults it to empty, and tests hold credential-shaped fixtures.",
+    "$comment": "Layer 1 cannot be switched off. skip_paths is empty on purpose: tests/ holds no credential-shaped fixtures, so it gets scanned too.",
     "enabled": true,
     "allow_substrings": [
       "noreply@anthropic.com",
@@ -47,9 +47,7 @@
       "W@p.wf",
       "Z@Y.hV"
     ],
-    "skip_paths": [
-      "tests/"
-    ],
+    "skip_paths": [],
     "$comment_false_positives": "The four digit runs are fractional parts of floats in renders/*.analysis.json, read as card numbers. W@p.wf and Z@Y.hV are random bytes inside compressed FLAC samples, read as emails. Each is an exact value, checked by hand."
   }
 }

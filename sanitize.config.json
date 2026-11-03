@@ -13,21 +13,26 @@
   "semantic": {
     "domain_noun": "player",
     "flag_examples": [
-      "a real person's name, handle, social account, email, or contact detail, including a player, collaborator, or anyone named in a session note",
-      "biographical or profile material about a real person, including anything drawn from their social media, their health, their schedule, or their relationships",
-      "a home, venue, city, or other location tied to a real person or session, or any detail of when and where someone played",
+      "a real person's name, handle, social account, email, or contact detail, other than the maintainer's first name described below",
+      "biographical or profile material about any real person, including the maintainer: their background, musical biography, social media, health, schedule, or relationships",
+      "a home address, home or room detail, venue, city, or other location tied to a real person or session",
       "a private repository, internal organization, agent fleet, hostname, machine name, or deployment detail",
-      "a local filesystem path that exposes a username or a private project",
-      "a transcript or quoted remark from a real person in a session, unless it is plainly generic instruction text",
+      "an absolute filesystem path or anything else that exposes a username or a private project",
+      "a transcript or quoted remark from anyone other than the maintainer, unless it is plainly generic instruction text",
       "a recording, sample, or lyric described as coming from a named person without stated permission"
     ],
     "do_not_flag_examples": [
       "this project's own name and identity: plume, plume-music, this repo's GitHub URLs, and the PLUME_* identifiers",
+      "the maintainer's first name, Juniper, she/her pronouns for the player, and credit for her ideas and decisions: she has chosen to keep these public",
+      "engineering notes from the maintainer's own playing sessions: session dates, her short quoted feedback about the software, measured take data, tempos, and tunings",
+      "relative names of gitignored recording folders such as takes5/ and takes6/, which contain no private detail in themselves",
+      "the name Fable when it signs a document: it is an AI model, not a person",
+      "synthetic fixture names such as jn_on_grid and jn_takes_over",
       "musical vocabulary: keys, tunings such as FACGCE, tempos, genres, styles, instruments, rhythms, and chord names",
       "generic audio engineering: latency figures, sample rates, thresholds, and hardware classes or product names used generically, such as a laptop mic, projector, audio interface, or AirPods",
-      "generic role nouns such as player, guitarist, drummer, or human, with no named person attached",
-      "library, tool, and research citations, including published papers and their authors, and public drum machines or software named as reference points",
-      "synthetic fixtures and placeholder values that are plainly invented",
+      "generic role nouns such as player, guitarist, drummer, or human, with no other named person attached",
+      "library, tool, and research citations, including published authors and technical analyses such as Hurliman and Baratatronix, and public drum machines or software named as reference points",
+      "plainly invented placeholder values",
       "references to this repo's own issues and pull requests"
     ],
     "model": "moonshotai/kimi-k3"

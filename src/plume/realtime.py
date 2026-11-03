@@ -1016,7 +1016,7 @@ def _resolve_device(sd, device: str | None):
 
 #: Live audio plays out of a real human's speakers.  Twice during development an
 #: automated agent started a live session and left it running,
-#: audible across the house, with no way to stop it short of finding the PID.
+#: still audible, with no way to stop it short of finding the PID.
 #: Sound out of a machine is a physical act in someone's room, so it is opt-in:
 #: an interactive terminal, or an explicit PLUME_ALLOW_AUDIO=1.
 AUDIO_CONSENT_ENV = "PLUME_ALLOW_AUDIO"

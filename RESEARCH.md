@@ -100,12 +100,9 @@ constraints), never note-by-note sampling. Arrangement = energy scalar (0–1)
 per 8-bar-multiple section gating layers/density/cutoff — "three movements" is
 three energy arcs.
 
-## The first human (live-mode defaults)
+## Live-mode defaults
 
-The first player is a genre-fluid improviser on guitar and banjo: ambient, midwest emo
-in FACGCE and other open tunings, lofi acoustic jazz, with a looper in the workflow.
-
-Consequences: onset/pitch tracking tuned for plucked strings with open-string
+Onset/pitch tracking tuned for plucked strings with open-string
 drones; chroma/key detection over chord templates (sus/add-heavy, modally
 ambiguous harmony — never assume standard tuning); tempo follower must tolerate
 rubato and lay out during free sections; default comping = texture and

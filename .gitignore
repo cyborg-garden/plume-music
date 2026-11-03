@@ -33,3 +33,9 @@ sessions/
 # live recordings stay on the machine that made them
 takes*/
 keepers/
+
+# player profiles stay on the machine too
+profiles/
+*profile*.md
+*profile*.json
+research/

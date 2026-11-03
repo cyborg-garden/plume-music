@@ -823,7 +823,7 @@ def test_joiner_different_seed_different_audio():
 # ---------------------------------------------------------------------------
 
 # sha256 of the float32 samples, recorded BEFORE the v2 joiner code was added
-# to fixtures_gen.py.  Other agents' tests depend on these bytes; this is the
+# to fixtures_gen.py.  Other tests depend on these bytes; this is the
 # guard that "additive only" stayed additive.
 _V1_DIGESTS = {
     "steady": "022f50fc06d95aa289a7da120b75d649f8df5048b52ffc16d0b62cb427e0a1f7",
@@ -846,7 +846,7 @@ def test_v1_fixture_bytes_unchanged(kind, rendered):
     audio, _ = rendered[kind]
     got = hashlib.sha256(audio.tobytes()).hexdigest()
     assert got == _V1_DIGESTS[kind], (
-        f"make_human({kind!r}) changed — other agents' tests depend on "
+        f"make_human({kind!r}) changed — other tests depend on "
         "these exact samples")
 
 

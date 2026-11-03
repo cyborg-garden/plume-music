@@ -188,7 +188,7 @@ ATTACK_BREADTH_EPS = 0.02  # a band "rose" if it rose by this many nats
 # well above any threshold that also passes a soft acoustic attack.  Sweeping
 # ATTACK_BANDS x ATTACK_LAG x ATTACK_MAXFILT x threshold (48 combinations) never
 # brought the worst-case density ratio below 2.6x.  Retuning ``density_high``
-# would fix it, and mind.py is not mine to change.
+# would fix it, and mind.py is out of scope here.
 #
 # So the two consumers are split, which is defensible on its own terms: ``mind``
 # asks "how much is happening" (a broadband event count) and the tracker asks

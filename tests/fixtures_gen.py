@@ -313,7 +313,7 @@ _JOINER_GROOVE = GrooveParams(
 # ``release_ms=250`` yields eight.  That matters here because a phantom onset
 # 875ms after the beat is a phantom BEAT to anything measuring the human's
 # timing.  (Not fixed in ``voices.py``: this is a fixture-side choice about
-# what the simulated human plays, and voices.py is not mine to change.)
+# what the simulated human plays, and voices.py is out of scope here.)
 _JOINER_BASS_PARAMS = {"release_ms": 250.0}
 
 
@@ -377,7 +377,7 @@ def _apply_silence_spans(buf: np.ndarray, silent: list[int],
 
     Deliberately a separate copy of ``make_human_with_truth``'s inline block
     rather than a shared extraction: that block is byte-load-bearing for other
-    agents' fixtures and is not mine to move.
+    fixtures and should not move.
     """
     if not silent:
         return

@@ -3534,8 +3534,8 @@ def _build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser(
         "gui", parents=[common],
-        help="read your takes in a local page: what plume did, a roast, and Keep. "
-             "Opens no audio device; plays a take only when you click Listen",
+        help="start a take and read your takes in a local page: what plume did, a roast, "
+             "and Keep. It opens no device and starts nothing until you click Start",
     )
     p.add_argument("action", nargs="?", choices=("url",), default=None,
                    help="'url' prints a new one-time link to the running page")

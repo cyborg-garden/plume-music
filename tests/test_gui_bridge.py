@@ -442,15 +442,16 @@ def test_errors_do_not_echo_the_request(client):
 
 # ---------------------------------------------------------------- the route table
 
-def test_the_route_table_is_exactly_what_v0_1_needs():
+def test_the_route_table_is_exactly_what_the_page_needs():
     assert gui.GET_ROUTES == ("/", "/auth", "/static/{name}", "/api/session", "/api/takes",
-                              "/api/take/{id}", "/api/take/{id}/audio/{track}")
-    assert sorted(gui.POST_OPS) == ["keep", "rename"]
+                              "/api/take/{id}", "/api/take/{id}/audio/{track}",
+                              "/api/home", "/api/live")
+    assert sorted(gui.POST_OPS) == ["cue", "keep", "rename", "start", "stop"]
 
 
-@pytest.mark.parametrize("op", ["start", "cue", "stop", "calibrate", "play", "lead", "jam",
-                                "voice", "delete", "record"])
-def test_no_route_starts_sound_or_the_mic(client, op):
+@pytest.mark.parametrize("op", ["calibrate", "play", "lead", "jam", "voice", "delete", "record",
+                                "meter", "listen"])
+def test_only_start_can_start_anything(client, op):
     assert client.post(f"/api/{op}", {"take": "x"})[0].status == 404
     assert client.get(f"/api/{op}")[0].status == 404
 
@@ -460,7 +461,8 @@ def test_other_methods_are_refused(client, method):
     assert client.request(method, "/api/takes")[0].status == 405
 
 
-def test_the_bridge_cannot_reach_a_sound_device_or_start_a_process():
+def test_the_bridge_cannot_reach_a_sound_device_and_starts_nothing_itself():
+    """The child and its consent live in guitake.py, which test_gui_take.py pins."""
     source = Path(gui.__file__).read_text() + Path(record.__file__).read_text()
     for banned in ("sounddevice", "subprocess", "os.system", "Popen", "os.exec", "os.spawn",
                    "realtime.lead", "realtime.jam", "send_cue", "send_stop"):
@@ -794,10 +796,11 @@ def test_the_real_command_serves_then_quits_cleanly_on_ctrl_c(tmp_path):
     assert not (tmp_path / "state" / "gui.json").exists()
 
 
-def test_gui_is_not_an_audio_verb(tmp_path, monkeypatch):
-    """It opens no audio, so it must not ask for or need consent to play."""
+def test_the_bridge_itself_never_handles_consent_to_play():
+    """Only the Start route's spawner may, and test_gui_take.py pins that one by its syntax."""
     source = Path(gui.__file__).read_text()
     assert "PLUME_ALLOW_AUDIO" not in source and "check_audio_consent" not in source
+    assert "AUDIO_CONSENT" not in source
 
 
 # ------------------------------------------------------- the cookie is not the key

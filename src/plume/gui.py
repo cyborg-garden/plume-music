@@ -1,8 +1,10 @@
-"""``plume gui``: a local page for reading takes.  It plays nothing by itself.
+"""``plume gui``: a local page for starting takes and reading them.
 
-v0.1 is The Record and the shelf.  There is no route that starts sound or the
-microphone, and this process opens no audio device.  The one way to hear anything
-is a person clicking Listen, which makes their own browser fetch a WAV from here.
+The page opens no device and starts nothing until a person clicks Start.  This
+process never opens an audio device itself: Start runs ``plume lead`` as a child, and
+everything about that child lives in :mod:`plume.guitake`.  The other way to hear
+anything is a person clicking Listen, which makes their own browser fetch a WAV from
+here.
 
 HTTP lets any website try to reach this, unlike plume's unix socket, and the WAVs
 are recordings of a room.  A DNS-rebinding page could find the random port and
@@ -43,19 +45,20 @@ import secrets
 import socket
 import stat
 import sys
+import signal
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-from . import record
+from . import guitake, record
 from .realtime import REC_HUMAN, REC_MACHINE, list_sessions
 
 STATE_DIR_ENV = "PLUME_GUI_STATE_DIR"
 
 GET_ROUTES = ("/", "/auth", "/static/{name}", "/api/session", "/api/takes",
-              "/api/take/{id}", "/api/take/{id}/audio/{track}")
-POST_OPS = frozenset({"keep", "rename"})
+              "/api/take/{id}", "/api/take/{id}/audio/{track}", "/api/home", "/api/live")
+POST_OPS = frozenset({"keep", "rename", "start", "stop", "cue"})
 
 _STATIC_DIR = Path(__file__).with_name("gui_static")
 #: Every file the page may load, and its type.  Nothing else under the folder is served.
@@ -264,6 +267,11 @@ class Library:
 
     def pinned_id(self) -> str | None:
         return None if self.pinned is None else self._id_of(self.pinned)
+
+    def id_of_folder(self, folder: Path) -> str | None:
+        """The ID of a take this library can see, or None."""
+        take_id = self._id_of(Path(folder).resolve())
+        return take_id if self.path_of(take_id) is not None else None
 
     @staticmethod
     def _signature(path: Path) -> tuple:
@@ -550,6 +558,14 @@ class _Handler(BaseHTTPRequestHandler):
             self.route = "/api/takes"
             self._json({"takes": self.gui.library.shelf()})
             return
+        if path == "/api/home":
+            self.route = "/api/home"
+            self._json(self.gui.takes.home())
+            return
+        if path == "/api/live":
+            self.route = "/api/live"
+            self._json(self.gui.takes.live())
+            return
         if found:
             self.route = "/api/take/{id}/audio/{track}"
             self._audio(found.group(1), found.group(2))
@@ -594,7 +610,30 @@ class _Handler(BaseHTTPRequestHandler):
             body = json.loads(self.rfile.read(max(0, length)))
         except (ValueError, RecursionError):
             raise _Refused(400, "body must be JSON") from None
-        if not isinstance(body, dict) or not isinstance(body.get("take"), str):
+        if not isinstance(body, dict):
+            raise _Refused(400, "body must be an object")
+        if op in ("keep", "rename"):
+            self._keep_or_rename(op, body)
+        else:
+            self._take_op(op, body)
+
+    def _take_op(self, op: str, body: dict) -> None:
+        takes = self.gui.takes
+        try:
+            if op == "start":
+                self._json(takes.start(body))
+            elif op == "stop":
+                self._json(takes.stop())
+            else:
+                self._json(takes.cue(body))
+        except guitake.Refused as refused:
+            doc = {"error": refused.message}
+            if refused.live is not None:
+                doc["live"] = refused.live
+            self._json(doc, refused.status)
+
+    def _keep_or_rename(self, op: str, body: dict) -> None:
+        if not isinstance(body.get("take"), str):
             raise _Refused(400, "body needs a take")
         kept, name = None, None
         if op == "keep":
@@ -726,8 +765,14 @@ class _Server(ThreadingHTTPServer):
 class GuiServer:
     """The bridge: an HTTP server on loopback, its session state, and its library."""
 
-    def __init__(self, *, roots=(), pinned=None, log=None, write_state: bool = True):
+    def __init__(self, *, roots=(), pinned=None, log=None, write_state: bool = True,
+                 spawner=None, lister=None, sessions=None, stopper=None, **take_options):
         self.library = Library(roots, pinned)
+        self.takes = guitake.TakeRunner(
+            self.library.roots[0] if self.library.roots else default_library(),
+            log_path=lambda: state_path().with_name("take.log"),
+            id_of=self.library.id_of_folder, spawner=spawner, lister=lister,
+            sessions=sessions, stopper=stopper, **take_options)
         self.log = log if log is not None else (lambda line: print(line, file=sys.stderr, flush=True))
         self._write_state_file = write_state
         self._key = secrets.token_bytes(32)
@@ -765,6 +810,7 @@ class GuiServer:
         return self
 
     def close(self) -> None:
+        self.takes.shutdown()
         if self.httpd is not None:
             self.httpd.shutdown()
             self.httpd.server_close()
@@ -826,8 +872,49 @@ def default_library() -> Path:
     return Path.home() / "Music" / "Plume"
 
 
-def serve(*, take=None, takes=None, open_browser: bool = True) -> None:
-    """Run until Ctrl-C.  Opens no audio device and starts no process."""
+class _Closing(BaseException):
+    """SIGTERM or SIGHUP: leave the same way Ctrl-C does."""
+
+
+def _closing_signal(signum, frame):  # noqa: ARG001
+    raise _Closing
+
+
+def _catch_closing_signals() -> dict:
+    """A closed terminal must not orphan the take this bridge started."""
+    previous = {}
+    for name in ("SIGTERM", "SIGHUP"):
+        sig = getattr(signal, name, None)
+        if sig is not None:
+            try:
+                previous[sig] = signal.signal(sig, _closing_signal)
+            except ValueError:      # not the main thread: then it is not ours to set
+                pass
+    return previous
+
+
+def _stop_the_take(server: GuiServer, write) -> None:
+    def say(line: str) -> None:
+        try:
+            write(line)
+        except OSError:              # the terminal may be what went away
+            pass
+
+    try:
+        if server.takes.live(poll=False)["state"] in ("starting", "waiting", "playing", "stopping"):
+            say("Stopping the take...")
+        stopped = server.takes.shutdown()
+    except (KeyboardInterrupt, _Closing):
+        stopped = False
+    if not stopped:
+        say("The take is still running. 'plume stop' ends it.")
+
+
+def serve(*, take=None, takes=None, open_browser: bool = True, wait=None, **server_options) -> None:
+    """Run until Ctrl-C, which also stops the take this started.
+
+    Opens no audio device, and starts nothing until a person clicks Start.
+    """
     def write(line: str) -> None:
         print(line, flush=True)
 
@@ -838,7 +925,8 @@ def serve(*, take=None, takes=None, open_browser: bool = True) -> None:
             raise GuiError(f"{take} is not a take folder (no session.json, decisions.ndjson, "
                            "ending.json or human.wav in it).")
     roots = [Path(takes) if takes is not None else default_library()]
-    server = GuiServer(roots=roots, pinned=pinned).start()
+    server = GuiServer(roots=roots, pinned=pinned, **server_options).start()
+    previous = _catch_closing_signals()
     try:
         opened = False
         if open_browser:
@@ -846,14 +934,24 @@ def serve(*, take=None, takes=None, open_browser: bool = True) -> None:
 
             opened = webbrowser.open(server.first_url())
         if opened:
-            write("plume gui is open in your browser. It plays nothing unless you click Listen.")
+            write("plume gui is open in your browser. It starts nothing until you click Start.")
             write("Lost the page? 'plume gui url' prints a new link. Ctrl-C here to quit.")
         else:
             # Asked for, or no browser.  This one-time link goes to the player's terminal only.
             write(server.first_url())
             write("Open that link once. 'plume gui url' prints a new one. Ctrl-C here to quit.")
-        threading.Event().wait()
-    except KeyboardInterrupt:
+        if wait is None:
+            threading.Event().wait()
+        else:
+            wait(server)
+    except (KeyboardInterrupt, _Closing):
         pass
     finally:
-        server.close()
+        _stop_the_take(server, write)
+        try:
+            server.close()
+        except (KeyboardInterrupt, _Closing):
+            pass
+        finally:
+            for sig, handler in previous.items():
+                signal.signal(sig, handler)

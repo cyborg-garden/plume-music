@@ -119,3 +119,13 @@ def test_a_tab_with_no_key_is_told_why_and_how_to_get_one(tmp_path):
 def test_a_stale_key_is_told_why_and_how_to_get_one(tmp_path):
     words = run_js(tmp_path, "session", body="return session.lostWords(true);")
     assert "restarted" in words["text"] and "plume gui url" in words["text"]
+
+
+def test_only_day_and_night_are_offered():
+    static = Path(__file__).resolve().parents[1] / "src" / "plume" / "gui_static"
+    for name in ("index.html", "app.js", "theme.js", "plume.css"):
+        text = (static / name).read_text(encoding="utf-8")
+        assert "theme-dim" not in text and "'dim'" not in text
+        assert 'data-theme="dim"' not in text
+    assert 'id="theme-day"' in (static / "index.html").read_text(encoding="utf-8")
+    assert 'id="theme-night"' in (static / "index.html").read_text(encoding="utf-8")

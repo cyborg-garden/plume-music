@@ -16,15 +16,6 @@
   --gl: max(16px, env(safe-area-inset-left, 0px));
   --gr: max(16px, env(safe-area-inset-right, 0px));
 }
-:root[data-theme="dim"] {
-  --field: #9C9A94; --floor: #9C9A94;
-  --text: #0E0E10; --secondary: #1F1F1E; --hairline: #3A3936;
-  --alert: #3F1206; --now: #0E0E10;
-  --on-solid: #9C9A94;
-  --mass-hi: #C8C6BE; --mass-mid: #75736D; --mass-lo: #151513;
-  --land: #8E8C86; --ridge: #3A3936;
-  --grain-ink: #000000; --grain-strength: .8; --rim: .2;
-}
 :root[data-theme="night"] {
   color-scheme: dark;
   --field: #071159; --floor: #071159;

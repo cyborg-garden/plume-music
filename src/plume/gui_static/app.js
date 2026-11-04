@@ -490,7 +490,7 @@ function paintGrain() {
 function currentTheme() { return document.documentElement.getAttribute('data-theme') || 'day'; }
 function reflectTheme() {
   const cur = currentTheme();
-  ['day', 'dim', 'night'].forEach(function (n) { $('theme-' + n).setAttribute('aria-pressed', n === cur ? 'true' : 'false'); });
+  ['day', 'night'].forEach(function (n) { $('theme-' + n).setAttribute('aria-pressed', n === cur ? 'true' : 'false'); });
   paintGrain();
   if (S.screen === 'record' && S.take) { drawSheet(); selectEvent(S.selected); paintPortrait(); }
   if (S.screen === 'shelf') repaintShelf();
@@ -518,7 +518,7 @@ async function init() {
     selectEvent(list[to].id);
     if ($(list[to].id)) $(list[to].id).focus();
   });
-  ['day', 'dim', 'night'].forEach(function (n) { $('theme-' + n).addEventListener('click', function () { setTheme(n); }); });
+  ['day', 'night'].forEach(function (n) { $('theme-' + n).addEventListener('click', function () { setTheme(n); }); });
   $('keep').addEventListener('click', function () { setKept(!S.take.kept); });
   $('take-name').addEventListener('change', saveName);
   $('roast-toggle').addEventListener('click', function () {

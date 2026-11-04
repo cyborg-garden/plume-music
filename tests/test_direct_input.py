@@ -143,6 +143,83 @@ def test_monitor_mixes_in_the_chosen_channel(tmp_path, consent):
     assert np.abs(fake.stream.output).max() > 0.1
 
 
+def test_monitor_follows_the_channel_and_stays_out_of_both_recordings(tmp_path, consent):
+    """What she hears of herself is not what the take keeps.  No count, so the band never
+    starts: anything at all in machine.wav would be her guitar leaking into it."""
+    guitar, decoy = _guitar_and_decoy()
+    fake = fake_audio(guitar, devices=RIG, human_channel=1, inputs={0: decoy}, capture=True)
+    with patched_module("sounddevice", fake):
+        realtime.lead(prompt="lofi", seed=0, role=roles_mod.RoleParams(role="lead"), status=False,
+                      max_minutes=0.05, monitor=True, tap_start=True, direct=True,
+                      record_dir=str(tmp_path / "rec"), socket_path=short_socket_path("monl"),
+                      input_device="audio interface", input_channel=2)
+    out = fake.stream.output[:, 0]
+    spectrum = np.abs(np.fft.rfft(out[:SR * 2]))
+    assert spectrum[int(220.0 * 2)] > 100.0 * spectrum[int(1000.0 * 2)], "the wrong channel"
+    # unchanged by the monitor, and the same in both ears
+    assert np.abs(out).max() == pytest.approx(0.2, abs=0.01)
+    assert np.array_equal(fake.stream.output[:, 0], fake.stream.output[:, 1])
+    machine, _ = sf.read(str(tmp_path / "rec" / "machine.wav"), dtype="float32")
+    assert machine.size and np.abs(machine).max() == 0.0
+    human, _ = sf.read(str(tmp_path / "rec" / "human.wav"), dtype="float32")
+    assert np.abs(human).max() == pytest.approx(0.2, abs=0.01), "doubled, or the decoy"
+    assert _tone_level(tmp_path / "rec" / "human.wav", 220.0) > 100.0 * _tone_level(
+        tmp_path / "rec" / "human.wav", 1000.0)
+    assert json.loads((tmp_path / "rec" / "session.json").read_text())["monitor"] is True
+
+
+# ---------------------------------------------- what the device says about latency
+
+def _stream_doc(tmp_path, *, latency=(0.012, 0.021), tap_start=True):
+    fake = fake_audio(np.zeros(SR, dtype=np.float32), devices=RIG, latency=latency)
+    with patched_module("sounddevice", fake):
+        realtime.lead(prompt="lofi", seed=0, role=roles_mod.RoleParams(role="lead"), status=False,
+                      max_minutes=0.01, tap_start=tap_start, direct=True,
+                      record_dir=str(tmp_path / "rec"), socket_path=short_socket_path("strm"),
+                      input_device="audio interface", input_channel=1)
+    return json.loads((tmp_path / "rec" / "stream.json").read_text())
+
+
+def test_stream_json_holds_what_the_device_reported(tmp_path, consent):
+    assert _stream_doc(tmp_path) == {
+        "input_ms": 12.0, "output_ms": 21.0, "reported_ms": 33.0,
+        "block_ms": pytest.approx(5.333, abs=0.001), "calibrated_ms": None}
+
+
+def test_stream_json_is_left_with_no_temporary_beside_it(tmp_path, consent):
+    _stream_doc(tmp_path)
+    assert not list((tmp_path / "rec").glob("*.tmp"))
+
+
+def test_stream_json_carries_a_real_calibration_when_there_is_one(tmp_path, consent):
+    from plume import calibrate
+    # The fake device's table can't be asked about one device, so it files under "default".
+    calibrate.save_roundtrip("default", "default", SR,
+                            {"roundtrip_ms": 41.5, "spread_ms": 0.5, "heard": 8, "clicks": 8})
+    assert _stream_doc(tmp_path)["calibrated_ms"] == 41.5
+
+
+def test_a_used_folder_does_not_keep_the_last_takes_stream(tmp_path):
+    rec = tmp_path / "rec"
+    rec.mkdir()
+    (rec / "stream.json").write_text("{}")
+    recorder = realtime.SessionRecorder(rec).open({})
+    recorder.close()
+    assert not (rec / "stream.json").exists()
+
+
+@pytest.mark.parametrize("latency", [None, "low", (0.01,), ("x", "y"), (float("nan"), 0.01)])
+def test_a_stream_that_reports_nonsense_says_nothing(latency):
+    class Stream:
+        pass
+    stream = Stream()
+    stream.latency = latency
+    doc = realtime.stream_report(stream)
+    assert doc["input_ms"] is None and doc["output_ms"] is None and doc["reported_ms"] is None
+    assert doc["block_ms"] > 0.0
+    json.dumps(doc, allow_nan=False)
+
+
 def test_a_voice_channel_is_recorded_beside_the_guitar(tmp_path, consent):
     guitar, voice = _guitar_and_decoy()
     fake = fake_audio(guitar, devices=RIG, human_channel=0, inputs={1: voice})

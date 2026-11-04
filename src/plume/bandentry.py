@@ -18,11 +18,87 @@ import numpy as np
 
 from .governor import HarmonyGovernor
 from .listen.harmony import HarmonyState
+from .theory import parse_key
 
 HARMONY_ROLES = ("bass", "pad", "keys", "shimmer")
 MELODY_ROLES = ("lead", "arp")
 
 DRUMS, BAND, FULL = "drums", "band", "full"
+
+#: Detect mode: after this many heard bars with no four running on one key, take the
+#: tracker's latest word for it rather than leave the player on drums for the whole take.
+DETECT_KEY_FALLBACK_BARS = 16
+#: Onsets per beat that make a player busy, and that make one sparse enough for trap.
+#: Like every number in detect_style, a first guess nobody has calibrated.
+_BUSY_ONSETS_PER_BEAT = 1.0
+_SPARSE_ONSETS_PER_BEAT = 0.5
+
+
+def detect_style(bpm: float, mode: str | None = None, busy: float | None = None) -> str:
+    """A style for a player who did not name one: a guess, and the page says so.
+
+    The tempo does most of the work, and each style's own range sets the bands.  The
+    mode and how busy the playing is (onsets per beat) only split a band.  None means
+    not known yet, or on a room mic not knowable, and counts as neither minor nor busy.
+    The thresholds are uncalibrated: they have never met a real player.
+    """
+    busy_now = busy is not None and busy >= _BUSY_ONSETS_PER_BEAT
+    if bpm < 80.0:
+        return "lofi"
+    if bpm < 90.0:
+        return "midwest" if busy_now else "lofi"
+    if bpm < 118.0:
+        return "synthwave" if mode == "minor" and not busy_now else "midwest"
+    if bpm < 130.0:
+        return "midwest"
+    if bpm <= 150.0:
+        return "midwest" if busy is not None and busy >= _SPARSE_ONSETS_PER_BEAT else "trap"
+    return "midwest"
+
+
+def _mode_of(key: str | None) -> str | None:
+    if not key:
+        return None
+    try:
+        return parse_key(key).mode
+    except ValueError:
+        return None
+
+
+class StylePick:
+    """Where a detected style comes from over a take.
+
+    Drums need a style the moment the count lands, when only the tempo is known, so it
+    picks once there.  It picks once more as the band enters, knowing the key and how
+    busy the player has been, and the drums changing then reads as part of the entrance.
+    After that it never moves.  A room mic hears the drums as onsets too, so its
+    ``trust_busy`` is off.
+    """
+
+    def __init__(self, *, key: str | None = None, trust_busy: bool = False):
+        self._mode = _mode_of(key)
+        self._trust_busy = bool(trust_busy)
+        self._onsets = 0
+        self._beats = 0
+        self.settled = False
+
+    def heard_bar(self, onsets: int) -> None:
+        self._onsets += int(onsets)
+        self._beats += 4
+
+    @property
+    def busy(self) -> float | None:
+        """Onsets per beat over the bars heard, if this input can say."""
+        if not self._trust_busy or not self._beats:
+            return None
+        return self._onsets / self._beats
+
+    def at_count(self, bpm: float) -> str:
+        return detect_style(bpm, self._mode)
+
+    def at_entry(self, bpm: float, key: str | None) -> str:
+        self.settled = True
+        return detect_style(bpm, _mode_of(key) or self._mode, self.busy)
 
 
 @dataclass(frozen=True)
@@ -83,9 +159,15 @@ class GuitarEar:
 class BandEntry:
     def __init__(self, style: str, *, min_drum_bars: int = 8, key_bars: int = 4,
                  melody_delay_bars: int = 4, release_bars: int = 8,
-                 known_key: str | None = None, after_first_heard_bars: int = 5):
+                 known_key: str | None = None, after_first_heard_bars: int = 5,
+                 key_fallback_bars: int | None = None):
         """``after_first_heard_bars`` counts from when she is confirmed, which is
-        about three bars after her first note, so she gets about eight bars."""
+        about three bars after her first note, so she gets about eight bars.
+
+        ``key_fallback_bars``: the governor wants several bars running on one key, and
+        a player who moves around may never give it that.  After this many heard bars,
+        commit to the tracker's latest key instead.  None waits for as long as it takes.
+        """
         self._min_drum_bars = int(min_drum_bars)
         self._melody_delay = int(melody_delay_bars)
         self._gov = HarmonyGovernor(style, SimpleNamespace(
@@ -96,11 +178,22 @@ class BandEntry:
         self._known_key = known_key
         self._after_heard = int(after_first_heard_bars)
         self._first_heard: int | None = None
+        self._key_fallback_bars = key_fallback_bars
+        self._latest_key: str | None = None
         self.bars_in = 0
 
     @property
     def band_is_in(self) -> bool:
         return self._band_bar is not None
+
+    def restyle(self, style: str) -> None:
+        """The chords come from this style from now on, in the same key."""
+        self._gov.restyle(style)
+
+    def chord_at(self, bar: int, harmony) -> str | None:
+        """Ask again for a bar already governed, after a :meth:`restyle`."""
+        return self._gov.govern(bar, harmony if harmony is not None else _NOTHING_HEARD,
+                                resting=True).chord
 
     def update(self, bar: int, harmony, playing: bool) -> EntryState:
         if playing:
@@ -129,6 +222,14 @@ class BandEntry:
             governed = self._gov.govern(bar, harmony, resting=True)
         else:
             governed = None
+        if playing and harmony is not None and harmony.key is not None:
+            self._latest_key = harmony.key
+        if (self._key_fallback_bars is not None and self._gov.committed_key is None
+                and self._heard >= self._key_fallback_bars
+                and self._latest_key is not None):
+            self._gov.commit(self._latest_key, bar)
+            governed = self._gov.govern(bar, harmony if harmony is not None else _NOTHING_HEARD,
+                                        resting=True)
         key = self._gov.committed_key
         if key is None or (not ready and self._band_bar is None):
             return EntryState(DRUMS, HARMONY_ROLES + MELODY_ROLES, None, None,
@@ -192,9 +293,9 @@ END_AFTER_S = 20.0
 #: is only ever as close as the bar lets it be.
 _FADE_TARGET_S = 6.0
 _FADE_MIN_BARS, _FADE_MAX_BARS = 2, 6
-#: What the reading itself costs before anything can react.  Bars are read two bars
-#: late and a player stops somewhere inside one, so a stop is noticed one to two bars
-#: after it happens; waiting whole bars adds up to one more, half of it taken as typical.
+#: What reading costs before anything can react.  Bars are read two bars late and a
+#: player stops somewhere inside one, so a stop is noticed one to two bars after it
+#: happens.  Waiting in whole bars can add up to one more, so a take lands a little over.
 _READ_LAG_BARS = 1.5
 
 

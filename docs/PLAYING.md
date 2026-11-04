@@ -33,6 +33,14 @@ so you have time to get your hands back on the strings after the count. Play dur
 fade and the band comes straight back. A rest of more than about 10 seconds on a direct input
 dips the band, and it can take two or three bars to come back up.
 
+Add `--detect` and you need no prompt at all: `plume lead --tap-start --detect`. Whatever a
+prompt doesn't name, plume works out as you play. It listens for the key, and after 16 bars
+with no settled key it takes its latest reading, so you can't get stuck on drums. It picks a
+style from your tempo when you count, then once more as the band comes in, using your key and
+how busy you are. On a room mic it can't tell your notes from the drums, so busyness doesn't
+count there. These are guesses, and the rule's thresholds are first guesses too. So far this
+has only run on a simulated device, never with a real guitar.
+
 To stop from another terminal, run `plume stop` (`plume play` and `plume calibrate` too), or `plume sessions` to see what is
 running. A take also stops by itself after 60 minutes; `--max-minutes N` changes that.
 

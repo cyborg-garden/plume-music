@@ -83,3 +83,15 @@ def test_a_recording_not_written_yet_waits_and_junk_rows_are_skipped(tmp_path):
     (tmp_path / "decisions.ndjson").write_text(
         '[1, 2]\n' + json.dumps({"bar": 0, "t_s": 0.0, "bpm": BPM}) + "\n")
     assert Listener(tmp_path, every=1).poll() == []
+
+
+def test_ctrl_c_leaves_the_watch_quietly(monkeypatch):
+    from argparse import Namespace
+
+    from plume import cli, watch
+
+    def interrupted(*args, **kwargs):
+        raise KeyboardInterrupt
+    monkeypatch.setattr(watch, "follow", interrupted)
+    args = Namespace(record_dir="takes", every=4, changes_only=False)
+    assert cli.cmd_watch(args) == ({"ended": True}, "", 0)

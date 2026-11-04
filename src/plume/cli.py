@@ -2621,8 +2621,11 @@ def cmd_watch(args):
     watch = _import("plume.watch")
     def write(line):
         print(line, flush=True)
-    watch.follow(args.record_dir, every=args.every,
-                 changes_only=args.changes_only, write=write)
+    try:
+        watch.follow(args.record_dir, every=args.every,
+                     changes_only=args.changes_only, write=write)
+    except KeyboardInterrupt:      # Ctrl-C is how you leave a watch, not a failure
+        pass
     return {"ended": True}, "", 0
 
 

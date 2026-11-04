@@ -862,7 +862,7 @@ class TestHardExit:
         exits, out = [], io.StringIO()
         h = HardExit(exit_fn=exits.append, stream=out)
         h.arm("stopped", seconds=0.05)
-        assert _wait_true(lambda: h.fired, 3.0), "the watchdog never fired"
+        assert _wait_true(lambda: exits, 3.0), "the watchdog never fired"
         assert exits == [realtime.EXIT_WEDGED]
         assert "did not finish" in out.getvalue()
 
@@ -890,7 +890,7 @@ class TestHardExit:
         h.arm("ending", seconds=60.0)         # ignored
         assert h.remaining_s <= first
         h.arm("second Ctrl-C", seconds=0.05)  # honoured
-        assert _wait_true(lambda: h.fired, 3.0)
+        assert _wait_true(lambda: exits, 3.0)
         assert exits == [realtime.EXIT_WEDGED]
         assert h.reason == "second Ctrl-C"
 
@@ -910,7 +910,7 @@ class TestHardExit:
         h = HardExit(exit_fn=lambda c: (order.append("exit"), exits.append(c)),
                      on_exit=cleanup, stream=io.StringIO())
         h.arm("wedged", seconds=0.05)
-        assert _wait_true(lambda: h.fired, 3.0)
+        assert _wait_true(lambda: exits, 3.0)
         assert order == ["cleanup", "exit"]
         doc = json.loads((d / "ending.json").read_text())
         assert doc["reason"] == realtime.END_WEDGED
@@ -924,7 +924,7 @@ class TestHardExit:
 
         h = HardExit(exit_fn=exits.append, on_exit=boom, stream=io.StringIO())
         h.arm("wedged", seconds=0.05)
-        assert _wait_true(lambda: h.fired, 3.0)
+        assert _wait_true(lambda: exits, 3.0)
         assert exits == [realtime.EXIT_WEDGED]
 
     def test_the_exit_code_is_distinguishable_from_a_clean_end(self):
@@ -2318,6 +2318,7 @@ def _machine_channel_rms_db(fake, lo_frac, hi_frac):
     return 10.0 * math.log10(max(p, 1e-12))
 
 
+@pytest.mark.usefixtures("fake_device_consent")
 class TestUnlockedRenderingEndToEnd:
     """The live path, through the fake device: what the decision log says
     sounded must be what the bus carried, and the status must match both."""
@@ -2358,6 +2359,7 @@ class TestUnlockedRenderingEndToEnd:
         assert any("listening" in t for t in texts)
 
 
+@pytest.mark.usefixtures("fake_device_consent")
 class TestLiveBusCalibrationEndToEnd:
     """FIX 3 through the fake device: the human arrives at two different
     levels and the machine bus must sit at ``plan.gain_db`` relative to EACH,

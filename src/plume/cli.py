@@ -1196,7 +1196,10 @@ def cmd_play(args):
     kwargs = {}
     if args.movement is not None:
         kwargs["movement"] = args.movement
-    engine.play(session, **kwargs)
+    try:
+        engine.play(session, **kwargs)
+    except KeyboardInterrupt:      # Ctrl-C or plume stop: the stream has closed
+        return {"played": str(path), "stopped": True}, f"stopped {path}", 130
     return {"played": str(path)}, f"played {path}", 0
 
 
@@ -1425,6 +1428,28 @@ def _input_mode_help() -> str:
     return ("beat-tracker front end: "
             + "; ".join(f"'{name}' = {doc}" for name, doc in _INPUT_MODE_TABLE)
             + ". Default: auto.")
+
+
+def _add_midi_flag(p) -> None:
+    p.add_argument("--midi", default=None, metavar="PORT",
+                   help="listen to this MIDI port instead of the mic: part of its "
+                        "name, or 'auto' if there is only one (run 'plume midi'; "
+                        "needs the midi extra)")
+    p.add_argument("--midi-clock", dest="midi_clock", action="store_true", default=False,
+                   help="let that port's MIDI clock set the tempo and the bar line, "
+                        "over what you play; without this a clock is ignored")
+
+
+def _midi_args(args) -> dict:
+    """What --midi and --midi-clock ask of a live verb, only if they were given."""
+    if getattr(args, "midi_clock", False) and not getattr(args, "midi", None):
+        raise CliError("--midi-clock needs --midi: a clock comes from a MIDI port")
+    out = {}
+    if getattr(args, "midi", None):
+        out["midi"] = args.midi
+    if getattr(args, "midi_clock", False):
+        out["midi_clock"] = True
+    return out
 
 
 def _add_input_mode_flag(p) -> None:
@@ -1669,6 +1694,7 @@ def cmd_jam(args):
     # A malformed flag is a fact about the command line, not about the
     # machine, so it is reported before anything probes the hardware.
     max_minutes = _parse_max_minutes(getattr(args, "max_minutes", None))
+    midi_extra = _midi_args(args)
     try:
         # Fail fast (and clean) on the no-device path before building the mind.
         realtime.check_device(args.device)
@@ -1706,6 +1732,7 @@ def cmd_jam(args):
     # realtime.jam without the kwarg, and resolution happens there.
     if getattr(args, "latency_comp", None) is not None:
         extra["latency_comp_s"] = args.latency_comp / 1000.0
+    extra.update(midi_extra)
     if in_note and not getattr(args, "json", False):
         print(in_note, file=sys.stderr)
     try:
@@ -1719,6 +1746,7 @@ def cmd_jam(args):
                 record_dir=args.record,
                 tightness=args.tightness,
                 **extra,
+                **_route_kwargs(args),
             )
     except (realtime.RealtimeError, ValueError) as e:
         # RealtimeError: no device / stream trouble; ValueError: bad style.
@@ -1731,15 +1759,18 @@ def cmd_jam(args):
 
 def cmd_calibrate(args):
     realtime = _import("plume.realtime")
-    try:
-        realtime.check_device(args.device)
-    except realtime.RealtimeError as e:
-        raise CliError(str(e)) from None
-    cal = _import("plume.calibrate")
-    try:
-        res = cal.run(device=args.device)
-    except realtime.RealtimeError as e:
-        raise CliError(str(e)) from None
+    with realtime.sigint_stops_this():
+        realtime.register_session(kind="calibrate")   # so `plume stop` can find it
+        try:
+            realtime.check_device(args.device)
+            cal = _import("plume.calibrate")
+            res = cal.run(device=args.device)
+        except KeyboardInterrupt:  # Ctrl-C or plume stop: the stream has closed
+            return {"ok": False, "stopped": True}, "calibrate: stopped. Nothing saved.", 130
+        except realtime.RealtimeError as e:
+            raise CliError(str(e)) from None
+        finally:
+            realtime.unregister_session()
     if not res["ok"]:
         return ({"ok": False, **res},
                 "calibrate: none of the clicks came back through the "
@@ -2338,6 +2369,7 @@ def cmd_lead(args):
     realtime = _import("plume.realtime")
     # Argument errors before hardware probing (see cmd_jam).
     max_minutes = _parse_max_minutes(getattr(args, "max_minutes", None))
+    midi_extra = _midi_args(args)
     try:
         # Fail fast (and clean) on the no-device path, before composing.
         realtime.check_device(args.device)
@@ -2380,7 +2412,9 @@ def cmd_lead(args):
                 socket_path=args.socket,
                 **({"tap_start": True} if args.tap_start else {}),
                 **({} if args.wind_down is None else {"wind_down_s": args.wind_down}),
+                **midi_extra,
                 **in_extra,
+                **_route_kwargs(args),
             )
     except (realtime.RealtimeError, ValueError) as e:
         raise CliError(str(e)) from None
@@ -2400,8 +2434,10 @@ def cmd_cue(args):
     if args.ttl_bars < 1:
         raise CliError(f"--ttl-bars must be >= 1, got {args.ttl_bars}")
     parsed = None
+    looped = _import("plume.looper").parse_loop_cue(args.text)
     try:
-        parsed = _import("plume.mind").parse_cue(args.text)
+        if looped is None:
+            parsed = _import("plume.mind").parse_cue(args.text)
     except CliError:
         pass
     try:
@@ -2416,6 +2452,11 @@ def cmd_cue(args):
                "bar": resp.get("bar")}
     if parsed is not None:
         payload["parsed"] = parsed
+    if looped is not None:
+        # A loop cue is answered at once, by the looper, not queued for a bar.
+        payload["loop"] = {k: v for k, v in resp.items()
+                           if k not in ("ok", "queued", "session", "bar")}
+        return payload, f"loop: {resp.get('said', 'done')}", 0
     kind = (parsed or {}).get("kind", "?")
     where = f" at bar {resp['bar']}" if resp.get("bar") is not None else ""
     human = (f"cued {args.text!r} ({kind}) for {args.at}{where} — "
@@ -2476,15 +2517,104 @@ def cmd_voice(args):
         print(line, flush=True)
     if args.wind_down is not None and not 0 < args.wind_down < float("inf"):
         raise CliError(f"--wind-down must be a time above 0, got {args.wind_down}")
+    if args.direct and args.voice_channel is None:
+        raise CliError("on a direct input the recording holds only the guitar, so nothing "
+                       "you say would reach the model: add --voice-channel N with a mic "
+                       "on that channel")
     extra = [] if args.wind_down is None else ["--wind-down", str(args.wind_down)]
+    for flag, value in (("--device", args.device), ("--input-device", args.input_device),
+                        ("--input-channel", args.input_channel),
+                        ("--voice-channel", args.voice_channel)):
+        if value is not None:
+            extra += [flag, str(value)]
+    if args.direct:
+        extra.append("--direct")
+    midi_args = _midi_args(args)
     try:
         realtime.check_audio_consent()
+        # Here, not in the band: its error only reaches the band log, and only after
+        # the model has loaded, which can be a download of minutes.
+        realtime.resolve_input(realtime._import_sounddevice(), args.device,
+                               input_device=args.input_device,
+                               input_channel=args.input_channel,
+                               voice_channel=args.voice_channel, direct=args.direct)
+        if "midi" in midi_args:
+            extra += ["--midi", realtime._resolve_midi_port(midi_args["midi"])]
+        if "midi_clock" in midi_args:
+            extra.append("--midi-clock")
         voice.run(prompt=args.prompt, base=args.base, extra_args=extra, write=write)
     except KeyboardInterrupt:
         pass                       # voice.run has already stopped the band
     except (realtime.RealtimeError, RuntimeError) as e:
         raise CliError(str(e)) from None
     return {"ended": True}, "", 0
+
+
+def cmd_voice_replay(args):
+    voice = _import("plume.voice")
+    def write(line):
+        print(line, flush=True)
+    try:
+        voice.replay(args.path, write=write)
+    except (RuntimeError, OSError) as e:
+        raise CliError(str(e)) from None
+    return {"replayed": args.path}, "", 0
+
+
+def cmd_inputs(args):
+    realtime = _import("plume.realtime")
+    try:
+        sd = realtime._import_sounddevice()
+        if args.meter is None:
+            devices = realtime.input_devices(sd)
+            rows = [f"{d['inputs']:>3} in {d['outputs']:>3} out  {d['name']}" for d in devices]
+            return {"devices": devices}, "\n".join(rows), 0
+        doc = realtime.meter_input(sd, args.meter, seconds=args.seconds)
+    except realtime.RealtimeError as e:
+        raise CliError(str(e)) from None
+    rows = [f"channel {c['channel']}: peak {c['peak_db']:>6} dB  rms {c['rms_db']:>6} dB"
+            for c in doc["channels"]]
+    rows.append(f"loudest: channel {doc['loudest_channel']}")
+    return doc, "\n".join(rows), 0
+
+
+def _route_kwargs(args) -> dict:
+    """The input route, only as far as it was asked for: a bare invocation must reach
+    the transport with the signature it always had."""
+    extra = {}
+    for name in ("input_device", "input_channel", "voice_channel"):
+        if getattr(args, name, None) is not None:
+            extra[name] = getattr(args, name)
+    if getattr(args, "direct", False):
+        extra["direct"] = True
+    return extra
+
+
+def _add_route_flags(p, *, voice: bool = True) -> None:
+    p.add_argument("--input-device", dest="input_device", default=None, metavar="NAME",
+                   help="listen on this device and leave the output alone (name substring; "
+                        "'plume inputs' lists them)")
+    p.add_argument("--input-channel", dest="input_channel", type=int, default=None,
+                   metavar="N", help="the instrument's channel on that device, counted from "
+                                     "1 as the interface labels them (default: 1)")
+    if voice:
+        p.add_argument("--voice-channel", dest="voice_channel", type=int, default=None,
+                       metavar="N", help="a mic on this channel of the same device, recorded "
+                                         "to voice.wav; what 'plume voice' listens to")
+    p.add_argument("--direct", action="store_true", default=False,
+                   help="the band cannot reach this input (instrument plugged in, or "
+                        "headphones): turns off self-masking and trusts its level. Thresholds "
+                        "are from a room mic and uncalibrated here")
+
+
+def cmd_midi(args):  # noqa: ARG001
+    midi = _import("plume.midi")
+    try:
+        ports = midi.list_ports()
+    except midi.MidiError as e:
+        raise CliError(str(e)) from None
+    human = "\n".join(ports) if ports else "no MIDI input ports found"
+    return {"ports": ports}, human, 0
 
 
 def cmd_watch(args):
@@ -2645,6 +2775,9 @@ How a session is stopped, in order, stopping as soon as it is gone:
      a working flush and throws the recording away.
   3. SIGTERM — the hard fallback, after --timeout has actually run out. The
      take's tail and records are probably lost, and the output says so.
+
+plume play and plume calibrate have no ending to finish, so they get about 5
+seconds, not --timeout, before SIGTERM, and they keep no records to lose.
 
 SIGKILL is deliberately not in the default ladder: it would cut the tail. If
 SIGTERM does not land, the output says so and names the command to run:
@@ -2855,6 +2988,18 @@ Cue kinds are rule-parsed: energy / section / texture / tempo / end / style,
 plus "unknown" for text we did not understand (applied as an explicit no-op
 and logged as such — guessing would change the music for no traceable
 reason). --json reports the parse alongside the session's reply.
+
+A cue asking for a loop goes to the looper instead, which answers at once, and
+refuses by name what it cannot follow. See docs/PLAYING.md, "Making a loop":
+
+  plume cue "make a loop of this"
+  plume cue "make a 4 bar loop called bass"
+  plume cue "that's the loop"
+  plume cue "mute the bass loop"
+  plume cue "stop the loop"
+  plume cue "swap the bass loop for the keys loop"
+  plume cue "drop the bass loop"
+  plume cue "list loops"
 
 With nothing listening this errors cleanly and changes nothing."""
 
@@ -3111,6 +3256,7 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="audio device name substring (default: system default)")
     p.add_argument("--monitor", action="store_true", default=False,
                    help="mix the mic into the output (headphones recommended)")
+    _add_route_flags(p, voice=False)
     # v2 (additive): absent = the v1 sideman, byte for byte.
     p.add_argument("--role", default=None, metavar="R",
                    help="starting role (run 'plume roles'); default follow = "
@@ -3136,6 +3282,7 @@ def _build_parser() -> argparse.ArgumentParser:
                         "'plume calibrate' measurement for this device pair, "
                         "else the stream's reported latency). Follow mode "
                         "only.")
+    _add_midi_flag(p)
     p.set_defaults(func=cmd_jam)
 
     p = sub.add_parser(
@@ -3261,6 +3408,7 @@ def _build_parser() -> argparse.ArgumentParser:
     _add_input_mode_flag(p)
     p.add_argument("--count-in", dest="count_in", action="store_true",
                    default=False, help=_COUNT_IN_HELP)
+    _add_route_flags(p)
     p.add_argument("--wind-down", dest="wind_down", type=float, default=None,
                    metavar="SECONDS",
                    help="with --tap-start: this long after the drums start, signal "
@@ -3270,6 +3418,7 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="wait silently for 4 knocks, start drums at that tempo "
                         "and hold it; bass and chords join in your key once it "
                         "has settled, then the melody")
+    _add_midi_flag(p)
     p.set_defaults(func=cmd_lead)
 
     p = sub.add_parser(
@@ -3303,7 +3452,36 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--wind-down", dest="wind_down", type=float, default=None,
                    metavar="SECONDS", help="signal the ending this long after the "
                                            "drums start, then fade and end")
+    p.add_argument("--device", default=None, metavar="NAME",
+                   help="audio device name substring, both directions")
+    _add_route_flags(p)
+    _add_midi_flag(p)
     p.set_defaults(func=cmd_voice)
+
+    p = sub.add_parser(
+        "voice-replay", parents=[common],
+        help="what the speech model hears in a recording, window by window, and whether "
+             "it would count as a command (no device, no sound; needs mlx-whisper)",
+    )
+    p.add_argument("path", help="a WAV, e.g. a take's human.wav or voice.wav")
+    p.set_defaults(func=cmd_voice_replay)
+
+    p = sub.add_parser(
+        "inputs", parents=[common],
+        help="list audio devices and their channels; --meter also listens for a few "
+             "seconds and says which channel is loudest (plays nothing)",
+    )
+    p.add_argument("--meter", default=None, metavar="NAME",
+                   help="device name substring: open its inputs and show each channel's level")
+    p.add_argument("--seconds", type=float, default=5.0, metavar="S",
+                   help="how long --meter listens, up to 60 (default: 5)")
+    p.set_defaults(func=cmd_inputs)
+
+    p = sub.add_parser(
+        "midi", parents=[common],
+        help="list MIDI input ports, for --midi (opens none of them)",
+    )
+    p.set_defaults(func=cmd_midi)
 
     p = sub.add_parser(
         "watch", parents=[common],

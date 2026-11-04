@@ -1,8 +1,8 @@
 """Real-time jam transport (SPEC-V1 section 7).
 
 ``jam()`` opens a sounddevice duplex stream (48 kHz, 256-sample blocks) whose
-callback ONLY copies to/from lock-free ring buffers — no allocation, no
-synthesis, no Python object churn.  Three worker roles surround it:
+callback ONLY copies to/from lock-free ring buffers: no locks, no waiting, no
+synthesis.  Its slices and sum do allocate a little, bounded and small.  Three worker roles surround it:
 
 - **analysis thread** — drains the input ring, runs FeatureExtractor →
   BeatTracker / HarmonyTracker (with schedule-aware self-masking of the
@@ -26,6 +26,7 @@ gets smoke tests only (no audio device in CI).
 from __future__ import annotations
 
 import collections
+import contextlib
 import dataclasses
 import json
 import math
@@ -692,7 +693,10 @@ class SelfMasker:
                  rise_window_s: float = SELF_MASK_RISE_WINDOW_S,
                  hold_s: float = SELF_MASK_HOLD_S,
                  transient_gate_db: float = SELF_MASK_TRANSIENT_GATE_DB,
-                 blank_envelope: bool = True):
+                 blank_envelope: bool = True, enabled: bool = True):
+        #: False on a direct input.  Nothing of ours can reach it, and a mask with
+        #: nothing to mask only punches holes at the machine's beat rate (v1.7).
+        self._enabled = bool(enabled)
         self._margin = float(margin_db)
         self._alpha = float(human_alpha)
         self._floor = float(abs_floor_db)
@@ -752,6 +756,12 @@ class SelfMasker:
             return self._leaky_db
         return min(self._leaky_db, self._reg_smooth_db)
 
+    @property
+    def coupling_measured(self) -> bool:
+        """Has the room been measured at all?  The estimate starts at the worst
+        case on purpose, which is right for a mask and wrong for a report."""
+        return self._reg_smooth_db is not None
+
     @coupling_db.setter
     def coupling_db(self, value: float) -> None:
         # Setting the estimate (tests, and __init__'s starting point) resets
@@ -804,6 +814,9 @@ class SelfMasker:
         Chunking-invariant: all state carries between calls, so feeding the
         same stream in one block or in a hundred gives identical flags.
         """
+        if not self._enabled:
+            self.frames_seen += len(frames)
+            return list(frames), [False] * len(frames)
         self._delay.extend(float(v) for v in machine_rms_db)
         out = []
         flags = []
@@ -954,6 +967,10 @@ def analysis_step(*, extractor, hop_rms, masker, tracker, harmony,
     chords disappear from a key estimate that wants them.
     """
     frames = extractor.process(human_block)
+    # Only a MIDI source has a clock to state; a mic's tempo is always inferred.
+    apply_clock = getattr(extractor, "apply_clock", None)
+    if apply_clock is not None:
+        apply_clock(tracker)
     machine_db = hop_rms.process(machine_block)
     masked_frames, flags = masker.mask(frames, machine_db)
     beat_state = tracker.process(masked_frames, masked=flags)
@@ -962,6 +979,58 @@ def analysis_step(*, extractor, hop_rms, masker, tracker, harmony,
 
 
 # ------------------------------------------------------------------ device I/O
+
+def _resolve_midi_port(midi: str | None) -> str | None:
+    """Which port ``--midi`` means, refused before anything opens or sounds."""
+    if midi is None:
+        return None
+    from .midi import MidiError, resolve_port  # noqa: PLC0415 - optional, like sd
+    try:
+        return resolve_port(midi)
+    except MidiError as e:
+        raise RealtimeError(str(e)) from None
+
+
+def _midi_listening(port: str, timeline: "TimelineBuffer",
+                    recorder: "SessionRecorder | None", *, status: bool = True,
+                    follow_clock: bool = False):
+    """``(MidiInput, MidiFrames, MidiMasker)`` for a session playing over ``port``.
+
+    The playhead is the stream clock the mic's frames count on, so it stamps the
+    notes.  It only moves one audio block at a time, 5 ms, well inside a frame.
+    """
+    from .midi import MidiFrames, MidiInput, MidiMasker  # noqa: PLC0415
+
+    def told(kind: str) -> None:
+        if status:
+            what = ("lost; the band hears silence until it is back"
+                    if kind == "lost" else "back")
+            print(f"midi: {port} {what}", file=sys.stderr, flush=True)
+
+    def clock_told(kind: str) -> None:
+        if status:
+            what = ("is sending a clock; ignoring it (--midi-clock follows it)"
+                    if kind == "ignored"
+                    else "clock stopped; reading the tempo from your playing again")
+            print(f"midi: {port} {what}", file=sys.stderr, flush=True)
+
+    log = None if recorder is None else recorder.midi
+    if log is not None:
+        # First line, so a take with no notes yet still reads as a MIDI take.
+        log({"t_s": 0.0, "type": "port", "port": port})
+    source = MidiInput(port, clock=lambda: timeline.playhead / SR, on_change=told)
+    frames = MidiFrames(source.events, sr=SR, log=log, follow_clock=follow_clock,
+                        on_clock=clock_told)
+    return source, frames, MidiMasker()
+
+
+def _stream_input_latency_s(stream) -> float:
+    """What the stream reports for its input side, for :attr:`MidiInput.offset_s`."""
+    try:
+        s = float(stream.latency[0])
+    except (AttributeError, IndexError, KeyError, TypeError, ValueError):
+        return 0.0
+    return s if math.isfinite(s) and 0.0 <= s <= SELF_MASK_MAX_LATENCY_S else 0.0
 
 def _import_sounddevice():
     """Lazy sounddevice import with a clean error when it is missing."""
@@ -1012,6 +1081,122 @@ def _resolve_device(sd, device: str | None):
             "'plume lead') needs a duplex mic+speaker setup. Try the offline "
             "twins: 'plume sim INPUT.wav' / 'plume simlead'.")
     return None  # let PortAudio use the defaults
+
+
+@dataclasses.dataclass(frozen=True)
+class InputRoute:
+    """Which input a live session listens to.
+
+    ``source`` is "direct" when the player says the band cannot reach this input (an
+    instrument plugged in, or a mic with the band only in headphones), else "room".
+    Every level threshold plume has was tuned on a room mic, and a direct input keeps
+    them as a starting point, so its record says ``thresholds_calibrated: False``
+    until someone has measured a real pickup against them.
+    """
+    device: object = None       # what Stream(device=) takes
+    channels: int = 1           # input channels the stream must open
+    guitar: int = 0             # 0-based index into indata
+    voice: int | None = None    # 0-based index into indata, or no voice channel
+    source: str = "room"
+    device_name: str | None = None
+
+    def describe(self) -> dict:
+        doc = {"source": self.source, "device": self.device_name,
+               "channel": self.guitar + 1,
+               "voice_channel": None if self.voice is None else self.voice + 1}
+        if self.source == "direct":
+            doc["thresholds_calibrated"] = False
+        return doc
+
+
+def resolve_input(sd, device: str | None = None, *, input_device: str | None = None,
+                  input_channel: int | None = None, voice_channel: int | None = None,
+                  direct: bool = False) -> InputRoute:
+    """Turn the player's choice of input into a route, or say what is wrong with it.
+
+    Channels are counted from 1, the way an interface labels its sockets.  With nothing
+    asked for, this is exactly the old mono read of the system default input.
+    """
+    dev = _resolve_device(sd, device)
+    devices = list(sd.query_devices())
+    if input_device is not None:
+        want = input_device.lower()
+        hits = [i for i, d in enumerate(devices) if want in str(d.get("name", "")).lower()]
+        if not hits:
+            names = ", ".join(str(d.get("name", "?")) for d in devices) or "(none)"
+            raise RealtimeError(
+                f"no audio device matching {input_device!r} (devices: {names})")
+        din = next((i for i in hits if devices[i].get("max_input_channels", 0) > 0), None)
+        if din is None:
+            raise RealtimeError(f"{devices[hits[0]].get('name')!r} has no inputs")
+        dev = (din, dev[1] if isinstance(dev, (tuple, list)) else None)
+    named = dev[0] if isinstance(dev, (tuple, list)) else None
+    if named is None and (input_channel is not None or voice_channel is not None):
+        # The system default can change under a take, and a channel number means
+        # nothing without knowing whose it is.
+        raise RealtimeError("choosing a channel needs a device: add --input-device NAME "
+                            "(run 'plume inputs' to see them)")
+    guitar = 0 if input_channel is None else int(input_channel) - 1
+    voice = None if voice_channel is None else int(voice_channel) - 1
+    if named is not None:
+        name = str(devices[named].get("name", "?"))
+        have = int(devices[named].get("max_input_channels", 0))
+        for label, ch in (("--input-channel", guitar), ("--voice-channel", voice)):
+            if ch is not None and not 0 <= ch < have:
+                raise RealtimeError(f"{label} {ch + 1}: {name} has channels 1 to {have}")
+    else:
+        name = None
+    if voice == guitar:
+        raise RealtimeError(f"--voice-channel and --input-channel are the same channel "
+                            f"({guitar + 1}): the voice needs its own")
+    return InputRoute(device=dev, channels=max(guitar, -1 if voice is None else voice) + 1,
+                      guitar=guitar, voice=voice, source="direct" if direct else "room",
+                      device_name=name)
+
+
+def input_devices(sd) -> list[dict]:
+    """Every device and its channel counts.  Opens nothing."""
+    try:
+        devices = list(sd.query_devices())
+    except Exception as e:  # noqa: BLE001
+        raise RealtimeError(f"audio device query failed: {e}") from None
+    return [{"name": str(d.get("name", "?")), "inputs": int(d.get("max_input_channels", 0)),
+             "outputs": int(d.get("max_output_channels", 0))} for d in devices]
+
+
+#: Sessions with no ending to finish: nothing to flush, and sound to silence.
+_NOTHING_TO_FINISH = ("play", "calibrate")
+
+#: The meter holds a mic open with no session around it, so no cap and no plume stop.
+MAX_METER_S = 60.0
+
+
+def meter_input(sd, name: str, *, seconds: float = 5.0) -> dict:
+    """Listen to every channel of one device for a few seconds; make no sound.
+
+    An input opened without anyone asking is still a microphone open in someone's
+    room, so it takes the same consent as playing.
+    """
+    if not 0.0 < float(seconds) <= MAX_METER_S or int(float(seconds) * SR) < 1:
+        raise RealtimeError(f"--seconds has to be more than 0 and at most "
+                            f"{MAX_METER_S:.0f}, not {seconds}")
+    allowed, why = audio_output_allowed()
+    if not allowed:
+        raise RealtimeError(f"refusing to open a live input: {why}. "
+                            f"Set {AUDIO_CONSENT_ENV}=1 to allow it.")
+    route = resolve_input(sd, input_device=name)
+    din = route.device[0]
+    have = int(list(sd.query_devices())[din].get("max_input_channels", 0))
+    y = sd.rec(int(float(seconds) * SR), samplerate=SR, channels=have, dtype="float32",
+               device=din)
+    sd.wait()
+
+    def db(v):
+        return round(max(RMS_FLOOR_DB, 20.0 * math.log10(max(float(v), 1e-9))), 1)
+    rows = [{"channel": c + 1, "peak_db": db(np.abs(y[:, c]).max()),
+             "rms_db": db(np.sqrt(np.mean(y[:, c] ** 2)))} for c in range(have)]
+    return {"device": route.device_name, "seconds": float(seconds), "channels": rows,
+            "loudest_channel": max(rows, key=lambda r: r["peak_db"])["channel"]}
 
 
 #: Live audio plays out of a real human's speakers.  Twice during development an
@@ -1223,6 +1408,8 @@ REC_DECISIONS = "decisions.ndjson"
 REC_HUMAN = "human.wav"
 REC_MACHINE = "machine.wav"
 REC_ENDING = "ending.json"
+REC_VOICE = "voice.wav"
+REC_MIDI = "midi.ndjson"
 
 #: Audio is flushed to disk at most this often — the most a `kill -9` can
 #: cost.  Decisions are flushed every line (they are what an observer reads).
@@ -1275,7 +1462,9 @@ class SessionRecorder:
     """
 
     def __init__(self, rec_dir, *, sr: int = SR, subtype: str = "PCM_24",
-                 flush_every_s: float = REC_AUDIO_FLUSH_S):
+                 flush_every_s: float = REC_AUDIO_FLUSH_S, voice: bool = False):
+        self._want_voice = bool(voice)
+        self._voice = None
         self.dir = Path(rec_dir)
         self.sr = int(sr)
         self.subtype = str(subtype)
@@ -1284,6 +1473,7 @@ class SessionRecorder:
         self._decisions = None            # text handle
         self._human = None                # soundfile handle
         self._machine = None
+        self._midi = None                 # opened by the first midi() line
         self._last_flush = 0.0
         self.decisions_written = 0
         self.frames_written = 0
@@ -1298,6 +1488,15 @@ class SessionRecorder:
 
         with self._lock:
             self.dir.mkdir(parents=True, exist_ok=True)
+            # A used directory: the last take's ending must not read as this one's,
+            # and its keys or voice must not stand in for a take that has none.
+            (self.dir / REC_ENDING).unlink(missing_ok=True)
+            # _midi_listening writes a MIDI take's first line before this runs, so a
+            # handle here means this take's own file.  Without one the file is the last take's.
+            if self._midi is None:
+                (self.dir / REC_MIDI).unlink(missing_ok=True)
+            if not self._want_voice:
+                (self.dir / REC_VOICE).unlink(missing_ok=True)
             if manifest is not None:
                 self._write_json(REC_MANIFEST, manifest)
             try:
@@ -1312,6 +1511,10 @@ class SessionRecorder:
                 self._machine = sf.SoundFile(
                     str(self.dir / REC_MACHINE), mode="w", samplerate=self.sr,
                     channels=1, subtype=self.subtype)
+                if self._want_voice:
+                    self._voice = sf.SoundFile(
+                        str(self.dir / REC_VOICE), mode="w", samplerate=self.sr,
+                        channels=1, subtype=self.subtype)
             except (OSError, RuntimeError, ValueError) as e:
                 self._note(f"audio: {e}")
             self._last_flush = time.monotonic()
@@ -1330,14 +1533,16 @@ class SessionRecorder:
                 return
             self.closed = True
             for name, h in (("decisions", self._decisions),
-                            ("human", self._human), ("machine", self._machine)):
+                            ("human", self._human), ("machine", self._machine),
+                            ("voice", self._voice), ("midi", self._midi)):
                 if h is None:
                     continue
                 try:
                     h.close()
                 except (OSError, RuntimeError) as e:      # pragma: no cover
                     self._note(f"{name} close: {e}")
-            self._decisions = self._human = self._machine = None
+            self._decisions = self._human = self._machine = self._voice = None
+            self._midi = None
 
     def emergency_close(self, ending: dict | None = None,
                         *, timeout: float = 1.0) -> bool:
@@ -1371,7 +1576,23 @@ class SessionRecorder:
             except (OSError, ValueError, TypeError) as e:
                 self._note(f"decision: {e}")
 
-    def audio(self, human: np.ndarray, machine: np.ndarray) -> None:
+    def midi(self, doc: dict) -> None:
+        """Append one MIDI event, flushed like a decision: ``plume watch`` reads it."""
+        with self._lock:
+            if self.closed:
+                return
+            try:
+                if self._midi is None:
+                    self.dir.mkdir(parents=True, exist_ok=True)
+                    self._midi = open(self.dir / REC_MIDI, "w",
+                                      encoding="utf-8", buffering=1)
+                self._midi.write(json.dumps(doc, sort_keys=True) + "\n")
+                self._midi.flush()
+            except (OSError, ValueError, TypeError) as e:
+                self._note(f"midi: {e}")
+
+    def audio(self, human: np.ndarray, machine: np.ndarray,
+              voice: np.ndarray | None = None) -> None:
         """Append one analysis chunk of each bus; flush about once a second."""
         with self._lock:
             if self._human is None or self._machine is None:
@@ -1379,18 +1600,22 @@ class SessionRecorder:
             try:
                 self._human.write(np.asarray(human, dtype=np.float32))
                 self._machine.write(np.asarray(machine, dtype=np.float32))
+                if self._voice is not None and voice is not None:
+                    self._voice.write(np.asarray(voice, dtype=np.float32))
                 self.frames_written += int(np.asarray(human).shape[0])
                 now = time.monotonic()
                 if now - self._last_flush >= self._flush_every:
                     self._human.flush()
                     self._machine.flush()
+                    if self._voice is not None:
+                        self._voice.flush()
                     self._last_flush = now
             except (OSError, RuntimeError, ValueError) as e:
                 self._note(f"audio: {e}")
 
     def flush(self) -> None:
         with self._lock:
-            for h in (self._decisions, self._human, self._machine):
+            for h in (self._decisions, self._human, self._machine, self._voice):
                 if h is None:
                     continue
                 try:
@@ -1422,7 +1647,9 @@ def session_manifest(*, kind: str, style: str, role: str, seed: int,
                      record_dir: str | None = None,
                      device: str | None = None, bpm: float | None = None,
                      params=None, role_params=None,
-                     started_at: float | None = None) -> dict:
+                     started_at: float | None = None,
+                     input_route: "InputRoute | None" = None,
+                     midi_port: str | None = None) -> dict:
     """What ``session.json`` says, written before the first bar is planned.
 
     Pure: everything except the pid and the clock is passed in, so the shape
@@ -1438,6 +1665,8 @@ def session_manifest(*, kind: str, style: str, role: str, seed: int,
         "session": session_name,
         "socket": socket_path,
         "device": device,
+        "input": (input_route or InputRoute()).describe(),
+        "midi_port": midi_port,
         "bpm": (None if bpm is None else float(bpm)),
         "sr": SR,
         "max_minutes": float(max_minutes),
@@ -1691,7 +1920,10 @@ def jam(*, style: str, seed: int, params, device: str | None = None,
         form_params=None, from_bar: int = 0,
         max_minutes: float | None = None,
         input_mode: str | None = None, count_in: bool = False,
-        latency_comp_s: float | None = None) -> None:
+        latency_comp_s: float | None = None,
+        input_device: str | None = None, input_channel: int | None = None,
+        direct: bool = False, midi: str | None = None,
+        midi_clock: bool = False) -> None:
     """Run the live sideman until it is ended (SPEC-V1 section 7).
 
     ``params`` is a ``plume.mind.MindParams``.  ``tightness`` overrides the
@@ -1721,6 +1953,11 @@ def jam(*, style: str, seed: int, params, device: str | None = None,
     only — a lead dispatch does not carry it, because in lead mode the machine
     owns the clock and the analogous correction is on the ANALYSIS side (a
     known residual, in the spec).
+
+    ``midi`` (additive): a port to listen to instead of the mic (see
+    :mod:`plume.midi`), by name or ``auto``.  The mic is still recorded to
+    ``human.wav``.  ``None`` never touches the MIDI library.  ``midi_clock``: let
+    that port's MIDI clock set the tempo and the bar line; otherwise it is ignored.
     """
     if _wants_lead(role, lead_in, session):
         return lead(style=style, seed=seed, params=params, role=role,
@@ -1729,9 +1966,17 @@ def jam(*, style: str, seed: int, params, device: str | None = None,
                     tightness=tightness, socket_path=socket_path,
                     form_params=form_params, from_bar=from_bar,
                     max_minutes=max_minutes,
-                    input_mode=input_mode, count_in=count_in)
+                    input_mode=input_mode, count_in=count_in,
+                    input_device=input_device, input_channel=input_channel,
+                    direct=direct,
+                    **({} if midi is None else {"midi": midi,
+                                                "midi_clock": midi_clock}))
     sd = _import_sounddevice()
-    dev = _resolve_device(sd, device)
+    route = resolve_input(sd, device, input_device=input_device,
+                          input_channel=input_channel, direct=direct)
+    check_audio_consent(device)
+    dev = route.device
+    midi_port = _resolve_midi_port(midi)
     max_minutes = resolve_max_minutes(max_minutes)
 
     # Siblings are imported lazily so this module always imports headless.
@@ -1778,7 +2023,11 @@ def jam(*, style: str, seed: int, params, device: str | None = None,
         # may never disagree with the rendered audio (live_status_state).
         "audible_until": 0,
     }
-    masker = SelfMasker()
+    masker = SelfMasker(enabled=route.source != "direct")
+    midi_in = None
+    if midi_port is not None:
+        midi_in, extractor, masker = _midi_listening(midi_port, timeline, recorder,
+                                                     follow_clock=midi_clock)
     # v1.8 (FIX 3) — the live machine-bus calibration (bus_calibration_step):
     # "db" is the smoothed applied gain (None until a human reference
     # exists), "base" the (solved_db, ref_db) pair of the last full solve,
@@ -1820,19 +2069,21 @@ def jam(*, style: str, seed: int, params, device: str | None = None,
             kind="jam", style=style, role="follow", seed=seed,
             socket_path=(cues.path if cues else None),
             max_minutes=max_minutes, record_dir=record_dir, device=device,
-            params=params, started_at=time.time()))
+            params=params, started_at=time.time(), input_route=route,
+            midi_port=midi_port))
     # Named stop_deadline, not deadline: planner_loop already has a local
     # `deadline` (the bar-revision cutoff) and the two must never be confused.
     stop_deadline = session_deadline(started_mono, max_minutes)
 
     def callback(indata, outdata, frames, time_info, status):  # noqa: ARG001
-        # Ring copies only: no allocation, no locks, no Python object churn.
-        in_ring.write(indata[:, 0])
+        # Ring copies only: no locks, no waiting, nothing outside the rings.  The
+        # slices and the sum below do allocate a little; it is bounded and small.
+        in_ring.write(indata[:, route.guitar])
         timeline.read_into(outdata)
         machine_ring.write(0.5 * (outdata[:, 0] + outdata[:, 1]))
         if monitor:
-            outdata[:, 0] += indata[:, 0]
-            outdata[:, 1] += indata[:, 0]
+            outdata[:, 0] += indata[:, route.guitar]
+            outdata[:, 1] += indata[:, route.guitar]
 
     hop_rms = HopRms()
 
@@ -1980,7 +2231,10 @@ def jam(*, style: str, seed: int, params, device: str | None = None,
         last_rendered_bar = -1
         last_unlocked_plan = -1e9
         human_ref_db = None         # EMA of non-silent human bar RMS (v1.2)
-        while not stop.is_set():
+        # ``ending`` is checked here and not only on the locked path below: a
+        # take that never locks must still reach the flush while the stream is
+        # open, or the tail goes to a closed stream after a full join timeout.
+        while not stop.is_set() and not ending.is_set():
             with state_lock:
                 beat_state = shared["beat"]
                 harm_state = shared["harmony"]
@@ -2120,12 +2374,15 @@ def jam(*, style: str, seed: int, params, device: str | None = None,
                               apply_calibration(tail, cal["lin"], cal["lin"]))
 
     stream = sd.Stream(
-        samplerate=SR, blocksize=BLOCK, device=dev, channels=(1, 2),
+        samplerate=SR, blocksize=BLOCK, device=dev, channels=(route.channels, 2),
         dtype="float32", latency="low", callback=callback,
     )
     # v1.6: the mask has to line up with when the sound came BACK, not when it
     # was handed to PortAudio.  Only the open stream knows the round trip.
     masker.set_latency_hops(stream_latency_hops(stream))
+    if midi_in is not None:
+        midi_in.offset_s = _stream_input_latency_s(stream)
+        midi_in.start()
     # v2.5: resolve the placement compensation now that the stream can report
     # its latency (the planner has not started; it sees only the final value).
     from .calibrate import (  # noqa: PLC0415 — lazy, like the other siblings
@@ -2220,6 +2477,8 @@ def jam(*, style: str, seed: int, params, device: str | None = None,
             planner.join(timeout=PLANNER_JOIN_S)
         if analysis.is_alive():
             analysis.join(timeout=ANALYSIS_JOIN_S)
+        if midi_in is not None:
+            midi_in.close()
         if cues is not None:
             cues.close()
         status_line.close()
@@ -2343,6 +2602,12 @@ class CueServer:
         self.stopped = threading.Event()
         #: extra fields a transport wants ``{"op": "status"}`` to report
         self.info: dict = {}
+        #: a transport may answer some cues itself, at once, rather than at the
+        #: next bar: ``text -> reply dict``, or None to queue it as usual.  The
+        #: looper needs this because a take must start when it is asked for, and
+        #: a tap-start session has no bars to drain the queue on until it has a
+        #: tempo, which the take itself may be about to set.
+        self.intercept = None
 
     # -- lifecycle ------------------------------------------------------
 
@@ -2452,6 +2717,10 @@ class CueServer:
         text = req.get("text")
         if not isinstance(text, str) or not text.strip():
             return {"ok": False, "error": "cue needs a non-empty 'text'"}
+        if self.intercept is not None:
+            reply = self.intercept(text)
+            if reply is not None:
+                return {**reply, "queued": 0, "session": self.kind, "bar": self.bar}
         at = req.get("at", "next-phrase")
         ttl = req.get("ttl_bars", 16)
         try:
@@ -2926,7 +3195,8 @@ def stop_session(rec: LiveSession, *, timeout: float = DEFAULT_STOP_TIMEOUT,
                 unregister_session(rec.pid)
                 return {**info, "stopped": True, "how": "socket", "tried": tried,
                         "detail": "asked over its own socket; it finished the "
-                                  "bar, flushed the tail and wrote its records"}
+                                  "bar and flushed the tail"
+                                  + (" and wrote its records" if rec.record_dir else "")}
         except RealtimeError as e:
             tried.append(f"socket-failed: {e}")
 
@@ -2946,7 +3216,13 @@ def stop_session(rec: LiveSession, *, timeout: float = DEFAULT_STOP_TIMEOUT,
     # SIGTERM in the middle of a working ending and throws the recording
     # away, which is exactly what a cross-process test caught it doing.
     # SIGTERM, the genuinely destructive rung, gets a brief grace of its own.
+    # A session with no ending to protect only gets that grace, since its sound
+    # keeps going for as long as this waits.
     grace = min(5.0, max(0.5, float(timeout)))
+    finishing = rec.kind not in _NOTHING_TO_FINISH
+    if not finishing:
+        deadline = time.monotonic() + grace
+    waited = timeout if finishing else grace
     for name in _STOP_SIGNALS:
         sig = getattr(_signal, name, None)
         if sig is None:                       # pragma: no cover - non-POSIX
@@ -2968,11 +3244,14 @@ def stop_session(rec: LiveSession, *, timeout: float = DEFAULT_STOP_TIMEOUT,
             return {**info, "stopped": True, "how": f"signal:{name}",
                     "tried": tried,
                     "detail": (f"sent {name} (the same graceful ending as "
-                               f"Ctrl-C): it finished the bar and wrote its "
-                               f"records" if name == "SIGINT" else
+                               f"Ctrl-C)" + (": it finished the bar and wrote its "
+                                             "records" if rec.record_dir else "")
+                               if name == "SIGINT" else
                                f"sent {name} after the graceful ending did not "
-                               f"finish in {timeout:g}s — the tail and the "
-                               f"records for this take are probably lost")}
+                               f"finish in {waited:g}s — "
+                               + ("the tail and the records for this take are "
+                                  "probably lost" if rec.record_dir else
+                                  "this session keeps no records, so none are lost"))}
 
     if force:
         sig = getattr(_signal, "SIGKILL", None)
@@ -2992,12 +3271,17 @@ def stop_session(rec: LiveSession, *, timeout: float = DEFAULT_STOP_TIMEOUT,
                     unregister_session(rec.pid)
                     return {**info, "stopped": True, "how": "signal:SIGKILL",
                             "tried": tried, "forced": True,
-                            "detail": (f"forced with SIGKILL after the graceful "
-                                       f"ending did not finish. Since v1.3 the "
-                                       f"take is written as it happens, so the "
-                                       f"recording holds everything up to the "
-                                       f"last flush — but the tail did not play "
-                                       f"and ending.json was not written.")}
+                            "detail": ((f"forced with SIGKILL after the graceful "
+                                        f"ending did not finish. Since v1.3 the "
+                                        f"take is written as it happens, so the "
+                                        f"recording holds everything up to the "
+                                        f"last flush — but the tail did not play "
+                                        f"and ending.json was not written.")
+                                       if rec.record_dir else
+                                       "forced with SIGKILL after the graceful "
+                                       "ending did not finish, so the tail did "
+                                       "not play. This session keeps no records, "
+                                       "so none are lost.")}
 
     return {**info, "stopped": False, "how": "failed", "tried": tried,
             "forced": bool(force),
@@ -3008,9 +3292,34 @@ def stop_session(rec: LiveSession, *, timeout: float = DEFAULT_STOP_TIMEOUT,
                           f"I/O); only a reboot or the device coming back will "
                           f"free it." if force else
                           f"'plume stop --pid {rec.pid} --force' escalates to "
-                          f"SIGKILL. Since v1.3 the take is streamed to disk as "
-                          f"it happens, so forcing costs the tail, not the "
-                          f"recording."))}
+                          f"SIGKILL."
+                          + (" Since v1.3 the take is streamed to disk as "
+                             "it happens, so forcing costs the tail, not the "
+                             "recording." if rec.record_dir else "")))}
+
+
+@contextlib.contextmanager
+def sigint_stops_this():
+    """Let SIGINT interrupt a blocking wait on sound, in a process that inherited it ignored.
+
+    A script's background job inherits ``SIG_IGN`` and CPython keeps it, so ``plume
+    stop``'s SIGINT would do nothing while the sound played on.  This is for verbs with
+    nothing to finish or write: :class:`GracefulSignals` is the live sessions' version.
+    Restores what it found, and does nothing off the main thread.
+    """
+    import signal as _signal  # noqa: PLC0415
+
+    ignored = _signal.getsignal(_signal.SIGINT) == _signal.SIG_IGN
+    try:
+        if ignored:
+            _signal.signal(_signal.SIGINT, _signal.default_int_handler)
+    except (ValueError, OSError):            # not the main thread
+        ignored = False
+    try:
+        yield
+    finally:
+        if ignored:
+            _signal.signal(_signal.SIGINT, _signal.SIG_IGN)
 
 
 class GracefulSignals:
@@ -3156,7 +3465,8 @@ class MachineClock:
     plays), which is exactly the coordinate ``TimelineBuffer.write_at`` wants.
     """
 
-    def __init__(self, bpm: float, *, t0: float = 0.0, beats_per_bar: int = 4):
+    def __init__(self, bpm: float, *, t0: float = 0.0, beats_per_bar: int = 4,
+                 first_bar: int = 0):
         bpm = float(bpm)
         if not math.isfinite(bpm) or bpm <= 0.0:
             raise ValueError(f"MachineClock needs bpm > 0, got {bpm}")
@@ -3165,7 +3475,7 @@ class MachineClock:
         self.bpm = bpm
         self.beats_per_bar = int(beats_per_bar)
         self._t = float(t0)
-        self._bar = 0
+        self._bar = int(first_bar)
 
     @property
     def bar(self) -> int:
@@ -3392,7 +3702,10 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
          from_bar: int = 0, socket_path: str | None = None,
          status: bool = True, max_minutes: float | None = None,
          input_mode: str | None = None, count_in: bool = False,
-         tap_start: bool = False, wind_down_s: float | None = None) -> None:
+         tap_start: bool = False, wind_down_s: float | None = None,
+         input_device: str | None = None, input_channel: int | None = None,
+         voice_channel: int | None = None, direct: bool = False,
+         midi: str | None = None, midi_clock: bool = False) -> None:
     """The machine starts; you join (SPEC-V2 section 5).
 
     ``tap_start``: nothing plays until four knocks set the tempo, the drums then
@@ -3428,7 +3741,15 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
     registers itself so ``plume sessions`` can name it from another terminal.
     """
     sd = _import_sounddevice()
-    dev = _resolve_device(sd, device)
+    route = resolve_input(sd, device, input_device=input_device,
+                          input_channel=input_channel, voice_channel=voice_channel,
+                          direct=direct)
+    check_audio_consent(device)
+    dev = route.device
+    midi_port = _resolve_midi_port(midi)
+    # With --midi the band listens to the notes, whatever --direct says about the
+    # audio input, so a level from that input decides nothing here.
+    is_direct = route.source == "direct" and midi_port is None
     max_minutes = resolve_max_minutes(max_minutes)
 
     from .duet import DuetEngine  # noqa: PLC0415
@@ -3439,6 +3760,8 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
                        MindParams, flatten_sections)
     from .roles import (RoleNegotiator, RoleParams,  # noqa: PLC0415
                         effective_bpm, onset_phase_offset_ms)
+
+    from .looper import DECLICK_SAMPLES, Looper  # noqa: PLC0415
 
     sess = _resolve_lead_session(session, prompt, style, seed)
     params = params if params is not None else MindParams()
@@ -3454,7 +3777,8 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
     composed_key = getattr(sess, "key", None)
 
     rec_path = None if record_dir is None else Path(record_dir)
-    recorder = None if rec_path is None else SessionRecorder(rec_path)
+    recorder = (None if rec_path is None
+                else SessionRecorder(rec_path, voice=route.voice is not None))
 
     extractor = FeatureExtractor(sr=SR)
     tkw: dict = {}
@@ -3473,7 +3797,10 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
                                 outro, song_section)
         guitar_ear = GuitarEar()
         from .listen.features import CountInDetector  # noqa: PLC0415
-        entry = BandEntry(style, known_key=_named_key(prompt))
+        # The ear confirms the player about a bar after a level would, so a direct input
+        # waits one bar longer to give the player the same eight or so before the band.
+        entry = BandEntry(style, known_key=_named_key(prompt),
+                          **({"after_first_heard_bars": 6} if is_direct else {}))
         silence_ending = SilenceEnding()
         # Stricter on evenness and speed than a tracker's count-in: with no
         # quiet start required, laughing in the room read as a count at 181 bpm.
@@ -3506,6 +3833,7 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
 
     in_ring = RingBuffer(SR * 8)
     machine_ring = RingBuffer(SR * 8)
+    voice_ring = None if route.voice is None else RingBuffer(SR * 8)
     timeline = TimelineBuffer(SR * 30, channels=2)
 
     stop = threading.Event()
@@ -3513,12 +3841,22 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
     state_lock = threading.Lock()
     shared = {"beat": None, "harmony": None, "events": [], "onsets": [],
               "taps": None, "chroma": []}
-    masker = SelfMasker()
+    masker = SelfMasker(enabled=route.source != "direct")
+    midi_in = None
+    if midi_port is not None:
+        midi_in, extractor, masker = _midi_listening(midi_port, timeline, recorder,
+                                                     status=status,
+                                                     follow_clock=midi_clock)
     last_decision: dict = {}            # {"d": <most recent>} for the status line
     n_decisions = [0]
     plan_us: list[float] = []          # per-bar planning cost, microseconds
 
-    cues = CueServer(socket_path, kind="lead").start()
+    # Self-bleed is only ever warned about: see plume.looper.
+    looper = Looper(SR, bleed_probe=lambda: (masker.coupling_db
+                                             if masker.coupling_measured else None))
+    cues = CueServer(socket_path, kind="lead")
+    cues.intercept = looper.handle_cue
+    cues.start()
     # v2.2 — discoverable and stoppable.  Lead already owns a socket, so the
     # stop verb rides it; only the registry entry is new.
     started_mono = time.monotonic()
@@ -3535,16 +3873,20 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
             session_name=getattr(sess, "name", None), socket_path=cues.path,
             max_minutes=max_minutes, record_dir=record_dir, device=device,
             bpm=composed_bpm, params=params, role_params=role,
-            started_at=time.time()))
+            started_at=time.time(), input_route=route, midi_port=midi_port))
     stop_deadline = session_deadline(started_mono, max_minutes)
 
     def callback(indata, outdata, frames, time_info, status_flags):  # noqa: ARG001
-        in_ring.write(indata[:, 0])
+        in_ring.write(indata[:, route.guitar])
+        # Before machine_ring: the analysis thread reads what both of those hold, so
+        # this ring always has at least that much.
+        if voice_ring is not None:
+            voice_ring.write(indata[:, route.voice])
         timeline.read_into(outdata)
         machine_ring.write(0.5 * (outdata[:, 0] + outdata[:, 1]))
         if monitor:
-            outdata[:, 0] += indata[:, 0]
-            outdata[:, 1] += indata[:, 0]
+            outdata[:, 0] += indata[:, route.guitar]
+            outdata[:, 1] += indata[:, route.guitar]
 
     hop_rms = HopRms()
 
@@ -3566,13 +3908,29 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
                 continue
             x = in_ring.read(n)
             m = machine_ring.read(n)
+            v = None if voice_ring is None else voice_ring.read(n)
             if recorder is not None:
-                recorder.audio(x, m)
+                recorder.audio(x, m, v)
+            looper.feed(x)
             masked_frames, _flags, beat_state, harm_state = analysis_step(
                 extractor=extractor, hop_rms=hop_rms, masker=masker,
                 tracker=tracker, harmony=harmony,
                 human_block=x, machine_block=m)
-            if tap_detector is not None:
+            loop_tempo = looper.take_tempo() if tap_detector is not None else None
+            if loop_tempo is not None:
+                # The loop set the tempo.  As after a count: never listen for one
+                # again, and the key starts from what comes next.
+                tap_detector = None
+                harmony = HarmonyTracker()
+                harm_state = None
+                with state_lock:
+                    shared["events"].clear()
+                    shared["onsets"].clear()
+                    shared["loop_tempo"] = loop_tempo
+            elif tap_detector is not None and looper.capturing:
+                # A phrase being looped is not a count, however even it sounds.
+                masked_frames = []
+            elif tap_detector is not None:
                 soft_knocks.extend(
                     f.t_s for f in masked_frames
                     if getattr(f, "attack", 0.0) >= TAP_START_SOFT_KNOCK
@@ -3607,15 +3965,24 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
         """Plan, render and place exactly one machine bar.  Returns the next
         bar's bpm.  Split out of the loop so its cost can be measured (and so
         the loop body stays readable)."""
+        held_bpm = looper.held_bpm()    # a loop is a fixed length of audio
+        if held_bpm is not None:
+            bpm = held_bpm
         bar, t_bar, _ = clock.commit(bpm)
         bar_len = clock.bar_len_s(bpm)
+        looper.note_bar(bar, int(round(t_bar * SR)) - comp_samples[0], bpm)
         # This bar is planned a bar ahead of the playhead, so the bar just
-        # before it has barely started and holds almost no frames.  Tap-start
-        # decides who is playing from this reading, so it uses the last bar that
-        # has actually finished.  Plain lead keeps its window (see PR notes).
-        w_end = t_bar - bar_len if tap_start else t_bar
-        w_start = w_end - bar_len
-        first_heard_bar = 2 if tap_start else 1   # tap-start: not the knocks
+        # before it has barely started and holds almost no frames.  Read the
+        # last bar that has actually finished, at the tempo it was played: a
+        # tempo change must not slide the window off that bar's own grid.  The
+        # bar index handed on stays ``bar - 1``: Mind reads ``human.bar + 1`` as
+        # the bar being planned, whichever bar was measured.
+        starts = state["bar_starts"]
+        w_end = starts[-1] if starts else t_bar - bar_len
+        w_start = starts[-2] if len(starts) > 1 else w_end - bar_len
+        state["bar_starts"] = [*starts[-1:], t_bar]
+        # tap-start: not the knocks
+        first_heard_bar = int(from_bar) + (2 if tap_start else 1)
         with state_lock:
             beat_state = shared["beat"]
             harm_state = shared["harmony"]
@@ -3639,7 +4006,7 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
                 state["ref_db"] = (human.rms_db if state["ref_db"] is None
                                    else 0.5 * human.rms_db + 0.5 * state["ref_db"])
         offset_ms = None
-        unit_s = bar_len / 16.0
+        unit_s = (w_end - w_start) / 16.0
         if human is not None and not human.silent:
             # v2.1: measured against the grid the machine is PLAYING (its own
             # swing), and the subdivision is handed to the negotiator so its
@@ -3663,13 +4030,22 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
             c = state["pending"].pop(0)
             cue = Cue(text=c["text"], at=c.get("at", "next-phrase"),
                       ttl_bars=int(c.get("ttl_bars", 16)))
-        form = mind.plan_form(role_state, mbeat, hh, human, sess, cue)
+        # The form listens for the PLAYER slowing down, so it gets the tracker's
+        # tempo, as in sim.  The machine's grid would read a ritard cue's own
+        # slowing as the player ending the tune.  Only the bar number is the machine's.
+        # No tracker state means no frames yet, so no human bar to read at all.
+        form_beat = (mbeat if beat_state is None
+                     else dataclasses.replace(beat_state, bar=bar))
+        form = mind.plan_form(role_state, form_beat, hh, human, sess, cue)
         # v2.1: the renderer's half of a cue.  ``Mind.plan_form`` owns the FORM
         # consequences; tempo and texture are the renderer's and were reported
         # as "applied" while doing nothing at all (SPEC-V2 section 3, C2).
         # Live gets the tempo half — it is the machine's own clock, which this
         # loop already owns — and reports the rest honestly.
         cue_notes = lead_cues.apply(getattr(form, "applied_cue", None))
+        if held_bpm is not None and any("(tempo:" in n for n in cue_notes):
+            cue_notes.append(f"tempo cue NOT applied yet: a loop is holding "
+                             f"{held_bpm:.1f} bpm until the last one is dropped")
         section = _section_at(flat, form.section_idx)
         sec_spec = None
         if section is not None:
@@ -3679,25 +4055,45 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
             except (AttributeError, IndexError, TypeError):
                 sec_spec = None
         chords = list(getattr(sec_spec, "chords", None) or [])
-        chord = chords[bar % len(chords)] if chords else None
+        # The chord cursor is sim's: from the top of a section, restarted when
+        # the form enters one (a re-entered one-section map included), and
+        # still running through an extend.
+        if (form.section_idx != state["sec_idx"]
+                or str(form.action) in ("advance", "jump")):
+            state["sec_bar"] = 0
+        else:
+            state["sec_bar"] += 1
+        state["sec_idx"] = form.section_idx
+        chord = chords[state["sec_bar"] % len(chords)] if chords else None
         mh = machine_harmony_state(t_bar, composed_key, chord,
                                    transpose=role_state.transpose_semitones)
         plan = lead_bar_plan(bar, sec_spec, duet.roles, role_state, form,
                              human=human, density_scale=lead_cues.density_scale)
         entered = None
+        loop_db = 0.0
         if entry is not None:
             # Over drums alone the mic can hear steady pitch, which is her.  Once
-            # the band is in, all that is left is whether the mic is silent.
-            if entry.band_is_in:
+            # the band is in, all that is left is whether the mic is silent.  A
+            # direct input holds nothing but the player, so its level answers the whole way
+            # through, and the ear can go on learning the player's notes under the band.
+            if is_direct:
+                playing = (bar >= first_heard_bar and human is not None
+                           and not human.silent)
+                if bar >= first_heard_bar:
+                    guitar_ear.bar(bar_chroma)
+            elif entry.band_is_in:
                 playing = human is not None and not human.silent
             else:
                 playing = bar >= first_heard_bar and guitar_ear.bar(bar_chroma)
             entered = entry.update(bar, harm_state, playing)
+            # Over a room mic with the band in, "not silent" mostly means the band.
+            playing_trusted = is_direct or midi_port is not None or not entry.band_is_in
             if entry.band_is_in:
                 duet.heard_notes = guitar_ear.notes()
             # The ear only runs before the band; after that its last reading is stale.
             fade_db, fade_done = silence_ending.update(
-                t_bar, playing or (not entry.band_is_in and guitar_ear.last_bar_tonal))
+                t_bar, playing or (not is_direct and not entry.band_is_in
+                                   and guitar_ear.last_bar_tonal))
             if entered.key is not None:
                 mh = machine_harmony_state(t_bar, entered.key, entered.chord)
             if entered.stage == "drums":
@@ -3716,6 +4112,7 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
                     shared["end_reason"] = END_SONG
             if not crash:
                 resting = (*resting, "crash")
+            loop_db = fade_db
             plan = dataclasses.replace(
                 plan,
                 roles={r: 1.0 for r in duet.roles
@@ -3726,6 +4123,13 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
                 reason=f"{entered.reason}; {plan.reason}")
         audio = duet.render_bar(plan, mbeat, mh)
         timeline.write_at(int(round(t_bar * SR)) - comp_samples[0], audio)
+        loop_events = looper.pop_events()
+        if looper.active:
+            timeline.write_at(
+                int(round(t_bar * SR)) - comp_samples[0],
+                looper.mix_bar(bar, (int(round((t_bar + bar_len) * SR))
+                                     - int(round(t_bar * SR))), gain_db=loop_db,
+                                under=audio))
         cues.bar = bar
         doc = {
             "bar": bar, "t_s": round(t_bar, 4), "state": plan.state,
@@ -3771,6 +4175,12 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
                                 else round(offset_ms, 2)),
             "cue_effects": cue_notes or None,
         }
+        if looper.active or loop_events:
+            doc["loop"] = {**looper.status(), "events": loop_events,
+                           "held_bpm": held_bpm}
+            cues.info["loops"] = doc["loop"]
+        else:
+            cues.info.pop("loops", None)
         if entered is not None:
             # not the composed harmony, which nobody hears yet
             doc["key"] = entered.key
@@ -3779,6 +4189,7 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
             doc["entry_reason"] = entered.reason
             doc["section"] = section
             doc["playing"] = playing
+            doc["playing_trusted"] = playing_trusted
             doc["fade_db"] = round(fade_db, 2)
             if fade_done:
                 state["ended"] = True
@@ -3802,15 +4213,22 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
             while not stop.is_set() and not ending.is_set():
                 with state_lock:
                     taps = shared["taps"]
-                if taps:
+                    loop_tempo = shared.get("loop_tempo")
+                if taps or loop_tempo:
                     break
                 stop.wait(0.01)
             else:
                 return
-            composed_bpm, _ = tap_tempo(taps)
-            # Her first knock is beat one, so the drums land on knock nine: the
-            # third bar line of her count, or the next one if that has gone.
-            next_beat = taps[0] + 8.0 * 60.0 / composed_bpm
+            if loop_tempo:
+                # The loop set it: bar 0 is the top of the loop, on the grid its
+                # own length makes.
+                composed_bpm = loop_tempo.bpm
+                next_beat = loop_tempo.next_line_s
+            else:
+                composed_bpm, _ = tap_tempo(taps)
+                # The first knock is beat one, so the drums land on knock nine:
+                # the third bar line of the count, or the next one if that has gone.
+                next_beat = taps[0] + 8.0 * 60.0 / composed_bpm
             negotiator = RoleNegotiator(role, composed_bpm=composed_bpm,
                                         composed_key=composed_key)
             period = 60.0 / composed_bpm
@@ -3818,11 +4236,15 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
                                 timeline.playhead / SR, comp_samples[0] / SR)
             last_decision["tapped"] = composed_bpm
         song_start[0] = t0
-        clock = MachineClock(composed_bpm, t0=t0)
-        state = {"ref_db": None, "pending": [], "ended": False}
+        # --from-bar: N bars into the map and into the bar count, but the first
+        # bar still sounds now.  The clock is stream time, not map position.
+        clock = MachineClock(composed_bpm, t0=t0, first_bar=int(from_bar))
+        state = {"ref_db": None, "pending": [], "ended": False,
+                 "bar_starts": [], "sec_idx": None, "sec_bar": 0}
+        if from_bar > 0:
+            state["sec_idx"], pos = mind.seek_form(sess, int(from_bar))
+            state["sec_bar"] = pos - 1  # the first plan steps onto ``pos``
         bpm = composed_bpm
-        for _ in range(max(0, int(from_bar))):
-            clock.commit(bpm)           # --from-bar: start N bars into the map
         while not stop.is_set() and not ending.is_set():
             # Stay one bar ahead of the playhead: render bar N while N-1 plays.
             if clock.t_s - timeline.playhead / SR > clock.bar_len_s(bpm):
@@ -3836,14 +4258,20 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
         tail = duet.flush_tail()
         if tail.shape[0]:
             timeline.write_at(timeline.end, tail)
+        if looper.active:
+            timeline.write_at(int(round(clock.t_s * SR)) - comp_samples[0],
+                              looper.mix_bar(clock.bar, DECLICK_SAMPLES, stop=True))
 
     stream = sd.Stream(
-        samplerate=SR, blocksize=BLOCK, device=dev, channels=(1, 2),
+        samplerate=SR, blocksize=BLOCK, device=dev, channels=(route.channels, 2),
         dtype="float32", latency="low", callback=callback,
     )
     # v1.6 — see jam(): masking is aligned to the bus->speaker->mic round trip,
     # and it matters more here because the machine plays continuously.
     masker.set_latency_hops(stream_latency_hops(stream))
+    if midi_in is not None:
+        midi_in.offset_s = _stream_input_latency_s(stream)
+        midi_in.start()
     if tap_start:
         # She plays to what she hears from her own tap, so bars must sound on
         # the tapped grid: place them early by the measured round trip (jam's
@@ -3857,6 +4285,10 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
                     if isinstance(lat, (tuple, list)) and len(lat) == 2 else None)
         comp_samples[0] = placement_comp_samples(
             None, load_roundtrip_ms(in_name, out_name, SR), reported, SR)
+    # Where a bar comes back through the mic, which is what a take is cut against.
+    looper.roundtrip_samples = stream_latency_hops(stream) * HOP
+    if tap_start:
+        looper.roundtrip_samples = comp_samples[0]
     analysis = threading.Thread(target=analysis_loop, name="plume-analysis",
                                 daemon=True)
     planner = threading.Thread(target=planner_loop, name="plume-planner",
@@ -3885,6 +4317,9 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
                     if reason is not None:
                         why = reason
                         break
+                    for note in looper.pop_notes():
+                        status_line.update(note)
+                        status_line.close()     # keep it, on a line of its own
                     d = last_decision.get("d")
                     if d is not None:
                         status_line.update(
@@ -3894,7 +4329,9 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
                             f"{str(d['key'] or '?'):<10}"
                             + (f" {d['entry']}" if "entry" in d else ""))
                     elif tap_start:
-                        status_line.update("[waiting] knock 4 even beats")
+                        status_line.update(
+                            "[waiting] press a key 4 even beats" if midi_in is not None
+                            else "[waiting] knock 4 even beats")
                     time.sleep(0.25)
             except KeyboardInterrupt:
                 why = END_INTERRUPT
@@ -3919,6 +4356,8 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
             planner.join(timeout=PLANNER_JOIN_S)
         if analysis.is_alive():
             analysis.join(timeout=ANALYSIS_JOIN_S)
+        if midi_in is not None:
+            midi_in.close()
         cues.close()
         status_line.close()
         if recorder is not None:

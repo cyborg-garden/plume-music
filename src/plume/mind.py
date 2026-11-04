@@ -1256,7 +1256,8 @@ class Mind:
 
         # --- first boundary: take up position, change nothing --------------
         if first or self._form_span <= 0:
-            self._form_enter(flat, self._form_idx)
+            if self._form_span <= 0:             # keeps a seek_form position
+                self._form_enter(flat, self._form_idx)
             cur = flat[self._form_idx]
             left = self._form_span - 1 - self._form_pos
             return FormPlan(
@@ -1317,6 +1318,27 @@ class Mind:
                         reason=reason)
 
     # ------------------------------------------------ form internals (v2)
+
+    def seek_form(self, session: "Session", bars: int) -> tuple[int, int]:
+        """Place the cursor ``bars`` bars into the composed route, for the first
+        :meth:`plan_form` to take up.  Past the end of the map it holds the last
+        bar, where the form's own rules decide what happens next.
+
+        Returns ``(section_idx, bar_in_section)``.
+        """
+        flat = flatten_sections(session)
+        if not flat:
+            return 0, 0
+        left = max(0, int(bars))
+        for sec in flat:
+            if left < sec.bars:
+                break
+            left -= sec.bars
+        else:
+            left = sec.bars - 1
+        self._form_enter(flat, sec.idx)
+        self._form_pos = left
+        return sec.idx, left
 
     def _form_enter(self, flat: tuple[_Sec, ...], idx: int) -> None:
         """Place the cursor at the first bar of ``flat[idx]``."""

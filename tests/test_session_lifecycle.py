@@ -902,6 +902,7 @@ class TestSessionsCli:
 
 # ======================================= 5. the whole thing, on real audio
 
+@pytest.mark.usefixtures("fake_device_consent")
 class TestLiveLifecycleOnRealMaterial:
     """``realtime.lead`` for real — real threads, real socket, real planner,
     real DuetEngine — over plume's own v0 renders.  Only the device is fake.
@@ -1133,6 +1134,7 @@ def _ndjson(path):
     return rows
 
 
+@pytest.mark.usefixtures("fake_device_consent")
 class TestRecordsStreamWhileThePlayingHappens:
     """P0-A.  ``--record takes/live1`` was EMPTY for a six-minute session and
     everything was written on a graceful exit — so there was nothing to watch
@@ -1305,6 +1307,7 @@ class TestRecordsStreamWhileThePlayingHappens:
         assert fake.stream.blocks > 0
 
 
+@pytest.mark.usefixtures("fake_device_consent")
 class TestStopActuallyStops:
     """P0-B.  `plume stop` reported, honestly: *"pid 36655 is still running
     after socket, SIGINT, SIGTERM — it is wedged"*, and `kill -9` was the only
@@ -1497,6 +1500,7 @@ class TestStopActuallyStops:
         assert armed_at == [realtime.END_STOPPED], armed_at
 
 
+@pytest.mark.usefixtures("fake_device_consent")
 class TestPipedStatusIsReadable:
     """P2-G, on the live transport rather than the class."""
 
@@ -1598,6 +1602,7 @@ with patched_module("sounddevice", fake):
 """
 
 
+@pytest.mark.usefixtures("fake_device_consent")
 def test_a_take_survives_a_real_kill_9(tmp_path, isolated_registry):
     """The postmortem's actual loss, reproduced with a real SIGKILL.
 
@@ -1710,6 +1715,7 @@ def spy_masker(monkeypatch):
     return _SpyMasker
 
 
+@pytest.mark.usefixtures("fake_device_consent")
 class TestTheTransportActuallyMasksItself:
     """The mic hears the speakers; the transport must act on that."""
 
@@ -1807,6 +1813,7 @@ def _planner_source() -> str:
         "\n".join(lines[planner.lineno - 1: planner.end_lineno]))
 
 
+@pytest.mark.usefixtures("fake_device_consent")
 class TestABarIsRenderedOnce:
     """P2: a revised bar must not be a second bar.
 
@@ -1824,11 +1831,21 @@ class TestABarIsRenderedOnce:
         from plume import duet as duet_mod
 
         seen: list[int] = []
+        held: list[bool] = []
         real = duet_mod.DuetEngine.render_bar
 
-        def spy(self, plan, beat, harm):
-            seen.append(int(plan.bar))
-            return real(self, plan, beat, harm)
+        def spy(self, plan, beat, harm, *, continuation=False):
+            # A bar can lose the lock after it was placed.  The bars the mind then
+            # holds carry its index on purpose and sound after it, so only a render
+            # that is not a continuation can be the same bar a second time.  The
+            # boundary path has to be locked and the held path must not be, or a
+            # render could dodge this count by calling itself a continuation.
+            if continuation:
+                held.append(bool(beat.locked))
+            else:
+                assert beat.locked, "a boundary bar was rendered without a lock"
+                seen.append(int(plan.bar))
+            return real(self, plan, beat, harm, continuation=continuation)
 
         monkeypatch.setattr(duet_mod.DuetEngine, "render_bar", spy)
         sock = short_sock("once")
@@ -1841,6 +1858,7 @@ class TestABarIsRenderedOnce:
         assert len(seen) == len(set(seen)), (
             f"bars rendered more than once: "
             f"{sorted(b for b in set(seen) if seen.count(b) > 1)}")
+        assert not any(held), "a locked bar was rendered as a held continuation"
 
     def test_a_bar_is_not_re_rendered_after_the_tracker_re_locks(self):
         """The second door into the same defect, stated deterministically.

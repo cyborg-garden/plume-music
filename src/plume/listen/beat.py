@@ -596,6 +596,7 @@ class BeatTracker:
         # subdivision alias in the audio cannot overthrow the human's count-in.
         self._tap_anchored = False
         self._tap_bpm: float | None = None   # the tapped tempo itself
+        self._clock_anchored = False         # that anchor came from a MIDI clock
 
     # ---------------------------------------------------------------- events
 
@@ -685,12 +686,72 @@ class BeatTracker:
             {"idx": 0, "hit": True, "accent": 1.0, "chroma_change": 0.0})
         self._tap_anchored = True
         self._tap_bpm = self._bpm
+        self._clock_anchored = False
         # v2.6: a fresh count-in IS the human saying what the tempo is now.
         # It supersedes whatever grid a previous lock lost.
         self._relock_bpm = None
         self._relock_t = None
         self._relock_resume_t = None
         self._t = max(self._t, t_s)
+
+    def clock_beat(self, t_s: float, bpm: float, beat_in_bar: int) -> None:
+        """A MIDI clock says this moment is this beat, at this tempo.
+
+        Stated, not inferred, so it is held the way a count-in is: confidence and
+        salience latched, and the tempo search vetoed.  Unlike :meth:`tap` it never
+        restarts the bar count, and it is called every beat.  ``jam`` refuses to
+        replay a bar it has already rendered, so a clock that sent the count back
+        to 0 would silence the band until the count caught up again.
+        """
+        t_s, bpm = float(t_s), float(bpm)
+        if not 30.0 <= bpm <= 300.0:
+            return
+        self._set_bpm(bpm)
+        self._salience = 1.0
+        self._conf = 1.0
+        self._conf_seeded = True
+        self._pending_bpm = None
+        self._pending_n = 0
+        self._oct_pending_bpm = None
+        self._oct_pending_n = 0
+        self._tap_anchored = True
+        self._tap_bpm = bpm
+        self._clock_anchored = True
+        self._relock_bpm = None
+        self._relock_t = None
+        self._relock_resume_t = None
+        # This beat may or may not have been emitted yet, and skipping it would
+        # lose a beat from the bar: keep whichever grid point is already due.
+        due = (math.isfinite(self._next_beat)
+               and abs(self._next_beat - t_s) < 0.5 * self._interval)
+        ahead = 0 if due else 1
+        self._next_beat = t_s + ahead * self._interval
+        if not due:
+            self._last_beat_t = t_s
+        beat_in_bar = (int(beat_in_bar) + ahead - 1) % 4     # the last beat emitted
+        self._bib = beat_in_bar
+        self._anchor = (self._beat_count - beat_in_bar) % 4
+        self._cand, self._cand_n = self._anchor, DOWNBEAT_COMMIT_BEATS
+        self._override, self._override_n = -1, 0
+        if not self._locked:
+            self._locked = True
+            self._lock_t = t_s
+            self._above = LOCK_BEATS
+            self._below = 0
+            if self._bar < 0:
+                self._bar = 0
+
+    def clock_released(self) -> None:
+        """The clock that was stating the tempo has ended.
+
+        Nothing is stating it now, so the tempo search gets its veto back and the
+        tempo goes back to being read from the player.  A count-in made since the
+        clock stays: that was the player, and they meant it.
+        """
+        if self._clock_anchored:
+            self._clock_anchored = False
+            self._tap_anchored = False
+            self._tap_bpm = None
 
     def _decay_salience(self) -> None:
         """Evidence decay when an evaluation finds nothing.  No-op under a

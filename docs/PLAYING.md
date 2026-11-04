@@ -23,8 +23,15 @@ to catch the count. Mouth clicks are usually too quiet, and if your first few kn
 are faint it still finds them once the later ones confirm the tempo.
 
 The drums stay alone until you play. The bass and chords come in about eight bars after
-you start, and the melody four bars after that. If you play
-nothing for 30 seconds, the take fades out and ends.
+you start, and the melody four bars after that. If you stop, the take fades out and ends
+by itself. On a direct input or MIDI it is over about 20 seconds after you stop, from about
+75 bpm up. Slower bars can't be read any sooner: about 26 seconds at 60 bpm, about 35 at 45.
+A room mic can't tell you from the band, so it keeps waiting for 30 seconds of silence at the
+mic, and a band coming out of speakers can keep it from ever hearing that: stop those takes
+yourself. Until you have played a bar, every input waits the 30 seconds,
+so you have time to get your hands back on the strings after the count. Play during the
+fade and the band comes straight back. A rest of more than about 10 seconds on a direct input
+dips the band, and it can take two or three bars to come back up.
 
 To stop from another terminal, run `plume stop` (`plume play` and `plume calibrate` too), or `plume sessions` to see what is
 running. A take also stops by itself after 60 minutes; `--max-minutes N` changes that.
@@ -253,8 +260,8 @@ band, and about a third of steady 4-note takes with loose timing were refused.
   loop and", the take ends, and "plume, stop that great loop" with no punctuation reads as a
   loop's name and does nothing. None of this was tried on real speech, only on the words the
   model might write.
-- On a `--tap-start` take the silence ending still applies: 30 seconds of you not playing
-  fades the take out, loops and all.
+- On a `--tap-start` take the silence ending still applies: stop playing and the take fades
+  out, loops and all, about 20 seconds later on a direct input or MIDI, after 30 on a room mic.
 
 Loops live in memory and end with the take. Only `--record` writes audio, into the same
 `human.wav` and `machine.wav` as always, and `.gitignore` keeps those out of git.
@@ -360,7 +367,7 @@ port that hasn't opened after a second counts the same way, so a stuck driver ca
 a take or stop you ending it. A driver that won't list its ports within 5 seconds gets the
 session refused before it starts. All of that was tested with a simulated driver, never a
 real one.
-Under `--tap-start`, 30 seconds of that ends the take the way any silence does. `--record`
+Under `--tap-start`, that ends the take about 20 seconds later, the way any silence does. `--record`
 adds `midi.ndjson`, every note with its time.
 
 Things to watch for:

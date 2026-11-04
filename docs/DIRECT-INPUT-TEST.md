@@ -50,7 +50,7 @@ plume lead --tap-start "lofi midwest emo in F major" \
 |---|---|
 | Mute the strings and chuck them 8 times, evenly | Drums land where the ninth would be. A knock on the body may not reach a pickup |
 | Play over the drums | Bass and chords join about 8 bars in, melody 4 bars after |
-| Keep playing a minute, then stop and mute the strings | About 30 seconds later the band fades out and the take ends |
+| Keep playing a minute, then stop and mute the strings | About 20 seconds later (from about 75 bpm up) the band has faded out and the take has ended |
 | On another try, in a new directory: stop, then come back in during the fade | The band comes straight back |
 
 If the count never catches, that is the first thing to report. The knock detector has only

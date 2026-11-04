@@ -186,6 +186,18 @@ def outro(seconds_in: float, wind_down_s: float | None, bar_s: float):
     return bars, gain, fading >= OUTRO_FADE_BARS
 
 
+#: How long after the player stops a direct or MIDI take should be over.
+END_AFTER_S = 20.0
+#: Roughly how long a fade should take, whatever the tempo.  In whole bars, so this
+#: is only ever as close as the bar lets it be.
+_FADE_TARGET_S = 6.0
+_FADE_MIN_BARS, _FADE_MAX_BARS = 2, 6
+#: What the reading itself costs before anything can react.  Bars are read two bars
+#: late and a player stops somewhere inside one, so a stop is noticed one to two bars
+#: after it happens; waiting whole bars adds up to one more, half of it taken as typical.
+_READ_LAG_BARS = 1.5
+
+
 class SilenceEnding:
     """Nobody playing: wait, then fade out and end (Juniper, 2026-11-02).
 
@@ -193,29 +205,55 @@ class SilenceEnding:
     brings the band straight back, so a long rest is not punished.  Bars are read
     two bars late, so the take stays open ``listen_bars`` past the fade: a return
     in the last bars of the fade is still heard.
+
+    ``end_after_s``: for an input that really can tell the player stopped (direct,
+    MIDI), size the wait and fade so the take ends about that long after they stop,
+    given ``bar_s`` on each update.  Reading and fading take at least six and a half
+    bars, so below about 75 bpm it ends later than asked.  Until they have played a
+    bar it keeps ``silence_s`` and ``fade_bars``: they have only just knocked, and
+    their hands are still on the way back to the strings.  A room mic leaves it unset
+    and keeps those numbers throughout, because it cannot hear a player stop over the
+    band.
     """
 
     def __init__(self, *, silence_s: float = 30.0, fade_bars: int = 4,
-                 floor_db: float = -36.0, listen_bars: int = 2):
+                 floor_db: float = -36.0, listen_bars: int = 2,
+                 end_after_s: float | None = None):
         self._silence_s = float(silence_s)
         self._fade_bars = int(fade_bars)
         self._floor_db = float(floor_db)
         self._listen_bars = int(listen_bars)
+        self._end_after_s = None if end_after_s is None else float(end_after_s)
         self._last_heard: float | None = None
+        self._played = False
         self._fade = 0
+        self._bars_of_fade = self._fade_bars
 
-    def update(self, t_bar: float, playing: bool) -> tuple[float, bool]:
+    def _timing(self, bar_s: float | None) -> tuple[float, int]:
+        """(seconds to wait, bars to fade over)."""
+        if self._end_after_s is None or bar_s is None or not self._played:
+            return self._silence_s, self._fade_bars
+        fade = max(_FADE_MIN_BARS, min(_FADE_MAX_BARS, round(_FADE_TARGET_S / bar_s)))
+        spent = (fade + self._listen_bars + _READ_LAG_BARS) * bar_s
+        return max(self._end_after_s - spent, bar_s), fade
+
+    def update(self, t_bar: float, playing: bool,
+               bar_s: float | None = None) -> tuple[float, bool]:
         """(gain offset in dB for this bar, whether the take should end)."""
+        self._played = self._played or bool(playing)
         if playing or self._last_heard is None:
             self._last_heard = float(t_bar)
             self._fade = 0
             if playing:
                 return 0.0, False
-        if t_bar - self._last_heard < self._silence_s:
-            return 0.0, False
+        if self._fade == 0:           # once it is fading, a tempo cue cannot reshape it
+            wait, self._bars_of_fade = self._timing(bar_s)
+            # 1e-6: a wait of one bar must not lose to rounding in the clock's sums.
+            if t_bar - self._last_heard < wait - 1e-6:
+                return 0.0, False
         self._fade += 1
-        gain = self._floor_db * min(self._fade, self._fade_bars) / self._fade_bars
-        return gain, self._fade >= self._fade_bars + self._listen_bars
+        gain = self._floor_db * min(self._fade, self._bars_of_fade) / self._bars_of_fade
+        return gain, self._fade >= self._bars_of_fade + self._listen_bars
 
 
 def count_start(taps, soft_hits, *, tol_frac: float = 0.15,

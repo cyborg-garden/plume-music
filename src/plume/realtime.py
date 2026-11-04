@@ -3917,15 +3917,17 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
     entry = None
     tap_detector = None
     if tap_start:
-        from .bandentry import (BandEntry, GuitarEar, SilenceEnding,  # noqa: PLC0415
-                                outro, song_section)
+        from .bandentry import (END_AFTER_S, BandEntry, GuitarEar,  # noqa: PLC0415
+                                SilenceEnding, outro, song_section)
         guitar_ear = GuitarEar()
         from .listen.features import CountInDetector  # noqa: PLC0415
         # The ear confirms the player about a bar after a level would, so a direct input
         # waits one bar longer to give the player the same eight or so before the band.
         entry = BandEntry(style, known_key=_named_key(prompt),
                           **({"after_first_heard_bars": 6} if is_direct else {}))
-        silence_ending = SilenceEnding()
+        # A room mic cannot hear her stop over the band, so it keeps the long wait.
+        silence_ending = (SilenceEnding(end_after_s=END_AFTER_S)
+                          if is_direct or midi_port is not None else SilenceEnding())
         # Stricter on evenness and speed than a tracker's count-in: with no
         # quiet start required, laughing in the room read as a count at 181 bpm.
         # Either four clear knocks or six soft ones: how hard she knocks varies by
@@ -4229,7 +4231,7 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
             # The ear only runs before the band; after that its last reading is stale.
             fade_db, fade_done = silence_ending.update(
                 t_bar, playing or (not is_direct and not entry.band_is_in
-                                   and guitar_ear.last_bar_tonal))
+                                   and guitar_ear.last_bar_tonal), bar_len)
             if entered.key is not None:
                 mh = machine_harmony_state(t_bar, entered.key, entered.chord)
             if entered.stage == "drums":

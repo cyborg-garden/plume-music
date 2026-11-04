@@ -1316,11 +1316,23 @@ def test_an_input_the_band_cannot_reach_never_blames_the_mic(route):
     text = words(events, lines)
     assert "The mic" not in text and "this mic" not in text
     assert "no idea what you did" not in text
-    assert "Nothing from you for 30 seconds" in text
-    assert "I heard nothing from you for 30 seconds" in text
+    assert "I stopped hearing you, so I began to fade" in text
+    assert "I stopped hearing you, so I faded out" in text
+    # That wait depends on the tempo, so no number can be true of every take.
+    assert "30 seconds" not in text
     assert "I could still hear you" in text
     # Class C: being able to hear is not leave to judge.
     assert "drag" not in text
+
+
+@pytest.mark.parametrize("route", ["direct", "midi"])
+def test_an_input_that_never_heard_a_note_really_did_wait_thirty_seconds(route):
+    rows = song(20, heard_bar=None, band_bar=None, cues={b: {"fade_db": -6.0} for b in range(16, 20)})
+    ending = ending_doc(realtime.END_SILENCE)
+    text = words(record.translate(rows, ending, route=route))
+    assert "Nothing from you for 30 seconds" in text
+    assert "I heard nothing from you for 30 seconds" in text
+    assert "I stopped hearing you" not in text
 
 
 @pytest.mark.parametrize("route", ["room", "unknown"])

@@ -88,6 +88,8 @@ _END_SENTENCE = {
                 "You did not choose this.",
 }
 _END_SILENCE_ALONE = "I heard nothing from you for 30 seconds, so I faded out."
+#: Once a direct input or keys have heard the player, the wait depends on the tempo.
+_END_SILENCE_STOPPED = "I stopped hearing you, so I faded out."
 #: What a cue to the looper asked for.  Fixed words: a loop's name can be anything
 #: anyone typed, so the text itself is never echoed.
 _LOOP_ASKS = {"record": "to record a loop", "close": "to close a loop take",
@@ -556,6 +558,8 @@ def _ending_sentence(rows: list[dict], ending: dict | None, *, live: bool = Fals
     reason = ending.get("reason")
     if reason == END_FORM:
         return _cue_ending(rows, end_at)
+    if reason == END_SILENCE and _heard_them_stop(rows, route):
+        return _END_SILENCE_STOPPED
     if reason == END_SILENCE and (_hears_player(route) or (rows and _entry(rows[-1]) == "drums")):
         return _END_SILENCE_ALONE
     if reason == END_MAX_MINUTES:
@@ -614,6 +618,11 @@ def recorded_from(manifest) -> str:
 def _hears_player(route: str) -> bool:
     """The band's own sound does not reach these, so silence there really is the player."""
     return route in ("direct", "midi")
+
+
+def _heard_them_stop(rows: list[dict], route: str) -> bool:
+    """The short wait applies once such an input has heard one bar of playing."""
+    return _hears_player(route) and any(r.get("playing") is True for r in rows)
 
 
 def translate(rows: list[dict], ending: dict | None = None,
@@ -710,6 +719,8 @@ def translate(rows: list[dict], ending: dict | None = None,
             silent = _fade(row) < 0 and section != "outro"
             if silent and not fading:
                 add(row, "plan", "fade started",
+                    "I stopped hearing you, so I began to fade."
+                    if _heard_them_stop(rows, route) else
                     "Nothing from you for 30 seconds, so I began to fade."
                     if entry == "drums" or _hears_player(route) else
                     "The mic went silent for 30 seconds, so I began to fade.")

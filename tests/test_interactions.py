@@ -492,7 +492,8 @@ class TestLoopCues:
                           write=lambda _s: None)
         band.start()
         assert seen["cmd"][seen["cmd"].index("lead") + 1] == "--tap-start"
-        assert seen["cmd"][-len(extra):] == extra
+        cut = seen["cmd"].index("--")
+        assert seen["cmd"][cut - len(extra):cut] == extra and seen["cmd"][cut + 1:] == ["lofi"]
         assert seen["env"][realtime.AUDIO_CONSENT_ENV] == "1"
 
     def test_jam_refuses_a_loop_cue_out_loud(self, env, capsys):

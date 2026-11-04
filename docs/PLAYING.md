@@ -393,6 +393,14 @@ in a waveform. On headphones, turn phone Bluetooth off so the AirPods stay with 
 Phone videos can carry your location, so strip the metadata before posting one:
 `ffmpeg -i in.mov -map_metadata -1 -c copy out.mov`.
 
+## Reading a take
+
+`plume gui --take takes6/` opens The Record in your browser: a strip of what plume did and when, a plain sentence for each moment, and a roast. It opens no audio device, and it plays a recording only when you click Listen. `plume gui --takes DIR` shows a shelf of take folders, each with its own carved stone. Keep writes a small `keep.json` beside the take and deletes nothing, and `--record` refuses a folder holding a kept take. A name that fails to save says so on the next screen you land on, then clears. This page has only been checked on made-up take folders, in headless Chromium with the sound muted. Listen has not been pressed in a real browser, and it has not been tried on a take from a real mic or interface, or in Firefox or Safari.
+
+Once the band is in on a room mic plume cannot hear you, so the page says so and makes no claim about your playing. On a direct input or a `--midi` take it can still hear you, so the page drops that line, but it still makes no claim about your playing, because neither has been tried on real hardware. Takes recorded before `cues.ndjson` existed can only say "A cue landed", not who asked or when.
+
+Every cue that reaches a session goes in `cues.ndjson`, including what the looper answered, and refusals. The page reports the looper's answer and nothing more, even for a take that stopped before its first bar: a take it agreed to can still end with no loop. MIDI notes do not send cues; a cue sent during a `--midi` take is logged like any other. None of this has been run on a real interface, keyboard or speakers, only on the simulated device.
+
 ## When it goes wrong
 
 | What you notice | Likely cause | Try |

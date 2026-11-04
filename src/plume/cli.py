@@ -2442,7 +2442,7 @@ def cmd_cue(args):
         pass
     try:
         resp = realtime.send_cue(args.text, at=args.at, ttl_bars=args.ttl_bars,
-                                 socket_path=args.socket)
+                                 socket_path=args.socket, source=args.source)
     except realtime.RealtimeError as e:
         raise CliError(str(e)) from None
     socket_path = args.socket or realtime.default_socket_path()
@@ -2624,6 +2624,18 @@ def cmd_watch(args):
     watch.follow(args.record_dir, every=args.every,
                  changes_only=args.changes_only, write=write)
     return {"ended": True}, "", 0
+
+
+def cmd_gui(args):
+    gui = _import("plume.gui")
+    try:
+        if args.action == "url":
+            url = gui.fresh_url()
+            return {"url": url}, url, 0
+        gui.serve(take=args.take, takes=args.takes, open_browser=not args.no_open)
+    except gui.GuiError as e:
+        raise CliError(str(e)) from None
+    return {"ended": True}, "plume gui closed.", 0
 
 
 def cmd_sessions(args):
@@ -3438,6 +3450,8 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--socket", default=None, metavar="PATH",
                    help="cue socket path (default: $PLUME_SOCKET or "
                         "<tmpdir>/plume-live.sock)")
+    p.add_argument("--source", default="cli", choices=("cli", "gui", "voice"),
+                   help="who is asking, for the take's cues.ndjson (default: cli)")
     p.set_defaults(func=cmd_cue)
 
     # ---- v2.2: finding and ending a live session (SPEC-V2 section 5) ----
@@ -3494,6 +3508,21 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--changes-only", dest="changes_only", action="store_true",
                    default=False, help="only lines where something changed")
     p.set_defaults(func=cmd_watch)
+
+    p = sub.add_parser(
+        "gui", parents=[common],
+        help="read your takes in a local page: what plume did, a roast, and Keep. "
+             "Opens no audio device; plays a take only when you click Listen",
+    )
+    p.add_argument("action", nargs="?", choices=("url",), default=None,
+                   help="'url' prints a new one-time link to the running page")
+    p.add_argument("--take", default=None, metavar="DIR",
+                   help="open this take folder's Record first")
+    p.add_argument("--takes", default=None, metavar="DIR",
+                   help="folder of take folders for the shelf (default: ~/Music/Plume)")
+    p.add_argument("--no-open", dest="no_open", action="store_true", default=False,
+                   help="print the one-time link instead of opening a browser")
+    p.set_defaults(func=cmd_gui)
 
     p = sub.add_parser(
         "sessions", parents=[common],

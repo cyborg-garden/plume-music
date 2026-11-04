@@ -30,7 +30,8 @@ package-dir = { "" = "src" }
 where = ["src"]
 
 [tool.setuptools.package-data]
-plume = ["styles/*.json", "samples/README.md", "samples/kit/*", "samples/tuned/*"]
+plume = ["styles/*.json", "samples/README.md", "samples/kit/*", "samples/tuned/*",
+         "gui_static/*", "gui_static/fonts/*"]
 
 [tool.pytest.ini_options]
 # A worker thread that dies must fail the run: a live-path test whose planner

@@ -19,6 +19,7 @@ import pytest
 from conftest import fake_audio, patched_module, short_socket_path, wait_until
 from plume import cli, realtime
 from plume import looper as lp
+from plume import record
 from plume import roles as roles_mod
 from plume.compose import PromptSpec, compose
 
@@ -309,6 +310,9 @@ class TestRunningTempo:
         assert all(r["bpm"] == pytest.approx(120.0, abs=0.01) for r in held)
         notes_ = [n for r in rows for n in (r["cue_effects"] or [])]
         assert any("NOT applied yet" in n for n in notes_), notes_
+        # The Record must not call that cue landed: the tempo never moved.
+        labels = [e["label"] for e in record.read_take(rec)["events"]]
+        assert "faster, on hold" in labels and "faster landed" not in labels
 
     def test_no_new_audio_file_appears(self, live_env):
         rec, sock = live_env / "rec", short_socket_path("loopd")
@@ -342,6 +346,14 @@ class TestLoopSetsTheTempo:
         assert rows[0]["loop"]["layers"][0]["sounding"] is True
         # No band had played, so nothing can be known about speakers in the mic.
         assert rows[0]["loop"]["layers"][0]["band_in_mic"] is False
+        # Nobody counted, and the cue that started it was answered, not left unused.
+        assert rows[0]["tempo_from"] == "loop"
+        take = record.read_take(rec)
+        said = " ".join(e["sentence"] for e in take["events"])
+        assert "your loop" in said and "your count" not in said
+        assert "asked to record a loop before the first bar" in said
+        assert "before a phrase line came" not in said
+        assert "You counted" not in " ".join(line["text"] for line in take["roast"])
         # bar 0 is the top of the loop, so its first note is on the bar line
         t0 = rows[0]["t_s"]
         assert tone_db(out, t0, t0 + 0.3) > -20.0

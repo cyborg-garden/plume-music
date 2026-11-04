@@ -285,9 +285,11 @@ class Band:
         env[AUDIO_CONSENT_ENV] = "1"
         with self.log.open("a") as log:
             self._proc = self._popen(
-                [sys.executable, "-m", "plume", "lead", "--tap-start", self._prompt,
+                # After "--" a prompt is only ever a prompt.  Before the flags, one
+                # spelled "--max-minutes=0" would turn off the session cap.
+                [sys.executable, "-m", "plume", "lead", "--tap-start",
                  "--input", "acoustic", "--record", f"{self.dir}/",
-                 "--seed", str(int(time.time()) % 100000), *self._extra],
+                 "--seed", str(int(time.time()) % 100000), *self._extra, "--", self._prompt],
                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=log, env=env,
                 # Its own process group: a terminal's Ctrl-C must reach only us, or the
                 # band gets two interrupts, and a second one cuts its ending short.
@@ -334,7 +336,7 @@ def run(*, prompt: str, base=".", extra_args=(), poll_s: float = 0.25, write=pri
         elif name == "restart":
             loop.retarget(band.start())
         else:
-            sent = subprocess.run([sys.executable, "-m", "plume", "cue", _CUES[name]],
+            sent = subprocess.run([sys.executable, "-m", "plume", "cue", _CUES[name], "--source", "voice"],
                                   capture_output=True, check=False)
             if sent.returncode != 0:
                 write(json.dumps({"cue_failed": name}))

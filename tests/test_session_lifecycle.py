@@ -23,10 +23,12 @@ No test here opens a real audio device.
 """
 from __future__ import annotations
 
+import inspect
 import io
 import json
 import os
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -1925,3 +1927,146 @@ class TestABarIsRenderedOnce:
         assert loud.size == audio.shape[0], (
             "the old placement was not cleared, or the new one overlapped it")
         assert int(loud[0]) == 1200
+
+
+class TestTheControlPathsAreHers:
+    """Linux /tmp is shared, and these two can stop or hijack a take."""
+
+    def test_the_cue_socket_is_owner_only_under_a_loose_umask(self):
+        path = short_sock("mode")
+        old = os.umask(0o022)
+        try:
+            with realtime.CueServer(path):
+                assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
+        finally:
+            os.umask(old)
+
+    def test_the_registry_is_owner_only_under_a_loose_umask(self, tmp_path, monkeypatch):
+        where = tmp_path / "sessions"
+        monkeypatch.setenv(realtime.SESSION_DIR_ENV, str(where))
+        old = os.umask(0o022)
+        try:
+            rec = realtime.register_session(kind="lead", pid=os.getpid())
+        finally:
+            os.umask(old)
+        assert stat.S_IMODE(os.stat(where).st_mode) == 0o700
+        assert stat.S_IMODE(os.stat(rec.path).st_mode) == 0o600
+        realtime.unregister_session()
+
+    def test_a_loose_existing_registry_is_tightened(self, tmp_path, monkeypatch):
+        where = tmp_path / "sessions"
+        where.mkdir(mode=0o755)
+        monkeypatch.setenv(realtime.SESSION_DIR_ENV, str(where))
+        realtime.register_session(kind="lead", pid=os.getpid())
+        assert stat.S_IMODE(os.stat(where).st_mode) == 0o700
+        realtime.unregister_session()
+
+    def test_the_registry_stores_an_absolute_record_dir(self, tmp_path, monkeypatch):
+        monkeypatch.setenv(realtime.SESSION_DIR_ENV, str(tmp_path / "sessions"))
+        monkeypatch.chdir(tmp_path)
+        rec = realtime.register_session(kind="lead", pid=os.getpid(), record_dir="takes3/")
+        assert rec.record_dir == str(tmp_path / "takes3")
+        realtime.unregister_session()
+
+    def test_a_fifo_in_the_registry_does_not_hang_the_lister(self, tmp_path, monkeypatch):
+        where = tmp_path / "sessions"
+        where.mkdir()
+        os.mkfifo(where / "1.json")
+        monkeypatch.setenv(realtime.SESSION_DIR_ENV, str(where))
+        box = []
+        lister = threading.Thread(target=lambda: box.append(realtime.list_sessions(prune=False)),
+                                  daemon=True)
+        lister.start()
+        lister.join(5.0)
+        assert box == [[]]
+
+
+class TestACueLogCannotHoldUpTheSocket:
+    """The socket thread also answers ``plume stop``, so it must never wait on the disk."""
+
+    def _recorder(self, tmp_path):
+        return realtime.SessionRecorder(tmp_path / "take").open({"kind": "lead"})
+
+    def test_a_stalled_recorder_does_not_delay_a_reply(self, tmp_path):
+        recorder = self._recorder(tmp_path)
+        path = short_sock("stall")
+        server = realtime.CueServer(path)
+        server.on_received = lambda item, _source: recorder.cue_soon({"text": item["text"]})
+        with server:
+            # The lock is an RLock, so another thread has to hold it for this to bite.
+            blocker_ready, release = threading.Event(), threading.Event()
+
+            def block():
+                with recorder._lock:
+                    blocker_ready.set()
+                    release.wait(5.0)
+
+            threading.Thread(target=block, daemon=True).start()
+            assert blocker_ready.wait(2.0)
+            try:
+                started = time.monotonic()
+                assert realtime.send_cue("busier", socket_path=path)["ok"] is True
+                assert server.handle({"op": "stop"})["ok"] is True
+                assert time.monotonic() - started < 1.0
+            finally:
+                release.set()
+        recorder.finish()
+        lines = (tmp_path / "take" / realtime.REC_CUES).read_text().splitlines()
+        assert [json.loads(line)["text"] for line in lines] == ["busier"]
+
+    def test_queued_cues_reach_the_file_before_it_closes(self, tmp_path):
+        recorder = self._recorder(tmp_path)
+        for i in range(50):
+            recorder.cue_soon({"text": f"c{i}"})
+        recorder.finish({"reason": "x"})
+        lines = (tmp_path / "take" / realtime.REC_CUES).read_text().splitlines()
+        assert len(lines) == 50
+
+    def test_a_cue_after_the_end_is_dropped_quietly(self, tmp_path):
+        recorder = self._recorder(tmp_path)
+        recorder.finish()
+        recorder.cue_soon({"text": "late"})
+        assert (tmp_path / "take" / realtime.REC_CUES).read_text() == ""
+
+    def test_the_live_transport_uses_the_queue(self):
+        source = inspect.getsource(realtime.lead)
+        assert "recorder.cue_soon(" in source and "recorder.cue(" not in source
+
+
+class TestAUsedFolder:
+    def test_a_new_take_does_not_wear_the_old_takes_name(self, tmp_path):
+        (tmp_path / realtime.REC_KEEP).write_text('{"kept": false, "name": "the old one"}')
+        realtime.SessionRecorder(tmp_path).open({})
+        assert not (tmp_path / realtime.REC_KEEP).exists()
+
+    @pytest.mark.parametrize("doc,refused", [('{"kept": true, "name": "x"}', True),
+                                             ('{"kept": false, "name": "x"}', False),
+                                             ("not json", False), ("[1]", False)])
+    def test_a_kept_take_is_never_recorded_over(self, tmp_path, doc, refused):
+        (tmp_path / realtime.REC_KEEP).write_text(doc)
+        if refused:
+            with pytest.raises(realtime.RealtimeError, match="kept"):
+                realtime._refuse_a_kept_take(tmp_path)
+        else:
+            realtime._refuse_a_kept_take(tmp_path)
+        realtime._refuse_a_kept_take(tmp_path / "nothing here")
+        realtime._refuse_a_kept_take(None)
+
+    @pytest.mark.parametrize("transport", ["jam", "lead"])
+    def test_the_transports_refuse_before_any_stream_opens(self, transport, tmp_path, monkeypatch,
+                                                           plume_registry):
+        from plume import mind, roles
+        monkeypatch.setenv(realtime.AUDIO_CONSENT_ENV, "1")   # the FAKE device only
+        rec = tmp_path / "take"
+        rec.mkdir()
+        (rec / realtime.REC_KEEP).write_text('{"kept": true}')
+        (rec / "human.wav").write_bytes(b"precious")
+        sd = fake_audio(None)
+        with patched_module("sounddevice", sd), pytest.raises(realtime.RealtimeError, match="kept"):
+            if transport == "jam":
+                realtime.jam(style="lofi", seed=0, params=mind.MindParams(), max_minutes=0.01,
+                             record_dir=str(rec))
+            else:
+                realtime.lead(prompt="lofi", seed=0, role=roles.RoleParams(role="lead"),
+                              max_minutes=0.01, record_dir=str(rec), status=False)
+        assert sd.streams == [] and (rec / "human.wav").read_bytes() == b"precious"

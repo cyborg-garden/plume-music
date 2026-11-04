@@ -596,6 +596,38 @@ def parse_cue(text: str) -> dict:
     return out("unknown", None)
 
 
+_FILLER_WORDS = ("please", "now", "a bit", "a little")
+
+
+def cue_is_exact(text: object) -> bool:
+    """Is this text a known cue and nothing more?
+
+    ``parse_cue`` is built to find a cue inside anything a player might say, which is
+    right for acting on it and wrong for repeating it.  A section name counts here only
+    if it is one of the generic ones, because a map's own names can be anything.
+    """
+    w = _cue_words(text)
+    for filler in _FILLER_WORDS:
+        w = w.removeprefix(filler + " ").removesuffix(" " + filler)
+    known = {*_END_PHRASES, *_ENERGY_UP, *_ENERGY_DOWN, *_STYLE_NAMES,
+             "next section", "next part", "previous section", "last section",
+             "back a section", "previous part"}
+    for _, phrases in (*_TEMPO_PHRASES, *_TEXTURE_PHRASES):
+        known.update(phrases)
+    if w in known:
+        return True
+    names = {*_SECTION_NAMES, *_GENERIC_SECTION_ROLES}
+    if w in names - _AMBIGUOUS_SECTIONS:
+        return True
+    for directional in _DIRECTIONAL:
+        if w.startswith(directional + " "):
+            tail = w[len(directional) + 1:]
+            for lead in ("the ", "a ", "that "):
+                tail = tail.removeprefix(lead)
+            return tail.removesuffix(" section").removesuffix(" part") in names
+    return False
+
+
 # --------------------------------------------------------- the form map
 
 @dataclass(frozen=True)

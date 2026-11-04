@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Plume</title>
+<script src="/static/theme.js"></script>
+<link rel="stylesheet" href="/static/plume.css">
+<script type="module" src="/static/app.js"></script>
+</head>
+<body data-screen="loading">
+<div id="vignette" aria-hidden="true"></div>
+<canvas id="grain" aria-hidden="true"></canvas>
+
+<div id="app">
+  <header>
+    <button id="wordmark" type="button">plume</button>
+    <button id="nav-takes" class="navlink" type="button">Takes</button>
+    <span id="busy" role="status" hidden>Opening</span>
+    <span class="spacer"></span>
+    <span class="seg" role="group" aria-label="Light">
+      <button id="theme-day" type="button" aria-pressed="false">Day</button>
+      <button id="theme-dim" type="button" aria-pressed="false">Dim</button>
+      <button id="theme-night" type="button" aria-pressed="false">Night</button>
+    </span>
+  </header>
+
+  <p id="keep-error" class="note warn" role="status" hidden></p>
+
+  <main id="problem" hidden tabindex="-1">
+    <h1 id="problem-title"></h1>
+    <p id="problem-text"></p>
+  </main>
+
+  <main id="record" hidden tabindex="-1">
+    <div id="rec-head">
+      <h1 id="rec-title"></h1>
+      <span id="rec-meta"></span>
+      <div id="rec-actions">
+        <span id="kept-status" hidden>Kept</span>
+        <button id="keep" class="quiet" type="button">Keep</button>
+      </div>
+    </div>
+    <div id="keep-panel" hidden>
+      <label for="take-name">Name <input id="take-name" type="text" autocomplete="off" maxlength="120" placeholder="Name this take"></label>
+      <span id="keep-path"></span>
+    </div>
+    <div id="sheet">
+      <canvas id="terrain" aria-hidden="true"></canvas>
+      <div id="hear-line"></div>
+      <div id="hear-tick"></div>
+      <span id="hear-yes" class="hear-lab"></span>
+      <span id="hear-no" class="hear-lab"></span>
+      <div id="events" role="group" aria-label="What happened in this take. Arrow keys move between moments."></div>
+      <p id="sheet-empty" hidden>Nothing played in this take.</p>
+    </div>
+    <details id="ev-more"><summary>All moments</summary><ul id="ev-list" aria-label="Moments in this take"></ul></details>
+    <div id="rec-lower">
+      <section id="rec-stone" aria-label="This take's stone">
+        <canvas id="portrait" width="480" height="540" role="img" aria-label="A carved stone made from this take's facts"></canvas>
+      </section>
+      <section aria-label="Selected moment">
+        <p id="ev-sentence" aria-live="polite"></p>
+        <p id="ev-note"></p>
+        <details id="raw"><summary id="raw-toggle">Log row, what plume did</summary><pre id="raw-row"></pre></details>
+        <div id="listen" hidden>
+          <h2>Listen</h2>
+          <div id="listen-buttons"></div>
+          <audio id="player" controls preload="none" hidden></audio>
+          <p class="note">These recordings are not lined up with the log yet, so a moment above does not move them.</p>
+        </div>
+      </section>
+      <section aria-label="Plume on this take">
+        <div id="roast-head"><h2>Plume on this take</h2><button id="roast-toggle" type="button"></button></div>
+        <ul id="roast"></ul>
+      </section>
+    </div>
+  </main>
+
+  <main id="shelf" hidden tabindex="-1">
+    <h1>Takes</h1>
+    <p id="shelf-how">Height is the length of the take, up to five minutes. Lean is its tempo, the deep cut is where the band came in, and its slope is major or minor. Each nick is a cue that landed, up to eight. The seed sets the rest, which is only identity.</p>
+    <p id="shelf-empty" hidden>No takes here yet. Point this at a folder of takes with plume gui --takes, or open one with plume gui --take.</p>
+    <div id="shelf-grid"></div>
+  </main>
+</div>
+</body>
+</html>

@@ -31,7 +31,9 @@ import dataclasses
 import json
 import math
 import os
+import queue
 import socket
+import stat
 import sys
 import tempfile
 import threading
@@ -1405,11 +1407,14 @@ class StatusLine:
 #: session needs to know them before the session has written anything.
 REC_MANIFEST = "session.json"
 REC_DECISIONS = "decisions.ndjson"
+REC_CUES = "cues.ndjson"
 REC_HUMAN = "human.wav"
 REC_MACHINE = "machine.wav"
 REC_ENDING = "ending.json"
 REC_VOICE = "voice.wav"
 REC_MIDI = "midi.ndjson"
+#: Keep's sidecar.  Plain JSON beside the take, so it outlives the page that wrote it.
+REC_KEEP = "keep.json"
 
 #: Audio is flushed to disk at most this often — the most a `kill -9` can
 #: cost.  Decisions are flushed every line (they are what an observer reads).
@@ -1432,6 +1437,20 @@ def _jsonable(obj):
     return str(obj)
 
 
+def _refuse_a_kept_take(path) -> None:
+    """Keep promises that nothing gets deleted, and a new take would overwrite this one."""
+    if path is None:
+        return
+    try:
+        with open(Path(path) / REC_KEEP, encoding="utf-8") as f:
+            kept = json.load(f).get("kept") is True
+    except (OSError, ValueError, AttributeError):
+        return
+    if kept:
+        raise RealtimeError(f"{path} holds a take you kept, so nothing was recorded over it. "
+                            "Give --record another folder.")
+
+
 class SessionRecorder:
     """A take written to disk WHILE it happens, not after it (v1.3).
 
@@ -1449,6 +1468,9 @@ class SessionRecorder:
       observer knows what is running the moment it is running;
     - every decision is one flushed line of ``decisions.ndjson`` — tailable
       live, and a kill costs at most the line being written;
+    - every cue received is one flushed line of ``cues.ndjson``.  The file is
+      created at open, so "present and empty" means no cues were sent and
+      "absent" means a take from before this log existed;
     - ``human.wav``/``machine.wav`` are streamed through open ``soundfile``
       handles and flushed about once a second.  libsndfile updates the RIFF
       header on flush, so the partial files are valid, playable and
@@ -1471,6 +1493,7 @@ class SessionRecorder:
         self._flush_every = float(flush_every_s)
         self._lock = threading.RLock()
         self._decisions = None            # text handle
+        self._cues = None                 # text handle
         self._human = None                # soundfile handle
         self._machine = None
         self._midi = None                 # opened by the first midi() line
@@ -1479,6 +1502,10 @@ class SessionRecorder:
         self.frames_written = 0
         self.errors: list[str] = []
         self.closed = False
+        self._cue_queue: queue.SimpleQueue = queue.SimpleQueue()
+        self._cue_writer: threading.Thread | None = None
+        self._cue_writer_done = False
+        self._cue_writer_guard = threading.Lock()
 
     # -- lifecycle ------------------------------------------------------
 
@@ -1491,6 +1518,7 @@ class SessionRecorder:
             # A used directory: the last take's ending must not read as this one's,
             # and its keys or voice must not stand in for a take that has none.
             (self.dir / REC_ENDING).unlink(missing_ok=True)
+            (self.dir / REC_KEEP).unlink(missing_ok=True)
             # _midi_listening writes a MIDI take's first line before this runs, so a
             # handle here means this take's own file.  Without one the file is the last take's.
             if self._midi is None:
@@ -1504,6 +1532,11 @@ class SessionRecorder:
                                        encoding="utf-8", buffering=1)
             except OSError as e:
                 self._note(f"decisions: {e}")
+            try:
+                self._cues = open(self.dir / REC_CUES, "w",
+                                  encoding="utf-8", buffering=1)
+            except OSError as e:
+                self._note(f"cues: {e}")
             try:
                 self._human = sf.SoundFile(
                     str(self.dir / REC_HUMAN), mode="w", samplerate=self.sr,
@@ -1520,19 +1553,50 @@ class SessionRecorder:
             self._last_flush = time.monotonic()
         return self
 
+    def cue_soon(self, doc: dict) -> None:
+        """Log a cue from the socket thread, which must never wait on this lock.
+
+        That thread also answers ``plume stop``, so a stalled disk here would stall
+        the stop.  A small thread of our own does the waiting instead.
+        """
+        self._cue_queue.put(doc)
+        with self._cue_writer_guard:
+            if self._cue_writer is None and not self._cue_writer_done:
+                self._cue_writer = threading.Thread(target=self._write_cues, daemon=True,
+                                                    name="plume-cue-log")
+                self._cue_writer.start()
+
+    def _write_cues(self) -> None:
+        while True:
+            doc = self._cue_queue.get()
+            if doc is None:
+                return
+            self.cue(doc)
+
+    def _end_cue_writer(self, timeout: float) -> None:
+        """Let queued cues reach the file before it closes, within reason."""
+        with self._cue_writer_guard:
+            self._cue_writer_done = True
+            writer, self._cue_writer = self._cue_writer, None
+        if writer is not None:
+            self._cue_queue.put(None)
+            writer.join(timeout=timeout)
+
     def finish(self, ending: dict | None = None) -> None:
         """Write ``ending.json`` (if given) and close every handle.  Idempotent."""
+        self._end_cue_writer(timeout=1.0)
         with self._lock:
             if ending is not None and not self.closed:
                 self._write_json(REC_ENDING, ending)
             self.close()
 
     def close(self) -> None:
+        self._end_cue_writer(timeout=1.0)
         with self._lock:
             if self.closed:
                 return
             self.closed = True
-            for name, h in (("decisions", self._decisions),
+            for name, h in (("decisions", self._decisions), ("cues", self._cues),
                             ("human", self._human), ("machine", self._machine),
                             ("voice", self._voice), ("midi", self._midi)):
                 if h is None:
@@ -1541,8 +1605,8 @@ class SessionRecorder:
                     h.close()
                 except (OSError, RuntimeError) as e:      # pragma: no cover
                     self._note(f"{name} close: {e}")
-            self._decisions = self._human = self._machine = self._voice = None
-            self._midi = None
+            self._decisions = self._cues = self._human = self._machine = None
+            self._voice = self._midi = None
 
     def emergency_close(self, ending: dict | None = None,
                         *, timeout: float = 1.0) -> bool:
@@ -1553,6 +1617,7 @@ class SessionRecorder:
         lock was taken; either way the per-line decision flushes and the
         per-second audio flushes have already made the files valid.
         """
+        self._end_cue_writer(timeout=0.0)
         got = self._lock.acquire(timeout=float(timeout))
         if not got:
             return False
@@ -1575,6 +1640,18 @@ class SessionRecorder:
                 self.decisions_written += 1
             except (OSError, ValueError, TypeError) as e:
                 self._note(f"decision: {e}")
+
+    def cue(self, doc: dict) -> None:
+        """Append one received cue and FLUSH it.  Who asked, and when, exists
+        nowhere else: the decision log only says where a cue applied."""
+        with self._lock:
+            if self._cues is None:
+                return
+            try:
+                self._cues.write(json.dumps(doc, sort_keys=True) + "\n")
+                self._cues.flush()
+            except (OSError, ValueError, TypeError) as e:
+                self._note(f"cue: {e}")
 
     def midi(self, doc: dict) -> None:
         """Append one MIDI event, flushed like a decision: ``plume watch`` reads it."""
@@ -1615,7 +1692,7 @@ class SessionRecorder:
 
     def flush(self) -> None:
         with self._lock:
-            for h in (self._decisions, self._human, self._machine, self._voice):
+            for h in (self._decisions, self._cues, self._human, self._machine, self._voice):
                 if h is None:
                     continue
                 try:
@@ -1987,6 +2064,7 @@ def jam(*, style: str, seed: int, params, device: str | None = None,
     from .mind import Mind  # noqa: PLC0415
 
     rec_path = None if record_dir is None else Path(record_dir)
+    _refuse_a_kept_take(rec_path)
     recorder = None if rec_path is None else SessionRecorder(rec_path)
 
     extractor = FeatureExtractor(sr=SR)
@@ -2551,6 +2629,10 @@ def _check_socket_path(path: str) -> str:
     return p
 
 
+#: Who may be named as a cue's sender.  Anything else reads as "unknown".
+CUE_SOURCES = ("gui", "cli", "voice")
+
+
 class CueServer:
     """AF_UNIX server that queues cues for a running session (SPEC-V2 §3).
 
@@ -2602,6 +2684,9 @@ class CueServer:
         self.stopped = threading.Event()
         #: extra fields a transport wants ``{"op": "status"}`` to report
         self.info: dict = {}
+        #: called as ``(item, source)`` for each cue a session acted on or answered;
+        #: see ``_enqueue``.  An item the looper answered also has a ``loop`` field.
+        self.on_received = None
         #: a transport may answer some cues itself, at once, rather than at the
         #: next bar: ``text -> reply dict``, or None to queue it as usual.  The
         #: looper needs this because a take must start when it is asked for, and
@@ -2638,6 +2723,13 @@ class CueServer:
                 s.close()
                 raise RealtimeError(
                     f"cannot open the cue socket at {self.path}: {e}") from None
+        # Before it listens.  Linux /tmp is shared, and this socket can stop a take.
+        try:
+            os.chmod(self.path, 0o600)
+        except OSError as e:
+            s.close()
+            raise RealtimeError(
+                f"cannot lock down the cue socket at {self.path}: {e}") from None
         s.listen(8)
         s.settimeout(0.2)
         self._sock = s
@@ -2720,6 +2812,11 @@ class CueServer:
         if self.intercept is not None:
             reply = self.intercept(text)
             if reply is not None:
+                # Never queued, so no row will name it.  Who asked exists only here,
+                # refusals included: the sender saw the answer and the take did not.
+                self._tell_log({"text": text, "at": "now", "ttl_bars": 0,
+                                "loop": {"op": reply.get("op"), "ok": reply.get("ok") is True}},
+                               req)
                 return {**reply, "queued": 0, "session": self.kind, "bar": self.bar}
         at = req.get("at", "next-phrase")
         ttl = req.get("ttl_bars", 16)
@@ -2733,7 +2830,19 @@ class CueServer:
             self._queue.append(item)
             self._received += 1
             n = len(self._queue)
+        self._tell_log(item, req)
         return {"ok": True, "queued": n, "session": self.kind, "bar": self.bar}
+
+    def _tell_log(self, item: dict, req: dict) -> None:
+        source = req.get("source")
+        if not isinstance(source, str) or source not in CUE_SOURCES:
+            source = "unknown"
+        hook = self.on_received
+        if hook is not None:
+            try:
+                hook(item, source)
+            except Exception:      # noqa: BLE001 — a log must not cost the cue
+                pass
 
     # -- accept loop ----------------------------------------------------
 
@@ -2813,15 +2922,22 @@ def _socket_request(path: str, req: dict, *, timeout: float,
 
 
 def send_cue(text: str, *, at: str = "next-phrase", ttl_bars: int = 16,
-             socket_path: str | None = None, timeout: float = 2.0) -> dict:
+             socket_path: str | None = None, timeout: float = 2.0,
+             source: str | None = None) -> dict:
     """Send one cue to a running session; return its reply.
+
+    ``source`` says who is asking, for the take's cue log (see
+    :data:`CUE_SOURCES`).  Left out, the log says "unknown".
 
     Raises :class:`RealtimeError` with a message a player can act on when
     nothing is listening — the common case, which must not look like a crash.
     """
     path = _check_socket_path(socket_path or default_socket_path())
+    req = {"text": str(text), "at": str(at), "ttl_bars": int(ttl_bars)}
+    if source is not None:
+        req["source"] = str(source)
     resp = _socket_request(
-        path, {"text": str(text), "at": str(at), "ttl_bars": int(ttl_bars)},
+        path, req,
         timeout=timeout,
         absent_msg=(f"no running plume session at {path} — start one with "
                     f"'plume lead' or 'plume jam --role lead' (or point "
@@ -3018,13 +3134,17 @@ def register_session(*, kind: str, style: str = "", role: str = "",
         session_name=session_name, socket=socket_path,
         started_at=float(time.time() if started_at is None else started_at),
         max_minutes=resolve_max_minutes(max_minutes),
-        record_dir=record_dir,
+        # Absolute, because other processes read this from their own directories.
+        record_dir=None if record_dir is None else os.path.abspath(record_dir),
     )
     try:
         d = session_dir()
-        d.mkdir(parents=True, exist_ok=True)
+        d.mkdir(mode=0o700, parents=True, exist_ok=True)
+        os.chmod(d, 0o700)
         tmp = d / f"{rec.pid}.json.tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            os.fchmod(f.fileno(), 0o600)
             json.dump(rec.to_dict(), f, sort_keys=True)
         os.replace(tmp, rec.path)      # atomic: a lister never sees a half file
     except OSError:
@@ -3058,8 +3178,11 @@ def list_sessions(*, prune: bool = True) -> list[LiveSession]:
     for f in files:
         rec = None
         try:
-            with open(f, "r", encoding="utf-8") as fh:
-                rec = LiveSession.from_dict(json.load(fh))
+            # O_NONBLOCK: a FIFO here must not hang whoever is asking what is playing.
+            fd = os.open(f, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            with os.fdopen(fd, "r", encoding="utf-8") as fh:
+                if stat.S_ISREG(os.fstat(fh.fileno()).st_mode):
+                    rec = LiveSession.from_dict(json.load(fh))
         except (OSError, ValueError, TypeError, KeyError, AttributeError):
             # Broad on purpose: this is a cache of running processes, and a
             # file in it that cannot be read is a file to drop, never an
@@ -3777,6 +3900,7 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
     composed_key = getattr(sess, "key", None)
 
     rec_path = None if record_dir is None else Path(record_dir)
+    _refuse_a_kept_take(rec_path)
     recorder = (None if rec_path is None
                 else SessionRecorder(rec_path, voice=route.voice is not None))
 
@@ -3874,6 +3998,18 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
             max_minutes=max_minutes, record_dir=record_dir, device=device,
             bpm=composed_bpm, params=params, role_params=role,
             started_at=time.time(), input_route=route, midi_port=midi_port))
+
+        def log_cue(item: dict, source: str) -> None:
+            # ``t_s`` is on the rows' clock: a bar written at t sounds at the
+            # playhead position t - comp (see the write_at in plan_one_bar).
+            doc = {"received_at": time.time(),
+                   "t_s": round((timeline.playhead + comp_samples[0]) / SR, 4),
+                   "bar": cues.bar, "text": item["text"], "source": source,
+                   "at": item["at"], "ttl_bars": item["ttl_bars"]}
+            if "loop" in item:
+                doc["loop"] = item["loop"]
+            recorder.cue_soon(doc)
+        cues.on_received = log_cue
     stop_deadline = session_deadline(started_mono, max_minutes)
 
     def callback(indata, outdata, frames, time_info, status_flags):  # noqa: ARG001
@@ -4187,6 +4323,8 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
             doc["chord"] = entered.chord
             doc["entry"] = entered.stage
             doc["entry_reason"] = entered.reason
+            if state["tempo_from_loop"]:
+                doc["tempo_from"] = "loop"
             doc["section"] = section
             doc["playing"] = playing
             doc["playing_trusted"] = playing_trusted
@@ -4208,6 +4346,7 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
     def planner_loop():
         nonlocal composed_bpm, negotiator
         t0 = 0.0
+        tempo_from_loop = False
         if tap_start:
             from .bandentry import first_bar_time, tap_tempo  # noqa: PLC0415
             while not stop.is_set() and not ending.is_set():
@@ -4222,6 +4361,7 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
             if loop_tempo:
                 # The loop set it: bar 0 is the top of the loop, on the grid its
                 # own length makes.
+                tempo_from_loop = True
                 composed_bpm = loop_tempo.bpm
                 next_beat = loop_tempo.next_line_s
             else:
@@ -4240,7 +4380,8 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
         # bar still sounds now.  The clock is stream time, not map position.
         clock = MachineClock(composed_bpm, t0=t0, first_bar=int(from_bar))
         state = {"ref_db": None, "pending": [], "ended": False,
-                 "bar_starts": [], "sec_idx": None, "sec_bar": 0}
+                 "bar_starts": [], "sec_idx": None, "sec_bar": 0,
+                 "tempo_from_loop": tempo_from_loop}
         if from_bar > 0:
             state["sec_idx"], pos = mind.seek_form(sess, int(from_bar))
             state["sec_bar"] = pos - 1  # the first plan steps onto ``pos``

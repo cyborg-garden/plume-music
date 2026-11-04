@@ -271,6 +271,28 @@ def test_being_told_to_end_stops_the_band_on_its_way_out(tmp_path, signame):
     assert FakeProc.made[0].signals == [signal.SIGINT]
 
 
+def test_a_prompt_that_looks_like_a_flag_stays_a_prompt(tmp_path):
+    """Parsed by plume's real parser.  Nothing is started."""
+    from plume import cli, voice
+
+    argv = {}
+
+    class Recording:
+        def __init__(self, args, **_kw):
+            argv["args"] = args
+
+        def poll(self):
+            return None
+
+    band = voice.Band(prompt="--max-minutes=0", base=tmp_path, write=lambda s: None, popen=Recording)
+    band.start()
+    band._proc = None
+    args = argv["args"][argv["args"].index("-m") + 2:]
+    parsed = cli._build_parser().parse_args(args)
+    assert parsed.prompt == "--max-minutes=0"
+    assert parsed.max_minutes is None
+
+
 # ---- why no spoken command registered, as far as code can show ----
 
 @pytest.mark.parametrize("text,want", [

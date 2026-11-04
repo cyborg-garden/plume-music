@@ -1207,6 +1207,8 @@ def meter_input(sd, name: str, *, seconds: float = 5.0) -> dict:
 #: Sound out of a machine is a physical act in someone's room, so it is opt-in:
 #: an interactive terminal, or an explicit PLUME_ALLOW_AUDIO=1.
 AUDIO_CONSENT_ENV = "PLUME_ALLOW_AUDIO"
+#: Spellings of that variable that say no.  No one, and no page, may overrule these.
+AUDIO_CONSENT_OFF = frozenset({"0", "false", "no", "off"})
 
 #: Belt and braces for the same incident: a live session with nobody watching
 #: stops on its own.  0 disables the cap (an interactive player can opt out).
@@ -1302,7 +1304,7 @@ def audio_output_allowed() -> tuple[bool, str]:
     flag = os.environ.get(AUDIO_CONSENT_ENV, "").strip().lower()
     if flag in {"1", "true", "yes", "on"}:
         return True, ""
-    if flag in {"0", "false", "no", "off"}:
+    if flag in AUDIO_CONSENT_OFF:
         return False, f"{AUDIO_CONSENT_ENV} is set to '{flag}'"
     try:
         if sys.stdin.isatty() and sys.stdout.isatty():

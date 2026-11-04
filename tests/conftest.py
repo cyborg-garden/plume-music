@@ -38,6 +38,14 @@ The knobs that matter, and the failures they reproduce:
   cost a whole session is untestable by construction.
 - ``latency`` — the stand-in reports a round trip the way ``sounddevice`` does,
   so ``realtime.stream_latency_hops`` aligns the mask to it.
+- ``human_channel`` / ``inputs`` / ``bleed_channels`` — **the audio interface.**
+  ``human`` arrives on one input channel, ``inputs`` puts other material on other
+  channels (a voice mic, or a loud decoy on the channel plume must not read), and
+  ``bleed_channels`` says which inputs can hear the room.  A guitar plugged in is a
+  channel the band cannot reach.
+- ``hold`` — a callable; the device waits while it is true.  Which lets a test
+  that reads the output by the sample keep up on a loaded machine, where a fast
+  playhead outruns the planner (tests/test_looper_live.py).
 
 Nothing here is autouse.  Files that do not ask for it are unaffected.
 """
@@ -63,6 +71,8 @@ from plume import realtime  # noqa: E402
 
 SR = realtime.SR
 
+#: The longest ``hold`` can pause the fake device: a wedge must still fail the test.
+HOLD_MAX_S = 30.0
 #: A device table that satisfies ``_resolve_device``: one duplex device.
 DUPLEX_DEVICES = [{"name": "Fake Duplex", "max_input_channels": 2,
                    "max_output_channels": 2}]
@@ -85,10 +95,18 @@ class FakeAudioStream:
                  block_timeout: float = 30.0, capture: bool = True,
                  bleed_db: float | None = None, bleed_delay_s: float = 0.020,
                  latency: tuple[float, float] | None = None,
-                 loop_human: bool = True):
+                 loop_human: bool = True, human_channel: int = 0,
+                 inputs: dict | None = None,
+                 bleed_channels: tuple[int, ...] = (0,), hold=None):
+        self._human_ch = int(human_channel)
+        self._inputs = {int(k): np.asarray(v, dtype=np.float32)
+                        for k, v in (inputs or {}).items()}
+        self._bleed_channels = tuple(int(c) for c in bleed_channels)
         self._human = (np.zeros(0, dtype=np.float32) if human is None
                        else np.asarray(human, dtype=np.float32))
         self._loop_human = bool(loop_human)
+        #: while this says so, the device waits, as if the test had paused time.
+        self._hold = hold
         #: speaker -> room -> mic path.  None = headphones (perfect isolation).
         self._bleed = (None if bleed_db is None
                        else float(10.0 ** (float(bleed_db) / 20.0)))
@@ -152,17 +170,28 @@ class FakeAudioStream:
             period = (real_period
                       if time.perf_counter() - t_start < self._warmup_s
                       else fast_period)
+            if self._hold is not None and self._hold():
+                give_up = time.perf_counter() + HOLD_MAX_S
+                while (self._hold() and not self._stop_evt.is_set()
+                       and time.perf_counter() < give_up):
+                    time.sleep(0.001)
+                t_next = time.perf_counter()
             indata = np.zeros((self._n, self._in_ch), dtype=np.float32)
             if self._human.size:
                 take = self._human[pos % span:][:self._n]
                 if take.size:
-                    indata[:take.size, 0] = take
+                    indata[:take.size, self._human_ch] = take
+            for ch, sig in self._inputs.items():
+                take = sig[pos % max(1, sig.size):][:self._n]
+                indata[:take.size, ch] = take
             # THE ROOM.  What plume played a moment ago is in the mic now,
             # quieter.  Without this the fake device is an isolation booth and
             # self-masking cannot be tested at all — which is exactly how a
             # mask that reached nothing shipped.
             if self._bleed is not None and len(self._echo) == self._echo.maxlen:
-                indata[:, 0] += self._echo[0] * self._bleed
+                for ch in self._bleed_channels:
+                    if ch < self._in_ch:
+                        indata[:, ch] += self._echo[0] * self._bleed
             pos += self._n
             outdata = np.zeros((self._n, self._out_ch), dtype=np.float32)
             if self._cb is not None:
@@ -247,11 +276,32 @@ class FakeAudioDevice:
         self._devices = list(DUPLEX_DEVICES if devices is None else devices)
         self._stream_kw = dict(stream_kw)
         self.streams: list[FakeAudioStream] = []
+        #: what each ``Stream(...)`` was opened with: device and channels
+        self.opened: list[dict] = []
+        self.recorded: list[dict] = []
+
+    def rec(self, frames, *, samplerate, channels, dtype, device):  # noqa: ARG002
+        """``sounddevice.rec``: what ``plume inputs --meter`` reads, no pump."""
+        self.recorded.append({"device": device, "channels": channels})
+        out = np.zeros((int(frames), int(channels)), dtype=np.float32)
+        kw = self._stream_kw
+        sources = dict(kw.get("inputs") or {})
+        if self._human is not None:
+            sources[kw.get("human_channel", 0)] = self._human
+        for ch, sig in sources.items():
+            sig = np.asarray(sig, dtype=np.float32)[:int(frames)]
+            out[:sig.size, int(ch)] = sig
+        return out
+
+    def wait(self):
+        return None
 
     def query_devices(self):
         return list(self._devices)
 
     def Stream(self, *, blocksize, callback, **kw):  # noqa: N802 - sd's name
+        self.opened.append({"device": kw.get("device"),
+                            "channels": kw.get("channels", (1, 2))})
         s = FakeAudioStream(self._human, blocksize=blocksize, callback=callback,
                             channels=kw.get("channels", (1, 2)),
                             **self._stream_kw)
@@ -315,6 +365,14 @@ def wait_until(predicate, *, timeout: float = 5.0, poll: float = 0.01) -> bool:
 # ------------------------------------------------------------------ fixtures
 
 @pytest.fixture
+def fake_device_consent(monkeypatch):
+    """The transports refuse to open a device without consent, and tests are no
+    exception.  Only for tests that run on the FAKE device.  A child process inherits
+    it, so a test using this must not start a real ``plume`` verb."""
+    monkeypatch.setenv(realtime.AUDIO_CONSENT_ENV, "1")
+
+
+@pytest.fixture
 def plume_registry(tmp_path, monkeypatch):
     """A private session registry — never the developer's real one.
 
@@ -331,3 +389,61 @@ def plume_registry(tmp_path, monkeypatch):
 def fake_device():
     """Factory fixture: ``fake_device(human, rate_x=8.0)`` -> FakeAudioDevice."""
     return fake_audio
+
+
+# ------------------------------------------------------------- a fake MIDI port
+#
+# Same rule as the audio device: no test opens a real port.  ``FakeMido`` stands
+# in for the whole ``mido`` module through ``patched_module("mido", FakeMido())``.
+
+class FakeMidiMessage:
+    """The attributes plume reads off a ``mido.Message``."""
+
+    def __init__(self, type, **kw):  # noqa: A002 - mido's name
+        self.type = type
+        self.channel = kw.get("channel", 0)
+        for name, value in kw.items():
+            setattr(self, name, value)
+
+
+class FakeMidiPort:
+    def __init__(self, name, callback, *, fail_close=False):
+        self.name, self.callback, self.closed = name, callback, False
+        self._fail_close = fail_close
+
+    def send(self, msg):
+        """What the library's thread does when a message arrives."""
+        if not self.closed:
+            self.callback(msg)
+
+    def close(self):
+        self.closed = True
+        if self._fail_close:
+            raise OSError("device is gone")
+
+
+class FakeMido:
+    """A stand-in ``mido`` module: named ports that can be unplugged."""
+
+    def __init__(self, names=("Fake Keys",), *, fail_open=False, fail_list=False,
+                 fail_close=False):
+        self.names = list(names)
+        self.fail_open, self.fail_list = fail_open, fail_list
+        self.fail_close = fail_close
+        self.ports: list[FakeMidiPort] = []
+
+    def get_input_names(self):
+        if self.fail_list:
+            raise OSError("backend trouble")
+        return list(self.names)
+
+    def open_input(self, name, callback=None):
+        if self.fail_open or name not in self.names:
+            raise OSError(f"cannot open {name}")
+        port = FakeMidiPort(name, callback, fail_close=self.fail_close)
+        self.ports.append(port)
+        return port
+
+    @property
+    def port(self) -> FakeMidiPort | None:
+        return self.ports[-1] if self.ports else None

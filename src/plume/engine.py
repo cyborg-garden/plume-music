@@ -383,19 +383,26 @@ def play(session: Session, **render_kwargs) -> None:
     # AUDIO_CONSENT_ENV note for the incident that put this here.
     from .realtime import check_audio_consent
     check_audio_consent()
-    try:
-        import sounddevice as sd
-    except Exception as exc:                     # pragma: no cover - optional dep
-        raise RuntimeError(
-            "playback needs the optional 'sounddevice' package "
-            "(pip install sounddevice)") from exc
-    with tempfile.TemporaryDirectory(prefix="plume-play-") as td:
-        path = os.path.join(td, "take.wav")
-        render(session, out_path=path, **render_kwargs)
-        data, sr = sf.read(path, dtype="float32")
+    from .realtime import register_session, sigint_stops_this, unregister_session
+    # A render can take a while.  `plume stop` has to reach it, or the sound starts after.
+    with sigint_stops_this():
+        register_session(kind="play")            # so `plume stop` can find it
         try:
-            sd.play(data, sr)
-            sd.wait()
-        except Exception as exc:                 # pragma: no cover - env dependent
-            raise RuntimeError(
-                f"audio playback failed (no output device?): {exc}") from exc
+            try:
+                import sounddevice as sd
+            except Exception as exc:             # pragma: no cover - optional dep
+                raise RuntimeError(
+                    "playback needs the optional 'sounddevice' package "
+                    "(pip install sounddevice)") from exc
+            with tempfile.TemporaryDirectory(prefix="plume-play-") as td:
+                path = os.path.join(td, "take.wav")
+                render(session, out_path=path, **render_kwargs)
+                data, sr = sf.read(path, dtype="float32")
+                try:
+                    sd.play(data, sr)
+                    sd.wait()
+                except Exception as exc:         # pragma: no cover - env dependent
+                    raise RuntimeError(
+                        f"audio playback failed (no output device?): {exc}") from exc
+        finally:
+            unregister_session()

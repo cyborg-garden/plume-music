@@ -1510,6 +1510,7 @@ class TestLeadBarPlan:
 
 # ======================================================== REAL MATERIAL
 
+@pytest.mark.usefixtures("fake_device_consent")
 class TestLeadPlannerOnRealMaterial:
     """The live lead planner's per-bar chain, on plume's own v0 renders.
 
@@ -2028,6 +2029,7 @@ class TestDoctorInputModeLine:
         assert code == 1
 
 
+@pytest.mark.usefixtures("fake_device_consent")
 class TestCountInThroughTheFakeDevice:
     def test_count_in_sets_the_tempo_live_and_holds(self, tmp_path,
                                                     monkeypatch, capsys):

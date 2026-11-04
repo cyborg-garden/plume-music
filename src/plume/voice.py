@@ -4,11 +4,17 @@ It reads the session's own recording, so it shares the mic without opening it, a
 transcribes on this machine; no audio leaves the Mac.  Commands need the wake word,
 because a speech model fed a band hallucinates sentences, and because sung lyrics
 must never end a take.
+
+Without a voice channel it reads ``human.wav``, which is the mic with the band in it.
+With ``--voice-channel`` it reads ``voice.wav``, and on a direct input it has to: there
+``human.wav`` holds only the guitar.  Every window leaves a line in ``voice.ndjson``
+saying what it heard, so a take with no commands can say why.
 """
 from __future__ import annotations
 
 import importlib.util
 import json
+import math
 import os
 import re
 import signal
@@ -21,6 +27,9 @@ from pathlib import Path
 
 import numpy as np
 import soundfile as sf
+from scipy.signal import resample_poly
+
+from .looper import _LOOP_WORD
 
 MODEL = "mlx-community/whisper-large-v3-turbo"
 WINDOW_S = 4.0
@@ -33,20 +42,93 @@ AUDIO_CONSENT_ENV = "PLUME_ALLOW_AUDIO"
 
 #: What the speech model tends to write for "plume".
 _WAKE = r"(?:plume|plumes|plum|plumb|bloom|blume|flume)"
-_COMMANDS = (
+_COMMANDS = (             # stop first: when one window holds two commands, it wins
+    ("stop", r"stops?|stopping|stopped|end it|that's it|thats it|finish|finished"
+             # These are ordinary words too, so nothing may follow them: "enough bass".
+             r"|(?:end|end this|end the take|end this take|end the song|quit|halt|done|enough"
+             r"|that's enough|we're done|we are done|we're finished|i'm done|i am done|shut up"
+             r"|shut it off|turn it off|kill it|wrap it up)"
+             r"(?=(?:[\s,]*(?:now|please|here))*\s*(?:[,|]|$))"),
     ("restart", r"restart|start over|start again|again|reset"),
-    ("stop", r"stop|end it|that's it|finish"),
-    ("busier", r"busier|more|build|bigger|louder"),
-    ("sparser", r"sparser|less|chill|calm|simpler|quieter"),
+    ("busier", r"busier|busy|more|build|bigger|louder"),
+    ("sparser", r"sparser|sparse|less|chill|calm|simpler|quieter"),
 )
 _CUES = {"busier": "busier", "sparser": "sparser"}
+#: Stop and restart words with no room for an object of their own: "end it" has one.
+_TAKES_NO_OBJECT = {"end it", "that's it", "thats it", "start over", "start again", "again",
+                    "done", "enough", "that's enough", "we're done", "we are done",
+                    "we're finished", "i'm done", "i am done", "shut up", "shut it off",
+                    "turn it off", "kill it", "wrap it up"}
+#: Only "plume" itself, not what the model mishears, because "the flowers bloom and the
+#: rain will stop" must not count.
+_REAL_WAKE = r"plumes?"
+#: In the same clause as "stop", these mean it isn't an order: "don't stop", "until i stop".
+_NOT_AN_ORDER = re.compile(
+    r"\b(?:don't|dont|do not|not|never|non|can't|cant|cannot|won't|wont|shouldn't|shouldnt"
+    r"|couldn't|couldnt|wouldn't|wouldnt|didn't|didnt|doesn't|doesnt|when|if|until|till|til"
+    r"|before|after|once|while|unless|why|did)\b")
+#: Asking nicely, which _NOT_AN_ORDER would otherwise read as "don't".
+_POLITE = re.compile(r"\b(?:why (?:don't|dont) (?:you|we)|(?:can't|cant|won't|wont) you|if you could)\b")
+#: "stop, plume", "stop it plume", "stop the band now, plume"
+_STOP_THEN_WAKE = re.compile(
+    r"\bstops?(?:[\s,|]+(?:it|that|this|everything|playing|right|now|please"
+    r"|the\s+(?:music|band|song|drums)))*"
+    rf"[\s,|]+{_REAL_WAKE}\b")
+_WORDS_BEFORE_STOP = 8
+_DETERMINER = r"the|a|an|my|our|that|this|these|those|all|of"
+#: Words that join things up or aim elsewhere, so they can't be part of a loop's name.
+_NOT_A_NAME = (rf"{_DETERMINER}|and|or|but|then|with|plus|not|too|stops?|everything|it"
+               r"|band|music|songs?")   # "stop the band loop" is a stop that lost a word
+#: What the band is called.  Only right before the word "loop" is it a loop's name.
+_THE_BAND = r"band|drums?|music|song"
+#: A loop as the verb's direct object: "the loop", "my old bass loop", "loop 1", "looping".
+_LOOP_OBJECT = (
+    rf"\s*(?:(?:{_DETERMINER})\s+)+"
+    rf"(?:(?!(?:{_NOT_A_NAME})\b)(?!(?:{_THE_BAND})\s+(?!{_LOOP_WORD}))[a-z']+\s+){{0,2}}"
+    rf"{_LOOP_WORD}|\s*{_LOOP_WORD}")
+#: Or the whole next sentence: "Plume, stop. The loop."
+_LOOP_AIM = rf"(?:{_LOOP_OBJECT}|[\s,]*\|[\s,|]*the\s+loop\b)"
+_ENDING = (r"(?:[\s,|]*(?:now|please|right\s+now|it's\s+too\s+(?:loud|much)"
+           r"|and\s+keep\s+playing|keep\s+going)\b)*[\s,|]*")
+_SAID_AGAIN = rf"\b{_WAKE}[\s|,]+(?:please[\s|,]+)?(?:stops?|finish|restart|reset)\b"
+_ABOUT_THE_LOOP = re.compile(rf"{_LOOP_AIM}{_ENDING}(?:{_SAID_AGAIN}{_LOOP_AIM}{_ENDING})*")
+
+
+def _stop_said_loosely(t: str) -> bool:
+    """"stop" with words before it, or the wake word after it.  Only "stop" gets this:
+    "plume, in the end" and "plume, louder again" are not commands."""
+    def an_order(start: int) -> bool:
+        return not _NOT_AN_ORDER.search(_POLITE.sub(" ", re.split(r"[,|]", t[:start])[-1]))
+
+    for m in re.finditer(r"\bstops?\b", t):
+        near = re.findall(r"[a-z']+", t[:m.start()])[-_WORDS_BEFORE_STOP:]
+        if (any(re.fullmatch(_REAL_WAKE, w) for w in near) and an_order(m.start())
+                and not _ABOUT_THE_LOOP.fullmatch(t[m.end():])):
+            return True
+    return any(an_order(m.start()) for m in _STOP_THEN_WAKE.finditer(t))
 
 
 def command_in(text: str) -> str | None:
-    """The command following the wake word in ``text``, or None."""
-    t = re.sub(r"[^a-z' ]+", " ", str(text or "").lower())
+    """The command following the wake word in ``text``, or None.
+
+    "stop" and "restart" leave the take alone only if the verb's direct object is the
+    loop and everything after it is a harmless ending (see ``_ENDING``) or the same
+    thing said again.  Any other words mean the command stands, because a stop that
+    fails is worse than one that ends a take by accident.  The other commands stand
+    back from any sentence naming a loop, and a stop beats them wherever it falls.
+    """
+    said = str(text or "").lower().replace("’", "'")
+    # | ends a sentence.  Commas stay: a loop after one is not the verb's object.
+    t = re.sub(r"[^a-z'|, ]+", " ", re.sub(r"[.!?]+", "|", said))
     for name, words in _COMMANDS:
-        if re.search(rf"\b{_WAKE}\s+(?:please\s+)?(?:{words})\b", t):
+        # The model puts a full stop anywhere, so one may sit between plume and the word.
+        for m in re.finditer(rf"\b{_WAKE}[\s|,]+(?:please[\s|,]+)?({words})\b", t):
+            rest = t[m.end():]
+            if m[1] not in _TAKES_NO_OBJECT and _ABOUT_THE_LOOP.fullmatch(rest):
+                continue
+            if name in ("stop", "restart") or not re.search(_LOOP_WORD, rest.split("|")[0]):
+                return name
+        if name == "stop" and _stop_said_loosely(t):
             return name
     return None
 
@@ -72,6 +154,17 @@ def _whisper(audio: np.ndarray) -> str:
         condition_on_previous_text=False, no_speech_threshold=0.5)["text"])
 
 
+def _to_stt(y: np.ndarray, sr: int) -> np.ndarray:
+    """To the model's rate, low-passed: anything above its 8 kHz would otherwise fold
+    down over the voice, and the band's hats and crash live up there."""
+    g = math.gcd(int(sr), _STT_SR)
+    return resample_poly(y, _STT_SR // g, int(sr) // g).astype(np.float32)
+
+
+def _rms_db(audio: np.ndarray) -> float:
+    return 20.0 * np.log10(float(np.sqrt(np.mean(audio ** 2))) + 1e-9)
+
+
 class VoiceLoop:
     """Poll a take's recording; act on a heard command.  The transcriber and the
     actions are passed in, so all of this is testable without a model or a band."""
@@ -82,40 +175,81 @@ class VoiceLoop:
         self._transcribe = transcribe
         self._clock = clock
         self._read_to = 0
+        self._missed_s = 0.0
+        self._source = "human.wav"
         self._last_fired: dict[str, float] = {}
 
     def retarget(self, record_dir) -> None:
         self.record_dir = Path(record_dir)
         self._read_to = 0
+        self._missed_s = 0.0
 
     def tail(self) -> np.ndarray | None:
         """The newest window, once a hop's worth of new audio has arrived."""
         try:
-            with sf.SoundFile(str(self.record_dir / "human.wav")) as f:
+            self._source = ("voice.wav" if (self.record_dir / "voice.wav").exists()
+                            else "human.wav")
+            with sf.SoundFile(str(self.record_dir / self._source)) as f:
                 sr, frames = f.samplerate, f.frames
                 if frames - self._read_to < int(HOP_S * sr):
                     return None
                 start = max(0, frames - int(WINDOW_S * sr))
+                # Audio that slid past while the model was busy: nobody ever heard it.
+                self._missed_s = (max(0, start - self._read_to) / sr
+                                  if self._read_to else 0.0)
                 f.seek(start)
                 y = f.read(frames - start, dtype="float32", always_2d=True).mean(axis=1)
         except (OSError, RuntimeError):
             return None
         self._read_to = frames
-        n = int(y.size * _STT_SR / sr)
-        return np.interp(np.arange(n) * sr / _STT_SR, np.arange(y.size), y).astype(np.float32)
+        return _to_stt(y, sr)
+
+    def _log(self, **row) -> None:
+        """One line per window.  Best effort: a log must not end a take."""
+        try:
+            with (self.record_dir / "voice.ndjson").open("a") as f:
+                f.write(json.dumps({"source": self._source, "missed_s": round(self._missed_s, 2),
+                                    **row}) + "\n")
+        except OSError:
+            pass
 
     def step(self) -> str | None:
         audio = self.tail()
         if audio is None or audio.size == 0:
             return None
-        if 20.0 * np.log10(float(np.sqrt(np.mean(audio ** 2))) + 1e-9) < MIN_RMS_DB:
+        level = round(_rms_db(audio), 1)
+        if level < MIN_RMS_DB:
+            self._log(rms_db=level, text=None, command=None, skipped="quiet")
             return None
-        name = command_in(self._transcribe(audio))
-        if name is None or self._clock() - self._last_fired.get(name, -1e9) < COOLDOWN_S:
+        began = time.monotonic()
+        text = str(self._transcribe(audio))
+        name = command_in(text)
+        cooling = (name is not None
+                   and self._clock() - self._last_fired.get(name, -1e9) < COOLDOWN_S)
+        self._log(rms_db=level, text=text, command=name, cooling=cooling,
+                  took_s=round(time.monotonic() - began, 2))
+        if name is None or cooling:
             return None
         self._last_fired[name] = self._clock()
         self._act(name)
         return name
+
+
+def replay(path, *, transcribe=None, write=print) -> None:
+    """What the model hears in a recording that already exists, window by window.  No
+    device and no band: this is how to ask what happened in a take that is over."""
+    if transcribe is None:
+        _require_whisper()
+        transcribe = _whisper
+    y, sr = sf.read(str(path), dtype="float32", always_2d=True)
+    y = y.mean(axis=1)
+    size, hop = int(WINDOW_S * sr), int(HOP_S * sr)
+    for start in range(0, max(1, y.size - size + 1), hop):
+        audio = _to_stt(y[start:start + size], sr)
+        level = round(_rms_db(audio), 1)
+        text = None if level < MIN_RMS_DB else str(transcribe(audio))
+        write(json.dumps({"t_s": round(start / sr, 2), "rms_db": level, "text": text,
+                          "command": command_in(text)}))
 
 
 def faded_out(record_dir) -> bool:
@@ -151,9 +285,11 @@ class Band:
         env[AUDIO_CONSENT_ENV] = "1"
         with self.log.open("a") as log:
             self._proc = self._popen(
-                [sys.executable, "-m", "plume", "lead", "--tap-start", self._prompt,
+                # After "--" a prompt is only ever a prompt.  Before the flags, one
+                # spelled "--max-minutes=0" would turn off the session cap.
+                [sys.executable, "-m", "plume", "lead", "--tap-start",
                  "--input", "acoustic", "--record", f"{self.dir}/",
-                 "--seed", str(int(time.time()) % 100000), *self._extra],
+                 "--seed", str(int(time.time()) % 100000), *self._extra, "--", self._prompt],
                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=log, env=env,
                 # Its own process group: a terminal's Ctrl-C must reach only us, or the
                 # band gets two interrupts, and a second one cuts its ending short.
@@ -184,6 +320,10 @@ def run(*, prompt: str, base=".", extra_args=(), poll_s: float = 0.25, write=pri
     """
     if transcribe is None:
         _require_whisper()
+        # The first call downloads and loads the model, which can take minutes.  Inside
+        # the take, that is minutes of band with nobody listening.
+        write(json.dumps({"loading": MODEL}))
+        _whisper(np.zeros(_STT_SR, dtype=np.float32))
         transcribe = _whisper
     band = Band(prompt=prompt, base=base, extra_args=extra_args, write=write, popen=popen)
     finished = {"done": False}
@@ -196,7 +336,7 @@ def run(*, prompt: str, base=".", extra_args=(), poll_s: float = 0.25, write=pri
         elif name == "restart":
             loop.retarget(band.start())
         else:
-            sent = subprocess.run([sys.executable, "-m", "plume", "cue", _CUES[name]],
+            sent = subprocess.run([sys.executable, "-m", "plume", "cue", _CUES[name], "--source", "voice"],
                                   capture_output=True, check=False)
             if sent.returncode != 0:
                 write(json.dumps({"cue_failed": name}))

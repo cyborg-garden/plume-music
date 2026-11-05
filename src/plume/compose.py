@@ -34,15 +34,26 @@ class PromptSpec:
     name: str = "untitled"
 
 
-# "house" is also just a word.  After a determiner or in a set phrase it is a building,
-# unless a music word follows it: "my house" is not a style, "a house beat" is.
-_HOUSE_NOT_AFTER = ("the", "a", "an", "my", "our", "your", "his", "her", "their", "this",
-                    "that", "full", "haunted", "coffee", "tree", "safe", "trap")
+_MOOD_WORDS = ("chill", "dark", "eerie", "hopeful", "aggressive", "ambient",
+               "dreamy", "mellow", "sad", "moody", "warm", "spooky")
+# "house" is also just a word, and far more often a building than a genre, so the genre
+# has to be asked for: a kind of house ("deep house"), house before a music word from a
+# plain start ("a house beat"), or house as the whole request ("play some house at 124").
+# Anything else stays a building and shows up as an ignored word.
+_MOOD_ALT = "|".join(_MOOD_WORDS)
+_GENRE_ALT = r"jazz(?:y)?|hip[\s\-]?hop|boom[\s\-]?bap|r\s*&\s*b|rnb|neo[\s\-]?soul"
+_HOUSE_KINDS = ("deep|tech|acid|chicago|detroit|funky|soulful|progressive|tropical|disco"
+                "|electro|afro|" + _GENRE_ALT)
+_HOUSE_ASKS = r"make|play|give|gimme|me|us|some|more|just|try|let'?s|please"
 _HOUSE_RE = (
-    r"(?:\b(?:" + "|".join(_HOUSE_NOT_AFTER) + r")\s+house\b"
-    r"(?=\s+(?:music|beat|track|groove|song|tune|jam|loop|vibes?|style)\b)"
-    r"|" + "".join(rf"(?<!\b{w}\s)" for w in _HOUSE_NOT_AFTER) + r"\bhouse\b"
-    r"(?![\s\-]+(?:of|party|plants?|cat|keys?|call|fire|rules|hold)\b))")
+    rf"\b(?:{_HOUSE_KINDS})[\s\-]+house\b"
+    r"(?![\s\-]+(?:of|party|plants?|cat|keys?|call|fire|rules|hold|band|sitting|arrest)\b)"
+    rf"|(?:^\s*|\b(?:the|a|an|my|our|your|his|her|their|this|that|{_HOUSE_ASKS}|{_MOOD_ALT})\s+)"
+    r"house(?=[\s\-]+(?:music|beat|track|groove|song|tune|jam|loop|vibes?|style)\b)"
+    rf"|^\s*(?:(?:{_HOUSE_ASKS}|{_MOOD_ALT})\s+)*house\b"
+    r"(?=\s*(?:$|[,.;:?]|\d|@"
+    r"|(?:at|around|about|near|tempo)\s*\d|key\s+of\b"
+    r"|in\s+[a-g][#b]?\s+(?:maj|min|dorian|phrygian|harmonic)))")
 _STYLE_PATTERNS = [
     (re.compile(r"\b(?:midwest|emo)\b", re.I), "midwest"),
     (re.compile(r"\btrap\b", re.I), "trap"),
@@ -60,8 +71,6 @@ _STYLE_PATTERNS = [
 #: The styles a prompt could always name.  A prompt naming one of them keeps the meaning
 #: it always had, whatever else it says: "lofi hip hop" is still lofi, at lofi's tempo.
 _ORIGINAL_STYLES = frozenset({"midwest", "trap", "lofi", "synthwave"})
-_MOOD_WORDS = ("chill", "dark", "eerie", "hopeful", "aggressive", "ambient",
-               "dreamy", "mellow", "sad", "moody", "warm", "spooky")
 _BPM_RE = re.compile(r"\b(\d{2,3}(?:\.\d+)?)\s*bpm\b", re.I)
 # v2.1 AMENDMENT.  THE DEFECT: a tempo was silently dropped unless the literal
 # token "bpm" followed the number — and BOTH lead-mode help texts documented
@@ -96,19 +105,39 @@ _NAME_STOPWORDS = {
 }
 
 
+def _one_new_genre(text: str, hits: dict[str, re.Match]) -> str:
+    """The one recipe a prompt naming several new genres plays.
+
+    compose has no blend for these styles, so a second name could only pull the tempo out
+    of the recipe's range.  The last of a run of adjacent names is the noun and the rest
+    colour it ("jazz house" is house), an adjective never leads ("jazzy" gives way to any
+    other genre), and with words between them the first one named is what was asked for.
+    """
+    order = sorted(hits, key=lambda c: (hits[c].end(), hits[c].start()))
+    nouns = [c for c in order if hits[c].group(0).lower() != "jazzy"] or order
+    head = nouns[0]
+    for canon in nouns[1:]:
+        if text[hits[head].end():hits[canon].start()].strip(" \t\r\n-"):
+            break
+        head = canon
+    return head
+
+
 def parse_prompt(text: str) -> PromptSpec:
     """Rule-based prompt parser. Unknowns -> None/defaults; never raises."""
     spec = PromptSpec()
     t = text or ""
 
-    found: dict[str, int] = {}
+    found: dict[str, re.Match] = {}
     for rx, canon in _STYLE_PATTERNS:
         m = rx.search(t)
-        if m and (canon not in found or m.start() < found[canon]):
-            found[canon] = m.start()
-    spec.styles = [c for c, _ in sorted(found.items(), key=lambda kv: kv[1])]
+        if m and (canon not in found or m.start() < found[canon].start()):
+            found[canon] = m
+    spec.styles = [c for c, _ in sorted(found.items(), key=lambda kv: kv[1].start())]
     if _ORIGINAL_STYLES & set(spec.styles):
         spec.styles = [c for c in spec.styles if c in _ORIGINAL_STYLES]
+    elif len(spec.styles) > 1:
+        spec.styles = [_one_new_genre(t, found)]
     # "lofi midwest emo" describes midwest emo with a lofi colour, not lofi.
     if "midwest" in spec.styles:
         spec.styles.remove("midwest")
@@ -180,6 +209,11 @@ def describe_prompt(text: str) -> dict:
             continue
         for m in rx.finditer(raw):
             claimed.update(re.findall(r"[a-z0-9#]+", m.group(0).lower()))
+    # "jazzy house" matches as a kind of house, but the jazz in it added nothing.
+    for rx, canon in _STYLE_PATTERNS:
+        if canon not in spec.styles:
+            for m in rx.finditer(raw):
+                claimed.difference_update(re.findall(r"[a-z0-9#]+", m.group(0).lower()))
     for rx in (_BPM_RE, _TEMPO_AT_RE, _KEY_RE, _MOV_RE):
         for m in rx.finditer(raw):
             claimed.update(re.findall(r"[a-z0-9#]+", m.group(0).lower()))

@@ -44,6 +44,10 @@ NEW_VOICES = ["housekick", "boomkick", "offhat", "brush", "upright", "roundbass"
     ("hiphop", "hiphop"), ("boom bap", "hiphop"), ("boom-bap beat", "hiphop"),
     ("house", "house"), ("deep house at 124", "house"), ("a house beat", "house"),
     ("the house groove", "house"), ("jazz", "jazz"), ("something jazzy", "jazz"),
+    ("house music", "house"), ("house in A minor", "house"), ("house at 124", "house"),
+    ("house, 3 movements", "house"), ("house 124 bpm", "house"), ("play some house", "house"),
+    ("make me some house at 124", "house"), ("chill house", "house"),
+    ("dark house track", "house"), ("tech-house", "house"), ("acid  house", "house"),
 ])
 def test_aliases_reach_their_style(text, style):
     assert parse_prompt(text).styles == [style]
@@ -52,6 +56,10 @@ def test_aliases_reach_their_style(text, style):
 @pytest.mark.parametrize("text", [
     "play me something for my house", "burn the house down", "a house of cards",
     "house party", "a haunted house", "in a coffee house", "full house",
+    "something for grandma's house", "the white house", "the opera house",
+    "open house vibe", "a warm cozy house in C minor", "house sitting", "house arrest",
+    "a house band", "house band", "the  house", "a house", "the house",
+    "a house in the woods", "house in the woods", "house at night",
 ])
 def test_house_the_building_is_not_house_the_genre(text):
     assert parse_prompt(text).styles == []
@@ -71,6 +79,36 @@ def test_house_the_building_is_not_house_the_genre(text):
 def test_a_prompt_naming_an_older_style_means_what_it_always_meant(text, styles, bpm):
     spec = parse_prompt(text)
     assert spec.styles == styles and spec.bpm == bpm
+
+
+@pytest.mark.parametrize("text,style", [
+    # a word right before another genre colours it, and an adjective never leads
+    ("jazzy house", "house"), ("jazzy hip hop", "hiphop"), ("hip hop jazz", "jazz"),
+    ("house jazz", "jazz"), ("jazz house", "house"), ("hip hop house", "house"),
+    ("neo soul hip hop", "hiphop"), ("something jazzy for a house beat", "house"),
+    # apart, the first one named is what was asked for
+    ("hip hop with jazz chords", "hiphop"), ("jazz with a boom bap beat", "jazz"),
+    ("neo soul and hip hop", "rnb"),
+])
+def test_two_new_genres_make_one_recipe_at_its_own_tempo(text, style):
+    """compose has no blend for these, so a second name could only drag the tempo out of
+    the range of the recipe that plays."""
+    spec = parse_prompt(text)
+    assert spec.styles == [style]
+    lo, hi = load_style(style)["bpm_range"]
+    assert lo <= compose(spec, seed=1).bpm <= hi
+
+
+@pytest.mark.parametrize("text,kept,dropped", [
+    ("jazzy house", ["house"], "jazzy"),
+    ("jazz house", ["house"], "jazz"),
+    ("hip hop house", ["house"], "hip"),
+    ("hip hop jazz", ["jazz"], "hop"),
+    ("neo soul and hip hop", ["rnb"], "hip"),
+])
+def test_the_genre_that_adds_nothing_is_not_reported_as_understood(text, kept, dropped):
+    said = describe_prompt(text)
+    assert said["understood"]["style"] == kept and dropped in said["ignored"]
 
 
 def test_a_genre_word_the_prompt_set_aside_is_reported_as_ignored():

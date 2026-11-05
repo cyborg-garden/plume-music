@@ -11,6 +11,7 @@ this adds is that bars she sat out are no evidence of a key.
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from types import SimpleNamespace
 
@@ -283,6 +284,229 @@ def song_section(bars_in: int) -> tuple[str, float, tuple[str, ...]]:
             return name, density, _SECTION_RESTS[name]
         at -= bars
     raise AssertionError("unreachable: at is reduced modulo the arc's length")
+
+
+# ------------------------------------------------------------ following the player
+#
+# Juniper, 2026-11-06: "the band should follow the player but just with the confidence
+# waiting thing so that if i just make like a little mistake it doesnt assume thats the
+# whole direction we're going."  Before this the band's level never moved and its
+# density was the arc's, by bar count, whatever she played.
+
+#: The band follows.  "lead", where plume steers the song itself, is on the roadmap;
+#: it would be another entry here, with the arc at full depth instead of following.
+FOLLOW = "follow"
+FOLLOW_MODES = (FOLLOW,)
+
+#: Bars a new way of playing has to hold before the band answers.  One bar is a
+#: stumble, and two is a fill or the end of a phrase, which breathe in twos.  A third
+#: bar the same way is past any fill and is a choice, and it is still inside the
+#: four-bar phrase that changed, so the answer is not a section late.  Bars are read two
+#: bars late on top of this, so the band moves about five bars after she does.
+FOLLOW_HOLD_BARS = 3
+#: A room mic hears the band as well as the player, so it is less sure what it heard.
+FOLLOW_HOLD_BARS_ROOM = 4
+#: Played bars it listens to before it knows how this player normally plays.
+FOLLOW_LEARN_BARS = 4
+#: How far a bar has to be from what the band already follows to count as different.
+#: 3 dB is mind.py's energy_up_db; half an octave of busyness is about 40% more or
+#: fewer notes.  Inside these a bar is more of the same.
+FOLLOW_LEVEL_DEADBAND_DB = 3.0
+FOLLOW_BUSY_DEADBAND = 0.5
+#: Notes per beat added to both sides of the busyness ratio, so a sparse player's
+#: second note is not "twice as busy".  mind.py's phrase floor.
+_BUSY_FLOOR = 0.25
+#: The band moves half as far as she did: it answers rather than mirrors (the idea
+#: behind mind.py's delayed recovery), and comes down to find a soft player without
+#: vanishing under her.
+FOLLOW_GAIN_PER_DB = 0.5
+#: Up is bounded tighter than down: a band that lifts with her must not bury her.
+FOLLOW_GAIN_MIN_DB, FOLLOW_GAIN_MAX_DB = -6.0, 3.0
+#: Density, as a multiple of the song's own.  Softer playing thins the band as well as
+#: quietening it; busier playing fills it in.
+FOLLOW_DENSITY_PER_DB = 0.04
+FOLLOW_DENSITY_PER_OCTAVE = 0.25
+FOLLOW_DENSITY_MIN, FOLLOW_DENSITY_MAX = 0.6, 1.3
+#: A room mic never moves the band as far.
+_ROOM_GAIN_DB = (-4.0, 2.0)
+_ROOM_DENSITY = (0.75, 1.15)
+#: The most it moves in one bar, so an answer is a glide.  The engine glides a gain
+#: change across the bar as well, so a decibel is never heard as a step.
+FOLLOW_GAIN_STEP_DB = 1.0
+FOLLOW_DENSITY_STEP = 0.05
+#: Notes per beat past which more band buries the player: mind.py's density_high.
+#: Over it the band never fills in, however busy that is for them.
+FOLLOW_TORRENT = 2.5
+#: Bars a "busier" or "sparser" cue holds the band's density where the cue left it.
+#: After that following moves again, under the cue's own scale, which stays.
+FOLLOW_CUE_HOLD_BARS = 16
+#: How much of the arc's swing survives while the band follows.  The arc stays for
+#: its sections (breaks, the high pad saved for lifts, the moments the take page
+#: shows), but its density by bar count alone is the band leading, so following
+#: keeps half of it and lets her playing do the rest.
+FOLLOW_ARC_DEPTH = 0.5
+_ARC_MEAN = sum(bars * d for _, bars, d in SONG_ARC) / sum(bars for _, bars, _ in SONG_ARC)
+#: A learned normal keeps adapting this slowly, and only while the band is not leaning,
+#: so a long soft passage is still soft at its end.
+_NORMAL_ALPHA = 0.05
+
+
+@dataclass(frozen=True)
+class FollowState:
+    gain_db: float               # added to the band's level
+    density: float               # multiplies the band's density
+    moved: tuple[str, ...]       # what changed this bar: softer, louder, busier, sparser
+    reason: str
+
+
+class _Patience:
+    """One reading's patience: commit only to what has held for ``hold`` bars.
+
+    Each bar is compared with what is already committed.  A bar inside the deadband is
+    more of the same and ends any run, and a bar on the other side starts a new one.  So
+    a mistake moves nothing, and cannot be half of a real move either: the same rule
+    the key governor keeps.
+    """
+
+    def __init__(self, hold: int, deadband: float):
+        self._hold, self._deadband = int(hold), float(deadband)
+        self.value = 0.0
+        self._run: list[float] = []
+        self._side = 0
+
+    def heard(self, reading: float) -> int:
+        """-1 or +1 when this bar commits a move that way, else 0."""
+        off = reading - self.value
+        side = 0 if abs(off) <= self._deadband else (1 if off > 0 else -1)
+        if side == 0:
+            self._run, self._side = [], 0
+            return 0
+        if side != self._side:
+            self._run, self._side = [], side
+        self._run.append(reading)
+        if len(self._run) < self._hold:
+            return 0
+        self.value = sum(self._run) / len(self._run)
+        self._run, self._side = [], 0
+        return side
+
+
+class BandFollow:
+    """The band's level and density, following how she plays.
+
+    Feed it each bar's level (dB) and busyness (onsets per beat), and whether she
+    played.  Both are read against her own normal, learned from her first played bars:
+    nobody is soft in absolute terms.  A bar she sat out is no evidence of anything, so
+    it neither moves the band nor breaks a run.
+
+    ``trusted`` is False on a room mic, where the band is in the signal.  Then it
+    ignores busyness (the drums are onsets too), waits longer, moves less far, learns
+    her normal only once the band is in, and takes its own lean back off what it hears,
+    so a band that lifted cannot read as a player who lifted.
+    """
+
+    def __init__(self, *, trusted: bool, mode: str = FOLLOW):
+        if mode not in FOLLOW_MODES:
+            raise ValueError(f"band mode {mode!r}: only {FOLLOW!r} exists, and plume "
+                             f"leading is on the roadmap")
+        self.mode = mode
+        self.trusted = bool(trusted)
+        self.hold_bars = FOLLOW_HOLD_BARS if self.trusted else FOLLOW_HOLD_BARS_ROOM
+        self._level = _Patience(self.hold_bars, FOLLOW_LEVEL_DEADBAND_DB)
+        self._busy = _Patience(self.hold_bars, FOLLOW_BUSY_DEADBAND)
+        self._gain_lim = ((FOLLOW_GAIN_MIN_DB, FOLLOW_GAIN_MAX_DB) if self.trusted
+                          else _ROOM_GAIN_DB)
+        self._dens_lim = ((FOLLOW_DENSITY_MIN, FOLLOW_DENSITY_MAX) if self.trusted
+                          else _ROOM_DENSITY)
+        self._normal_db: float | None = None
+        self._normal_busy: float | None = None
+        self._learned = 0
+        self._torrent = False
+        self.gain_db = 0.0
+        self.density = 1.0
+        self._cue_hold = 0
+
+    def shape(self, arc_density: float) -> float:
+        """The song arc's density, keeping only part of its swing while following."""
+        return _ARC_MEAN + FOLLOW_ARC_DEPTH * (float(arc_density) - _ARC_MEAN)
+
+    def _learn(self, db: float, busy: float | None) -> None:
+        if self._learned < FOLLOW_LEARN_BARS:
+            n = self._learned
+            self._normal_db = db if n == 0 else (self._normal_db * n + db) / (n + 1)
+            if busy is not None:
+                self._normal_busy = (busy if self._normal_busy is None
+                                     else (self._normal_busy * n + busy) / (n + 1))
+            self._learned += 1
+        elif self._level.value == 0.0 and self._busy.value == 0.0:
+            self._normal_db += _NORMAL_ALPHA * (db - self._normal_db)
+            if busy is not None and self._normal_busy is not None:
+                self._normal_busy += _NORMAL_ALPHA * (busy - self._normal_busy)
+
+    def bar(self, rms_db: float | None, onsets_per_beat: float | None, *,
+            playing: bool, band_in: bool = True) -> FollowState:
+        """This bar's lean.  ``band_in`` False: drums alone, so only listen."""
+        busy = None if onsets_per_beat is None or not self.trusted else float(onsets_per_beat)
+        if not band_in:
+            # A room mic over drums alone hears another mix than it will with the band
+            # in, so only a trusted input learns from these bars.
+            if self.trusted and playing and rms_db is not None:
+                self._learn(float(rms_db), busy)
+            return FollowState(0.0, 1.0, (), "follow: listening until the band is in")
+        moved: list[str] = []
+        if playing and rms_db is not None:
+            # Off a room mic, take back what the band's own lean put into it.
+            db = float(rms_db) - (0.0 if self.trusted else self.gain_db)
+            if self._learned >= FOLLOW_LEARN_BARS:
+                step = self._level.heard(db - self._normal_db)
+                if step:
+                    moved.append("louder" if step > 0 else "softer")
+                if busy is not None and self._normal_busy is not None:
+                    self._torrent = busy > FOLLOW_TORRENT
+                    ratio = math.log2((busy + _BUSY_FLOOR) / (self._normal_busy + _BUSY_FLOOR))
+                    step = self._busy.heard(ratio)
+                    if step:
+                        moved.append("busier" if step > 0 else "sparser")
+            self._learn(db, busy)
+        gain_t, dens_t = self._targets()
+        self.gain_db = _toward(self.gain_db, gain_t, FOLLOW_GAIN_STEP_DB)
+        if self._cue_hold > 0:
+            self._cue_hold -= 1
+        else:
+            self.density = _toward(self.density, dens_t, FOLLOW_DENSITY_STEP)
+        return self._state(tuple(moved))
+
+    def _targets(self) -> tuple[float, float]:
+        lvl, busy = self._level.value, self._busy.value
+        gain = _clip(FOLLOW_GAIN_PER_DB * lvl, *self._gain_lim)
+        dens = 1.0 + FOLLOW_DENSITY_PER_DB * lvl + FOLLOW_DENSITY_PER_OCTAVE * busy
+        hi = min(1.0, self._dens_lim[1]) if self._torrent else self._dens_lim[1]
+        return gain, _clip(dens, self._dens_lim[0], hi)
+
+    def cue(self, value: str) -> FollowState:
+        """A "busier" or "sparser" cue is the player's own word, and beats following.
+
+        Any lean against it goes at once, and the density holds there for
+        :data:`FOLLOW_CUE_HOLD_BARS`.  A lean the same way as the cue stays."""
+        if value not in ("busier", "sparser"):
+            return self._state(())
+        self.density = (min(self.density, 1.0) if value == "sparser"
+                        else max(self.density, 1.0))
+        self._cue_hold = FOLLOW_CUE_HOLD_BARS
+        return self._state(())
+
+    def _state(self, moved: tuple[str, ...]) -> FollowState:
+        why = (f"follow: level {self.gain_db:+.1f}dB density x{self.density:.2f}"
+               + (f", {' and '.join(moved)} for {self.hold_bars} bars" if moved else ""))
+        return FollowState(round(self.gain_db, 3), round(self.density, 4), moved, why)
+
+
+def _toward(now: float, target: float, step: float) -> float:
+    return now + max(-step, min(step, target - now))
+
+
+def _clip(x: float, lo: float, hi: float) -> float:
+    return max(lo, min(hi, x))
 
 
 OUTRO_SIGNAL_BARS = 4

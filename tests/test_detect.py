@@ -106,6 +106,8 @@ def test_the_transport_refuses_too_before_touching_a_device(kw, monkeypatch):
 @pytest.mark.parametrize("bpm,mode,busy,style", [
     (60.0, None, None, "lofi"),
     (60.0, "major", 0.2, "lofi"),
+    (59.9, "minor", 0.2, "lofi"),
+    (50.0, "minor", None, "lofi"),
     (60.0, "minor", 0.2, "rnb"),
     (79.9, "minor", None, "rnb"),
     (79.9, "minor", 3.0, "lofi"),
@@ -133,7 +135,15 @@ def test_the_transport_refuses_too_before_touching_a_device(kw, monkeypatch):
     (140.0, "minor", 0.5, "midwest"),
     (150.0, "major", 0.1, "trap"),
     (150.1, "major", 0.1, "jazz"),
-    (170.0, None, None, "jazz"),
+    (170.0, "minor", 0.49, "jazz"),
+    (220.0, "major", 0.2, "jazz"),
+    # Fast and not known to be sparse is the older answer: nothing there says jazz.
+    (170.0, None, None, "midwest"),
+    (170.0, "major", None, "midwest"),
+    (170.0, "minor", 0.5, "midwest"),
+    (170.0, "major", 2.0, "midwest"),
+    (170.0, "minor", 3.0, "midwest"),
+    (220.1, "major", 0.2, "midwest"),
 ])
 def test_the_rule(bpm, mode, busy, style):
     assert detect_style(bpm, mode, busy) == style
@@ -163,20 +173,47 @@ def test_a_key_she_named_informs_the_first_pick():
     assert StylePick(key="A minor").at_count(100.0) == "synthwave"
 
 
-def test_every_bundled_style_can_be_guessed_at_somewhere_in_its_own_range():
-    """Fair means reachable: no style is shipped that detect can never pick, and a guess
-    never lands outside the tempo range of the style it names."""
-    from plume.styles_lib import list_styles, load_style
+def _every_guess():
     seen = {}
-    for bpm in np.arange(45.0, 171.0, 0.5):
+    for bpm in np.arange(40.0, 260.0, 0.5):
         for mode in (None, "major", "minor"):
             for busy in (None, 0.2, 0.7, 2.0):
-                style = detect_style(float(bpm), mode, busy)
-                seen.setdefault(style, set()).add(float(bpm))
+                seen.setdefault(detect_style(float(bpm), mode, busy), set()).add(float(bpm))
+    return seen
+
+
+def test_every_bundled_style_can_be_guessed_at_somewhere_in_its_own_range():
+    """Fair means reachable: no style is shipped that detect can never pick."""
+    from plume.styles_lib import list_styles, load_style
+    seen = _every_guess()
     assert set(seen) == set(list_styles())
     for style, tempi in seen.items():
         lo, hi = load_style(style)["bpm_range"]
         assert any(lo <= t <= hi for t in tempi), style
+
+
+@pytest.mark.parametrize("style", ["jazz", "house", "hiphop", "rnb"])
+def test_a_new_genre_is_never_guessed_outside_its_own_range(style):
+    """lofi and midwest stay the catch-alls past every range, as they always were.  The
+    four new styles are claims about a tempo, so they never answer outside it."""
+    from plume.styles_lib import load_style
+    lo, hi = load_style(style)["bpm_range"]
+    tempi = _every_guess()[style]
+    assert lo <= min(tempi) and max(tempi) <= hi
+
+
+def test_a_room_mic_never_guesses_jazz():
+    """Jazz needs a player known to be sparse, and a room mic cannot know that."""
+    pick = StylePick(trust_busy=False)
+    pick.heard_bar(0)
+    assert pick.at_count(170.0) == "midwest"
+    assert pick.at_entry(170.0, "C major") == "midwest"
+
+
+def test_a_fast_player_on_a_direct_input_is_not_handed_jazz_for_being_fast():
+    pick = StylePick(trust_busy=True)
+    pick.heard_bar(16)
+    assert pick.at_entry(170.0, "A minor") == "midwest"
 
 
 def test_a_settled_pick_says_so():

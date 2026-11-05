@@ -44,13 +44,16 @@ def detect_style(bpm: float, mode: str | None = None, busy: float | None = None)
 
     A minor key with room in it is the only sign this rule has of r&b, hip hop or house,
     so those three are claims about tempo and mode and nothing more.  It hears nothing
-    that could tell jazz at all, so jazz only answers above 150, where no other style's
-    range reaches: a slow jazz player gets one of the others and has to name it.
+    that could tell jazz from anything else played fast, so being fast is not enough:
+    jazz only answers above 150, where no other style's range reaches, for a player a
+    direct input knows is leaving a lot of room, and a sparse player at those tempos is
+    still only a guess.  Everyone else fast keeps midwest, and a slow jazz player, or one
+    on a room mic, has to name it.
     """
     busy_now = busy is not None and busy >= _BUSY_ONSETS_PER_BEAT
     minor_with_room = mode == "minor" and not busy_now
     if bpm < 80.0:
-        return "rnb" if minor_with_room else "lofi"
+        return "rnb" if minor_with_room and bpm >= 60.0 else "lofi"
     if bpm < 90.0:
         if busy_now:
             return "midwest"
@@ -63,7 +66,8 @@ def detect_style(bpm: float, mode: str | None = None, busy: float | None = None)
         return "house" if minor_with_room else "midwest"
     if bpm <= 150.0:
         return "midwest" if busy is not None and busy >= _SPARSE_ONSETS_PER_BEAT else "trap"
-    return "jazz"
+    known_sparse = busy is not None and busy < _SPARSE_ONSETS_PER_BEAT
+    return "jazz" if known_sparse and bpm <= 220.0 else "midwest"
 
 
 def _mode_of(key: str | None) -> str | None:

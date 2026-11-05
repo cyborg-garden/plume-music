@@ -673,7 +673,7 @@ def test_a_named_genre_plays_a_whole_tap_started_take(tmp_path, consent, prompt,
 
 
 def test_a_guessed_genre_says_it_is_a_guess(tmp_path, consent):
-    rec = _fake_take(tmp_path, "guess", bpm=160.0, detect=True, prompt="in C major")
+    rec = _fake_take(tmp_path, "guess", bpm=85.0, detect=True, prompt="in A minor")
     rows = _take_rows(rec)
-    assert rows and {r["style"] for r in rows} == {"jazz"}
+    assert rows and {r["style"] for r in rows} == {"hiphop"}
     assert all(r["style_guess"] for r in rows)

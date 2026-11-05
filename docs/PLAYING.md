@@ -44,8 +44,9 @@ how busy you are. On a room mic it can't tell your notes from the drums, so busy
 count there. These are guesses, and the rule's thresholds are first guesses too. All it has
 to go on is tempo, key and how busy you are, so `rnb`, `hiphop` and `house` only mean a minor
 key with room in it at those tempos. Nothing it hears can tell jazz, so it only guesses `jazz`
-above 150 bpm, where no other style reaches. To play slower jazz, name it. So far this has
-only run on a simulated device, never with a real guitar.
+above 150 bpm, where no other style reaches, and only for a player a direct input knows is
+leaving a lot of room. Anyone else that fast gets `midwest`. To play jazz at other tempos or on
+a room mic, name it. So far this has only run on a simulated device, never with a real guitar.
 
 To stop from another terminal, run `plume stop` (`plume play` and `plume calibrate` too), or `plume sessions` to see what is
 running. A take also stops by itself after 60 minutes; `--max-minutes N` changes that.

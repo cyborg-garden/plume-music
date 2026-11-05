@@ -14,7 +14,7 @@ const S = { csrf: '', take: null, selected: null, roastOn: true, screen: 'loadin
   shelfKey: null, shelfDone: false, shelfTakes: [], lastTake: null, shelfScroll: 0, cameByLink: false,
   nameFor: null, nameSent: '', keepTurn: {}, nameTurn: {}, moving: false, failed: null, newNames: {},
   live: { state: 'idle' }, liveTurn: 0, following: false, starting: false, stopSent: false, stopPending: false,
-  home: null, homeTurn: 0, homeStone: null, stoneTurn: 0, homeNote: '', form: { device: null, channel: null },
+  home: null, homeTurn: 0, homeNote: '', form: { device: null, channel: null },
   setup: null, setupTurn: 0, listening: false, listenSlow: false, answering: false, ending: NO_ENDING };
 
 function load(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
@@ -622,26 +622,11 @@ async function loadHome() {
   drawHomeMenu();
   drawHomeState();
 }
-/* The newest take's stone. With no take yet it is one nothing has cut, and leads nowhere.
-   It is asked for on its own, so a slow folder of takes never holds up Start. */
-const UNCUT = { seed: 7, height: 0.62, lean: 0.04, cut: null, minor: false, nicks: 0 };
+/* Plume's own stone. These are the numbers of the first take it was carved from. */
+const HOME_STONE = { seed: 12034, height: 0.8137, lean: 0.2, cut: 0.2326, minor: false, nicks: 0 };
 function paintHomeStone() {
-  const t = S.homeStone, b = $('home-stone');
   if (!stonesIdle()) S.shelfDone = false;
-  clearStones(); queueStone($('home-stone-art'), t ? t.portrait : UNCUT, true);
-  b.disabled = !t;
-  if (t) b.setAttribute('aria-label', 'Open your latest take, ' + titleOf(t));
-  else b.removeAttribute('aria-label');
-  b.setAttribute('aria-hidden', t ? 'false' : 'true');
-  b.hidden = false;
-}
-async function loadHomeStone() {
-  const turn = ++S.stoneTurn;
-  let doc;
-  try { doc = await api('/api/takes'); } catch (err) { doc = null; }
-  if (turn !== S.stoneTurn || S.screen !== 'home') return;
-  if (doc) S.homeStone = doc.takes[0] || null;
-  paintHomeStone();
+  clearStones(); queueStone($('home-stone'), HOME_STONE, true);
 }
 function openHome() {
   if (isRunning(S.live)) { history.replaceState(null, '', '#/live'); openLive(); return; }
@@ -651,7 +636,7 @@ function openHome() {
   drawHomeMenu();
   drawHomeState();
   loadHome();
-  loadHomeStone();
+  paintHomeStone();
 }
 /* Only what was decided here, so what setup learned is not overruled by a page that never
    changed it, and the device setup just heard, so the bridge does not choose again. It checks
@@ -1027,7 +1012,7 @@ function reflectTheme() {
   paintGrain();
   if (S.screen === 'record' && S.take) { drawSheet(); selectEvent(S.selected); paintPortrait(); }
   if (S.screen === 'shelf') repaintShelf();
-  if (S.screen === 'home' && !$('home-stone').hidden) paintHomeStone();
+  if (S.screen === 'home') paintHomeStone();
 }
 function setTheme(name) {
   if (name === 'day') document.documentElement.removeAttribute('data-theme');
@@ -1041,8 +1026,7 @@ function setTheme(name) {
 async function init() {
   S.roastOn = load('plume-roast') !== 'off';
   $('wordmark').addEventListener('click', goHome);
-  $('home-stone').addEventListener('click', function () { if (S.homeStone) goTake(S.homeStone.id); });
-$('nav-takes').addEventListener('click', goShelf);
+  $('nav-takes').addEventListener('click', goShelf);
   $('nav-live').addEventListener('click', goLive);
   $('start').addEventListener('click', pressStart);
   $('rec-again').addEventListener('click', function (ev) { if (!(ev && ev.detail > 1)) pressStart(); });

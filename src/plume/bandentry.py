@@ -387,8 +387,15 @@ class _Patience:
         if len(self._run) < self._hold:
             return 0
         self.value = sum(self._run) / len(self._run)
+        if abs(self.value) <= self._deadband:
+            self.value = 0.0          # back inside normal is normal, not a lean
         self._run, self._side = [], 0
         return side
+
+    @property
+    def settled(self) -> bool:
+        """Not leaning, and nothing building towards a lean."""
+        return self.value == 0.0 and not self._run
 
 
 class BandFollow:
@@ -438,7 +445,9 @@ class BandFollow:
                 self._normal_busy = (busy if self._normal_busy is None
                                      else (self._normal_busy * n + busy) / (n + 1))
             self._learned += 1
-        elif self._level.value == 0.0 and self._busy.value == 0.0:
+        elif self._level.settled and self._busy.settled:
+            # Not from a bar that may be the start of a move: a soft passage's first
+            # bars would pull her normal down to meet it.
             self._normal_db += _NORMAL_ALPHA * (db - self._normal_db)
             if busy is not None and self._normal_busy is not None:
                 self._normal_busy += _NORMAL_ALPHA * (busy - self._normal_busy)

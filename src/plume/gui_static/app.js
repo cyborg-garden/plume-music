@@ -14,7 +14,7 @@ const S = { csrf: '', take: null, selected: null, roastOn: true, screen: 'loadin
   shelfKey: null, shelfDone: false, shelfTakes: [], lastTake: null, shelfScroll: 0, cameByLink: false,
   nameFor: null, nameSent: '', keepTurn: {}, nameTurn: {}, moving: false, failed: null, newNames: {},
   live: { state: 'idle' }, liveTurn: 0, following: false, starting: false, stopSent: false, stopPending: false,
-  home: null, homeTurn: 0, homeNote: '', form: { device: null, channel: null, hear: null },
+  home: null, homeTurn: 0, homeNote: '', form: { device: null, channel: null },
   setup: null, setupTurn: 0, listening: false, listenSlow: false, answering: false, ending: NO_ENDING };
 
 function load(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
@@ -513,11 +513,12 @@ function chosenDevice() {
   const id = S.form.device || S.home.device;
   return S.home.devices.find(function (d) { return d.id === id; }) || null;
 }
-/* Off until a person says otherwise, in setup or here. */
+/* What the bridge has saved, as of its last answer. The page keeps no tick of its own: one left
+   here would outlast the gear it was true of. */
 function hearOn() {
-  if (S.form.hear !== null) return S.form.hear;
+  if (!S.home) return false;
   const device = chosenDevice();
-  return !!(device && device.hear_me);
+  return !!(device ? device.hear_me : S.home.hear_me && S.home.hear_me.default);
 }
 function channelNow() {
   if (S.form.channel !== null) return S.form.channel;
@@ -537,7 +538,7 @@ function drawHomeMenu() {
   const doc = S.home;
   if (!doc) return;
   /* A device that went away falls back to the default rather than to nothing. */
-  if (S.form.device && !doc.devices.some(function (d) { return d.id === S.form.device; })) { S.form.device = null; S.form.channel = null; S.form.hear = null; }
+  if (S.form.device && !doc.devices.some(function (d) { return d.id === S.form.device; })) { S.form.device = null; S.form.channel = null; }
   const device = chosenDevice(), most = device ? device.inputs : 1;
   if (S.form.channel > most) S.form.channel = null;
   const devices = doc.devices.map(function (d) {
@@ -557,8 +558,8 @@ function drawHomeMenu() {
   drawSummary();
 }
 function drawHear() {
-  /* Any input, once a person says headphones are on: ticking this says so. Plume cannot tell
-     headphones from speakers, and the bridge refuses it without that yes. */
+  /* Any input, once a person says headphones are on: ticking this says so, to the bridge, there
+     and then. Plume cannot tell headphones from speakers, and the bridge refuses it without that yes. */
   const device = chosenDevice(), on = hearOn();
   $('hear-row').hidden = !S.home;
   $('hear-words').hidden = !S.home || !on;
@@ -566,6 +567,27 @@ function drawHear() {
   $('hear-direct').hidden = !(device && device.mode === 'direct');
   $('hear-direct').textContent = DIRECT_LINE;
   $('hear-delay').textContent = delayLine(device && device.reported_ms);
+}
+async function sendHear(on) {
+  const box = $('hear-me'), note = $('hear-note'), asked = chosenDevice(), body = { step: 'hear_me', answer: on ? 'on' : 'off' };
+  if (asked) body.device = asked.id;
+  box.disabled = true;
+  note.hidden = true;
+  /* A look at the bridge asked before this answer knows less than it does. */
+  S.homeTurn += 1;
+  let answer = null;
+  try { answer = await send('setup/answer', body); } catch (err) { /* said below */ }
+  box.disabled = false;
+  if (answer && answer.status === 401) { problem(answer); return; }
+  if (answer && answer.ok) {
+    const device = asked && S.home.devices.find(function (d) { return d.id === asked.id; });
+    if (device) device.hear_me = answer.doc.hear_me;
+    else if (S.home.hear_me) S.home.hear_me.default = answer.doc.hear_me;
+  } else {
+    note.hidden = false;
+    note.textContent = (answer && answer.doc && answer.doc.error) || 'That did not reach plume gui.';
+  }
+  drawHear();
 }
 function drawSummary() {
   if (S.home) $('home-summary').textContent = routeLine(chosenDevice(), channelNow(), $('set-key').value.trim(), $('set-style').value.trim());
@@ -614,10 +636,6 @@ function startBody() {
     if (device) body.device = device.id;
     /* The rows here are from before setup heard her, so only a channel she changed is sent. */
     if (S.form.channel !== null) body.channel = S.form.channel;
-  }
-  if (S.form.hear !== null) {
-    body.hear_me = S.form.hear;
-    if (S.form.hear) body.headphones = true;
   }
   return body;
 }
@@ -729,7 +747,7 @@ function drawSetup() {
     b.textContent = 'Try ' + device.name;
     b.addEventListener('click', function (ev) {
       if (ev && ev.detail > 1) return;
-      S.form.device = device.id; S.form.channel = null; S.form.hear = null;
+      S.form.device = device.id; S.form.channel = null;
       setupListen();
     });
     others.appendChild(b);
@@ -758,13 +776,11 @@ async function setupListen() {
   S.listening = false;
   settleSetup(answer);
 }
-/* Whatever she said here is what counts, not a tick left in the menu before she was asked. */
 function setOff(b) { b.disabled = true; }
 async function setupAnswer(step, value) {
   const turn = S.setupTurn, body = { step: step, answer: value };
   if (S.setup.device) body.device = S.setup.device;
   S.answering = true;
-  S.form.hear = null;
   Array.from($('setup-choices').children).forEach(setOff);
   let answer = null;
   try { answer = await send('setup/answer', body); } catch (err) { /* said below */ }
@@ -795,7 +811,11 @@ async function resetSetup() {
   try { answer = await send('setup/reset', {}); } catch (err) { /* said below */ }
   if (answer && answer.status === 401) { problem(answer); return; }
   if (!answer || !answer.ok) { note.textContent = 'That did not reach plume gui.'; return; }
-  S.form.hear = null; S.form.channel = null;
+  S.form.channel = null;
+  if (S.home) {
+    S.home.devices.forEach(function (d) { d.hear_me = false; });
+    if (S.home.hear_me) S.home.hear_me.default = false;
+  }
   note.textContent = 'Start will ask again.';
   drawHear();
   loadHome();
@@ -996,11 +1016,10 @@ async function init() {
   $('elsewhere-stop').addEventListener('click', function () { stopTake(); });
   $('cue-busier').addEventListener('click', function () { sendCue('busier'); });
   $('cue-sparser').addEventListener('click', function () { sendCue('sparser'); });
-  $('hear-me').addEventListener('change', function () { S.form.hear = $('hear-me').checked; drawHear(); });
+  $('hear-me').addEventListener('change', function () { sendHear($('hear-me').checked); });
   $('set-device').addEventListener('change', function () {
     S.form.device = $('set-device').value || null;
     S.form.channel = null;
-    S.form.hear = null;
     drawHomeMenu();
   });
   $('set-channel').addEventListener('change', function () { S.form.channel = parseInt($('set-channel').value, 10) || 1; drawSummary(); });

@@ -641,20 +641,58 @@ def test_a_saved_hear_me_shows_ticked_and_is_left_to_the_bridge(tmp_path, docs):
     assert out["on"] is True and out["words"] is True and out["body"] == {}
 
 
-def test_ticking_hear_me_is_also_the_yes_about_headphones(tmp_path, docs):
-    out = run_page(tmp_path, docs, """
-        $('hear-me').checked = true; $('hear-me').fire('change');
+TICK = "$('hear-me').checked = true; $('hear-me').fire('change'); await page.settle();"
+
+
+def test_ticking_hear_me_tells_the_bridge_then_and_start_says_nothing_about_it(tmp_path, docs):
+    """A tick that only lives in the page outlasts the gear it was true of."""
+    interface = next(d for d in docs["home"]["devices"] if d["name"] == "Test Interface")
+    out = run_page(tmp_path, docs, f"""
+        page.replies['setup/answer'] = [200, {json.dumps({**COUNT, "hear_me": True})}];
+        {TICK}
+        const ticked = $('hear-me').checked;
         $('start').click(); await page.settle();
-        return page.posts('start')[0];""")
-    assert out == {"hear_me": True, "headphones": True}
+        return {{ ticked, said: page.posts('setup/answer'), start: page.posts('start') }};""")
+    assert out["said"] == [{"device": interface["id"], "step": "hear_me", "answer": "on"}]
+    assert out["ticked"] is True and out["start"] == [{}]
 
 
-def test_choosing_another_device_forgets_the_tick(tmp_path, docs):
+def test_a_tick_left_in_the_page_never_reaches_start_anyway(tmp_path, docs):
+    nothing = {**setup_doc("listen", "Barely hearing you.", "again", "start"),
+               "heard": {"result": "low", "channel": 1, "peak_db": -45.0}, "others": []}
+    out = first_run(tmp_path, docs, f"""
+        page.replies['setup/answer'] = [200, {json.dumps({**COUNT, "hear_me": True})}];
+        {TICK}
+        page.replies['setup/listen'] = [200, {json.dumps(nothing)}];
+        $('start').click(); await page.settle();
+        $('setup-start').click(); await page.settle();
+        return page.posts('start');""")
+    assert out == [{}]
+
+
+def test_a_tick_the_bridge_refuses_does_not_stay_ticked(tmp_path, docs):
+    out = run_page(tmp_path, docs, f"""
+        page.replies['setup/answer'] = [400, {{ error: {json.dumps(guitake.DEVICE_MISSING)} }}];
+        {TICK}
+        return {{ ticked: $('hear-me').checked, note: $('hear-note').textContent, shown: !$('hear-note').hidden }};""")
+    assert out == {"ticked": False, "note": guitake.DEVICE_MISSING, "shown": True}
+
+
+def test_a_tick_that_cannot_reach_the_bridge_does_not_stay_ticked(tmp_path, docs):
+    out = run_page(tmp_path, docs, f"""
+        page.down = true;
+        {TICK}
+        return {{ ticked: $('hear-me').checked, note: $('hear-note').textContent }};""")
+    assert out == {"ticked": False, "note": "That did not reach plume gui."}
+
+
+def test_each_device_shows_its_own_tick(tmp_path, docs):
     mic = next(d for d in docs["home"]["devices"] if d["name"] == "Test Mic")
     interface = next(d for d in docs["home"]["devices"] if d["name"] == "Test Interface")
     out = run_page(tmp_path, docs, f"""
         const pick = (id) => {{ $('set-device').value = id; $('set-device').fire('change'); }};
-        $('hear-me').checked = true; $('hear-me').fire('change');
+        page.replies['setup/answer'] = [200, {json.dumps({**COUNT, "hear_me": True})}];
+        {TICK}
         pick({json.dumps(mic["id"])});
         const onMic = {{ ...{HEAR}, line: $('home-summary').textContent, channel: !$('set-channel').hidden }};
         pick({json.dumps(interface["id"])});
@@ -662,21 +700,22 @@ def test_choosing_another_device_forgets_the_tick(tmp_path, docs):
         $('start').click(); await page.settle();
         return {{ onMic, back, body: page.posts('start')[0] }};""")
     assert out["onMic"]["on"] is False and out["onMic"]["line"] == "Test Mic, room mic" and out["onMic"]["channel"] is False
-    assert out["back"]["on"] is False and out["back"]["channel"] is True
+    assert out["back"]["on"] is True and out["back"]["channel"] is True
     assert out["back"]["line"] == "Test Interface, channel 1"
     assert out["body"] == {"device": interface["id"]}, "the channel is setup's to fill in, unless she changed it"
 
 
-def test_turning_hear_me_off_is_sent_and_kept_across_a_visit_to_the_shelf(tmp_path, docs):
+def test_turning_hear_me_off_is_told_to_the_bridge_and_stays_off(tmp_path, docs):
     _saved_hear_me(docs)
-    out = run_page(tmp_path, docs, """
-        $('hear-me').checked = false; $('hear-me').fire('change');
+    out = run_page(tmp_path, docs, f"""
+        page.replies['setup/answer'] = [200, {json.dumps({**COUNT, "hear_me": False})}];
+        $('hear-me').checked = false; $('hear-me').fire('change'); await page.settle();
         $('nav-takes').click(); await page.settle();
         $('wordmark').click(); await page.settle();
         const ticked = $('hear-me').checked;
         $('start').click(); await page.settle();
-        return { ticked, body: page.posts('start')[0] };""")
-    assert out == {"ticked": False, "body": {"hear_me": False}}
+        return {{ ticked, said: page.posts('setup/answer')[0].answer, body: page.posts('start')[0] }};""")
+    assert out == {"ticked": False, "said": "off", "body": {}}
 
 
 def test_the_channel_setup_found_shows_and_is_left_to_the_bridge(tmp_path, docs):
@@ -1462,17 +1501,6 @@ def test_two_quick_answers_send_one(tmp_path, docs):
     assert out == 1
 
 
-def test_setup_says_no_on_headphones_beats_a_tick_left_in_the_menu(tmp_path, docs):
-    """A page must not put Hear me on after she has just said speakers."""
-    out = first_run(tmp_path, docs, f"""
-        $('hear-me').checked = true; $('hear-me').fire('change');
-        $('start').click(); await page.settle();
-        page.replies['setup/answer'] = [200, {json.dumps(COUNT)}];
-        $('setup-no').click(); await page.settle();
-        return page.posts('start');""", setup=HEADPHONES)
-    assert out == [{}]
-
-
 @pytest.mark.parametrize("leave", ["$('setup-leave').click();", "$('wordmark').click();", "$('nav-takes').click();",
                                    "page.history.go(-1);"])
 def test_leaving_while_it_listens_lets_go_of_the_device_and_keeps_nothing_running(tmp_path, docs, leave):
@@ -1616,11 +1644,14 @@ def test_set_up_again_is_one_link_in_the_menu_and_starts_nothing(tmp_path, docs)
     menu = html[html.index('<details id="home-menu"'):html.index("</details>")]
     assert ">Set up again</button>" in menu and html.count("Set up again") == 1
     out = run_page(tmp_path, docs, f"""
-        $('hear-me').checked = true; $('hear-me').fire('change');
+        page.replies['setup/answer'] = [200, {json.dumps({**COUNT, "hear_me": True})}];
+        {TICK}
+        const before = $('hear-me').checked;
         $('set-again').click(); await page.settle();
         const seen = {{ note: $('set-again-note').textContent, ticked: $('hear-me').checked }};
-        return {{ ...seen, posts: {MUTATIONS}, bodies: page.posts('setup/reset'), screen: page.screen() }};""")
-    assert out["posts"] == ["setup/reset"] and out["bodies"] == [{}] and out["screen"] == "home"
+        return {{ ...seen, before, posts: {MUTATIONS}, bodies: page.posts('setup/reset'), screen: page.screen() }};""")
+    assert out["before"] is True
+    assert out["posts"] == ["setup/answer", "setup/reset"] and out["bodies"] == [{}] and out["screen"] == "home"
     assert out["note"] == "Start will ask again." and out["ticked"] is False
 
 

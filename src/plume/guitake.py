@@ -147,7 +147,9 @@ CUES = ("busier", "sparser")
 #: folder first on the path, and a plume.py in it would run with the click's consent.
 PLUME_CHILD = (sys.executable, "-P", "-m", "plume")
 _TYPED_TONIC = re.compile(r"[A-Ga-g][#sb]?")
-_FIELDS = frozenset({"device", "channel", "key", "style", "hear_me", "headphones"})
+#: No word about headphones: a page can be hours old, on other gear.  That is said to setup, and
+#: saved there, where a change in what is plugged in can take it back.
+_FIELDS = frozenset({"device", "channel", "key", "style", "hear_me"})
 #: A row may carry more than a page needs.  Only these fields leave the bridge.
 _ROW_FIELDS = ("bar", "t_s", "bpm", "section", "stage", "key", "chord", "style", "style_guess",
                "key_guess", "you_db", "band_db", "you_busy", "you_notes", "you_source", "input",
@@ -394,8 +396,8 @@ class Route:
 def _route(body: dict, devices: list[dict], *, preferred=None, saved_for=lambda device: {}) -> tuple:
     """(the route, the device it came from).  What setup learned fills in what she did not say.
 
-    Hear me needs a yes about headphones, for this device, saved or sent with this request.
-    Plume cannot tell headphones from speakers, and a stale page must not cause feedback.
+    Hear me needs a yes about headphones, saved for this device as things are now.  Plume cannot
+    tell headphones from speakers, and a stale page must not cause feedback.
     """
     wanted = body.get("device")
     if wanted is None:
@@ -412,13 +414,9 @@ def _route(body: dict, devices: list[dict], *, preferred=None, saved_for=lambda 
     if isinstance(channel, bool) or not isinstance(channel, int) or not 1 <= channel <= most:
         raise Refused(400, f"That device has channels 1 to {most}.")
     mode = "room" if device is None else device["mode"]
-    hear_me, headphones = body.get("hear_me"), body.get("headphones")
+    hear_me, headphones = body.get("hear_me"), saved.get("headphones")
     if hear_me is not None and not isinstance(hear_me, bool):
         raise Refused(400, "hear_me must be true or false")
-    if headphones is not None and not isinstance(headphones, bool):
-        raise Refused(400, "headphones must be true or false")
-    if headphones is None:
-        headphones = saved.get("headphones")
     if hear_me is None:
         hear_me = saved.get("hear_me") is True and headphones is True
     if hear_me and headphones is not True:
@@ -429,7 +427,7 @@ def _route(body: dict, devices: list[dict], *, preferred=None, saved_for=lambda 
 # --------------------------------------------------------------------------------- setup
 
 _ANSWERS = {"headphones": ("yes", "no"), "hears_self": ("yes", "no"), "volume": ("fixed", "still"),
-            "latency": ("ok",)}
+            "latency": ("ok",), "hear_me": ("on", "off")}
 _YES_NO = [{"answer": "yes", "label": "Yes"}, {"answer": "no", "label": "No"}]
 _STEPS = {
     "headphones": ("Headphones on?", _YES_NO),
@@ -1034,6 +1032,8 @@ class TakeRunner:
         step, answer = body.get("step"), body.get("answer")
         if not isinstance(step, str) or not isinstance(answer, str) or answer not in _ANSWERS.get(step, ()):
             raise Refused(400, "That is not an answer setup asked for.")
+        if step == "hear_me":
+            return self._menu_hear_me(body.get("device"), answer == "on")
         try:
             devices, rows, mark = self._look_recent()
         except TakeError as e:
@@ -1058,6 +1058,28 @@ class TakeRunner:
                 entry["still"], entry["hear_me"] = True, True
         else:
             entry["late_said"] = True
+        entry["list"] = mark
+        self._setup.put(_setup_key(device), entry)
+        return self._setup_doc(device, rows, mark, self._reported_now())
+
+    def _menu_hear_me(self, device_id, on: bool) -> dict:
+        """The tick in the menu.  On is a yes about headphones for this device, as things are now.
+
+        It settles what setup would have asked, so a finished setup stays finished.
+        """
+        try:
+            devices, rows, mark = self._look()
+        except TakeError as e:
+            raise Refused(409, str(e)) from None
+        device = self._named(device_id, devices, mark)
+        entry = self._saved(device, mark)
+        if on:
+            entry.update(headphones=True, hears_self=False, still=True, hear_me=True)
+        else:
+            entry["hear_me"] = False
+            if entry.get("headphones") is True:
+                entry["hears_self"] = True
+                entry.pop("still", None)
         entry["list"] = mark
         self._setup.put(_setup_key(device), entry)
         return self._setup_doc(device, rows, mark, self._reported_now())
@@ -1247,9 +1269,8 @@ class TakeRunner:
             return self._failed(str(e))
         if not devices:
             return self._failed(NO_INPUT)
-        route, device = _route(body, devices, preferred=self._preferred(mark),
-                               saved_for=lambda d: self._saved(d, mark))
-        self._keep_what_she_said(body, device, route, mark)
+        route, _ = _route(body, devices, preferred=self._preferred(mark),
+                          saved_for=lambda d: self._saved(d, mark))
         try:
             folder = make_take_folder(self.root, self._now())
         except OSError:
@@ -1288,20 +1309,6 @@ class TakeRunner:
             threading.Thread(target=self._watch, args=(take,), name="plume-gui-take",
                              daemon=True).start()
         return doc
-
-    def _keep_what_she_said(self, body: dict, device: dict | None, route: Route, mark: str) -> None:
-        """A yes or no sent with Start, or Hear me set in the menu, holds for next time."""
-        headphones = body.get("headphones")
-        if headphones is None and body.get("hear_me") is None:
-            return
-        entry = self._saved(device, mark)
-        if headphones is not None:
-            entry["headphones"] = headphones
-            for name in ("hears_self", "still"):
-                entry.pop(name, None)
-        entry["hear_me"] = route.hear_me
-        entry["list"] = mark
-        self._setup.put(_setup_key(device), entry)
 
     def _failed(self, message: str) -> dict:
         with self._lock:

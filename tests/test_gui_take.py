@@ -660,7 +660,8 @@ def test_playing_once_a_bar_is_decided(rig, runner):
 
 
 def test_the_live_doc_says_what_the_take_is(rig, runner):
-    runner.start({"key": "F major", "channel": 2, "hear_me": True, "headphones": True})
+    runner.answer({"step": "hear_me", "answer": "on"})
+    runner.start({"key": "F major", "channel": 2})
     doc = runner.live()
     assert doc["device"] == SCARLETT["name"]
     assert (doc["mode"], doc["channel"], doc["hear_me"]) == ("direct", 2, True)
@@ -1463,7 +1464,8 @@ def test_the_whole_way_on_the_fake_device(tmp_path, monkeypatch, plume_registry)
         return doc
 
     with patched_module("sounddevice", fake_audio(_strummed_take(115.0), devices=devices, rate_x=12.0)):
-        assert runner.start({"hear_me": True, "headphones": True})["state"] == "starting"
+        runner.answer({"step": "hear_me", "answer": "on"})
+        assert runner.start({})["state"] == "starting"
         assert wait_until(lambda: state()["state"] in ("waiting", "playing"), timeout=20.0)
         assert wait_until(lambda: state()["level_db"] is not None, timeout=20.0)
         assert wait_until(lambda: state()["stream"] is not None, timeout=20.0)

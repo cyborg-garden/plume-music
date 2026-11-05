@@ -718,37 +718,89 @@ def test_a_saved_yes_on_one_device_says_nothing_about_another(rig, runner, meter
         runner.start({"device": mic["id"], "hear_me": True})
 
 
-@pytest.mark.parametrize("given", [True, False])
-def test_a_just_given_answer_counts_and_is_kept(rig, runner, given):
-    if given:
-        runner.start({"hear_me": True, "headphones": True})
-        assert "--monitor" in rig.spawned[-1]
-        assert runner.setup()["hear_me"] is True
-    else:
-        with pytest.raises(guitake.Refused):
-            runner.start({"hear_me": True, "headphones": False})
-        assert rig.spawned == []
+def tick(runner, on=True, device=None):
+    body = {"step": "hear_me", "answer": "on" if on else "off"}
+    if device is not None:
+        body["device"] = device
+    return runner.answer(body)
 
 
-def test_a_just_given_no_turns_a_saved_hear_me_off(rig, runner, meter):
-    _finished(runner, meter)
-    runner.start({"headphones": False})
-    assert "--monitor" not in rig.spawned[-1]
-    assert runner.setup()["hear_me"] is False
+def test_a_tick_is_a_yes_kept_for_this_device_and_start_needs_nothing_more(rig, runner):
+    assert tick(runner)["hear_me"] is True
+    runner.start({})
+    assert "--monitor" in rig.spawned[-1]
+    assert runner.setup()["hear_me"] is True
 
 
 def test_turning_it_off_in_the_menu_is_kept(rig, runner, meter):
     _finished(runner, meter)
-    runner.start({"hear_me": False})
+    assert tick(runner, on=False)["hear_me"] is False
+    runner.start({})
     assert "--monitor" not in rig.spawned[-1]
     assert runner.setup()["hear_me"] is False
 
 
-@pytest.mark.parametrize("value", ["yes", 1, 0])
-def test_headphones_must_be_a_real_boolean(rig, runner, value):
+@pytest.mark.parametrize("answer", ["yes", "maybe", ""])
+def test_a_tick_is_only_on_or_off(runner, answer):
+    with pytest.raises(guitake.Refused):
+        runner.answer({"step": "hear_me", "answer": answer})
+    assert runner.setup()["hear_me"] is False
+
+
+def test_a_tick_for_a_device_that_has_gone_is_refused(rig, runner):
+    with pytest.raises(guitake.Refused) as e:
+        tick(runner, device="f" * 16)
+    assert e.value.status == 400 and runner.setup()["hear_me"] is False
+
+
+@pytest.mark.parametrize("value", [True, False, "yes", 1, 0])
+def test_start_is_never_a_word_about_headphones(rig, runner, value):
+    """Words sent with Start come from a page that may be hours old, on other gear."""
+    with pytest.raises(guitake.Refused):
+        runner.start({"hear_me": True, "headphones": value})
     with pytest.raises(guitake.Refused):
         runner.start({"headphones": value})
-    assert rig.spawned == []
+    assert rig.spawned == [] and runner.setup()["hear_me"] is False
+
+
+def test_hear_me_sent_with_start_does_not_change_what_is_saved(rig, runner, meter):
+    _finished(runner, meter)
+    runner.start({"hear_me": False})
+    assert "--monitor" not in rig.spawned[-1]
+    assert runner.setup()["hear_me"] is True
+
+
+def test_a_tick_from_before_the_headphones_came_out_starts_no_monitor(rig, runner, meter):
+    """The feedback case: headphones out, so the mic's sound now goes to the speakers."""
+    plugged = {"name": "Wired Headphones", "inputs": 0, "outputs": 2, "default_output": True}
+    rig.devices = [LAPTOP_MIC, LAPTOP_OUT, plugged]
+    good(meter, LAPTOP_MIC, -14.0)
+    runner.listen({})
+    tick(runner)
+    runner.start({})
+    assert "--monitor" in rig.spawned[-1], "the check needs the tick to have worked"
+    rig.die(0)
+    runner.tick()
+    rig.devices = [LAPTOP_MIC, LAPTOP_OUT]
+    good(meter, LAPTOP_MIC, -45.0)
+    assert runner.listen({})["heard"]["result"] == "low"
+    runner.start({})
+    assert "--monitor" not in rig.spawned[-1]
+    entry = json.loads(Path(runner._setup._path_of()).read_text())["devices"]
+    assert not any(e.get("hear_me") or e.get("headphones") for e in entry.values())
+
+
+@pytest.mark.parametrize("on", [True, False])
+def test_a_tick_leaves_a_finished_setup_finished(rig, runner, meter, on):
+    good(meter)
+    runner.listen({})
+    walk(runner, ("headphones", "yes"), ("hears_self", "yes"))
+    assert runner.setup()["done"] is True
+    tick(runner, on=on)
+    doc = runner.setup()
+    assert doc["done"] is True and doc["hear_me"] is on
+    runner.start({})
+    assert ("--monitor" in rig.spawned[-1]) is on
 
 
 @pytest.mark.parametrize("devices,name", [
@@ -758,14 +810,16 @@ def test_headphones_must_be_a_real_boolean(rig, runner, value):
 def test_a_room_mic_may_hear_itself_with_headphones(rig, runner, devices, name):
     rig.devices = devices
     mic = next(d for d in runner.home()["devices"] if d["name"] == name)
-    runner.start({"device": mic["id"], "hear_me": True, "headphones": True})
+    tick(runner, device=mic["id"])
+    runner.start({"device": mic["id"]})
     argv = rig.spawned[-1]
     assert f"--input-device={name}" in argv and "--monitor" in argv and "--direct" not in argv
 
 
 def test_the_system_default_may_hear_itself_with_headphones(rig, runner):
     rig.devices = [LAPTOP_OUT, BLACKHOLE]
-    runner.start({"hear_me": True, "headphones": True})
+    tick(runner)
+    runner.start({})
     assert "--monitor" in rig.spawned[-1]
     assert not [a for a in rig.spawned[-1] if a.startswith(("--device", "--input-device"))]
 

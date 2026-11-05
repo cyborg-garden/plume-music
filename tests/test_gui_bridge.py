@@ -1117,8 +1117,24 @@ def test_together_lines_the_player_up_and_leaves_room_for_both(tmp_path):
     assert record.playing_delay_frames(folder, 48000) == 480
     with sf.SoundFile(folder / "human.wav") as h, sf.SoundFile(folder / "machine.wav") as m:
         pcm = np.frombuffer(gui._mixed_pcm(h, m, 480, 0, 200), dtype="<i2") / 32767.0
-    assert pcm[100] == pytest.approx((0.5 + 0.25) * 0.7, abs=1e-3)
+    # The band sits 3 dB up on her (it was buried); both stay under the limiter's knee here.
+    assert pcm[100] == pytest.approx((0.5 + 0.25 * 10 ** (3 / 20)) * 0.7, abs=1e-3)
     assert abs(pcm[:100]).max() == 0
+
+
+def test_together_rounds_off_two_full_scale_peaks_instead_of_clipping(tmp_path):
+    import soundfile as sf
+    from plume import gui
+    human = np.zeros(4800); human[580] = 0.99; human[1580] = 0.5
+    machine = np.zeros(4800); machine[100] = 0.99; machine[1100] = 0.1
+    folder = _together_take(tmp_path / "takes" / "t1", human=human, machine=machine,
+                            stream={"reported_ms": 10.0}, source="direct")
+    with sf.SoundFile(folder / "human.wav") as h, sf.SoundFile(folder / "machine.wav") as m:
+        pcm = np.frombuffer(gui._mixed_pcm(h, m, 480, 0, 1200), dtype="<i2") / 32767.0
+    # Both at full scale at once is under full scale, not clipped flat.
+    assert 0.9 < pcm[100] < 1.0
+    # A quiet pair passes the limiter untouched.
+    assert pcm[1100] == pytest.approx((0.5 + 0.1 * 10 ** (3 / 20)) * 0.7, abs=1e-3)
 
 
 @pytest.mark.parametrize("stream, want", [
@@ -1163,7 +1179,7 @@ def test_together_is_served_whole_and_by_range(takes, client):
     assert int(resp.getheader("Content-Length")) == len(whole) == 44 + 4800 * 2
     pcm = np.frombuffer(whole[44:], dtype="<i2")
     assert int(np.argmax(abs(pcm))) == 100
-    assert pcm[100] / 32767 == pytest.approx(0.75 * 0.7, abs=1e-3)
+    assert pcm[100] / 32767 == pytest.approx((0.5 + 0.25 * 10 ** (3 / 20)) * 0.7, abs=1e-3)
     # Odd byte edges and the header boundary come back byte for byte.
     for first, last in ((0, 43), (10, 60), (45, 244), (100, 100), (len(whole) - 3, len(whole) - 1)):
         part, got = client.get(f"/api/take/{tid}/audio/together", headers={"Range": f"bytes={first}-{last}"})

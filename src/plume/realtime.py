@@ -42,6 +42,7 @@ from pathlib import Path
 
 import numpy as np
 
+from . import fx as _fx
 from .listen.features import HOP, RMS_FLOOR_DB, Frame  # noqa: F401 (Frame: typing)
 # Bar-silence level tolerance relative to the human's running level; imported
 # from sim so the two silence rules cannot drift apart again (v1.2: they had,
@@ -3786,8 +3787,17 @@ TAP_START_SOFT_KNOCK = 0.45
 TAP_START_SOFT_FLOOR = 0.5
 TAP_START_SOFT_KEPT = 4096
 #: Lead mode renders hot (about -9 dBFS rms), and this take goes straight into
-#: headphones with an unamplified guitar to hear over them.
-TAP_START_GAIN_DB = -10.0
+#: headphones with an unamplified guitar to hear over them.  It was -10, and the
+#: owner heard the band as a little buried under her (2026-11-06): in a
+#: direct-input page take machine.wav sat about 12 dB (LUFS) under human.wav.
+#: Up 2 dB; she stays on top.  At -8 the hottest style's densest bars peak near
+#: 0 dBFS, so the band is soft-limited at :data:`TAP_START_CEILING_DB`.
+TAP_START_GAIN_DB = -8.0
+#: The band's peak ceiling in a page take.  machine.wav is 24-bit and the output
+#: has no limiter, so a peak past full scale would clip in both.  The limiter is
+#: transparent 3 dB under this; at -8 dB it touches under 0.5% of samples (trap,
+#: densest bars) and none in house, jazz or rnb.
+TAP_START_CEILING_DB = -1.0
 
 #: Density added on the announce bar — the fill/riser that tells the human a
 #: section change is coming (SPEC-V2 §2, "announce it").
@@ -4385,6 +4395,8 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
                 gain_db=plan.gain_db + TAP_START_GAIN_DB + fade_db,
                 reason=f"{entered.reason}; {plan.reason}")
         audio = duet.render_bar(plan, mbeat, mh)
+        if entry is not None:
+            audio = _fx.limiter(audio, TAP_START_CEILING_DB)
         timeline.write_at(int(round(t_bar * SR)) - comp_samples[0], audio)
         loop_events = looper.pop_events()
         if looper.active:

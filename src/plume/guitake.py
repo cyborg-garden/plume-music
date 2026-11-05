@@ -130,8 +130,8 @@ HOT_DB = -1.0
 LOW_DB = -33.0
 NOTHING_DB = -60.0
 #: A yes or no in setup can use a look at the devices this recent.  Each look is a child, and a
-#: second's wait after every answer is what would make this feel like a form.  Start always
-#: looks again, so a change is caught there.
+#: second's wait after every answer is what would make this feel like a form.  Only the answer
+#: about headphones, and the one that finishes setup, wait for a fresh look.
 LOOK_RECENT_S = 20.0
 #: An output this late is hard to play to.  A guess too: wired ones report far less than this.
 LATE_MS = 80.0
@@ -1034,12 +1034,51 @@ class TakeRunner:
             raise Refused(400, "That is not an answer setup asked for.")
         if step == "hear_me":
             return self._menu_hear_me(body.get("device"), answer == "on")
+        # She may have just plugged them in because it asked, so this one waits for a fresh look.
+        fresh = step == "headphones"
         try:
-            devices, rows, mark = self._look_recent()
+            devices, rows, mark = self._look() if fresh else self._look_recent()
         except TakeError as e:
             raise Refused(409, str(e)) from None
         device = self._named(body.get("device"), devices, mark)
-        entry = self._saved(device, mark)
+        entry, asked_again = self._in_the_flow(device, mark)
+        if not asked_again or fresh:
+            self._apply_answer(entry, step, answer)
+        entry["list"] = mark
+        self._setup.put(_setup_key(device), entry)
+        doc = self._setup_doc(device, rows, mark, self._reported_now())
+        return doc if fresh or not doc["done"] else self._still_so(device, doc, mark)
+
+    def _in_the_flow(self, device: dict | None, mark: str) -> tuple[dict, bool]:
+        """What is known partway through, and whether a yes about headphones just lapsed.
+
+        Unlike :meth:`_saved`, she keeps her level: she was only just heard on this device, and
+        something plugged in elsewhere is no reason to play again.  A room mic's answers still go,
+        because its sound may have just changed where it comes out.
+        """
+        entry = self._setup.entry(_setup_key(device))
+        if not entry or entry.get("list") == mark or not (device is None or device["mode"] == "room"):
+            return entry, False
+        for name in _ROOM_ANSWERS:
+            entry.pop(name, None)
+        return entry, True
+
+    def _still_so(self, device: dict | None, doc: dict, mark: str) -> dict:
+        """Setup is about to say done, and the band follows, so it says so of the devices now."""
+        try:
+            devices, rows, now = self._look()
+        except TakeError as e:
+            raise Refused(409, str(e)) from None
+        if now == mark:
+            return doc
+        device = self._named(None if device is None else device["id"], devices, now)
+        entry, _ = self._in_the_flow(device, now)
+        entry["list"] = now
+        self._setup.put(_setup_key(device), entry)
+        return self._setup_doc(device, rows, now, self._reported_now())
+
+    @staticmethod
+    def _apply_answer(entry: dict, step: str, answer: str) -> None:
         if step == "headphones":
             for name in ("hears_self", "still"):
                 entry.pop(name, None)
@@ -1058,9 +1097,6 @@ class TakeRunner:
                 entry["still"], entry["hear_me"] = True, True
         else:
             entry["late_said"] = True
-        entry["list"] = mark
-        self._setup.put(_setup_key(device), entry)
-        return self._setup_doc(device, rows, mark, self._reported_now())
 
     def _menu_hear_me(self, device_id, on: bool) -> dict:
         """The tick in the menu.  On is a yes about headphones for this device, as things are now.

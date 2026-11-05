@@ -626,17 +626,17 @@ function openHome() {
   loadHome();
 }
 /* Only what was decided here, so what setup learned is not overruled by a page that never
-   changed it. The bridge checks every field again. */
-function startBody() {
+   changed it, and the device setup just heard, so the bridge does not choose again. It checks
+   every field again, and a device that has gone is refused rather than swapped for another. */
+function startBody(heard) {
   const body = {}, key = $('set-key').value.trim(), style = $('set-style').value.trim();
   if (key) body.key = key;
   if (style) body.style = style;
-  if (S.home && (S.form.device || S.form.channel !== null)) {
-    const device = chosenDevice();
-    if (device) body.device = device.id;
-    /* The rows here are from before setup heard her, so only a channel she changed is sent. */
-    if (S.form.channel !== null) body.channel = S.form.channel;
-  }
+  const menu = S.home ? chosenDevice() : null, changed = S.form.channel !== null;
+  const device = S.form.device ? menu && menu.id : heard || (changed && menu ? menu.id : null);
+  if (device) body.device = device;
+  /* The rows here are from before setup heard her, so only a channel she changed is sent. */
+  if (changed && menu && menu.id === device) body.channel = S.form.channel;
   return body;
 }
 function backHome(message, openMenu) {
@@ -648,7 +648,7 @@ function backHome(message, openMenu) {
 }
 /* The page goes to the live view straight away. Listing devices can take seconds, and Stop
    has to be there during them. */
-async function startTake() {
+async function startTake(heard) {
   if (S.starting || isRunning(S.live)) return;
   S.starting = true;
   S.stopSent = false; S.stopPending = false;
@@ -662,7 +662,7 @@ async function startTake() {
   if (location.hash === '#/setup') history.replaceState(null, '', '#/live');
   goLive();
   let answer = null;
-  try { answer = await send('start', startBody()); } catch (err) { /* said below */ }
+  try { answer = await send('start', startBody(heard)); } catch (err) { /* said below */ }
   S.starting = false;
   S.liveTurn += 1;
   if (answer && answer.status === 401) { problem(answer); return; }
@@ -710,7 +710,7 @@ async function pressStart() {
 function followSetup(doc) {
   S.setup = doc;
   S.listening = S.answering = false;
-  if (doc.done) startTake();
+  if (doc.done) startTake(doc.device);
   else drawSetup();
 }
 function pickedName() {

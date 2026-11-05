@@ -479,18 +479,29 @@ def test_a_late_line_leads_with_what_to_do(rig, runner, meter):
     assert doc["step"] == "latency" and doc["line"].startswith("Try wired headphones. ")
 
 
-def test_a_yes_or_no_does_not_wait_for_another_look_at_the_devices(rig, runner, meter):
+def test_a_question_that_does_not_finish_setup_waits_for_no_look_at_the_devices(rig, runner, meter):
     """Each look is a child that can take a second, and she has only just been heard."""
+    good(meter)
+    runner.listen({})
+    walk(runner, ("headphones", "yes"))
+    looks = []
+    listed = runner._list
+    runner._list = lambda: (looks.append(1), listed())[1]
+    walk(runner, ("hears_self", "no"))
+    assert looks == []
+    rig.clock.t += guitake.LOOK_RECENT_S + 1.0
+    walk(runner, ("hears_self", "no"))
+    assert looks == [1], "a look from a while ago is looked at again"
+
+
+def test_headphones_on_is_answered_about_the_devices_there_are_now(rig, runner, meter):
     good(meter)
     runner.listen({})
     looks = []
     listed = runner._list
     runner._list = lambda: (looks.append(1), listed())[1]
-    walk(runner, ("headphones", "yes"), ("hears_self", "no"), ("volume", "still"))
-    assert looks == []
-    rig.clock.t += guitake.LOOK_RECENT_S + 1.0
-    walk(runner, ("headphones", "no"))
-    assert looks == [1], "a look from a while ago is looked at again"
+    walk(runner, ("headphones", "yes"))
+    assert looks == [1]
 
 
 def test_a_quick_wired_output_is_not_nagged(rig, runner, meter):
@@ -512,6 +523,83 @@ def test_the_delay_of_the_last_take_counts_too(rig, runner, meter):
     runner.listen({})
     runner._reported[SCARLETT["name"]] = 200.0
     assert walk(runner, ("headphones", "no"))["step"] == "latency"
+
+
+# ------------------------------------------------- something plugged in during the flow
+
+WIRED = {"name": "Wired Headphones", "inputs": 0, "outputs": 2, "default_output": True}
+
+
+def _heard_on_a_laptop(rig, runner, meter):
+    rig.devices = [LAPTOP_MIC, LAPTOP_OUT]
+    good(meter, LAPTOP_MIC, -14.0)
+    return runner.listen({})
+
+
+def test_plugging_headphones_in_when_asked_keeps_every_answer(rig, runner, meter):
+    """It asked, so she did.  The commonest path for someone who only saw the clip."""
+    doc = _heard_on_a_laptop(rig, runner, meter)
+    assert doc["step"] == "headphones"
+    rig.devices = [LAPTOP_MIC, LAPTOP_OUT, WIRED]
+    mic = {"device": doc["device"]}
+    assert runner.answer({**mic, "step": "headphones", "answer": "yes"})["step"] == "hears_self"
+    assert runner.answer({**mic, "step": "hears_self", "answer": "no"})["step"] == "volume"
+    last = runner.answer({**mic, "step": "volume", "answer": "still"})
+    assert last["done"] is True and last["hear_me"] is True
+    assert len(meter.calls) == 1, "and she is not asked to play again"
+    runner.start({"device": doc["device"]})
+    assert "--monitor" in rig.spawned[-1]
+    assert runner.setup()["done"] is True
+
+
+def test_headphones_coming_out_after_the_yes_are_asked_about_again(rig, runner, meter):
+    plugged = [LAPTOP_MIC, LAPTOP_OUT, WIRED]
+    rig.devices = plugged
+    good(meter, LAPTOP_MIC, -14.0)
+    doc = runner.listen({})
+    mic = {"device": doc["device"]}
+    runner.answer({**mic, "step": "headphones", "answer": "yes"})
+    runner.answer({**mic, "step": "hears_self", "answer": "no"})
+    rig.devices = [LAPTOP_MIC, LAPTOP_OUT]
+    last = runner.answer({**mic, "step": "volume", "answer": "still"})
+    assert (last["step"], last["done"], last["hear_me"]) == ("headphones", False, False)
+    assert len(meter.calls) == 1
+    runner.start({"device": doc["device"]})
+    assert "--monitor" not in rig.spawned[-1]
+
+
+def test_the_device_she_was_heard_on_going_away_never_says_done(rig, runner, meter):
+    good(meter)
+    doc = runner.listen({})
+    picked = {"device": doc["device"]}
+    runner.answer({**picked, "step": "headphones", "answer": "yes"})
+    rig.devices = [LAPTOP_MIC, LAPTOP_OUT]
+    with pytest.raises(guitake.Refused) as e:
+        runner.answer({**picked, "step": "hears_self", "answer": "yes"})
+    assert (e.value.status, e.value.message) == (400, guitake.DEVICE_MISSING)
+    assert rig.spawned == []
+
+
+def test_a_second_interface_plugged_in_during_the_flow_does_not_move_the_take(rig, runner, meter):
+    good(meter)
+    doc = runner.listen({})
+    rig.devices = [LAPTOP_MIC, LAPTOP_OUT, SCARLETT, OTHER_BOX]
+    picked = {"device": doc["device"]}
+    assert runner.answer({**picked, "step": "headphones", "answer": "no"})["done"] is True
+    runner.start({})
+    assert f"--device={SCARLETT['name']}" in rig.spawned[-1]
+
+
+def test_a_finished_flow_that_saw_the_same_devices_takes_one_more_look_and_no_more(rig, runner, meter):
+    good(meter)
+    doc = runner.listen({})
+    picked = {"device": doc["device"]}
+    runner.answer({**picked, "step": "headphones", "answer": "yes"})
+    looks = []
+    listed = runner._list
+    runner._list = lambda: (looks.append(1), listed())[1]
+    assert runner.answer({**picked, "step": "hears_self", "answer": "yes"})["done"] is True
+    assert looks == [1]
 
 
 # --------------------------------------------------------------- saved between runs

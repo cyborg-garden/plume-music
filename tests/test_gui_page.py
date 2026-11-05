@@ -1461,7 +1461,7 @@ def test_an_answer_goes_to_the_bridge_and_a_done_setup_starts_with_no_click(tmp_
         return {{ screen: page.screen(), hash: page.location.hash, answers: page.posts('setup/answer'), starts: page.posts('start') }};""",
                     setup=HEADPHONES)
     assert out["answers"] == [{"device": HEADPHONES["device"], "step": "headphones", "answer": "no"}]
-    assert out["screen"] == "live" and out["hash"] == "#/live" and out["starts"] == [{}]
+    assert out["screen"] == "live" and out["hash"] == "#/live" and out["starts"] == [{"device": COUNT["device"]}]
 
 
 def test_a_question_already_answered_is_not_asked_and_nothing_is_listened_to(tmp_path, docs):
@@ -1476,6 +1476,31 @@ def test_a_finished_setup_goes_straight_to_the_count(tmp_path, docs):
         $('start').click(); await page.settle();
         return {{ screen: page.screen(), posts: {MUTATIONS} }};""", setup=COUNT)
     assert out == {"screen": "live", "posts": ["start"]}
+
+
+def test_a_finished_setup_starts_on_the_device_it_heard_not_one_picked_again(tmp_path, docs):
+    out = first_run(tmp_path, docs, """
+        $('start').click(); await page.settle();
+        return page.posts('start');""", setup=COUNT)
+    assert out == [{"device": COUNT["device"]}]
+
+
+def test_start_anyway_is_not_held_to_a_device_nothing_was_heard_on(tmp_path, docs):
+    """No device name means the bridge's own safe choice."""
+    out = first_run(tmp_path, docs, f"""
+        page.replies['setup/listen'] = [200, {json.dumps({**setup_doc("listen", "Nothing came in.", "again", "start"), "others": []})}];
+        $('start').click(); await page.settle();
+        $('setup-start').click(); await page.settle();
+        return page.posts('start');""")
+    assert out == [{}]
+
+
+def test_a_device_gone_from_a_finished_setup_goes_home_and_says_so(tmp_path, docs):
+    out = first_run(tmp_path, docs, f"""
+        page.replies['start'] = [400, {{ error: {json.dumps(guitake.DEVICE_MISSING)} }}];
+        $('start').click(); await page.settle();
+        return {{ screen: page.screen(), note: $('home-note').textContent }};""", setup=COUNT)
+    assert out == {"screen": "home", "note": guitake.DEVICE_MISSING}
 
 
 def test_a_double_click_on_an_answer_does_not_answer_the_next_question(tmp_path, docs):
@@ -1701,7 +1726,8 @@ def test_real_bridge_answers_walk_the_whole_flow_into_the_take(tmp_path, docs, m
     assert [s["say"] for s in out["said"]] == ["Headphones on?", "Can you hear yourself?", "Check your headphone volume."]
     assert out["said"][0]["note"] == "Heard you on Test Interface, channel 2."
     assert out["said"][2]["choices"] == ["That was it", "Still nothing"]
-    assert out["screen"] == "live" and out["body"] == [{}], "Hear me comes from what the bridge saved"
+    assert out["screen"] == "live", "Hear me comes from what the bridge saved"
+    assert out["body"] == [{"device": done["device"]}], "and nothing but the device she was heard on is named"
     assert [a["step"] for a in out["answers"]] == ["headphones", "hears_self", "volume"]
 
 

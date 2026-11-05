@@ -1693,6 +1693,35 @@ def test_a_refused_step_says_the_bridges_words(tmp_path, docs):
     assert out == guitake.DEVICE_MISSING
 
 
+def test_a_low_level_offers_another_device_and_listens_on_it(tmp_path, docs):
+    low = {**setup_doc("listen", guitake.LOW_GAIN, "again", "start"),
+           "heard": {"result": "low", "channel": 1, "peak_db": -50.0}, "others": [{"id": "b" * 16, "name": "Second Box"}]}
+    out = first_run(tmp_path, docs, f"""
+        page.replies['setup/listen'] = [200, {json.dumps(low)}];
+        $('start').click(); await page.settle();
+        const seen = {SEEN};
+        page.hold('setup/listen');
+        $('setup-others').children[0].click(); await page.settle();
+        return {{ seen, listens: page.posts('setup/listen') }};""")
+    assert out["seen"]["others"] == ["Try Second Box"]
+    assert out["listens"] == [{}, {"device": "b" * 16}]
+
+
+def test_with_nothing_plugged_in_there_is_one_thing_to_press(tmp_path, docs):
+    none = {**setup_doc("listen", guitake.NO_INPUT_NEXT), "choices": [{"answer": "again", "label": "Try again"}],
+            "device": None, "device_name": None, "heard": {"result": "failed", "channel": None, "peak_db": None}, "others": []}
+    out = first_run(tmp_path, docs, f"""
+        page.replies['setup/listen'] = [200, {json.dumps(none)}];
+        $('start').click(); await page.settle();
+        const seen = {SEEN};
+        page.hold('setup/listen');
+        $('setup-again').click(); await page.settle();
+        return {{ seen, listens: page.posts('setup/listen').length, starts: page.posts('start').length }};""")
+    assert out["seen"]["say"] == "Plume could not find a microphone or an audio interface."
+    assert out["seen"]["more"] == "Plug one in, then try again."
+    assert out["seen"]["choices"] == ["Try again"] and out["listens"] == 2 and out["starts"] == 0
+
+
 def test_a_lost_key_during_setup_says_how_to_get_a_new_link(tmp_path, docs):
     out = first_run(tmp_path, docs, """
         page.replies['setup/listen'] = [401, { error: 'no' }];

@@ -139,6 +139,31 @@ def test_nothing_arriving_names_the_device_and_offers_the_others(rig, runner, me
     assert [c["answer"] for c in doc["choices"]] == ["again", "start"]
 
 
+def test_a_low_level_offers_the_others_because_it_may_be_gear_she_is_not_using(rig, runner, meter):
+    """Hum on an idle interface, while she plays into the laptop."""
+    good(meter, SCARLETT, -50.0, -90.0, -90.0, -90.0)
+    doc = runner.listen({})
+    assert doc["heard"]["result"] == "low"
+    assert [o["name"] for o in doc["others"]] == [LAPTOP_MIC["name"]]
+    good(meter, LAPTOP_MIC, -12.0)
+    picked = runner.listen({"device": doc["others"][0]["id"]})
+    assert picked["step"] == "headphones" and picked["device_name"] == LAPTOP_MIC["name"]
+
+
+def test_a_hot_level_has_found_her_so_it_offers_nothing_else(rig, runner, meter):
+    good(meter, SCARLETT, -0.2, -90.0, -90.0, -90.0)
+    assert runner.listen({})["others"] == []
+
+
+@pytest.mark.parametrize("devices", [[], [LAPTOP_OUT]])
+def test_with_nothing_plugged_in_the_one_next_step_is_to_plug_something_in(rig, runner, meter, devices):
+    rig.devices = devices
+    doc = runner.listen({})
+    assert doc["step"] == "listen" and doc["heard"]["result"] == "failed"
+    assert doc["line"] == "Plume could not find a microphone or an audio interface. Plug one in, then try again."
+    assert doc["choices"] == [{"answer": "again", "label": "Try again"}] and meter.calls == []
+
+
 def test_a_second_device_can_be_chosen_when_nothing_arrives(rig, runner, meter):
     doc = runner.listen({})
     good(meter, LAPTOP_MIC, -12.0)
@@ -1037,6 +1062,18 @@ def test_the_room_argv_runs_the_real_transport_on_the_fake_device(tmp_path, monk
     ("pulse", 32, 32, "builtin"),
     ("pipewire", 64, 64, "builtin"),
     ("VoiceMeeter Output", 2, 2, "virtual"),
+    ("samplerate", 128, 128, "virtual"),
+    ("speexrate", 128, 128, "virtual"),
+    ("upmix", 8, 8, "virtual"),
+    ("vdownmix", 6, 6, "virtual"),
+    ("dmix", 2, 2, "virtual"),
+    ("surround51", 6, 6, "virtual"),
+    ("HD-Audio Generic: ALC257 Analog (hw:1,0)", 2, 2, "builtin"),
+    ("HDA Intel PCH: ALC3246 Analog (hw:0,0)", 2, 2, "builtin"),
+    ("sof-hda-dsp: - (hw:0,0)", 2, 2, "builtin"),
+    ("bcm2835 Headphones: - (hw:0,0)", 2, 2, "builtin"),
+    ("Some Box 4x4: USB Audio (hw:3,0)", 4, 4, "interface"),
+    ("USB Audio Device: - (hw:2,0)", 2, 2, "interface"),
     ("Monitor of Something", 2, 2, "virtual"),
     ("USB Mic", 1, 0, "other"),
     ("Big Studio Microphone", 2, 2, "other"),
@@ -1045,6 +1082,27 @@ def test_the_room_argv_runs_the_real_transport_on_the_fake_device(tmp_path, monk
 ])
 def test_no_list_of_brands_decides_what_a_device_is(name, inputs, outputs, kind):
     assert guitake.describe_devices([{"name": name, "inputs": inputs, "outputs": outputs}])[0]["kind"] == kind
+
+
+def test_a_laptop_with_software_devices_listed_is_listened_to_on_its_own_mic(rig, runner, meter):
+    """What ALSA usually lists, typed from memory and not captured from a machine."""
+    rig.devices = [{"name": "HD-Audio Generic: ALC257 Analog (hw:1,0)", "inputs": 2, "outputs": 2},
+                   {"name": "sysdefault", "inputs": 128, "outputs": 128},
+                   {"name": "samplerate", "inputs": 128, "outputs": 128},
+                   {"name": "speexrate", "inputs": 128, "outputs": 128},
+                   {"name": "upmix", "inputs": 8, "outputs": 8},
+                   {"name": "vdownmix", "inputs": 6, "outputs": 6},
+                   {"name": "default", "inputs": 32, "outputs": 32}]
+    runner.listen({})
+    assert [name for name, _ in meter.calls] == ["HD-Audio Generic: ALC257 Analog (hw:1,0)"]
+    doc = runner.home()
+    assert doc["mode"] == "room" and doc["devices"][0]["kind"] == "builtin"
+
+
+def test_software_coming_and_going_is_not_a_changed_list_on_linux_either():
+    rows = [{"name": "HDA Intel PCH: ALC3246 Analog (hw:0,0)", "inputs": 2, "outputs": 2}]
+    with_software = [*rows, {"name": "upmix", "inputs": 8, "outputs": 8}]
+    assert guitake.device_list_mark(rows) == guitake.device_list_mark(with_software)
 
 
 def test_there_is_no_allow_list_of_makers_any_more():

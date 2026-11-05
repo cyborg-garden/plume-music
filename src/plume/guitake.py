@@ -57,6 +57,7 @@ from .theory import parse_key
 # The page's words.  Nothing else about a failure ever reaches it.
 DEVICE_MISSING = "Plume could not find that device. Check it is plugged in."
 NO_INPUT = "Plume could not find a microphone or an audio interface."
+NO_INPUT_NEXT = NO_INPUT + " Plug one in, then try again."
 OPEN_FAILED = "Plume could not open the device. Check it is set to 48 kHz."
 AUDIO_PART_MISSING = "Plume needs its audio part: pip install with the play extra."
 NO_LISTING = "Plume could not ask this computer for its audio devices."
@@ -66,6 +67,7 @@ ALREADY_RUNNING = "A take is already running."
 DID_NOT_START = "The take did not start."
 NO_COUNT = ("Still waiting for a count. A knock may not reach a pickup, "
             "so try chucking muted strings.")
+NO_COUNT_ROOM = "Still waiting for a count. Try knocking or clapping louder, closer to the mic."
 OPENING = "Still opening the device. This computer may be asking to use the microphone."
 STALLED = "The audio device stopped answering."
 ENDED_EARLY = "The take ended early."
@@ -166,11 +168,15 @@ _VIRTUAL = ("blackhole", "soundflower", "loopback", "aggregate", "zoomaudio", "z
 #: the band.  Any computer's words, not one maker's.  A name not here is taken at its word, and
 #: being wrong is caught by hearing nothing at setup, or by the take's own routing check.
 _BUILT_IN = ("built-in", "builtin", "internal", "microphone array", "mic array", "laptop", "notebook",
-             "macbook", "imac", "mac mini", "mac studio", "mac pro", "hda intel", "realtek",
-             "conexant", "smart sound", "webcam", "camera", "facetime", "display", "hdmi", "dock",
+             "macbook", "imac", "mac mini", "mac studio", "mac pro", "hda ", "hd-audio", "sof-", "bcm2835",
+             "realtek", "conexant", "smart sound", "webcam", "camera", "facetime", "display", "hdmi", "dock",
              "iphone", "ipad")
 #: Not a card at all: the sound system's own names for whatever is current.
 _SYSTEM_NAMES = frozenset({"default", "sysdefault", "pulse", "pipewire", "jack"})
+#: Not a card either: ALSA's plugins, whole names, each one a software path to some other device.
+#: From what PortAudio usually lists there.  Nobody has run plume on Linux to capture a real list.
+_SOFTWARE_NAMES = re.compile(r"samplerate|speexrate|speex|lavrate|lavcrate|upmix|vdownmix|dmix|dsnoop|front|rear"
+                             r"|center_lfe|side|iec958|spdif|a52|modem|phoneline|oss|surround\d+")
 #: A mic, or wireless: the band belongs on the system's output, and it hears the room.
 _ROOM_ONLY = re.compile(r"\b(?:mic|microphone)\b|bluetooth|wireless|airpods|buds|hands-?free",
                         re.IGNORECASE)
@@ -309,7 +315,7 @@ def _kind(name: str, inputs: int, outputs: int) -> str:
     take the band away from where she is listening, so those stay room mics.
     """
     low = name.lower()
-    if any(mark in low for mark in _VIRTUAL):
+    if _SOFTWARE_NAMES.fullmatch(low) or any(mark in low for mark in _VIRTUAL):
         return "virtual"
     if low in _SYSTEM_NAMES or any(mark in low for mark in _BUILT_IN):
         return "builtin"
@@ -438,6 +444,8 @@ _STEPS = {
 }
 #: After a level needs a hand or nothing came in: she is never kept here.
 _TRY_OR_START = [{"answer": "again", "label": "Play again"}, {"answer": "start", "label": "Start anyway"}]
+#: With nothing to play into, neither of those means anything.
+_TRY_ONLY = [{"answer": "again", "label": "Try again"}]
 _DEVICE_KEY = re.compile(r"[0-9a-f]{16}|default")
 _ROOM_ANSWERS = ("headphones", "hears_self", "still", "hear_me", "late_said")
 
@@ -1183,7 +1191,7 @@ class TakeRunner:
             else:
                 tried = self._candidates(devices, mark)
             if not tried:
-                return self._heard("failed", None, rows=rows, mark=mark, line=NO_INPUT)
+                return self._heard("failed", None, rows=rows, mark=mark, line=NO_INPUT_NEXT, choices=_TRY_ONLY)
             readings = self._read_meters(tried, job)
             return self._judge(job, tried, readings, devices, rows, mark)
         finally:
@@ -1263,17 +1271,19 @@ class TakeRunner:
         if level != "ok":
             direct = device["mode"] == "direct"
             line = {"hot": HOT_GAIN if direct else HOT_ROOM, "low": LOW_GAIN if direct else LOW_ROOM}[level]
+        # Barely there can be hum on gear she is not using, so she can go and try what she is.
         return self._heard(level, device, rows=rows, mark=mark, line=line, channel=channel,
-                           peak_db=round(peak, 1))
+                           peak_db=round(peak, 1), others=others if level == "low" else None)
 
     def _heard(self, result: str, device: dict | None, *, rows: list[dict], mark: str, line: str | None = None,
-               others: list | None = None, channel: int | None = None, peak_db: float | None = None) -> dict:
+               others: list | None = None, channel: int | None = None, peak_db: float | None = None,
+               choices: list | None = None) -> dict:
         doc = self._setup_doc(device, rows, mark, self._output_now())
         doc["heard"] = {"result": result, "channel": channel, "peak_db": peak_db}
         doc["others"] = others or []
         if line is not None:
             doc["step"], doc["line"], doc["note"] = "listen", line, None
-            doc["done"], doc["choices"] = False, _TRY_OR_START
+            doc["done"], doc["choices"] = False, _TRY_OR_START if choices is None else choices
         return doc
 
     # -- start
@@ -1538,7 +1548,9 @@ class TakeRunner:
         if not take.loud and waited >= FLAT_AFTER_S:
             return (FLAT_CHANNEL.format(channel=take.route.channel) if take.route.channels > 1
                     else FLAT_MIC)
-        return NO_COUNT if waited >= NO_COUNT_S else None
+        if waited < NO_COUNT_S:
+            return None
+        return NO_COUNT if take.route.mode == "direct" else NO_COUNT_ROOM
 
     @staticmethod
     def _read_human(take: _Take) -> tuple[bool, float | None]:

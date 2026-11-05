@@ -765,6 +765,19 @@ def test_a_strange_stream_file_is_no_reading(rig, runner, junk):
 
 # ----------------------------------------------------------------------------- hints
 
+def test_no_count_after_a_minute_on_a_room_mic_says_nothing_about_a_pickup(rig, runner):
+    rig.devices = [LAPTOP_MIC, LAPTOP_OUT]
+    runner.start({})
+    rig.open_stream()
+    runner.tick()
+    for _ in range(12):
+        rig.clock.t += 5.0
+        rig.more_audio()
+        runner.tick()
+    hint = runner.live()["hint"]
+    assert hint == guitake.NO_COUNT_ROOM and "pickup" not in hint and "strings" not in hint
+
+
 def test_no_count_after_a_minute(rig, runner):
     runner.start({})
     rig.open_stream()

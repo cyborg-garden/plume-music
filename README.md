@@ -47,9 +47,12 @@ pad, pluck, FM e-piano, lead, vinyl crackle — pure NumPy DSP, 48kHz.
 [docs/PLAYING.md](docs/PLAYING.md) covers playing a real instrument with plume:
 counting it in, talking to it, running it with a coding agent, and setting up for
 recording or filming. `plume gui` opens a local page with one Start and no typing, and it
-opens no device and starts nothing until a person clicks Start. That page has only ever
-started simulated takes, so [docs/DIRECT-INPUT-TEST.md](docs/DIRECT-INPUT-TEST.md) says how
-to try it on real hardware.
+opens no device and starts nothing until a person clicks Start. The first press is the setup,
+one line at a time: play something so plume can find your channel and check your level, say
+whether headphones are on, then count and the band comes in. Later presses go straight to the
+count. That page has only ever started simulated takes, and only one Mac and one interface
+have ever been tried with plume at all, so other computers and other gear are untested.
+[docs/DIRECT-INPUT-TEST.md](docs/DIRECT-INPUT-TEST.md) says how to try it on real hardware.
 
 ## Live mode (v1 — the sideman)
 

@@ -127,26 +127,37 @@ Empty output means the model never wrote anything close, and the band is the lik
 
 ## 7. The Start button (5 minutes)
 
-**Untested.** The page's Start has only ever run a fake process on fake devices, so this is
-the first time it makes real sound. Plume makes sound during this step, and clicking Start is
-what starts it. Turn the headphones down first.
+**Untested.** The page's Start and its setup have only ever run a fake process and a fake
+meter on fake devices, so this is the first time they meet a real interface. Only one Mac and
+one interface have ever been tried with plume at all. The first press of Start listens to your
+input for a few seconds and plays nothing, but once setup is done the band comes in with no
+further click. Turn the headphones down first.
 
 ```bash
 plume gui
 ```
 
+Set up again in the menu makes this a first run, if you have been here before.
+
 | Do this | Look for |
 |---|---|
-| Read the first screen, without clicking | Your interface's name and channel 1 under Start. If it says room mic, it did not pick your interface, so open the menu and choose it |
-| Turn the Direct button off, leave Hear me on, and click Start | The folder is new, under `~/Music/Plume`. "Play 8 even beats. Muted strings work well." and the level moves when you play. You hear yourself |
-| Chuck muted strings 8 times | Drums land where the ninth would be, and the bar, tempo and stage appear |
-| Play | Your notes and level follow you. Key and style show as a guess once the band is in. Note whether the guess is any good |
-| Reload the page | The same take comes back, and there is still only one band |
-| Click Stop, or stop playing | The page lands on that take's Record. `human.wav` holds only guitar, with no band |
-| With the page open, unplug the interface, then click Start | "Plume could not find that device." and no sound. Reloading first would pick the built-in mic instead, and that take does make sound |
+| Read the first screen, without clicking | One Start. The closed menu line under it names what it will use |
+| Click Start with your hands on the strings, and play | "Play something." The next line says it heard you on your interface, on the channel you are plugged into. Note what level it asked you to change, if any, against the -18 to -6 dB in step 2 |
+| With nothing plugged in or the gain down, click Set up again, then Start | "Nothing came in" names the device, and Play again, Start anyway and any other device are offered. Nothing else is open |
+| Say Yes to headphones. With the Direct button off, say No to hearing yourself | "Check your headphone volume." Then "Still nothing" goes on with Hear me on |
+| Do it once more through speakers, saying No to headphones | Hear me stays off and is not offered |
+| Click Not now on any step | Back on Start, and nothing keeps running. `plume sessions` shows no take |
+| Finish setup with headphones | The folder is new, under `~/Music/Plume`. "Play 8 even beats. Muted strings work well." and the small sign says Hearing you when you play. You hear yourself |
+| Chuck muted strings 8 times | Drums land where the ninth would be, and the first view shows only a key line, the sign and Stop |
+| Open Details and play | Bar, tempo and stage, and your notes and level follow you. Key and style show as a guess once the band is in. Note whether the guess is any good |
+| Stop playing and wait | "Stop playing and the band will finish on its own." then the band says it is finishing, and the take ends by itself |
+| Reload the page during a take | The same take comes back, and there is still only one band |
+| Click Stop, or let it fade | The page lands on that take's Record. `human.wav` holds only guitar, with no band |
+| Click Start again | Straight to the count, with no questions |
+| With the page open, unplug the interface, then click Start | Plume asks you to play something again rather than starting on the wrong device. Note what it picked, because that take can make sound |
 
-Note the delay Hear me shows, and whether playing through it feels late. That number is what
-the device reports, not a measured round trip. If you can't stop it from the page, `plume stop`
+Note the delay in Details, and whether playing through Hear me feels late. That number is what
+the device reports, which nobody has measured. If you can't stop it from the page, `plume stop`
 in a terminal always works.
 
 ## What to send back
@@ -156,8 +167,10 @@ in a terminal always works.
 - `takes-di1/ending.json`, and whether the band came in and faded on time.
 - Five lines of `plume watch` while playing and five after stopping.
 - The `text` column of `voice.ndjson` from step 5, and from the room mic in `di3`.
-- From step 7: what the first screen picked, the delay Hear me showed, how it felt to play
-  through, and the key and style plume guessed against what you played.
+- From step 7: what setup said about your level and whether it was right, the channel and
+  device it heard you on, the delay Details showed, how it felt to play through, and the key
+  and style plume guessed against what you played. Say how long it took from the first press
+  to the band coming in.
 
 ## What only you can answer
 

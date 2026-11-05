@@ -68,6 +68,14 @@ export function delayLine(ms) {
   return 'Use headphones. Plume adds about ' + Math.round(ms) + ' ms, as your device reports it. This is not a measured round trip.';
 }
 
+/* Said where it can be read while it is happening: on home, and during the take. */
+export const DIRECT_LINE = 'A Direct button on your interface has no latency. Using both doubles the sound.';
+
+/* A clap can't reach a pickup, and only a room mic hears the room. */
+export function countWords(mode) {
+  return mode === 'direct' ? 'Play 8 even beats. Muted strings work well.' : 'Knock or clap 8 even beats.';
+}
+
 /* The menu's one closed line: what Start will use, without opening it. */
 export function routeLine(device, channel, key, style) {
   const bits = device

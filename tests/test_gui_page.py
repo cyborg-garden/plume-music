@@ -664,9 +664,36 @@ def test_the_delay_shown_is_the_chosen_devices_own(tmp_path, docs):
     assert out["delay"] == "Use headphones. Plume shows the delay your device reports once a take starts."
 
 
-def test_the_direct_button_line_is_there_once(tmp_path):
+DIRECT_LINE = "A Direct button on your interface has no latency. Using both doubles the sound."
+
+
+def test_the_direct_button_line_is_on_home_with_the_menu_closed(tmp_path, docs):
+    out = run_page(tmp_path, docs, "return { text: $('hear-direct').textContent, hidden: $('hear-direct').hidden, menu: $('home-menu').open };")
+    assert out == {"text": DIRECT_LINE, "hidden": False, "menu": False}
     html = (STATIC / "index.html").read_text()
-    assert html.count("A Direct button on your interface has no latency. Using both doubles the sound.") == 1
+    menu = html[html.index('<details id="home-menu"'):html.index("</details>")]
+    assert "hear-direct" not in menu
+
+
+def test_the_direct_button_line_is_not_offered_on_a_built_in_mic(tmp_path, docs):
+    docs["home"] = home_for(ROOM_ONLY)
+    assert run_page(tmp_path, docs, "return $('hear-direct').hidden;") is True
+
+
+def test_the_direct_button_line_is_there_while_it_is_happening(tmp_path, docs):
+    out = live_page(tmp_path, docs, PLAYING, "return { text: $('live-direct').textContent, hidden: $('live-direct').hidden };")
+    assert out == {"text": DIRECT_LINE, "hidden": False}
+    off = live_page(tmp_path, docs, {**PLAYING, "hear_me": False}, "return $('live-direct').hidden;")
+    assert off is True
+
+
+def test_stop_never_lands_under_a_second_click_on_start():
+    """Both screens start at the same place, so Stop has to start below where Start ended."""
+    css = (STATIC / "plume.css").read_text()
+    start = int(re.search(r"#start \{ height: (\d+)px", css).group(1))
+    say = int(re.search(r"#live-say \{[^}]*min-height: (\d+)px", css).group(1))
+    gap = int(re.search(r"\.column \{[^}]*gap: (\d+)px", css).group(1))
+    assert say + gap > start
 
 
 def test_a_machine_with_no_default_can_still_start_on_the_system_input(tmp_path, docs):
@@ -738,10 +765,15 @@ def test_a_running_take_beats_a_pinned_one_and_an_old_address(tmp_path, docs):
 
 
 def test_while_waiting_it_says_to_count_and_shows_a_level(tmp_path, docs):
-    out = live_page(tmp_path, docs, WAITING, f"return {FACTS};")
+    out = live_page(tmp_path, docs, {**WAITING, "mode": "room", "hear_me": False}, f"return {FACTS};")
     assert out["say"] == "Knock or clap 8 even beats."
     assert out["meter"] is True and out["facts"] is False and out["cues"] is False
     assert out["stop"] == "Stop" and out["stopDisabled"] is False
+
+
+def test_a_clap_cannot_reach_a_pickup_so_a_direct_input_is_told_to_play_them(tmp_path, docs):
+    out = live_page(tmp_path, docs, {**WAITING, "mode": "direct"}, f"return {FACTS};")
+    assert out["say"] == "Play 8 even beats. Muted strings work well."
 
 
 def test_after_start_the_page_looks_again_soon(tmp_path, docs):

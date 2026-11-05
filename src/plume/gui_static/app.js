@@ -7,7 +7,7 @@
 import { clearStones, cssVar, queueStone, rng, stonesIdle, tok } from '/static/stone.js';
 import { hitBoxes, lineSpans, nextIndex } from '/static/layout.js';
 import { lostWords, pinnedRoute, routeOf } from '/static/session.js';
-import { delayLine, endedNote, isRunning, keyLine, landing, meterShare, routeLine, settledLine, stageWords, youView } from '/static/live.js';
+import { DIRECT_LINE, countWords, delayLine, endedNote, isRunning, keyLine, landing, meterShare, routeLine, settledLine, stageWords, youView } from '/static/live.js';
 
 const $ = function (id) { return document.getElementById(id); };
 const S = { csrf: '', take: null, selected: null, roastOn: true, screen: 'loading', nav: 0,
@@ -551,6 +551,8 @@ function drawHear() {
   $('hear-words').hidden = !allowed;
   $('hear-me').checked = allowed && hearOn();
   $('hear-short').hidden = !hearOn();
+  $('hear-direct').hidden = !allowed;
+  $('hear-direct').textContent = DIRECT_LINE;
   $('hear-delay').textContent = delayLine(device && device.reported_ms);
 }
 function drawSummary() {
@@ -656,7 +658,7 @@ function land(doc) {
 }
 function liveWords(doc, row) {
   if (doc.state === 'starting') return 'Opening the device.';
-  if (doc.state === 'waiting') return 'Knock or clap 8 even beats.';
+  if (doc.state === 'waiting') return countWords(doc.mode);
   if (doc.state === 'stopping') return 'Stopping.';
   return keyLine(row, doc);
 }
@@ -688,6 +690,8 @@ function drawLive() {
   const ms = doc.hear_me && doc.stream ? doc.stream.reported_ms : null;
   $('live-delay').hidden = typeof ms !== 'number';
   $('live-delay').textContent = typeof ms === 'number' ? delayLine(ms) : '';
+  $('live-direct').hidden = !doc.hear_me;
+  $('live-direct').textContent = DIRECT_LINE;
   $('live-cues').hidden = doc.state !== 'playing';
 }
 /* A click sends one request. The bridge signals a take once however often it is asked, and

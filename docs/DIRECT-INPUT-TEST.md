@@ -138,7 +138,7 @@ plume gui
 | Do this | Look for |
 |---|---|
 | Read the first screen, without clicking | Your interface's name and channel 1 under Start. If it says room mic, it did not pick your interface, so open the menu and choose it |
-| Turn the Direct button off, leave Hear me on, and click Start | The folder is new, under `~/Music/Plume`. "Knock or clap 8 even beats." and the level moves when you play. You hear yourself |
+| Turn the Direct button off, leave Hear me on, and click Start | The folder is new, under `~/Music/Plume`. "Play 8 even beats. Muted strings work well." and the level moves when you play. You hear yourself |
 | Chuck muted strings 8 times | Drums land where the ninth would be, and the bar, tempo and stage appear |
 | Play | Your notes and level follow you. Key and style show as a guess once the band is in. Note whether the guess is any good |
 | Reload the page | The same take comes back, and there is still only one band |

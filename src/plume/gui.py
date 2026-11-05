@@ -54,6 +54,7 @@ from urllib.parse import parse_qs, urlsplit
 import numpy as np
 import soundfile as sf
 
+from . import fx as _fx
 from . import guitake, record
 from .realtime import REC_HUMAN, REC_MACHINE, list_sessions
 
@@ -81,8 +82,15 @@ STATIC_FILES = {
 }
 _TRACKS = {"human": REC_HUMAN, "machine": REC_MACHINE}
 TOGETHER = "together"
-# What leaves room for both when they peak at once, and is only clipped if they really do.
+# What leaves room for both when they peak at once.
 _TOGETHER_GAIN = 0.7
+# The band over that.  Both tracks at 0.7 left the band buried: a direct-input page take
+# (2026-11-05) had machine.wav about 12 dB (LUFS) under human.wav, and the owner asked for
+# the other instruments a little louder with her still slightly on top.
+_TOGETHER_BAND_DB = 3.0
+# Where the sum is soft-limited rather than hard-clipped when both peak at once.  The
+# limiter is untouched below 3 dB under it (0.71 of full scale).
+_TOGETHER_CEILING_DB = 0.0
 _TOGETHER_FRAMES = 65536
 _WAV_HEADER = 44
 
@@ -854,7 +862,10 @@ def _read_mono(track, start: int, count: int) -> np.ndarray:
 
 
 def _mixed_pcm(human, machine, shift: int, frame: int, count: int) -> bytes:
-    mixed = (_read_mono(human, frame + shift, count) + _read_mono(machine, frame, count)) * _TOGETHER_GAIN
+    band = 10.0 ** (_TOGETHER_BAND_DB / 20.0)
+    mixed = (_read_mono(human, frame + shift, count) + _read_mono(machine, frame, count) * band) * _TOGETHER_GAIN
+    # Sample by sample, so a range request reads the same bytes as the whole file.
+    mixed = _fx.limiter(mixed, _TOGETHER_CEILING_DB)
     return (np.clip(mixed, -1.0, 1.0) * 32767.0).astype("<i2").tobytes()
 
 

@@ -100,5 +100,11 @@
       {"name": "peak", "energy_curve": [0.75, 0.9], "bars": 32},
       {"name": "reprise", "energy_curve": [0.5, 0.2], "bars": 32}
     ]
+  },
+  "role_gain_db": {
+    "kick": -2.0,
+    "bass": 0.0,
+    "pad": -3.0,
+    "lead": -2.0
   }
 }

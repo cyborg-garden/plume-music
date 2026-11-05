@@ -92,5 +92,9 @@
       {"name": "drift", "energy_curve": [0.65, 0.55], "bars": 32},
       {"name": "dusk", "energy_curve": [0.4, 0.2], "bars": 32}
     ]
+  },
+  "role_gain_db": {
+    "pad": -4.0,
+    "lead": -2.0
   }
 }

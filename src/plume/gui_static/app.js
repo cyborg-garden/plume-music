@@ -7,7 +7,7 @@
 import { clearStones, cssVar, queueStone, rng, stonesIdle, tok } from '/static/stone.js';
 import { hitBoxes, lineSpans, nextIndex } from '/static/layout.js';
 import { lostWords, pinnedRoute, routeOf } from '/static/session.js';
-import { delayLine, endedNote, isRunning, keyLine, landing, meterShare, routeLine, stageWords, youView } from '/static/live.js';
+import { delayLine, endedNote, isRunning, keyLine, landing, meterShare, routeLine, settledLine, stageWords, youView } from '/static/live.js';
 
 const $ = function (id) { return document.getElementById(id); };
 const S = { csrf: '', take: null, selected: null, roastOn: true, screen: 'loading', nav: 0,
@@ -63,7 +63,7 @@ function fmtDate(epoch) {
 }
 function metaOf(t) {
   const bits = [];
-  if (t.key) bits.push(t.key);
+  if (t.key || t.style) bits.push(settledLine(t));
   if (t.bars && t.bpm !== null) bits.push(t.bpm + ' bpm');
   bits.push(fmtTime(t.seconds));
   return bits;

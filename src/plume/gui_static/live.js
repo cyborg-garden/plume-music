@@ -26,11 +26,20 @@ export function keyLine(row, doc) {
   const key = (row && row.key) || doc.key, style = (row && row.style) || doc.style;
   const keyGuess = !!(key && row && row.key_guess && !doc.key);
   const styleGuess = !!(style && row && row.style_guess && !doc.style);
-  const line = [key || 'Listening for the key', style].filter(Boolean).join(', ');
+  return guessLine(key || 'Listening for the key', style, keyGuess, styleGuess);
+}
+
+function guessLine(key, style, keyGuess, styleGuess) {
+  const line = [key, style].filter(Boolean).join(', ');
   if (keyGuess && styleGuess) return line + ' (a guess)';
   if (keyGuess) return line + ' (the key is a guess)';
   if (styleGuess) return line + ' (the style is a guess)';
   return line;
+}
+
+/* The same words for a take that is over, so the screens she keeps say it too. */
+export function settledLine(take) {
+  return guessLine(take.key, take.style, !!(take.key && take.key_guess), !!(take.style && take.style_guess));
 }
 
 /* What can be said about the player right now. null means plume can't say, so don't show it.

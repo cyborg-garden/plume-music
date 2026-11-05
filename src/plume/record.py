@@ -67,6 +67,7 @@ _KEY_RE = re.compile(r"[A-G][#b]? (?:major|minor)")
 _CHORD_RE = re.compile(r"[A-G][#b]?(?:" + "|".join(sorted(map(re.escape, _QUALITIES), key=len, reverse=True))
                        + r")(?:/[A-G][#b]?)?")
 _ROLE_RE = re.compile(r"[a-z_]{1,16}")
+_STYLE_RE = re.compile(r"[a-z][a-z0-9_-]{0,31}")
 _ACTION_RE = re.compile(r"[a-z_]{1,16}")
 _CUE_NAME_RE = re.compile(r"[A-Za-z0-9' -]{1,32}")
 _DENSITY_NOTE_RE = re.compile(r"density x(\d+(?:\.\d+)?) -> x(\d+(?:\.\d+)?)")
@@ -164,6 +165,19 @@ def _section(row: dict) -> str | None:
 def _key(row: dict) -> str | None:
     value = row.get("key")
     return value if isinstance(value, str) and _KEY_RE.fullmatch(value) else None
+
+
+def _key_words(row: dict) -> str | None:
+    """The key as a sentence says it: one plume worked out is never stated as a fact."""
+    key = _key(row)
+    if key and row.get("key_guess") is True:
+        return f"{key} (a guess)"
+    return key
+
+
+def _style(row: dict) -> str | None:
+    value = row.get("style")
+    return value if isinstance(value, str) and _STYLE_RE.fullmatch(value) else None
 
 
 def _tempo_from_loop(row: dict) -> bool:
@@ -693,7 +707,7 @@ def translate(rows: list[dict], ending: dict | None = None,
                 "I was sure I could hear you by here."
                 + ("" if _hears_player(route) else " That takes me about three bars."))
         if entry and entry != prev_entry and i > 0:
-            key = _key(row)
+            key = _key_words(row)
             if entry == "band":
                 add(row, "plan", "bass and chords",
                     f"Bass and chords in, in {key}." if key else "Bass and chords in.")
@@ -1166,7 +1180,10 @@ def _take_doc(rows, cue_log, take_dir, ending, manifest, seed, sizes, keep, live
     lines = roast(rows, ending, cue_log, events=events, route=route)
     started = _number(manifest.get("started_at"))
     bpm = _number(rows[0].get("bpm")) if rows else None
-    key = next((_key(r) for r in rows if _key(r)), None)
+    key_row = next((r for r in rows if _key(r)), None)
+    key = None if key_row is None else _key(key_row)
+    # The last one: a style picked as the band comes in replaces the one from the count.
+    style_row = next((r for r in reversed(rows) if _style(r)), None)
     tap = bool(rows) and _entry(rows[0]) is not None
     band = _first(rows, lambda r: _entry(r) == "band")
     if unread:
@@ -1183,6 +1200,9 @@ def _take_doc(rows, cue_log, take_dir, ending, manifest, seed, sizes, keep, live
         "name": keep["name"],
         "started_at": started,
         "key": key,
+        "key_guess": key_row is not None and key_row.get("key_guess") is True,
+        "style": None if style_row is None else _style(style_row),
+        "style_guess": style_row is not None and style_row.get("style_guess") is True,
         "bpm": None if bpm is None else round(bpm),
         "seconds": round(_length_s(rows, ending), 2),
         "bars": len(rows),
@@ -1207,6 +1227,7 @@ def _take_doc(rows, cue_log, take_dir, ending, manifest, seed, sizes, keep, live
 
 def summary(take: dict) -> dict:
     """The shelf's view of :func:`read_take`."""
-    names = ("folder", "kept", "name", "started_at", "key", "bpm", "seconds", "bars",
+    names = ("folder", "kept", "name", "started_at", "key", "key_guess", "style", "style_guess",
+             "bpm", "seconds", "bars",
              "bytes", "portrait")
     return {name: take[name] for name in names}

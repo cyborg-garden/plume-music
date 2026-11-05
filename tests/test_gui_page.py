@@ -872,6 +872,45 @@ def test_a_failed_take_lands_on_home_in_plain_words(tmp_path, docs, message):
     assert "Traceback" not in message
 
 
+def _guessed_docs(docs, tmp_path, *, key_guess=True, style_guess=True):
+    rows = song(20, band_bar=8)
+    for row in rows:
+        row.update(key_guess=key_guess, style_guess=style_guess, style="midwest")
+    root = tmp_path / "guessed"
+    write_take(root / "g", rows, ending=ending_doc(), started_at=1800000009.0)
+    srv = gui.GuiServer(roots=[root], log=lambda line: None, lister=lambda: DEVICES,
+                        spawner=_no_spawner, sessions=lambda: []).start()
+    try:
+        client = Client(srv).login()
+        takes = json.loads(client.get("/api/takes")[1])["takes"]
+        full = {t["id"]: json.loads(client.get(f"/api/take/{t['id']}")[1]) for t in takes}
+    finally:
+        srv.close()
+    return {**docs, "takes": takes, "docs": full, "ids": {t["folder"]: t["id"] for t in takes}}
+
+
+def test_a_detected_key_and_style_stay_guesses_on_the_record_and_the_shelf(tmp_path, docs):
+    guessed = _guessed_docs(docs, tmp_path)
+    out = run_page(tmp_path, guessed, """
+        $('nav-takes').click(); await page.settle();
+        const shelf = page.$('shelf-' + ids.g).children[2].textContent;
+        page.$('shelf-' + ids.g).click(); await page.settle();
+        return { shelf, meta: $('rec-meta').textContent, sentence: $('ev-sentence').textContent };""")
+    assert "F major, midwest (a guess)" in out["shelf"]
+    assert "F major, midwest (a guess)" in out["meta"]
+    assert out["sentence"] == "Bar 8. Bass and chords in, in F major (a guess)."
+
+
+def test_a_typed_key_and_style_are_stated_plainly_afterwards(tmp_path, docs):
+    guessed = _guessed_docs(docs, tmp_path, key_guess=False, style_guess=False)
+    out = run_page(tmp_path, guessed, """
+        $('nav-takes').click(); await page.settle();
+        page.$('shelf-' + ids.g).click(); await page.settle();
+        return { meta: $('rec-meta').textContent, sentence: $('ev-sentence').textContent };""")
+    assert "F major, midwest" in out["meta"] and "guess" not in out["meta"]
+    assert out["sentence"] == "Bar 8. Bass and chords in, in F major."
+
+
 def test_a_false_start_lands_on_home_with_the_menu_open_and_says_why(tmp_path, docs):
     out = live_page(tmp_path, docs, WAITING, """
         page.live = { state: 'idle', menu: true, message: 'Nothing came in on channel 1. Try another channel.' };

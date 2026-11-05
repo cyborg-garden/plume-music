@@ -176,10 +176,33 @@ def test_the_note_is_ours_and_never_the_engines_text():
 
 
 def test_darker_says_the_log_claims_it_and_nobody_can_find_it():
+    """A take from before 2026-11-06: live logged the tone and never applied it.
+    Its note said "from here on", and that wording is how such a take is known."""
     rows = song(40, cues={20: {"applied": "darker", "effects": [
         "cue 'darker' (texture:darker): tone +0.0 -> -1.0 from here on"]}})
     event = by_label(record.translate(rows, ending_doc()), "darker, no effect")
     assert event["dashed"] and "I can't find that it did" in event["sentence"]
+
+
+@pytest.mark.parametrize("text,effect", [
+    ("darker", "cue 'darker' (texture:darker): tone +0.0 -> -1.0, gliding in over 1s"),
+    ("warmer", "cue 'warmer' (texture:warmer): tone +0.0 -> -0.5, gliding in over 1s"),
+    ("wet", "cue 'wet' (texture:wet): reverb 0.00 -> 0.12, gliding in over 1s")])
+def test_a_tone_cue_lands_now_that_live_plays_it(text, effect):
+    rows = song(40, cues={20: {"applied": text, "effects": [effect]}})
+    event = by_label(record.translate(rows, ending_doc()), f"{text} landed")
+    assert not event["dashed"]
+
+
+@pytest.mark.parametrize("text,effect", [
+    ("dry", "cue 'dry' (texture:dry): reverb already off; nothing changed"),
+    ("darker", "cue 'darker' (texture:darker): tone already at -1.0, as far as it goes; "
+               "nothing changed")])
+def test_a_tone_cue_at_its_limit_did_nothing(text, effect):
+    rows = song(40, cues={20: {"applied": text, "effects": [effect]}})
+    events = record.translate(rows, ending_doc())
+    assert not [e for e in events if e["label"].endswith(" landed")]
+    assert by_label(events, f"{text}, did nothing")["dashed"]
 
 
 def test_only_an_end_cue_gets_the_credit_for_ending():

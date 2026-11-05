@@ -348,7 +348,8 @@ def _changed_nothing(effect: str | None) -> bool:
     if effect is None:
         return False
     found = _TEMPO_NOTE_RE.search(effect)
-    return "NOT applied" in effect or bool(found and found.group(1) == found.group(2))
+    return ("NOT applied" in effect or "nothing changed" in effect
+            or bool(found and found.group(1) == found.group(2)))
 
 
 def _loop_held_tempo(row: dict) -> bool:
@@ -387,9 +388,12 @@ def _outcome(row: dict, text: str, effect: str | None, *, next_row: dict | None 
             return "landed", ""
         if fate is None:
             return "unsure", ""
-    if effect is None or "NOT applied" in effect:
+    if effect is None or _changed_nothing(effect) and "(tempo:" not in effect:
         return "nothing", ""
-    if "(texture:darker)" in effect or "(texture:brighter)" in effect:
+    # Before 2026-11-06 a live take logged the tone ("... from here on") and
+    # never applied it.  Now the bus plays it, and its note says it glides in.
+    if (("(texture:darker)" in effect or "(texture:brighter)" in effect)
+            and "from here on" in effect):
         return "tone", ""
     # A tempo cue sets the next bar's tempo.  With no next bar, nothing sounded.
     if kind == "tempo" and next_row is None:

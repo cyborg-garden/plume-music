@@ -938,9 +938,9 @@ _CUE_TEMPO_STEP = 0.06       # "faster"/"slower": +/-6%, an audible push
 _CUE_RITARD_PER_BAR = 0.04   # "ritard": 4% slower per bar, compounding
 _CUE_RITARD_FLOOR = 0.55     # ...down to 55% of the tempo it started from
 _CUE_DENSITY_STEP = 0.65     # "sparser" multiplies density by this; busier /
-_CUE_TILT_HZ = 2600.0        # "darker"/"brighter" shelf corner
-_CUE_TILT_MIX = 0.55         # ...and how much of the shelf is mixed in
-_CUE_XFADE_S = 0.05          # crossfade at the boundary, so it is not a click
+#: "warmer" is half a "darker": the same shelf, a gentler move.  The tone
+#: itself (shelf corner, mix, reverb steps, glide) is ``fx.BusTone``'s.
+_CUE_WARM_STEP = 0.5
 #: Bars of ending played after an `end` cue lands: one to say it, one to land
 #: on.  Short on purpose — "take it out" is an instruction to stop, and a
 #: sixteen-bar outro after it is not honouring it either.
@@ -962,6 +962,7 @@ class _LeadCues:
         self.tempo_ratio = 1.0       # multiplies the machine's bpm
         self.density_scale = 1.0     # multiplies the planner's density
         self.tilt = 0.0              # -1 fully dark .. +1 fully bright
+        self.wet = 0.0               # reverb send, 0 .. fx.BUS_TONE_WET_MAX
         self.ritard = False
         self._ritard_floor = 1.0
 
@@ -1011,15 +1012,28 @@ class _LeadCues:
                           else 1.0 / _CUE_DENSITY_STEP), 0.15, 2.0)
             return (f"cue {text!r} (texture:{value}): density x{before:.2f} -> "
                     f"x{self.density_scale:.2f}")
-        if value in ("darker", "brighter"):
+        if value in ("darker", "brighter", "warmer"):
             before = self.tilt
-            self.tilt = _clamp01(before + (-1.0 if value == "darker" else 1.0),
-                                 -1.0, 1.0)
+            step = {"darker": -1.0, "brighter": 1.0, "warmer": -_CUE_WARM_STEP}[value]
+            self.tilt = _clamp01(before + step, -1.0, 1.0)
+            if self.tilt == before:
+                return (f"cue {text!r} (texture:{value}): tone already at "
+                        f"{before:+.1f}, as far as it goes; nothing changed")
             return (f"cue {text!r} (texture:{value}): tone {before:+.1f} -> "
-                    f"{self.tilt:+.1f} from here on")
+                    f"{self.tilt:+.1f}, gliding in over "
+                    f"{_fx.BUS_TONE_GLIDE_S:.0f}s")
+        if value in ("dry", "wet"):
+            before = self.wet
+            step = _fx.BUS_TONE_WET_STEP * (1.0 if value == "wet" else -1.0)
+            self.wet = round(_clamp01(before + step, 0.0, _fx.BUS_TONE_WET_MAX), 6)
+            if self.wet == before:
+                return (f"cue {text!r} (texture:{value}): reverb already "
+                        f"{'off' if before == 0.0 else f'at {before:.2f}, the most it goes'}; "
+                        f"nothing changed")
+            return (f"cue {text!r} (texture:{value}): reverb {before:.2f} -> "
+                    f"{self.wet:.2f}, gliding in over {_fx.BUS_TONE_GLIDE_S:.0f}s")
         return (f"cue {text!r} (texture:{value}): understood but NOT applied "
-                f"— {value} is a mix-bus effect and this take has no live "
-                f"send; 'sparser'/'busier'/'darker'/'brighter' do land")
+                f"— no tone move is defined for {value}")
 
     def bar_ratio(self) -> float:
         """The tempo multiplier for the upcoming bar, advancing a ritardando."""
@@ -1031,21 +1045,6 @@ class _LeadCues:
 
 def _clamp01(x: float, lo: float, hi: float) -> float:
     return lo if x < lo else (hi if x > hi else x)
-
-
-def _lead_tilt(x: np.ndarray, sr: int, tilt: float) -> np.ndarray:
-    """A first-order tone tilt for a texture cue: -1 dark, +1 bright.
-
-    Applied to a whole contiguous span of the machine bus rather than bar by
-    bar, so the filter has one continuous state and only the intended step at
-    the cue's own boundary (which the caller crossfades).
-    """
-    if abs(float(tilt)) < 1e-6 or x.size == 0:
-        return x
-    lo = _fx.svf_lowpass(x, sr, _CUE_TILT_HZ)
-    if tilt < 0.0:
-        return x + (-tilt) * _CUE_TILT_MIX * (lo - x)
-    return x + tilt * _CUE_TILT_MIX * (x - lo)
 
 
 def lead_analysis_gain(x: np.ndarray, *, ref_db: float = _ANA_REF_DB) -> float:
@@ -1556,7 +1555,7 @@ def simulate_lead(input_wav: str | None, *, session=None,
     sec_bar = 0
     cues = _LeadCues()
     ending_at: int | None = None
-    tilt_from: int | None = None
+    tone = _fx.BusTone(sr)
     machine_key = _lead_transposed_key(str(session.key), 0)
 
     def consume(t: float) -> None:
@@ -1688,10 +1687,11 @@ def simulate_lead(input_wav: str | None, *, session=None,
                             density_scale=cues.density_scale)
         if cue_notes:
             plan = _replace(plan, reason=plan.reason + "; " + "; ".join(cue_notes))
-        if cues.tilt and tilt_from is None:
-            tilt_from = cursor
 
-        bar_audio = duet.render_bar(plan, m_beat, m_harm)
+        # The tone cues' stage, bar by bar exactly as live runs it; bit-exact
+        # pass-through until a cue moves it.
+        bar_audio = tone.process(duet.render_bar(plan, m_beat, m_harm),
+                                 tilt=cues.tilt, wet=cues.wet)
         placements.append((cursor, bar_audio))
         cursor += bar_audio.shape[0]
 
@@ -1763,7 +1763,12 @@ def simulate_lead(input_wav: str | None, *, session=None,
 
     tail = duet.flush_tail()
     if tail.shape[0]:
+        tail = tone.process(tail, tilt=cues.tilt, wet=cues.wet)
         placements.append((cursor, tail))
+        cursor += tail.shape[0]
+    ring = tone.flush()
+    if ring.shape[0]:
+        placements.append((cursor, ring))
 
     # ---- mix (no bus calibration in lead mode — see the docstring) ---------
     machine_end = max((i0 + a.shape[0] for i0, a in placements), default=0)
@@ -1771,19 +1776,6 @@ def simulate_lead(input_wav: str | None, *, session=None,
     machine = np.zeros((total, 2), dtype=np.float64)
     for i0, a in placements:
         machine[i0:i0 + a.shape[0]] += a.astype(np.float64)
-    if tilt_from is not None and cues.tilt and tilt_from < machine.shape[0]:
-        # A "darker"/"brighter" cue is a real, measurable change to the machine
-        # bus from the bar it landed on.  Applied to the whole remaining span
-        # at once so the filter has continuous state (a per-bar filter starting
-        # from zero state clicks at every bar line), and crossfaded over
-        # ``_CUE_XFADE_S`` so the cue's own boundary is a move, not a click.
-        seg = machine[tilt_from:]
-        wet = _lead_tilt(seg, sr, cues.tilt)
-        n = min(int(_CUE_XFADE_S * sr), seg.shape[0])
-        if n > 1:
-            r = np.linspace(0.0, 1.0, n, dtype=np.float64)[:, None]
-            wet[:n] = seg[:n] * (1.0 - r) + wet[:n] * r
-        machine[tilt_from:] = wet
     hgain = 10.0 ** (float(mix_human_db) / 20.0)
     human_st = np.zeros((total, 2), dtype=np.float64)
     human_st[: human.shape[0]] = (human.astype(np.float64) * hgain)[:, None]

@@ -137,11 +137,11 @@ further click. Turn the headphones down first.
 plume gui
 ```
 
-Set up again in the menu makes this a first run, if you have been here before.
+Set up again in Settings makes this a first run, if you have been here before.
 
 | Do this | Look for |
 |---|---|
-| Read the first screen, without clicking | One Start. The closed menu line under it names what it will use |
+| Read the first screen, without clicking | One Start. The small line under it names what it will use, and Settings sits next to Takes |
 | Click Start with your hands on the strings, and play | "Play something." The next line says it heard you on your interface, on the channel you are plugged into. Note what level it asked you to change, if any, against the -18 to -6 dB in step 2 |
 | With nothing plugged in or the gain down, click Set up again, then Start | "Nothing came in" names the device, and Play again, Start anyway and any other device are offered. Nothing else is open |
 | Say Yes to headphones. With the Direct button off, say No to hearing yourself | "Check your headphone volume." Then "Still nothing" goes on with Hear me on |
@@ -155,6 +155,19 @@ Set up again in the menu makes this a first run, if you have been here before.
 | Click Stop, or let it fade | The page lands on that take's Record. `human.wav` holds only guitar, with no band |
 | Click Start again | Straight to the count, with no questions |
 | With the page open, unplug the interface, then click Start | Plume asks you to play something again rather than starting on the wrong device. Note what it picked, because that take can make sound |
+
+To try speakers in the room, open Settings and pick them under Output. This is the only part of plume that opens two devices, and it has not been tried on real gear.
+
+| Do this | Look for |
+|---|---|
+| Pick the speakers, leave the tick off, click Start and play | The band comes out of the speakers. Your guitar comes only through your interface's own monitoring. `session.json` names the output under `input` |
+| Tick Send my instrument to this output, with an instrument plugged in, and start again | Your guitar comes out of the speakers too, slightly late. Note how late it feels, against the delay in Details |
+| Move to another channel in Settings | The tick shows off until you say so again |
+| With two interfaces plugged in and no setup yet, pick the speakers, click Start and play into the interface Settings was not showing | Plume says which input it heard you on and asks about the speakers before the count |
+| Unplug the speakers, then click Start | Settings says it could not find that output, and nothing plays anywhere else |
+| Try a pair that may refuse, such as a display's speakers | Either it plays, or Settings says the two would not open together. Note which |
+| Play ten minutes | Note whether the band and your guitar drift apart. Plume does nothing about this |
+| Open the take and play Together | Note whether you sit where you played. `stream.json` holds what the two devices reported, and they may not report everything |
 
 Note the delay in Details, and whether playing through Hear me feels late. That number is what
 the device reports, which nobody has measured. If you can't stop it from the page, `plume stop`
@@ -171,6 +184,8 @@ in a terminal always works.
   device it heard you on, the delay Details showed, how it felt to play through, and the key
   and style plume guessed against what you played. Say how long it took from the first press
   to the band coming in.
+- If you tried another output: which devices, whether they opened, any drift over a long take,
+  and `stream.json` next to how far off Together sounded.
 
 ## What only you can answer
 
@@ -184,4 +199,4 @@ in a terminal always works.
   reports here, and on other setups that number has been wrong by over 200 ms.
 - Whether Whisper hears a close mic in a real room.
 - Whether a separate input and output device hold together. Two clocks can drift, which is
-  why the commands above use one device for both.
+  why the commands above use one device for both. Output in Settings is how to find out.

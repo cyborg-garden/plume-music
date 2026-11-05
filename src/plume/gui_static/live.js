@@ -11,7 +11,7 @@ export function isRunning(doc) { return !!doc && RUNNING.includes(doc.state); }
 /* Where a take that is over sends a page that was following it. */
 export function landing(doc) {
   if (doc.state === 'done') return { take: doc.take };
-  return { home: true, message: doc.state === 'elsewhere' ? '' : doc.message || '', menu: !!doc.menu };
+  return { home: true, message: doc.state === 'elsewhere' ? '' : doc.message || '', settings: !!doc.settings };
 }
 
 /* The note a Record shows for the take that just ended, and only for that one. */
@@ -78,7 +78,7 @@ export function signView(you, row, doc) {
 export function bandInInput(row) {
   return !!row && row.input === 'direct' && !(row.you_trusted || []).includes('you_db');
 }
-export const BAND_IN_INPUT_LINE = 'Plume hears the band on this input. Press Stop and try another device in the menu.';
+export const BAND_IN_INPUT_LINE = 'Plume hears the band on this input. Press Stop and try another device in Settings.';
 
 /* The device's own number, called what it is. */
 export function delayLine(ms) {
@@ -89,16 +89,25 @@ export function delayLine(ms) {
 /* Said where it can be read while it is happening: on home, and during the take. */
 export const DIRECT_LINE = 'A Direct or monitor button on your interface has no delay. Using both doubles the sound.';
 
+/* Another output: what Settings says about it, and what the take says while it runs. */
+export const WIRELESS_LINE = 'Wireless speakers arrive late, which makes playing along hard.';
+export const SEND_LINE = 'It arrives slightly late. Only for an instrument plugged in: a mic on this channel would howl.';
+export const ROOM_OUTPUT_LINE = 'Hear me stays off here: a room mic through speakers would howl.';
+export function sendDelayLine(ms) {
+  return 'Your instrument reaches that output about ' + Math.round(ms) + ' ms late, by your device\'s own count, and it could be more.';
+}
+
 /* A clap can't reach a pickup, and only a room mic hears the room. */
 export function countWords(mode) {
   return mode === 'direct' ? 'Play 8 even beats. Muted strings work well.' : 'Knock or clap 8 even beats.';
 }
 
-/* The menu's one closed line: what Start will use, without opening it. */
-export function routeLine(device, channel, key, style) {
+/* Home's one small line: what Start will use. output: the name of another output, if any. */
+export function routeLine(device, channel, key, style, output) {
   const bits = device
     ? [device.name, device.mode === 'direct' ? 'channel ' + channel : 'room mic']
     : ['System default', 'room mic'];
+  if (output) bits.push('out to ' + output);
   if (key) bits.push(key);
   if (style) bits.push(style);
   return bits.join(', ');
@@ -155,6 +164,34 @@ export function setupTrouble(words) {
 function heardNote(doc) {
   if (!doc.heard || doc.heard.result !== 'ok' || !doc.device_name) return null;
   return 'Heard you on ' + doc.device_name + (doc.mode === 'direct' ? ', channel ' + doc.channel : '') + '.';
+}
+
+/* Home showed one place for the band, and setup has just heard her on an input that would send it
+   somewhere else. Home may have named an output, or named none while the new input has its own
+   saved. shown: the input and output home was showing at the press of Start. Null when they
+   agree, and unless she was heard: a device that heard nothing has not moved anything.
+   output is what a Yes leaves saved on the new input, and otherwise what a No leaves. */
+export function movedOutput(shown, doc, outputs) {
+  if (!shown || !doc.device || doc.device === shown.device) return null;
+  if (!doc.heard || !['ok', 'hot', 'low'].includes(doc.heard.result)) return null;
+  const direct = doc.mode === 'direct', saved = doc.output || null;
+  const output = shown.output || saved;
+  if (!output) return null;
+  if (shown.output
+    ? saved === shown.output || (direct && !saved && doc.device === shown.output)
+    : shown.direct && saved === shown.device) return null;
+  const otherwise = shown.output ? saved : null;
+  const nameOf = function (id) {
+    const found = (outputs || []).find(function (o) { return o.id === id; });
+    return found ? found.name : '';
+  };
+  const instead = otherwise ? nameOf(otherwise) || 'the output saved for it' : direct ? doc.device_name : 'the system output';
+  return {
+    step: 'moved', done: false, note: null, others: [], output: output, otherwise: otherwise,
+    line: 'Plume heard you on ' + doc.device_name + '. Send the band to ' + (nameOf(output) || 'the output you chose')
+      + '? If not, it comes out of ' + instead + '.',
+    choices: [{ answer: 'yes', label: 'Yes' }, { answer: 'no', label: 'No' }]
+  };
 }
 
 /* The big line is the first sentence, and the rest sits under it in smaller words. */

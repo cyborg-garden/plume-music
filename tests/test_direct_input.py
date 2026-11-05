@@ -11,7 +11,7 @@ import pytest
 import soundfile as sf
 
 from conftest import fake_audio, patched_module, short_socket_path
-from plume import cli, realtime
+from plume import cli, realtime, record
 from plume import mind as mind_mod
 from plume import roles as roles_mod
 from plume.realtime import RealtimeError, resolve_input
@@ -713,3 +713,158 @@ def test_a_jam_that_means_lead_takes_its_input_route_along(monkeypatch):
                  input_channel=3, direct=True, monitor=True)
     assert (seen["input_device"], seen["input_channel"], seen["direct"],
             seen["monitor"]) == ("audio interface", 3, True, True)
+
+
+# ------------------------------------------------------------------ another output
+
+def test_output_device_changes_the_output_and_only_the_output():
+    route = resolve_input(rig(), device="audio interface", input_channel=2, direct=True, output_device="laptop speakers")
+    assert route.device == (2, 1) and route.guitar == 1 and route.source == "direct"
+    assert route.device_name == "Audio Interface 4x4" and route.output_name == "Laptop Speakers"
+
+
+def test_output_device_with_an_input_device_or_none():
+    assert resolve_input(rig(), input_device="laptop mic", output_device="laptop speakers").device == (0, 1)
+    assert resolve_input(rig(), output_device="laptop speakers").device == (None, 1)
+
+
+def test_part_of_an_output_name_is_not_enough_so_one_that_went_cannot_become_its_neighbour():
+    """Room Speakers has gone and Room Speakers 2 is there.  That is a refusal, never a swap."""
+    table = [{"name": "Audio Interface 4x4", "max_input_channels": 4, "max_output_channels": 4},
+             {"name": "Room Speakers 2", "max_input_channels": 0, "max_output_channels": 2}]
+    with pytest.raises(RealtimeError, match="no audio output matching"):
+        resolve_input(fake_audio(None, devices=table), device="audio interface", output_device="Room Speakers")
+    assert resolve_input(fake_audio(None, devices=table), output_device="room speakers 2").device == (None, 1)
+
+
+def test_no_output_asked_for_is_as_it_was():
+    assert resolve_input(rig()).device is None
+    assert resolve_input(rig(), device="audio interface").device == (2, 2)
+    assert "output" not in resolve_input(rig(), device="audio interface").describe()
+
+
+@pytest.mark.parametrize("name,words", [("no such thing", "no audio output matching"), ("laptop mic", "has no outputs")])
+def test_output_device_is_refused_and_never_swapped(name, words):
+    with pytest.raises(RealtimeError, match=words):
+        resolve_input(rig(), device="audio interface", output_device=name)
+
+
+def test_only_the_lead_command_takes_the_output_flag():
+    args = cli._build_parser().parse_args(["lead", "--output-device", "speakers"])
+    assert args.output_device == "speakers"
+    assert cli._route_kwargs(args) == {"output_device": "speakers"}
+    assert "output_device" not in cli._route_kwargs(cli._build_parser().parse_args(["lead"]))
+    with pytest.raises(SystemExit):
+        cli._build_parser().parse_args(["jam", "--output-device", "speakers"])
+
+
+def _two_device_take(tmp_path, *, name="rec", **kw):
+    device = fake_audio(kw.pop("human", None), devices=RIG, latency=(0.012, 0.150))
+    with patched_module("sounddevice", device):
+        realtime.lead(prompt="lofi", seed=0, role=roles_mod.RoleParams(role="lead"), status=False,
+                      max_minutes=0.01, tap_start=True, direct=True, record_dir=str(tmp_path / name),
+                      socket_path=short_socket_path("twodev"), device="audio interface",
+                      input_channel=1, output_device="laptop speakers", **kw)
+    return device, tmp_path / name
+
+
+def test_the_stream_opens_on_the_pair_and_the_take_says_so(tmp_path, consent):
+    device, rec = _two_device_take(tmp_path)
+    assert device.opened[0]["device"] == (2, 1)
+    manifest = json.loads((rec / "session.json").read_text())
+    assert manifest["input"]["output"] == "Laptop Speakers" and manifest["input"]["device"] == "Audio Interface 4x4"
+
+
+def test_stream_json_holds_both_devices_numbers_and_together_lines_up_on_them(tmp_path, consent):
+    """As far as a fake can: it reports what it is told.  Real gear may add a delay it does not report."""
+    _, rec = _two_device_take(tmp_path)
+    doc = json.loads((rec / "stream.json").read_text())
+    assert doc["input_ms"] == 12.0 and doc["output_ms"] == 150.0 and doc["reported_ms"] == 162.0
+    assert doc["calibrated_ms"] is None
+    assert record.playing_delay_frames(rec, SR) == round(0.162 * SR)
+
+
+def test_a_calibration_of_other_devices_is_not_used_for_this_pair(tmp_path, consent):
+    from plume import calibrate
+    calibrate.save_roundtrip("Audio Interface 4x4", "Audio Interface 4x4", SR,
+                             {"roundtrip_ms": 41.5, "spread_ms": 0.5, "heard": 8, "clicks": 8})
+    _, rec = _two_device_take(tmp_path)
+    assert json.loads((rec / "stream.json").read_text())["calibrated_ms"] is None
+
+
+def test_the_monitor_mixes_into_the_chosen_output(tmp_path, consent):
+    """The opt-in is the existing Hear me mix, with the same stream on the other output."""
+    guitar = (0.2 * np.sin(2 * np.pi * 220.0 * np.arange(SR * 2) / SR)).astype(np.float32)
+    device, _ = _two_device_take(tmp_path, human=guitar, monitor=True)
+    assert device.opened[0]["device"] == (2, 1)
+    assert np.abs(device.stream.output).max() > 0.1
+
+
+class _RefusingAudio:
+    """A device table whose pair will not open, as a real pair of clocks may not."""
+
+    def __init__(self):
+        self._inner = rig()
+
+    def query_devices(self, *a, **kw):
+        return self._inner.query_devices(*a, **kw)
+
+    def Stream(self, **kw):  # noqa: N802 - sd's name
+        raise RuntimeError("Error opening Stream: Illegal combination of I/O devices [PaErrorCode -9993]")
+
+
+def test_a_pair_that_will_not_open_is_a_sentence_and_not_a_traceback(tmp_path, consent, capsys):
+    with patched_module("sounddevice", _RefusingAudio()):
+        code = cli.main(["lead", "--tap-start", "--detect", f"--record={tmp_path / 'rec'}/", "--device=audio interface",
+                         "--direct", "--output-device=laptop speakers", f"--socket={short_socket_path('refuse')}"])
+    err = capsys.readouterr().err
+    assert code != 0 and realtime.OPEN_TOGETHER_FAILED in err and "Traceback" not in err
+    assert realtime.list_sessions(prune=False) == [], "nothing left behind claiming to be a take"
+
+
+class _WontStart:
+    """The pair opens, and then will not run, which PortAudio reports from a different call."""
+
+    def __init__(self):
+        self._inner = rig()
+        self.stream = None
+
+    def query_devices(self, *a, **kw):
+        return self._inner.query_devices(*a, **kw)
+
+    def Stream(self, **kw):  # noqa: N802 - sd's name
+        self.stream = self._inner.Stream(**kw)
+        self.stream.start = self._refuse
+        return self.stream
+
+    @staticmethod
+    def _refuse():
+        raise RuntimeError("Error starting stream: Unanticipated host error [PaErrorCode -9999]")
+
+
+def test_a_pair_that_opens_and_will_not_start_is_the_same_sentence(tmp_path, consent, capsys):
+    audio = _WontStart()
+    with patched_module("sounddevice", audio):
+        code = cli.main(["lead", "--tap-start", "--detect", f"--record={tmp_path / 'rec'}/", "--device=audio interface",
+                         "--direct", "--output-device=laptop speakers", f"--socket={short_socket_path('nostart')}"])
+    err = capsys.readouterr().err
+    assert code != 0 and realtime.OPEN_TOGETHER_FAILED in err and "Traceback" not in err
+    assert audio.stream.closed is True, "the device is let go"
+    assert realtime.list_sessions(prune=False) == [], "nothing left behind claiming to be a take"
+
+
+def test_one_device_failing_to_start_is_as_it_was(tmp_path, consent):
+    audio = _WontStart()
+    with patched_module("sounddevice", audio):
+        with pytest.raises(RuntimeError, match="Error starting stream"):
+            realtime.lead(prompt="lofi", seed=0, role=roles_mod.RoleParams(role="lead"), status=False,
+                          max_minutes=0.01, tap_start=True, direct=True, record_dir=str(tmp_path / "rec"),
+                          socket_path=short_socket_path("onestart"), device="audio interface", input_channel=1)
+
+
+def test_one_device_refusing_to_open_is_as_it_was(tmp_path, consent):
+    with patched_module("sounddevice", _RefusingAudio()):
+        with pytest.raises(RuntimeError, match="Illegal combination"):
+            realtime.lead(prompt="lofi", seed=0, role=roles_mod.RoleParams(role="lead"), status=False,
+                          max_minutes=0.01, tap_start=True, direct=True, record_dir=str(tmp_path / "rec"),
+                          socket_path=short_socket_path("oneref"), device="audio interface", input_channel=1)

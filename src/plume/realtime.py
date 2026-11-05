@@ -1085,6 +1085,10 @@ def _resolve_device(sd, device: str | None):
     return None  # let PortAudio use the defaults
 
 
+#: What a refused pair of devices says, which the page knows it by.
+OPEN_TOGETHER_FAILED = "could not open that input and output together"
+
+
 @dataclasses.dataclass(frozen=True)
 class InputRoute:
     """Which input a live session listens to.
@@ -1101,11 +1105,14 @@ class InputRoute:
     voice: int | None = None    # 0-based index into indata, or no voice channel
     source: str = "room"
     device_name: str | None = None
+    output_name: str | None = None      # only when the sound goes out somewhere she named
 
     def describe(self) -> dict:
         doc = {"source": self.source, "device": self.device_name,
                "channel": self.guitar + 1,
                "voice_channel": None if self.voice is None else self.voice + 1}
+        if self.output_name is not None:
+            doc["output"] = self.output_name
         if self.source == "direct":
             doc["thresholds_calibrated"] = False
         return doc
@@ -1113,11 +1120,15 @@ class InputRoute:
 
 def resolve_input(sd, device: str | None = None, *, input_device: str | None = None,
                   input_channel: int | None = None, voice_channel: int | None = None,
-                  direct: bool = False) -> InputRoute:
+                  direct: bool = False, output_device: str | None = None) -> InputRoute:
     """Turn the player's choice of input into a route, or say what is wrong with it.
 
     Channels are counted from 1, the way an interface labels its sockets.  With nothing
     asked for, this is exactly the old mono read of the system default input.
+
+    ``output_device`` names where the sound goes, whatever the input's own outs are.  It takes
+    the whole name, unlike ``device``: part of one could land on a neighbour when the named
+    output has gone.  A name that finds no output is refused here, never swapped for another.
     """
     dev = _resolve_device(sd, device)
     devices = list(sd.query_devices())
@@ -1132,6 +1143,19 @@ def resolve_input(sd, device: str | None = None, *, input_device: str | None = N
         if din is None:
             raise RealtimeError(f"{devices[hits[0]].get('name')!r} has no inputs")
         dev = (din, dev[1] if isinstance(dev, (tuple, list)) else None)
+    output_name = None
+    if output_device is not None:
+        want = output_device.lower()
+        hits = [i for i, d in enumerate(devices) if want == str(d.get("name", "")).lower()]
+        if not hits:
+            names = ", ".join(str(d.get("name", "?")) for d in devices) or "(none)"
+            raise RealtimeError(
+                f"no audio output matching {output_device!r} (devices: {names})")
+        dout = next((i for i in hits if devices[i].get("max_output_channels", 0) > 0), None)
+        if dout is None:
+            raise RealtimeError(f"{devices[hits[0]].get('name')!r} has no outputs")
+        output_name = str(devices[dout].get("name", "?"))
+        dev = (dev[0] if isinstance(dev, (tuple, list)) else None, dout)
     named = dev[0] if isinstance(dev, (tuple, list)) else None
     if named is None and (input_channel is not None or voice_channel is not None):
         # The system default can change under a take, and a channel number means
@@ -1153,7 +1177,7 @@ def resolve_input(sd, device: str | None = None, *, input_device: str | None = N
                             f"({guitar + 1}): the voice needs its own")
     return InputRoute(device=dev, channels=max(guitar, -1 if voice is None else voice) + 1,
                       guitar=guitar, voice=voice, source="direct" if direct else "room",
-                      device_name=name)
+                      device_name=name, output_name=output_name)
 
 
 def input_devices(sd) -> list[dict]:
@@ -3883,7 +3907,7 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
          input_device: str | None = None, input_channel: int | None = None,
          voice_channel: int | None = None, direct: bool = False,
          midi: str | None = None, midi_clock: bool = False,
-         detect: bool = False) -> None:
+         detect: bool = False, output_device: str | None = None) -> None:
     """The machine starts; you join (SPEC-V2 section 5).
 
     ``tap_start``: nothing plays until four knocks set the tempo, the drums then
@@ -3926,7 +3950,7 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
     sd = _import_sounddevice()
     route = resolve_input(sd, device, input_device=input_device,
                           input_channel=input_channel, voice_channel=voice_channel,
-                          direct=direct)
+                          direct=direct, output_device=output_device)
     check_audio_consent(device)
     dev = route.device
     midi_port = _resolve_midi_port(midi)
@@ -4514,10 +4538,26 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
             timeline.write_at(int(round(clock.t_s * SR)) - comp_samples[0],
                               looper.mix_bar(clock.bar, DECLICK_SAMPLES, stop=True))
 
-    stream = sd.Stream(
-        samplerate=SR, blocksize=BLOCK, device=dev, channels=(route.channels, 2),
-        dtype="float32", latency="low", callback=callback,
-    )
+    def refuse_pair(e: Exception):
+        # Two devices have two clocks, and some pairs will not open together.  Nothing has
+        # played yet, so this is a sentence and not a traceback.
+        if midi_in is not None:
+            midi_in.close()
+        cues.close()
+        if recorder is not None:
+            recorder.close()
+        unregister_session()
+        raise RealtimeError(f"{OPEN_TOGETHER_FAILED}: {e}") from None
+
+    try:
+        stream = sd.Stream(
+            samplerate=SR, blocksize=BLOCK, device=dev, channels=(route.channels, 2),
+            dtype="float32", latency="low", callback=callback,
+        )
+    except Exception as e:  # noqa: BLE001 - PortAudio's error, or sounddevice's own
+        if output_device is None:
+            raise
+        refuse_pair(e)
     # v1.6 — see jam(): masking is aligned to the bus->speaker->mic round trip,
     # and it matters more here because the machine plays continuously.
     masker.set_latency_hops(stream_latency_hops(stream))
@@ -4544,6 +4584,17 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
     looper.roundtrip_samples = stream_latency_hops(stream) * HOP
     if tap_start:
         looper.roundtrip_samples = comp_samples[0]
+    if output_device is not None:
+        # A pair can open and then refuse to run.  Starting it here says so in the same words;
+        # entering the stream below starts it again, which does nothing to one already running.
+        try:
+            stream.start()
+        except Exception as e:  # noqa: BLE001 - PortAudio's error, or sounddevice's own
+            try:
+                stream.close()
+            except Exception:  # noqa: BLE001 - it never ran, and the refusal is what matters
+                pass
+            refuse_pair(e)
     analysis = threading.Thread(target=analysis_loop, name="plume-analysis",
                                 daemon=True)
     planner = threading.Thread(target=planner_loop, name="plume-planner",

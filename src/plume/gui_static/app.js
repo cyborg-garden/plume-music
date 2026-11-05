@@ -1,4 +1,4 @@
-/* Home, the live view, the Record and the shelf. Everything shown comes from the bridge,
+/* Home, Settings, the live view, the Record and the shelf. Everything shown comes from the bridge,
    already filtered and already in sentences. Words go in with textContent only.
 
    Nothing here starts anything by itself: every POST that opens a device follows a click on
@@ -7,7 +7,7 @@
 import { clearStones, cssVar, queueStone, rng, stonesIdle, tok } from '/static/stone.js';
 import { hitBoxes, lineSpans, nextIndex } from '/static/layout.js';
 import { lostWords, pinnedRoute, routeOf } from '/static/session.js';
-import { BAND_IN_INPUT_LINE, DIRECT_LINE, FADING_LINE, NO_ENDING, ROOM_END_LINE, askingLine, bandInInput, countWords, delayLine, endLine, endedNote, isFading, isRunning, keyLine, landing, meterShare, routeLine, settledLine, setupTrouble, setupView, signView, stageWords, watchEnding, youView } from '/static/live.js';
+import { BAND_IN_INPUT_LINE, DIRECT_LINE, FADING_LINE, NO_ENDING, ROOM_END_LINE, ROOM_OUTPUT_LINE, SEND_LINE, WIRELESS_LINE, askingLine, bandInInput, countWords, delayLine, endLine, endedNote, isFading, isRunning, keyLine, landing, meterShare, movedOutput, routeLine, sendDelayLine, settledLine, setupTrouble, setupView, signView, stageWords, watchEnding, youView } from '/static/live.js';
 
 const $ = function (id) { return document.getElementById(id); };
 const S = { csrf: '', take: null, selected: null, roastOn: true, screen: 'loading', nav: 0,
@@ -15,7 +15,7 @@ const S = { csrf: '', take: null, selected: null, roastOn: true, screen: 'loadin
   nameFor: null, nameSent: '', keepTurn: {}, nameTurn: {}, moving: false, failed: null, newNames: {},
   live: { state: 'idle' }, liveTurn: 0, following: false, starting: false, stopSent: false, stopPending: false,
   trackButtons: {}, track: null, audioOn: false, seekTo: null,
-  home: null, homeTurn: 0, homeNote: '', form: { device: null, channel: null },
+  home: null, homeTurn: 0, homeNote: '', settingsNote: '', form: { device: null, channel: null },
   setup: null, setupTurn: 0, listening: false, listenSlow: false, answering: false, ending: NO_ENDING };
 
 function load(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
@@ -73,9 +73,10 @@ function metaOf(t) {
 
 function setScreen(name) {
   if (S.screen === 'setup' && name !== 'setup') leaveSetup();
+  if (S.screen === 'settings' && name !== 'settings') S.settingsNote = '';
   S.screen = name;
   document.body.setAttribute('data-screen', name);
-  ['home', 'setup', 'live', 'record', 'shelf', 'problem'].forEach(function (s) { $(s).hidden = s !== name; });
+  ['home', 'settings', 'setup', 'live', 'record', 'shelf', 'problem'].forEach(function (s) { $(s).hidden = s !== name; });
   if (name !== 'record') stopAudio();
   window.scrollTo(0, 0);
   reflectNav();
@@ -357,6 +358,7 @@ function showRoute() {
   if (route.name === 'take') openRecord(route.id);
   else if (route.name === 'takes') openShelf();
   else if (route.name === 'live') openLive();
+  else if (route.name === 'settings') openSettings();
   else openHome();
 }
 function goTake(id) {
@@ -372,6 +374,11 @@ function goShelf() {
 function goHome() {
   if (routeOf(location.hash).name !== 'home') history.pushState(null, '', '#/');
   openHome();
+}
+function goSettings() {
+  S.settingsNote = '';
+  if (location.hash !== '#/settings') history.pushState(null, '', '#/settings');
+  openSettings();
 }
 function goLive() {
   if (location.hash !== '#/live') history.pushState(null, '', '#/live');
@@ -542,7 +549,7 @@ function repaintShelf() {
   S.shelfKey = JSON.stringify(S.shelfTakes) + currentTheme();
 }
 
-/* ------------------------------------------------------------------------ home */
+/* ---------------------------------------------------------------- home and settings */
 
 function chosenDevice() {
   if (!S.home) return null;
@@ -570,7 +577,37 @@ function drawOptions(select, options, value) {
   });
   select.value = value;
 }
-function drawHomeMenu() {
+/* Where the chosen input's sound goes, as saved, or null for its own. */
+function outputSaved() {
+  const device = chosenDevice();
+  return (device ? device : S.home || {}).output || null;
+}
+function outputName() {
+  const saved = outputSaved();
+  if (!saved) return '';
+  const found = S.home.outputs.find(function (o) { return o.id === saved; });
+  return found ? found.name : 'an output that has gone';
+}
+function outputProblem() {
+  const device = chosenDevice();
+  return (device ? device : S.home || {}).output_problem || '';
+}
+function drawOutput() {
+  const doc = S.home, device = chosenDevice(), saved = outputSaved();
+  const direct = !!device && device.mode === 'direct';
+  /* Sent to her own outs, this is the same as not choosing, so it is not offered twice. */
+  const others = doc.outputs.filter(function (o) { return !(direct && o.id === device.id); });
+  const options = [{ value: '', label: direct ? 'Same as input' : 'System output' }]
+    .concat(others.map(function (o) { return { value: o.id, label: o.name }; }));
+  if (saved && !others.some(function (o) { return o.id === saved; })) options.push({ value: saved, label: 'Not plugged in' });
+  drawOptions($('set-output'), options, saved || '');
+  $('set-output').hidden = $('output-label').hidden = options.length < 2;
+  const problem = outputProblem(), note = $('output-note');
+  note.hidden = !problem && !saved;
+  note.textContent = problem || WIRELESS_LINE;
+  note.classList.toggle('warn', !!problem);
+}
+function drawSettings() {
   const doc = S.home;
   if (!doc) return;
   /* A device that went away falls back to the default rather than to nothing. */
@@ -590,19 +627,29 @@ function drawHomeMenu() {
   styles.textContent = '';
   doc.styles.forEach(function (name) { const o = document.createElement('option'); o.value = name; styles.appendChild(o); });
   $('set-folder').textContent = doc.folder;
+  drawOutput();
   drawHear();
   drawSummary();
 }
 function drawHear() {
   /* Any input, once a person says headphones are on: ticking this says so, to the bridge, there
      and then. Plume cannot tell headphones from speakers, and the bridge refuses it without that yes. */
-  const device = chosenDevice(), on = hearOn();
-  $('hear-row').hidden = !S.home;
-  $('hear-words').hidden = !S.home || !on;
+  const device = chosenDevice(), on = hearOn(), elsewhere = !!outputSaved();
+  const direct = !!device && device.mode === 'direct', gone = !!outputProblem();
+  $('hear-row').hidden = !S.home || elsewhere;
+  $('hear-words').hidden = !S.home || !on || elsewhere;
   $('hear-me').checked = on;
-  $('hear-direct').hidden = !(device && device.mode === 'direct');
+  $('hear-direct').hidden = !direct;
   $('hear-direct').textContent = DIRECT_LINE;
   $('hear-delay').textContent = delayLine(device && device.reported_ms);
+  /* On another output a yes about headphones means nothing. An instrument takes its own opt-in. */
+  const offer = elsewhere && direct && !gone, sends = offer && device.send_channel === channelNow();
+  $('send-row').hidden = !offer;
+  $('send-me').checked = sends;
+  $('send-words').hidden = !offer;
+  $('send-words').textContent = SEND_LINE;
+  $('room-output').hidden = !(elsewhere && !direct);
+  $('room-output').textContent = ROOM_OUTPUT_LINE;
 }
 async function sendHear(on) {
   const box = $('hear-me'), note = $('hear-note'), asked = chosenDevice(), body = { step: 'hear_me', answer: on ? 'on' : 'off' };
@@ -625,14 +672,67 @@ async function sendHear(on) {
   }
   drawHear();
 }
+/* The output and the opt-in are saved as they change, so a reload or a new page finds them. */
+async function sendOutput(value) {
+  const select = $('set-output'), asked = chosenDevice(), body = { step: 'output', answer: value || 'same' };
+  if (asked) body.device = asked.id;
+  select.disabled = true;
+  $('hear-note').hidden = true;
+  S.homeTurn += 1;
+  let answer = null;
+  try { answer = await send('setup/answer', body); } catch (err) { /* said below */ }
+  select.disabled = false;
+  if (settingsAnswerLeft(answer)) return;
+  if (answer && answer.ok) {
+    const holder = asked ? S.home.devices.find(function (d) { return d.id === asked.id; }) : S.home;
+    if (holder) { holder.output = answer.doc.output || null; holder.output_problem = null; holder.send_channel = null; }
+  } else showSettingsNote((answer && answer.doc && answer.doc.error) || 'That did not reach plume gui.');
+  drawOutput();
+  drawHear();
+  drawSummary();
+}
+async function sendSend(on) {
+  const box = $('send-me'), asked = chosenDevice(), channel = channelNow();
+  const body = { step: 'send', answer: on ? 'on' : 'off', channel: channel };
+  if (asked) body.device = asked.id;
+  box.disabled = true;
+  S.homeTurn += 1;
+  let answer = null;
+  try { answer = await send('setup/answer', body); } catch (err) { /* said below */ }
+  box.disabled = false;
+  if (settingsAnswerLeft(answer)) return;
+  if (answer && answer.ok) {
+    const device = asked && S.home.devices.find(function (d) { return d.id === asked.id; });
+    if (device) device.send_channel = on ? channel : null;
+  } else showSettingsNote((answer && answer.doc && answer.doc.error) || 'That did not reach plume gui.');
+  drawHear();
+}
+/* A lost page key, or a take started since: then there is nothing here to redraw. */
+function settingsAnswerLeft(answer) {
+  if (answer && answer.status === 401) { problem(answer); return true; }
+  if (answer && answer.status === 409 && answer.doc && answer.doc.live) { applyLive(answer.doc.live); return true; }
+  return false;
+}
+function showSettingsNote(words) {
+  S.settingsNote = words;
+  drawSettingsNote();
+}
+function drawSettingsNote() {
+  let note = S.settingsNote || (S.home && S.home.problem) || '';
+  /* The Output choice already says this, right where it can be fixed. */
+  if (note === outputProblem()) note = '';
+  $('settings-note').hidden = !note;
+  $('settings-note').textContent = note;
+}
 function drawSummary() {
-  if (S.home) $('home-summary').textContent = routeLine(chosenDevice(), channelNow(), $('set-key').value.trim(), $('set-style').value.trim());
+  if (S.home) $('home-gear').textContent = routeLine(chosenDevice(), channelNow(), $('set-key').value.trim(), $('set-style').value.trim(), outputName());
 }
 /* A terminal's take is the only thing that takes Start's place. */
 function drawHomeState() {
   const there = S.live.state === 'elsewhere';
   $('start').hidden = there;
   $('home-elsewhere').hidden = !there;
+  $('home-gear').hidden = there;
   if (there) {
     $('elsewhere-text').textContent = S.live.message;
     $('elsewhere-stop').disabled = !!S.live.stopping;
@@ -649,8 +749,9 @@ async function loadHome() {
   try { doc = await api('/api/home'); } catch (err) { if (turn === S.homeTurn && err.status === 401) problem(err); return; }
   if (turn !== S.homeTurn) return;
   S.home = doc;
-  drawHomeMenu();
+  drawSettings();
   drawHomeState();
+  drawSettingsNote();
 }
 /* Plume's own stone. These are the numbers of the first take it was carved from. */
 const HOME_STONE = { seed: 12034, height: 0.8137, lean: 0.2, cut: 0.2326, minor: false, nicks: 0 };
@@ -663,10 +764,20 @@ function openHome() {
   /* Setup is only ever reached by a click, never by reload, Back or Forward. */
   if (location.hash === '#/setup') history.replaceState(null, '', '#/');
   arriveAt('home');
-  drawHomeMenu();
+  drawSettings();
   drawHomeState();
   loadHome();
   paintHomeStone();
+}
+/* Only ever by asking: nothing here opens a device, and a take that is running keeps what it was
+   started with, so while one runs this is the take's screen instead. */
+function openSettings() {
+  if (isRunning(S.live)) { history.replaceState(null, '', '#/live'); openLive(); return; }
+  arriveAt('settings');
+  drawSettings();
+  drawSettingsNote();
+  /* A device plugged in since the page opened shows up here. */
+  loadHome();
 }
 /* Only what was decided here, so what setup learned is not overruled by a page that never
    changed it, and the device setup just heard, so the bridge does not choose again. It checks
@@ -675,19 +786,21 @@ function startBody(heard) {
   const body = {}, key = $('set-key').value.trim(), style = $('set-style').value.trim();
   if (key) body.key = key;
   if (style) body.style = style;
-  const menu = S.home ? chosenDevice() : null, changed = S.form.channel !== null;
-  const device = S.form.device ? menu && menu.id : heard || (changed && menu ? menu.id : null);
+  const shown = S.home ? chosenDevice() : null, changed = S.form.channel !== null;
+  const device = S.form.device ? shown && shown.id : heard || (changed && shown ? shown.id : null);
   if (device) body.device = device;
   /* The rows here are from before setup heard her, so only a channel she changed is sent. */
-  if (changed && menu && menu.id === device) body.channel = S.form.channel;
+  if (changed && shown && shown.id === device) body.channel = S.form.channel;
   return body;
 }
-function backHome(message, openMenu) {
+/* inSettings: the message is about something chosen there, so it is said where it can be fixed. */
+function backHome(message, inSettings) {
   S.following = false;
-  S.homeNote = message || '';
-  history.replaceState(null, '', '#/');
-  openHome();
-  if (openMenu) $('home-menu').open = true;
+  S.homeNote = inSettings ? '' : message || '';
+  S.settingsNote = inSettings ? message || '' : '';
+  history.replaceState(null, '', inSettings ? '#/settings' : '#/');
+  if (inSettings) openSettings();
+  else openHome();
 }
 /* The page goes to the live view straight away. Listing devices can take seconds, and Stop
    has to be there during them. */
@@ -734,6 +847,8 @@ async function pressStart() {
   S.homeNote = '';
   S.setup = null;
   S.listening = S.answering = false;
+  const seen = chosenDevice();
+  S.setupShown = S.home ? { device: seen ? seen.id : null, output: outputSaved(), direct: !!seen && seen.mode === 'direct' } : null;
   if (location.hash !== '#/setup') history.pushState(null, '', '#/setup');
   arriveAt('setup');
   drawSetup();
@@ -751,10 +866,41 @@ async function pressStart() {
   followSetup(doc);
 }
 function followSetup(doc) {
-  S.setup = doc;
   S.listening = S.answering = false;
+  if (askAboutOutput(doc)) return;
+  S.setup = doc;
   if (doc.done) startTake(doc.device);
   else drawSetup();
+}
+/* Nothing plays while this is asked: she is told where the band would go first. */
+function askAboutOutput(doc) {
+  const moved = movedOutput(S.setupShown, doc, S.home && S.home.outputs);
+  if (!moved) return false;
+  S.setup = Object.assign(moved, { then: doc });
+  drawSetup();
+  return true;
+}
+/* What home said is settled once the answer is saved, for this input, and not before. The next
+   press of Start reads what home knows, so it has to hear the answer too, or it would ask again
+   after each take. An answer that did not save keeps the question, because Start anyway would
+   start on the input she was heard on and leave out what she just said. */
+async function answerMoved(answer) {
+  const asked = S.setup, then = asked.then, turn = S.setupTurn;
+  const wanted = answer === 'yes' ? asked.output : asked.otherwise;
+  const settled = { device: then.device, output: wanted, direct: then.mode === 'direct' };
+  if (wanted === (then.output || null)) { S.setupShown = settled; loadHome(); followSetup(then); return; }
+  S.answering = true;
+  Array.from($('setup-choices').children).forEach(setOff);
+  let reply = null;
+  try { reply = await send('setup/answer', { step: 'output', answer: wanted || 'same', device: then.device }); } catch (err) { /* said below */ }
+  if (reply && reply.ok) loadHome();
+  if (turn !== S.setupTurn) return;
+  S.answering = false;
+  if (reply && reply.ok) { S.setupShown = settled; followSetup(then.step === 'listen' ? then : reply.doc); return; }
+  if (reply && reply.status === 400 && reply.doc && reply.doc.error) { backHome(reply.doc.error, true); return; }
+  if (reply && (reply.status === 401 || (reply.status === 409 && reply.doc && reply.doc.live))) { settleSetup(reply); return; }
+  S.setup = Object.assign({}, asked, { note: (reply && reply.doc && reply.doc.error) || 'That did not reach plume gui. Try again.' });
+  drawSetup();
 }
 function pickedName() {
   const device = S.form.device && chosenDevice();
@@ -798,7 +944,8 @@ function drawSetup() {
 }
 function chooseSetup(answer) {
   if (S.answering || S.listening) return;
-  if (answer === 'again') setupListen();
+  if (S.setup.step === 'moved') answerMoved(answer);
+  else if (answer === 'again') setupListen();
   else if (answer === 'start') startTake();
   else setupAnswer(S.setup.step, answer);
 }
@@ -858,7 +1005,8 @@ async function resetSetup() {
   if (!answer || !answer.ok) { note.textContent = 'That did not reach plume gui.'; return; }
   S.form.channel = null;
   if (S.home) {
-    S.home.devices.forEach(function (d) { d.hear_me = false; });
+    S.home.devices.forEach(function (d) { d.hear_me = false; d.output = null; d.output_problem = null; d.send_channel = null; });
+    S.home.output = null; S.home.output_problem = null;
     if (S.home.hear_me) S.home.hear_me.default = false;
   }
   note.textContent = 'Start will ask again.';
@@ -880,7 +1028,7 @@ function land(doc) {
   if (to.take) {
     history.replaceState(null, '', '#/take/' + to.take);
     openRecord(to.take);
-  } else backHome(to.message, to.menu);
+  } else backHome(to.message, to.settings);
 }
 function liveWords(doc, row) {
   if (doc.state === 'starting') return 'Opening the device.';
@@ -918,8 +1066,9 @@ function drawLive() {
   /* Only once a stream has said so, and only when this take is monitoring. */
   const ms = doc.hear_me && doc.stream ? doc.stream.reported_ms : null;
   $('live-delay').hidden = typeof ms !== 'number';
-  $('live-delay').textContent = typeof ms === 'number' ? delayLine(ms) : '';
-  $('live-direct').hidden = !doc.hear_me || doc.mode !== 'direct';
+  $('live-delay').textContent = typeof ms !== 'number' ? '' : doc.output ? sendDelayLine(ms) : delayLine(ms);
+  /* That button only reaches the interface's own outs, so it says nothing about other speakers. */
+  $('live-direct').hidden = !doc.hear_me || doc.mode !== 'direct' || !!doc.output;
   $('live-direct').textContent = DIRECT_LINE;
   $('live-cues').hidden = doc.state !== 'playing';
   /* Told once she has gone quiet, where the engine can tell. A room mic can't, so it is told
@@ -930,7 +1079,7 @@ function drawLive() {
   $('live-end').textContent = ends;
   $('live-how').hidden = !row || row.input !== 'room';
   $('live-how').textContent = ROOM_END_LINE;
-  /* An empty menu is not offered. */
+  /* Empty Details are not offered. */
   $('live-details').hidden = !row && $('live-delay').hidden && $('live-direct').hidden;
 }
 /* A click sends one request. The bridge signals a take once however often it is asked, and
@@ -973,7 +1122,7 @@ function applyLive(doc) {
   }
   reflectNav();
   if (isRunning(doc)) {
-    if (S.screen === 'home' || S.screen === 'setup') goLive();
+    if (S.screen === 'home' || S.screen === 'setup' || S.screen === 'settings') goLive();
     else if (S.screen === 'live') drawLive();
     return;
   }
@@ -987,6 +1136,7 @@ function reflectNav() {
   const nav = $('nav-live'), running = isRunning(S.live);
   nav.hidden = S.screen === 'live' || !(running || S.following);
   nav.textContent = running ? 'Playing' : 'Last take';
+  $('nav-settings').hidden = running;
   drawReplay();
 }
 /* Asking is also what tells the bridge a page is still here, so this runs on every screen
@@ -1006,7 +1156,7 @@ async function pollLive() {
       applyLive(doc);
     }
   } catch (err) {
-    if (err.status === 401 && (S.screen === 'live' || S.screen === 'home')) problem(err);
+    if (err.status === 401 && (S.screen === 'live' || S.screen === 'home' || S.screen === 'settings')) problem(err);
     else if (err.status !== 401) {
       S.liveLost = true;
       if (S.screen === 'live') drawLive();
@@ -1080,6 +1230,8 @@ $('player').addEventListener('ended', function () {
   S.audioOn = false; p.currentTime = 0; drawPlayer();
 });
 $('nav-takes').addEventListener('click', goShelf);
+  $('nav-settings').addEventListener('click', goSettings);
+  $('settings-done').addEventListener('click', goHome);
   $('nav-live').addEventListener('click', goLive);
   $('start').addEventListener('click', pressStart);
   $('rec-again').addEventListener('click', function (ev) { if (!(ev && ev.detail > 1)) pressStart(); });
@@ -1090,18 +1242,27 @@ $('nav-takes').addEventListener('click', goShelf);
   $('cue-busier').addEventListener('click', function () { sendCue('busier'); });
   $('cue-sparser').addEventListener('click', function () { sendCue('sparser'); });
   $('hear-me').addEventListener('change', function () { sendHear($('hear-me').checked); });
+  $('send-me').addEventListener('change', function () { sendSend($('send-me').checked); });
+  $('set-output').addEventListener('change', function () { S.settingsNote = ''; drawSettingsNote(); sendOutput($('set-output').value); });
   $('set-device').addEventListener('change', function () {
     S.form.device = $('set-device').value || null;
     S.form.channel = null;
-    drawHomeMenu();
+    S.settingsNote = '';
+    drawSettingsNote();
+    drawSettings();
   });
-  $('set-channel').addEventListener('change', function () { S.form.channel = parseInt($('set-channel').value, 10) || 1; drawSummary(); });
+  $('set-channel').addEventListener('change', function () {
+    S.form.channel = parseInt($('set-channel').value, 10) || 1;
+    S.settingsNote = '';
+    drawSettingsNote();
+    drawSummary();
+    /* The opt-in was for one channel, so another shows unticked until she says so. */
+    drawHear();
+  });
   /* Typing a fix answers the complaint about what was there. */
   ['set-key', 'set-style'].forEach(function (id) {
-    $(id).addEventListener('input', function () { S.homeNote = ''; drawSummary(); drawHomeState(); });
+    $(id).addEventListener('input', function () { S.homeNote = ''; S.settingsNote = ''; drawSummary(); drawHomeState(); drawSettingsNote(); });
   });
-  /* A device plugged in since the page opened shows up here. */
-  $('home-menu').addEventListener('toggle', function () { if ($('home-menu').open && S.screen === 'home') loadHome(); });
   window.addEventListener('popstate', showRoute);
   /* A reload or a closed tab leaves no screen behind to come through leaveSetup. keepalive lets
      this outlast the page. If it never arrives the child still ends by itself within seconds. */

@@ -174,10 +174,10 @@ def test_the_meter_stays_on_its_scale(tmp_path, db, want):
 
 @pytest.mark.parametrize("doc,want", [
     ({"state": "done", "take": "t1"}, {"take": "t1"}),
-    ({"state": "failed", "message": "words"}, {"home": True, "message": "words", "menu": False}),
-    ({"state": "idle"}, {"home": True, "message": "", "menu": False}),
-    ({"state": "idle", "message": "try another", "menu": True}, {"home": True, "message": "try another", "menu": True}),
-    ({"state": "elsewhere", "message": "not a failure"}, {"home": True, "message": "", "menu": False}),
+    ({"state": "failed", "message": "words"}, {"home": True, "message": "words", "settings": False}),
+    ({"state": "idle"}, {"home": True, "message": "", "settings": False}),
+    ({"state": "idle", "message": "try another", "settings": True}, {"home": True, "message": "try another", "settings": True}),
+    ({"state": "elsewhere", "message": "not a failure"}, {"home": True, "message": "", "settings": False}),
 ])
 def test_where_a_take_lands(tmp_path, doc, want):
     assert live_js(tmp_path, f"live.landing({json.dumps(doc)})") == want
@@ -194,7 +194,7 @@ def test_no_number_means_no_claimed_delay(tmp_path):
     assert "headphones" in words and "ms" not in words.split()
 
 
-def test_the_closed_menu_says_what_start_will_use(tmp_path):
+def test_the_line_on_home_says_what_start_will_use(tmp_path):
     direct = {"name": "Box", "mode": "direct"}
     room = {"name": "Mic", "mode": "room"}
     assert live_js(tmp_path, f"live.routeLine({json.dumps(direct)}, 2, '', '')") == "Box, channel 2"

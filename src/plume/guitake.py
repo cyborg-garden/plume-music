@@ -22,6 +22,10 @@ a click, for a few seconds, closed before the next step.  A setup left halfway c
 because Start always works, with Hear me off.  Plume cannot tell headphones from speakers, so
 Hear me takes a person's yes, never a device's name.
 
+An output other than the input's own is a saved choice too.  It is taken to be speakers, because
+plume cannot tell, so a yes about headphones says nothing about it: an instrument reaches it only
+by an opt-in of its own, for that output and that channel, and a room mic never does.
+
 A process that nobody can reach is the failure this file exists to avoid.  So the child
 keeps its own 60 minute cap and still answers ``plume stop``, closing the bridge stops
 the take it started, and a take that needs a person to end it stops itself when no page
@@ -48,8 +52,8 @@ from datetime import datetime
 from pathlib import Path
 
 from .compose import parse_prompt
-from .realtime import (AUDIO_CONSENT_ENV, AUDIO_CONSENT_OFF, REC_CUES, REC_DECISIONS, REC_ENDING,
-                       REC_HUMAN, REC_MACHINE, REC_MANIFEST, REC_MIDI, REC_STREAM, REC_VOICE,
+from .realtime import (AUDIO_CONSENT_ENV, AUDIO_CONSENT_OFF, OPEN_TOGETHER_FAILED, REC_CUES,
+                       REC_DECISIONS, REC_ENDING, REC_HUMAN, REC_MACHINE, REC_MANIFEST, REC_MIDI, REC_STREAM, REC_VOICE,
                        LiveSession, RealtimeError, list_sessions, send_cue, stop_session)
 from .styles_lib import list_styles
 from .theory import parse_key
@@ -73,7 +77,7 @@ STALLED = "The audio device stopped answering."
 ENDED_EARLY = "The take ended early."
 NO_PAGE = "No page was open, so plume stopped this take."
 WEDGED = "Still stopping. Run plume stop in a terminal."
-FLAT_CHANNEL = "Nothing on channel {channel}. Press Stop, then try another channel in the menu."
+FLAT_CHANNEL = "Nothing on channel {channel}. Press Stop, then try another channel in Settings."
 FLAT_CHANNEL_HOME = "Nothing came in on channel {channel}. Try another channel."
 FLAT_MIC = ("Plume hears nothing. Check this computer lets it use the microphone, "
             "or press Stop and pick another device.")
@@ -82,6 +86,10 @@ KEPT_NOTHING = "The band had not come in yet, so plume kept nothing."
 BAD_KEY = "Plume did not understand that key. Try F major or A minor."
 ONLY_MAJOR_MINOR = "Plume plays major and minor keys. Try F major or A minor."
 NO_HEAR_ME = "Hear me needs headphones on. Through speakers it would feed back."
+OUTPUT_MISSING = "Plume could not find that output. Plug it back in, or choose another."
+OUTPUT_REFUSED = "Plume could not open that input and output together. Try another output."
+NO_SEND = "Only an instrument plugged in can go to another output. A mic would howl."
+NO_HEAR_ELSEWHERE = "Hear me only follows the input's own output. Choose it first."
 NO_READING = "Plume could not read that device. Try again, or just start."
 STILL_LISTENING = "Plume is still closing the device. Try again in a moment."
 PLAY_SOMETHING = "Play something."
@@ -187,6 +195,8 @@ _FAILURES = (
     (("sounddevice is not available",), AUDIO_PART_MISSING),
     (("refusing to play live audio", "refusing to open a live input"), SOUND_OFF),
     (("another plume session",), TERMINAL_TAKE),
+    ((OPEN_TOGETHER_FAILED,), OUTPUT_REFUSED),
+    (("no audio output matching", "has no outputs"), OUTPUT_MISSING),
     (("no audio device matching", "has no inputs", "cannot form a duplex", "has channels 1 to",
       "choosing a channel", "no audio input device", "no audio output device",
       "audio device query failed"), DEVICE_MISSING),
@@ -370,9 +380,30 @@ def describe_devices(listed) -> list[dict]:
         # With --device the output is found by the same substring, and has to be this one too.
         if kind == "interface" and next(r for r in hits if r["outputs"] > 0) is not row:
             kind = "other"
-        out.append({"id": hashlib.sha256(row["name"].encode()).hexdigest()[:16], "name": row["name"],
+        out.append({"id": _device_id(row["name"]), "name": row["name"],
                     "inputs": row["inputs"], "outputs": row["outputs"], "kind": kind,
                     "mode": "direct" if kind == "interface" else "room", "hear_me": False})
+    return out
+
+
+def _device_id(name: str) -> str:
+    return hashlib.sha256(name.encode()).hexdigest()[:16]
+
+
+def describe_outputs(listed) -> list[dict]:
+    """The outputs a person can pick: real ones, each with an ID that is not a name.
+
+    ``plume lead`` takes an output by its whole name, ignoring case, so only a second row of
+    the same name could not be reached.
+    """
+    rows = [r for r in _rows(listed) if r["outputs"] > 0]
+    out = []
+    for row in rows:
+        low = row["name"].lower()
+        if low in _SYSTEM_NAMES or _kind(row["name"], row["inputs"], row["outputs"]) == "virtual":
+            continue
+        if next(r for r in rows if low == r["name"].lower()) is row:
+            out.append({"id": _device_id(row["name"]), "name": row["name"]})
     return out
 
 
@@ -398,13 +429,37 @@ class Route:
     channel: int
     hear_me: bool
     channels: int = 1       # how many this device has, so what the page can offer her
+    output: str | None = None   # None: the input's own, or the system's on a room mic
 
 
-def _route(body: dict, devices: list[dict], *, preferred=None, saved_for=lambda device: {}) -> tuple:
+def _sends(device: dict | None, saved: dict, channel: int) -> bool:
+    """Whether she said to send this instrument to the output chosen, on this very channel.
+
+    A mic moved onto another channel, or other speakers, is not what she said yes to.
+    """
+    return (device is not None and device["mode"] == "direct" and saved.get("output") is not None
+            and saved.get("send_output") == saved["output"] and saved.get("send_channel") == channel)
+
+
+def _output_row(saved: dict, outputs: list[dict]) -> dict | None:
+    """The output saved for this input, or None for its own.  One that has gone is refused."""
+    wanted = saved.get("output")
+    if wanted is None:
+        return None
+    found = next((o for o in outputs if o["id"] == wanted), None)
+    if found is None:
+        raise Refused(400, OUTPUT_MISSING)
+    return found
+
+
+def _route(body: dict, devices: list[dict], *, preferred=None, saved_for=lambda device: {},
+           outputs: tuple | list = ()) -> tuple:
     """(the route, the device it came from).  What setup learned fills in what she did not say.
 
     Hear me needs a yes about headphones, saved for this device as things are now.  Plume cannot
-    tell headphones from speakers, and a stale page must not cause feedback.
+    tell headphones from speakers, and a stale page must not cause feedback.  On another output
+    that yes means nothing: only her opt-in for that output and channel does, and only on a
+    direct input.
     """
     wanted = body.get("device")
     if wanted is None:
@@ -421,20 +476,28 @@ def _route(body: dict, devices: list[dict], *, preferred=None, saved_for=lambda 
     if isinstance(channel, bool) or not isinstance(channel, int) or not 1 <= channel <= most:
         raise Refused(400, f"That device has channels 1 to {most}.")
     mode = "room" if device is None else device["mode"]
+    output = _output_row(saved, list(outputs))
     hear_me, headphones = body.get("hear_me"), saved.get("headphones")
     if hear_me is not None and not isinstance(hear_me, bool):
         raise Refused(400, "hear_me must be true or false")
-    if hear_me is None:
-        hear_me = saved.get("hear_me") is True and headphones is True
-    if hear_me and headphones is not True:
-        raise Refused(400, NO_HEAR_ME)
-    return Route(None if device is None else device["name"], mode, channel, hear_me, most), device
+    if output is not None:
+        sends = _sends(device, saved, channel)
+        if hear_me and not sends:
+            raise Refused(400, NO_SEND)
+        hear_me = sends if hear_me is None else hear_me
+    else:
+        if hear_me is None:
+            hear_me = saved.get("hear_me") is True and headphones is True
+        if hear_me and headphones is not True:
+            raise Refused(400, NO_HEAR_ME)
+    return Route(None if device is None else device["name"], mode, channel, hear_me, most,
+                 None if output is None else output["name"]), device
 
 
 # --------------------------------------------------------------------------------- setup
 
 _ANSWERS = {"headphones": ("yes", "no"), "hears_self": ("yes", "no"), "volume": ("fixed", "still"),
-            "latency": ("ok",), "hear_me": ("on", "off")}
+            "latency": ("ok",), "hear_me": ("on", "off"), "send": ("on", "off")}
 _YES_NO = [{"answer": "yes", "label": "Yes"}, {"answer": "no", "label": "No"}]
 _STEPS = {
     "headphones": ("Headphones on?", _YES_NO),
@@ -447,6 +510,7 @@ _TRY_OR_START = [{"answer": "again", "label": "Play again"}, {"answer": "start",
 #: With nothing to play into, neither of those means anything.
 _TRY_ONLY = [{"answer": "again", "label": "Try again"}]
 _DEVICE_KEY = re.compile(r"[0-9a-f]{16}|default")
+_OUTPUT_ID = re.compile(r"[0-9a-f]{16}")
 _ROOM_ANSWERS = ("headphones", "hears_self", "still", "hear_me", "late_said")
 
 
@@ -459,6 +523,12 @@ def _clean_entry(entry) -> dict:
     if not isinstance(entry, dict):
         return {}
     out = {}
+    for name in ("output", "send_output"):
+        if isinstance(entry.get(name), str) and _OUTPUT_ID.fullmatch(entry[name]):
+            out[name] = entry[name]
+    send_channel = entry.get("send_channel")
+    if isinstance(send_channel, int) and not isinstance(send_channel, bool) and send_channel >= 1:
+        out["send_channel"] = send_channel
     if isinstance(entry.get("list"), str):
         out["list"] = entry["list"]
     channel = entry.get("channel")
@@ -571,6 +641,8 @@ def _saved_channel(device: dict | None, saved: dict) -> int:
 def _next_step(entry: dict, late: str | None) -> str:
     if entry.get("level") != "ok":
         return "listen"
+    if entry.get("output") is not None:
+        return "count"              # every question after this is about her own output
     if "headphones" not in entry:
         return "headphones"
     if not entry["headphones"]:
@@ -687,6 +759,8 @@ def build_argv(route: Route, folder: Path, *, key: str | None, style: str | None
         argv.append(f"--input-device={route.name}")
         if route.channel != 1:
             argv.append(f"--input-channel={route.channel}")
+    if route.output is not None:
+        argv.append(f"--output-device={route.output}")
     if route.hear_me:
         argv.append("--monitor")
     words = [w for w in (style, f"in {key}" if key else None) if w]
@@ -879,11 +953,12 @@ class TakeRunner:
             devices, rows, mark = self._look()
         except TakeError as e:
             devices, rows, mark, problem = [], [], "", str(e)
+        outputs = describe_outputs(rows)
         preferred = self._preferred(mark)
         with self._lock:
             # Each device's own number.  One device's delay says nothing about another's.
             reported, output = dict(self._reported), dict(self._output_ms)
-        devices = [self._device_view(d, reported, output, rows, mark) for d in devices]
+        devices = [self._device_view(d, reported, output, rows, mark, outputs) for d in devices]
         chosen = default_device(devices, preferred)
         if problem is None and not devices:
             problem = NO_INPUT
@@ -896,18 +971,31 @@ class TakeRunner:
             "hear_me": {"allowed": saved.get("headphones") is True,
                         "default": saved.get("hear_me") is True,
                         "reported_ms": None if chosen is None else chosen["reported_ms"]},
+            "outputs": outputs,
+            **self._output_view(chosen, saved, outputs),
             "folder": pretty_path(self.root),
             "styles": list_styles(),
             "problem": problem,
             "setup": self._setup_doc(chosen, rows, mark, output),
         }
 
-    def _device_view(self, device: dict, reported: dict, output: dict, rows: list[dict], mark: str) -> dict:
+    @staticmethod
+    def _output_view(device: dict | None, saved: dict, outputs: list[dict]) -> dict:
+        """Where this input's sound goes, as saved.  A problem is said, never swapped away."""
+        wanted = saved.get("output")
+        gone = wanted is not None and all(o["id"] != wanted for o in outputs)
+        sends = saved.get("send_channel") if device is not None and device["mode"] == "direct" \
+            and wanted is not None and saved.get("send_output") == wanted else None
+        return {"output": wanted, "send_channel": sends, "output_problem": OUTPUT_MISSING if gone else None}
+
+    def _device_view(self, device: dict, reported: dict, output: dict, rows: list[dict], mark: str,
+                     outputs: list[dict]) -> dict:
         saved = self._saved(device, mark)
         late = _late_line(device, rows, output.get(device["name"]))
         return {**device, "reported_ms": reported.get(device["name"]), "hear_me": saved.get("hear_me") is True,
                 "headphones": saved.get("headphones"), "channel": _saved_channel(device, saved),
-                "setup_done": _next_step(saved, late) == "count"}
+                "setup_done": _next_step(saved, late) == "count",
+                **self._output_view(device, saved, outputs)}
 
     def _saved(self, device: dict | None, mark: str) -> dict:
         """What is known about this device, as of the devices there are now.
@@ -929,7 +1017,9 @@ class TakeRunner:
     def _keep(self, device: dict | None, entry: dict, rows: list[dict], mark: str, *, last: bool = False) -> None:
         """Save what is known.  Once she is through, a delay a take reports later stops nobody."""
         entry["list"] = mark
-        if _next_step(entry, self._late_for(device, rows, self._output_now())) == "count":
+        # Sent elsewhere she was never asked, and the question still stands for her own output.
+        if (entry.get("output") is None
+                and _next_step(entry, self._late_for(device, rows, self._output_now())) == "count"):
             entry["late_said"] = True
         self._setup.put(_setup_key(device), entry, last=last)
 
@@ -951,7 +1041,9 @@ class TakeRunner:
                 "device_name": None if device is None else device["name"],
                 "mode": "direct" if direct else "room",
                 "channel": _saved_channel(device, saved),
-                "hear_me": saved.get("hear_me") is True}
+                "hear_me": (_sends(device, saved, _saved_channel(device, saved))
+                            if saved.get("output") is not None else saved.get("hear_me") is True),
+                "output": saved.get("output")}
 
     def live(self, *, poll: bool = True) -> dict:
         """The state document.  A page asking is also what proves a page is still there."""
@@ -976,6 +1068,7 @@ class TakeRunner:
             "state": "stopping" if take.stop_asked else take.phase,
             "device": take.route.name, "mode": take.route.mode,
             "channel": take.route.channel, "hear_me": take.route.hear_me,
+            "output": take.route.output,
             "key": take.key, "style": take.style,
             "level_db": take.level_db, "row": take.row, "stream": take.stream,
             "hint": take.hint,
@@ -1018,13 +1111,20 @@ class TakeRunner:
 
     # -- setup
 
-    def setup(self, device_id: str | None = None) -> dict:
-        """Where this device has got to.  Opens nothing."""
+    def setup(self, device_id: str | None = None, *, check_output: bool = False) -> dict:
+        """Where this device has got to.  Opens nothing.
+
+        ``check_output``: a press of Start asking, which should not play through a whole setup
+        only to be refused an output that has gone.
+        """
         try:
             devices, rows, mark = self._look()
         except TakeError:
-            devices, rows, mark = [], [], ""
-        return self._setup_doc(self._named(device_id, devices, mark), rows, mark, self._output_now())
+            devices, rows, mark, check_output = [], [], "", False
+        device = self._named(device_id, devices, mark)
+        if check_output:
+            _output_row(self._saved(device, mark), describe_outputs(rows))
+        return self._setup_doc(device, rows, mark, self._output_now())
 
     def _output_now(self) -> dict:
         with self._lock:
@@ -1045,13 +1145,19 @@ class TakeRunner:
 
     def answer(self, body: dict) -> dict:
         """One answer from a person.  Hear me only ever follows from a yes about headphones."""
-        if not isinstance(body, dict) or set(body) - {"device", "step", "answer"}:
+        if not isinstance(body, dict) or set(body) - {"device", "step", "answer", "channel"}:
             raise Refused(400, "That is not something setup understands.")
         step, answer = body.get("step"), body.get("answer")
+        if "channel" in body and step != "send":
+            raise Refused(400, "That is not something setup understands.")
+        if step == "output" and isinstance(answer, str) and (answer == "same" or _OUTPUT_ID.fullmatch(answer)):
+            return self._set_output(body.get("device"), answer)
         if not isinstance(step, str) or not isinstance(answer, str) or answer not in _ANSWERS.get(step, ()):
             raise Refused(400, "That is not an answer setup asked for.")
         if step == "hear_me":
-            return self._menu_hear_me(body.get("device"), answer == "on")
+            return self._set_hear_me(body.get("device"), answer == "on")
+        if step == "send":
+            return self._set_send(body.get("device"), body.get("channel"), answer == "on")
         # She may have just plugged them in because it asked, so this one waits for a fresh look.
         fresh = step == "headphones"
         try:
@@ -1114,17 +1220,77 @@ class TakeRunner:
         else:
             entry["late_said"] = True
 
-    def _menu_hear_me(self, device_id, on: bool) -> dict:
-        """The tick in the menu.  On is a yes about headphones for this device, as things are now.
+    def _not_while_running(self) -> None:
+        """What a running take was started with is what it keeps, so nothing here pretends otherwise."""
+        with self._lock:
+            if self._take is not None or self._preparing:
+                raise Refused(409, ALREADY_RUNNING, live=self._doc())
 
-        It settles what setup would have asked, so a finished setup stays finished.
-        """
+    def _set_output(self, device_id, answer: str) -> dict:
+        """Where this input's sound goes.  Saved, and nothing opens.  Any change takes back the
+        opt-in for sending her instrument, because that was a yes about the other output."""
+        self._not_while_running()
         try:
             devices, rows, mark = self._look()
         except TakeError as e:
             raise Refused(409, str(e)) from None
         device = self._named(device_id, devices, mark)
         entry = self._saved(device, mark)
+        own = device is not None and device["mode"] == "direct" and answer == device["id"]
+        if answer == "same" or own:
+            wanted = None
+        else:
+            if all(o["id"] != answer for o in describe_outputs(rows)):
+                raise Refused(400, OUTPUT_MISSING)
+            wanted = answer
+        if wanted != entry.get("output"):
+            entry.pop("send_output", None)
+            entry.pop("send_channel", None)
+        entry.pop("output", None)
+        if wanted is not None:
+            entry["output"] = wanted
+        self._keep(device, entry, rows, mark)
+        return self._setup_doc(device, rows, mark, self._output_now())
+
+    def _set_send(self, device_id, channel, on: bool) -> dict:
+        """The opt-in: this instrument, on this channel, to the output chosen."""
+        self._not_while_running()
+        try:
+            devices, rows, mark = self._look()
+        except TakeError as e:
+            raise Refused(409, str(e)) from None
+        device = self._named(device_id, devices, mark)
+        entry = self._saved(device, mark)
+        if on:
+            if device is None or device["mode"] != "direct" or entry.get("output") is None:
+                raise Refused(400, NO_SEND)
+            _output_row(entry, describe_outputs(rows))
+            channel = _saved_channel(device, entry) if channel is None else channel
+            if isinstance(channel, bool) or not isinstance(channel, int) or not 1 <= channel <= device["inputs"]:
+                raise Refused(400, f"That device has channels 1 to {device['inputs']}.")
+            entry.update(send_output=entry["output"], send_channel=channel)
+        else:
+            entry.pop("send_output", None)
+            entry.pop("send_channel", None)
+        self._keep(device, entry, rows, mark)
+        doc = self._setup_doc(device, rows, mark, self._output_now())
+        return {**doc, "send_channel": entry.get("send_channel")}
+
+    def _set_hear_me(self, device_id, on: bool) -> dict:
+        """The tick in Settings.  On is a yes about headphones for this device, as things are now.
+
+        It settles what setup would have asked, so a finished setup stays finished.
+        """
+        self._not_while_running()
+        try:
+            devices, rows, mark = self._look()
+        except TakeError as e:
+            raise Refused(409, str(e)) from None
+        device = self._named(device_id, devices, mark)
+        entry = self._saved(device, mark)
+        # A yes about headphones says nothing about other speakers.
+        if on and entry.get("output") is not None:
+            raise Refused(400, NO_HEAR_ELSEWHERE)
         if on:
             entry.update(headphones=True, hears_self=False, still=True, hear_me=True)
         else:
@@ -1317,13 +1483,13 @@ class TakeRunner:
         key = canonical_key(_text_field(body, "key"))
         style = canonical_style(_text_field(body, "style"))
         try:
-            devices, _, mark = self._look()
+            devices, rows, mark = self._look()
         except TakeError as e:
             return self._failed(str(e))
         if not devices:
             return self._failed(NO_INPUT)
         route, _ = _route(body, devices, preferred=self._preferred(mark),
-                          saved_for=lambda d: self._saved(d, mark))
+                          saved_for=lambda d: self._saved(d, mark), outputs=describe_outputs(rows))
         try:
             folder = make_take_folder(self.root, self._now())
         except OSError:
@@ -1520,9 +1686,11 @@ class TakeRunner:
                 take.row = row
             if stream is not None:
                 take.stream = stream
-                if stream["reported_ms"] is not None:
+                # These are kept as what this input's own output reports. Other speakers' number
+                # would make a later take on its own output sound late when it is not.
+                if stream["reported_ms"] is not None and take.route.output is None:
                     self._reported[take.route.name] = stream["reported_ms"]
-                if stream["output_ms"] is not None:
+                if stream["output_ms"] is not None and take.route.output is None:
                     self._output_ms[take.route.name] = stream["output_ms"]
             if take.phase == "starting" and take.frames > 0:
                 take.phase, take.opened = "waiting", now
@@ -1626,6 +1794,9 @@ class TakeRunner:
                 result = self._false_start(take)
             else:
                 result = {"state": "failed", "message": classify_failure(Path(self._log_path()))}
+                if take.route.output is not None:
+                    # The output is the likeliest thing to change, and Settings is where it is.
+                    result["settings"] = True
         with self._lock:
             if self._take is take:
                 self._take = None
@@ -1638,6 +1809,6 @@ class TakeRunner:
         if flat and take.note is None:
             message = (FLAT_CHANNEL_HOME.format(channel=take.route.channel)
                        if take.route.channels > 1 else FLAT_MIC_HOME)
-            return {"state": "idle", "message": message, "menu": True}
+            return {"state": "idle", "message": message, "settings": True}
         message = take.note or (KEPT_NOTHING if take.loud else None)
         return {"state": "idle", "message": message} if message else {"state": "idle"}

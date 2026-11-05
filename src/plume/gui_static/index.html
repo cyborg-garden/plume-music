@@ -16,6 +16,7 @@
   <header>
     <button id="wordmark" type="button">plume</button>
     <button id="nav-takes" class="navlink" type="button">Takes</button>
+    <button id="nav-settings" class="navlink" type="button">Settings</button>
     <button id="nav-live" class="navlink" type="button" hidden></button>
     <span id="busy" role="status" hidden>Opening</span>
     <span class="spacer"></span>
@@ -40,31 +41,45 @@
         <button id="elsewhere-stop" class="quiet" type="button">Stop it</button>
       </div>
       <p id="home-note" class="note warn" role="status" hidden></p>
-      <details id="home-menu">
-        <summary id="home-summary">Settings</summary>
-        <div id="menu-body">
-          <label for="set-key">Key</label>
-          <input id="set-key" type="text" autocomplete="off" spellcheck="false" maxlength="80" placeholder="Detect">
-          <label for="set-style">Style</label>
-          <input id="set-style" type="text" autocomplete="off" spellcheck="false" maxlength="80" placeholder="Detect" list="style-list">
-          <datalist id="style-list"></datalist>
-          <label for="set-device">Device</label>
-          <select id="set-device"></select>
-          <label id="channel-label" for="set-channel">Channel</label>
-          <select id="set-channel"></select>
-          <span id="folder-label">Takes go in</span>
-          <span id="set-folder"></span>
-        </div>
+      <p id="home-gear" class="note"></p>
+    </div>
+    <canvas id="home-stone" width="480" height="540" aria-hidden="true"></canvas>
+  </main>
+
+  <main id="settings" hidden tabindex="-1">
+    <div class="column">
+      <h1>Settings</h1>
+      <p id="settings-note" class="note warn" role="status" hidden></p>
+      <div id="settings-body">
+        <label for="set-key">Key</label>
+        <input id="set-key" type="text" autocomplete="off" spellcheck="false" maxlength="80" placeholder="Detect">
+        <label for="set-style">Style</label>
+        <input id="set-style" type="text" autocomplete="off" spellcheck="false" maxlength="80" placeholder="Detect" list="style-list">
+        <datalist id="style-list"></datalist>
+        <label for="set-device">Device</label>
+        <select id="set-device"></select>
+        <label id="channel-label" for="set-channel">Channel</label>
+        <select id="set-channel"></select>
+        <label id="output-label" for="set-output">Output</label>
+        <select id="set-output"></select>
+        <p id="output-note" class="note" role="status" hidden></p>
+        <span id="folder-label">Takes go in</span>
+        <span id="set-folder"></span>
+      </div>
+      <div id="sound-rows">
         <label id="hear-row" hidden><input id="hear-me" type="checkbox"> Hear me <span id="hear-short" class="note">Only with headphones on.</span></label>
         <p id="hear-note" class="note warn" role="status" hidden></p>
         <div id="hear-words" hidden>
           <p id="hear-direct" class="note" hidden></p>
           <p id="hear-delay" class="note"></p>
         </div>
-        <p id="again-row"><button id="set-again" class="textlink" type="button">Set up again</button> <span id="set-again-note" class="note" role="status"></span></p>
-      </details>
+        <label id="send-row" hidden><input id="send-me" type="checkbox"> Send my instrument to this output</label>
+        <p id="send-words" class="note" hidden></p>
+        <p id="room-output" class="note" hidden></p>
+      </div>
+      <p id="again-row"><button id="set-again" class="textlink" type="button">Set up again</button> <span id="set-again-note" class="note" role="status"></span></p>
+      <button id="settings-done" class="textlink" type="button">Done</button>
     </div>
-    <canvas id="home-stone" width="480" height="540" aria-hidden="true"></canvas>
   </main>
 
   <main id="setup" hidden tabindex="-1">

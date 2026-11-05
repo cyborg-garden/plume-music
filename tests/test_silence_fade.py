@@ -230,3 +230,19 @@ def test_a_direct_take_ends_about_twenty_seconds_after_she_stops(tmp_path, conse
     over = rows[-1]["t_s"] + bar_s
     assert 16.0 <= over - last_heard_bar_ends <= 23.0
     assert any(r["fade_db"] < 0.0 for r in rows)
+
+
+def test_a_phrase_rest_in_a_slow_song_does_not_dip_the_band(tmp_path, consent):
+    bpm = 66.0
+    human = _take(bpm=bpm, seconds=70.0)
+    # Five and a half seconds with her hands off the strings, well after the band is in.
+    human[int(45.0 * 48000):int(50.5 * 48000)] = 0.0
+    with patched_module("sounddevice", fake_audio(human, devices=RIG, rate_x=12.0)):
+        realtime.lead(prompt="midwest emo in C major", seed=0, tap_start=True, direct=True,
+                      role=roles_mod.RoleParams(role="lead"), record_dir=str(tmp_path / "rec"),
+                      status=False, socket_path=short_socket_path("rest"), max_minutes=1.1,
+                      input_device="audio interface", input_channel=1)
+    rows = _played_rows(tmp_path / "rec")
+    during = [r for r in rows if 40.0 <= r["t_s"] <= 62.0]
+    assert during, "the take did not reach the rest"
+    assert all(r["fade_db"] == 0.0 for r in during), [(r["bar"], r["fade_db"]) for r in during if r["fade_db"]]

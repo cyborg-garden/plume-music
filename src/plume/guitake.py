@@ -29,6 +29,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import secrets
 import subprocess
 import sys
@@ -99,6 +100,15 @@ _VIRTUAL = ("blackhole", "soundflower", "loopback", "aggregate", "zoomaudio", "z
             "microsoft teams", "teams audio", "vb-cable", "virtual")
 _BUILT_IN = ("built-in", "builtin", "macbook", "imac", "mac mini", "mac studio", "mac pro",
              "internal microphone")
+#: What makes a device an audio interface.  Two inputs and two outputs is not enough: a
+#: laptop's own mic and speakers, or a display with both, look just the same, and Hear me
+#: would feed one into the other.  So it takes a name plume knows.  Anything else plays as a
+#: room mic with no Hear me, which is the safe way to be wrong about a device.
+_INTERFACE = re.compile(
+    r"\b(?:\d+i\d+|interface|scarlett|clarett|focusrite|motu|apollo|universal audio|volt"
+    r"|apogee|presonus|audiobox|babyface|fireface|rme|steinberg|ur\d+\w*|umc\d+\w*|behringer"
+    r"|ssl \d|solid state logic|audient|id\d+|m-track|m-audio|komplete audio|rubix|minifuse"
+    r"|tascam|zoom uac|antelope)(?!\w)", re.IGNORECASE)
 
 #: What the child said, mapped to the page's words.  First match wins.
 _FAILURES = (
@@ -184,7 +194,7 @@ def _kind(name: str, inputs: int, outputs: int) -> str:
         return "virtual"
     if any(mark in low for mark in _BUILT_IN):
         return "builtin"
-    return "interface" if inputs >= 2 and outputs >= 2 else "other"
+    return "interface" if inputs >= 2 and outputs >= 2 and _INTERFACE.search(name) else "other"
 
 
 def describe_devices(listed) -> list[dict]:

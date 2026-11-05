@@ -168,6 +168,35 @@ def test_what_kind_of_device_this_is(name, inputs, outputs, kind):
         [{"name": name, "inputs": inputs, "outputs": outputs}])[0]["kind"] == kind
 
 
+@pytest.mark.parametrize("name", [
+    "HDA Intel PCH: ALC257 Analog (hw:0,0)", "sysdefault", "default", "pulse", "pipewire",
+    "Laptop Mic", "Studio Display", "Some Dock Audio", "USB Audio Device", "Mystery Box",
+])
+def test_two_in_two_out_is_not_enough_to_be_called_an_interface(name):
+    """Its own mic and speakers look just like this, and Hear me would feed one into the other."""
+    device = guitake.describe_devices([{"name": name, "inputs": 2, "outputs": 2}])[0]
+    assert (device["kind"], device["mode"], device["hear_me"]) == ("other", "room", False)
+    assert guitake.default_device([device]) is None
+
+
+@pytest.mark.parametrize("name", [
+    "Scarlett 2i2 USB", "Focusrite USB Audio", "MOTU M2", "Universal Audio Volt 2", "Apollo Twin",
+    "Apogee Duet", "PreSonus AudioBox USB 96", "Babyface Pro", "Steinberg UR22C", "UMC204HD 192k",
+    "SSL 2+", "Audient iD14", "Komplete Audio 2", "MiniFuse 2", "Some Audio Interface",
+])
+def test_a_named_interface_is_still_one(name):
+    device = guitake.describe_devices([{"name": name, "inputs": 2, "outputs": 2}])[0]
+    assert (device["kind"], device["mode"], device["hear_me"]) == ("interface", "direct", True)
+
+
+def test_a_device_it_does_not_recognise_cannot_be_given_hear_me(rig, runner):
+    rig.devices = [LAPTOP_MIC, {"name": "Mystery Box", "inputs": 2, "outputs": 2}]
+    box = next(d for d in runner.home()["devices"] if d["name"] == "Mystery Box")
+    with pytest.raises(guitake.Refused):
+        runner.start({"device": box["id"], "hear_me": True})
+    assert rig.spawned == []
+
+
 def test_the_only_interface_is_chosen_on_channel_one_with_hear_me(rig, runner):
     home = runner.home()
     chosen = next(d for d in home["devices"] if d["id"] == home["device"])
@@ -184,7 +213,7 @@ def test_a_virtual_device_does_not_count_as_the_only_interface(rig, runner):
 
 @pytest.mark.parametrize("devices", [
     [LAPTOP_MIC, LAPTOP_OUT, BLACKHOLE],
-    [LAPTOP_MIC, SCARLETT, {"name": "Other Box 2x2", "inputs": 2, "outputs": 2}],
+    [LAPTOP_MIC, SCARLETT, {"name": "Other Interface 2x2", "inputs": 2, "outputs": 2}],
 ])
 def test_otherwise_the_built_in_mic_in_room_mode_with_no_hear_me(rig, runner, devices):
     rig.devices = devices
@@ -218,9 +247,9 @@ def test_a_name_that_would_land_on_an_earlier_device_is_not_offered(rig):
 
 def test_an_interface_whose_output_would_land_elsewhere_is_not_direct():
     # --device finds the output by the same substring, so this would play out of the other one.
-    devices = guitake.describe_devices([{"name": "Box Out Box", "inputs": 0, "outputs": 2},
-                                        {"name": "Box", "inputs": 2, "outputs": 2}])
-    assert [(d["name"], d["mode"], d["hear_me"]) for d in devices] == [("Box", "room", False)]
+    devices = guitake.describe_devices([{"name": "Interface Out Box", "inputs": 0, "outputs": 2},
+                                        {"name": "Interface", "inputs": 2, "outputs": 2}])
+    assert [(d["name"], d["mode"], d["hear_me"]) for d in devices] == [("Interface", "room", False)]
 
 
 @pytest.mark.parametrize("junk", [None, "nope", [{"name": "x"}], [{"name": "", "inputs": 1, "outputs": 1}],
@@ -1428,10 +1457,10 @@ def stub_sounddevice(tmp_path, monkeypatch):
 
 def test_the_lister_reads_the_real_verb_with_no_real_device(stub_sounddevice):
     stub_sounddevice("def query_devices():\n"
-                     "    return [{'name': 'Stub Box', 'max_input_channels': 2,"
+                     "    return [{'name': 'Stub Interface', 'max_input_channels': 2,"
                      " 'max_output_channels': 2}]\n")
     listed = guitake.default_lister()
-    assert listed == [{"name": "Stub Box", "inputs": 2, "outputs": 2}]
+    assert listed == [{"name": "Stub Interface", "inputs": 2, "outputs": 2}]
     assert guitake.describe_devices(listed)[0]["kind"] == "interface"
 
 

@@ -641,7 +641,7 @@ class _Handler(BaseHTTPRequestHandler):
     def _setup_view(self, query: str) -> None:
         values = parse_qs(query, keep_blank_values=True).get("device", [])
         try:
-            self._json(self.gui.takes.setup(values[0] if len(values) == 1 else None))
+            self._json(self.gui.takes.setup(values[0] if len(values) == 1 else None, check_output=True))
         except guitake.Refused as refused:
             self._json({"error": refused.message}, refused.status)
 

@@ -11,7 +11,7 @@ export function isRunning(doc) { return !!doc && RUNNING.includes(doc.state); }
 /* Where a take that is over sends a page that was following it. */
 export function landing(doc) {
   if (doc.state === 'done') return { take: doc.take };
-  return { home: true, message: doc.state === 'elsewhere' ? '' : doc.message || '', menu: !!doc.menu };
+  return { home: true, message: doc.state === 'elsewhere' ? '' : doc.message || '', settings: !!doc.settings };
 }
 
 /* The note a Record shows for the take that just ended, and only for that one. */
@@ -78,7 +78,7 @@ export function signView(you, row, doc) {
 export function bandInInput(row) {
   return !!row && row.input === 'direct' && !(row.you_trusted || []).includes('you_db');
 }
-export const BAND_IN_INPUT_LINE = 'Plume hears the band on this input. Press Stop and try another device in the menu.';
+export const BAND_IN_INPUT_LINE = 'Plume hears the band on this input. Press Stop and try another device in Settings.';
 
 /* The device's own number, called what it is. */
 export function delayLine(ms) {
@@ -89,16 +89,25 @@ export function delayLine(ms) {
 /* Said where it can be read while it is happening: on home, and during the take. */
 export const DIRECT_LINE = 'A Direct or monitor button on your interface has no delay. Using both doubles the sound.';
 
+/* Another output: what Settings says about it, and what the take says while it runs. */
+export const WIRELESS_LINE = 'Wireless speakers arrive late, which makes playing along hard.';
+export const SEND_LINE = 'It arrives slightly late. Only for an instrument plugged in: a mic on this channel would howl.';
+export const ROOM_OUTPUT_LINE = 'Hear me stays off here: a room mic through speakers would howl.';
+export function sendDelayLine(ms) {
+  return 'Your instrument reaches that output about ' + Math.round(ms) + ' ms late, by your device\'s own count, and it could be more.';
+}
+
 /* A clap can't reach a pickup, and only a room mic hears the room. */
 export function countWords(mode) {
   return mode === 'direct' ? 'Play 8 even beats. Muted strings work well.' : 'Knock or clap 8 even beats.';
 }
 
-/* The menu's one closed line: what Start will use, without opening it. */
-export function routeLine(device, channel, key, style) {
+/* Home's one small line: what Start will use. output: the name of another output, if any. */
+export function routeLine(device, channel, key, style, output) {
   const bits = device
     ? [device.name, device.mode === 'direct' ? 'channel ' + channel : 'room mic']
     : ['System default', 'room mic'];
+  if (output) bits.push('out to ' + output);
   if (key) bits.push(key);
   if (style) bits.push(style);
   return bits.join(', ');

@@ -545,7 +545,7 @@ def test_with_nothing_changed_start_leaves_the_choice_to_the_bridge(tmp_path, do
 def test_start_works_with_no_device_list_yet(tmp_path, docs):
     docs["home"] = None
     out = run_page(tmp_path, docs, """
-        const line = $('home-summary').textContent, hear = $('hear-row').hidden;
+        const line = $('home-gear').textContent, hear = $('hear-row').hidden;
         $('start').click(); await page.settle();
         return { line, hear, body: page.posts('start') };""")
     assert out == {"line": "", "hear": True, "body": [{}]}
@@ -558,22 +558,22 @@ def test_typed_key_and_style_and_chosen_channel_go_in_the_body(tmp_path, docs):
         $('set-key').fire('input');
         $('set-channel').value = '3';
         $('set-channel').fire('change');
-        const summary = $('home-summary').textContent;
+        const summary = $('home-gear').textContent;
         $('start').click(); await page.settle();
         return { summary, body: page.posts('start')[0] };""")
     assert out["body"]["key"] == "F major" and out["body"]["style"] == "midwest" and out["body"]["channel"] == 3
     assert out["summary"] == "Test Interface, channel 3, F major, midwest"
 
 
-def test_a_refused_field_comes_back_home_says_so_and_opens_the_menu(tmp_path, docs):
+def test_a_refused_field_goes_to_settings_and_says_so_there(tmp_path, docs):
     out = run_page(tmp_path, docs, f"""
         page.replies.start = [400, {{ error: {json.dumps(guitake.BAD_KEY)} }}];
         $('set-key')._value = '-rf';
         $('start').click(); await page.settle();
-        return {{ ...{LOOK}, note: $('home-note').textContent, shown: !$('home-note').hidden,
-                  menu: $('home-menu').open, key: $('set-key').value }};""")
-    assert out["screen"] == "home" and out["hash"] == "#/"
-    assert out["note"] == guitake.BAD_KEY and out["shown"] is True and out["menu"] is True
+        return {{ ...{LOOK}, note: $('settings-note').textContent, shown: !$('settings-note').hidden,
+                  key: $('set-key').value }};""")
+    assert out["screen"] == "settings" and out["hash"] == "#/settings"
+    assert out["note"] == guitake.BAD_KEY and out["shown"] is True
     assert out["key"] == "-rf", "what was typed stays, to be fixed"
 
 
@@ -638,6 +638,7 @@ def home_for(devices):
     return {"devices": described, "device": chosen and chosen["id"],
             "mode": chosen["mode"] if chosen else "room", "channel": 1,
             "hear_me": {"allowed": False, "default": False, "reported_ms": None},
+            "outputs": guitake.describe_outputs(devices), "output": None, "send_channel": None, "output_problem": None,
             "folder": "~/Music/Plume", "styles": ["lofi", "midwest"], "problem": None}
 
 
@@ -647,12 +648,17 @@ def _saved_hear_me(docs, name="Test Interface"):
             device["hear_me"], device["headphones"] = True, True
 
 
-def test_the_first_screen_is_one_start_with_hear_me_in_the_menu():
+def _settings_html():
     html = (STATIC / "index.html").read_text()
-    first = html[html.index('<main id="home"'):html.index('<details id="home-menu"')]
-    menu = html[html.index('<details id="home-menu"'):html.index("</details>")]
+    return html[html.index('<main id="settings"'):html.index('<main id="setup"')]
+
+
+def test_the_first_screen_is_one_start_with_hear_me_in_settings():
+    html = (STATIC / "index.html").read_text()
+    first = html[html.index('<main id="home"'):html.index('<main id="settings"')]
     assert "hear" not in first.lower() and "headphones" not in first.lower()
-    assert 'id="hear-row"' in menu and 'id="hear-direct"' in menu
+    assert "<select" not in first and "<input" not in first and "<details" not in first
+    assert 'id="hear-row"' in _settings_html() and 'id="hear-direct"' in _settings_html()
 
 
 def test_hear_me_is_off_until_someone_says_otherwise(tmp_path, docs):
@@ -732,9 +738,9 @@ def test_each_device_shows_its_own_tick(tmp_path, docs):
         page.replies['setup/answer'] = [200, {json.dumps({**COUNT, "hear_me": True})}];
         {TICK}
         pick({json.dumps(mic["id"])});
-        const onMic = {{ ...{HEAR}, line: $('home-summary').textContent, channel: !$('set-channel').hidden }};
+        const onMic = {{ ...{HEAR}, line: $('home-gear').textContent, channel: !$('set-channel').hidden }};
         pick({json.dumps(interface["id"])});
-        const back = {{ ...{HEAR}, line: $('home-summary').textContent, channel: !$('set-channel').hidden }};
+        const back = {{ ...{HEAR}, line: $('home-gear').textContent, channel: !$('set-channel').hidden }};
         $('start').click(); await page.settle();
         return {{ onMic, back, body: page.posts('start')[0] }};""")
     assert out["onMic"]["on"] is False and out["onMic"]["line"] == "Test Mic, room mic" and out["onMic"]["channel"] is False
@@ -761,7 +767,7 @@ def test_the_channel_setup_found_shows_and_is_left_to_the_bridge(tmp_path, docs)
         if device["name"] == "Test Interface":
             device["channel"] = 3
     out = run_page(tmp_path, docs, """
-        const seen = { line: $('home-summary').textContent, value: $('set-channel').value };
+        const seen = { line: $('home-gear').textContent, value: $('set-channel').value };
         $('start').click(); await page.settle();
         return { ...seen, body: page.posts('start')[0] };""")
     assert out == {"line": "Test Interface, channel 3", "value": "3", "body": {}}
@@ -788,10 +794,10 @@ def test_the_delay_shown_is_the_chosen_devices_own(tmp_path, docs):
 DIRECT_LINE = "A Direct or monitor button on your interface has no delay. Using both doubles the sound."
 
 
-def test_the_direct_button_line_waits_in_the_menu_for_hear_me(tmp_path, docs):
+def test_the_direct_button_line_waits_in_settings_for_hear_me(tmp_path, docs):
     _saved_hear_me(docs)
-    out = run_page(tmp_path, docs, "return { text: $('hear-direct').textContent, hidden: $('hear-direct').hidden, words: $('hear-words').hidden, menu: $('home-menu').open };")
-    assert out == {"text": DIRECT_LINE, "hidden": False, "words": False, "menu": False}
+    out = run_page(tmp_path, docs, "return { text: $('hear-direct').textContent, hidden: $('hear-direct').hidden, words: $('hear-words').hidden, screen: page.screen() };")
+    assert out == {"text": DIRECT_LINE, "hidden": False, "words": False, "screen": "home"}
 
 
 def test_the_direct_button_line_is_not_offered_on_a_built_in_mic(tmp_path, docs):
@@ -823,7 +829,7 @@ def test_stop_never_lands_under_a_second_click_on_start():
 def test_a_machine_with_no_default_can_still_start_on_the_system_input(tmp_path, docs):
     docs["home"] = home_for([{"name": "Test Speakers", "inputs": 0, "outputs": 2}, {"name": "Odd One", "inputs": 1, "outputs": 0}])
     out = run_page(tmp_path, docs, """
-        const line = $('home-summary').textContent;
+        const line = $('home-gear').textContent;
         $('start').click(); await page.settle();
         return { line, body: page.posts('start')[0] };""")
     assert out["line"] == "System default, room mic" and "device" not in out["body"]
@@ -835,9 +841,9 @@ def test_a_device_that_went_away_falls_back_to_the_default(tmp_path, docs):
     out = run_page(tmp_path, docs, f"""
         $('set-device').value = {json.dumps(mic["id"])}; $('set-device').fire('change');
         page.home = {json.dumps(fewer)};
-        $('home-menu').open = true; $('home-menu').fire('toggle');
+        $('nav-settings').click();
         await page.settle();
-        return $('home-summary').textContent;""")
+        return $('home-gear').textContent;""")
     assert out == "Test Interface, channel 1"
 
 
@@ -889,7 +895,7 @@ def test_a_running_take_beats_a_pinned_one_and_an_old_address(tmp_path, docs):
 
 
 def test_the_first_view_of_a_take_is_one_line_a_sign_and_stop():
-    """Everything else waits in one menu, cues and the delay included."""
+    """Everything else waits in one Details, cues and the delay included."""
     html = (STATIC / "index.html").read_text()
     live = html[html.index('<main id="live"'):html.index('<main id="record"')]
     first = live[:live.index('<details id="live-details"')]
@@ -1052,11 +1058,11 @@ def test_a_room_mic_with_no_recording_level_yet_has_no_sign(tmp_path, docs):
 
 
 BLEED = {**PLAYING, "row": {**ROW, "you_trusted": []}}
-BLEED_LINE = "Plume hears the band on this input. Press Stop and try another device in the menu."
+BLEED_LINE = "Plume hears the band on this input. Press Stop and try another device in Settings."
 
 
 def test_the_band_in_a_direct_input_is_said_on_the_first_view(tmp_path, docs):
-    """A wrong guess at what a device is gets caught here, so it cannot sit in a closed menu."""
+    """A wrong guess at what a device is gets caught here, so it cannot sit in closed Details."""
     out = live_page(tmp_path, docs, BLEED, f"return {{ ...{FACTS}, open: $('live-details').open, sign: !$('hearing').hidden }};")
     assert out["hint"] == BLEED_LINE
     assert out["why"] == "" and out["open"] is False and out["sign"] is False
@@ -1138,7 +1144,7 @@ def test_the_live_delay_shows_only_when_monitoring_and_reported(tmp_path, docs):
     assert off["delay"] == "" and unknown["delay"] == ""
 
 
-@pytest.mark.parametrize("hint", [guitake.NO_COUNT, guitake.OPENING, "Nothing on channel 1. Try another channel in the menu."])
+@pytest.mark.parametrize("hint", [guitake.NO_COUNT, guitake.OPENING, "Nothing on channel 1. Try another channel in Settings."])
 def test_a_hint_from_the_bridge_is_shown(tmp_path, docs, hint):
     out = live_page(tmp_path, docs, {**WAITING, "hint": hint}, f"return {FACTS};")
     assert out["hint"] == hint
@@ -1301,14 +1307,14 @@ def test_a_typed_key_and_style_are_stated_plainly_afterwards(tmp_path, docs):
     assert out["sentence"] == "Bar 8. Bass and chords in, in F major."
 
 
-def test_a_false_start_lands_on_home_with_the_menu_open_and_says_why(tmp_path, docs):
+def test_a_false_start_lands_on_settings_and_says_why(tmp_path, docs):
     out = live_page(tmp_path, docs, WAITING, """
-        page.live = { state: 'idle', menu: true, message: 'Nothing came in on channel 1. Try another channel.' };
+        page.live = { state: 'idle', settings: true, message: 'Nothing came in on channel 1. Try another channel.' };
         await page.poll();
-        return { screen: document.body.getAttribute('data-screen'), note: $('home-note').textContent,
-                 shown: !$('home-note').hidden, menu: $('home-menu').open, start: !$('start').hidden };""")
-    assert out == {"screen": "home", "note": "Nothing came in on channel 1. Try another channel.",
-                   "shown": True, "menu": True, "start": True}
+        return { screen: document.body.getAttribute('data-screen'), note: $('settings-note').textContent,
+                 shown: !$('settings-note').hidden, hash: page.location.hash, starts: page.posts('start').length };""")
+    assert out == {"screen": "settings", "note": "Nothing came in on channel 1. Try another channel.",
+                   "shown": True, "hash": "#/settings", "starts": 0}
 
 
 def test_a_start_answered_with_failure_lands_on_home_too(tmp_path, docs):
@@ -1334,14 +1340,14 @@ def test_a_complaint_about_a_field_goes_when_it_is_fixed_or_left(tmp_path, docs)
     out = run_page(tmp_path, docs, f"""
         const refuse = () => {{ page.replies.start = [400, {{ error: {json.dumps(guitake.BAD_KEY)} }}]; $('start').click(); }};
         refuse(); await page.settle();
-        const first = !$('home-note').hidden;
+        const first = !$('settings-note').hidden;
         $('set-key')._value = 'F major'; $('set-key').fire('input');
-        const typed = !$('home-note').hidden;
+        const typed = !$('settings-note').hidden;
         refuse(); await page.settle();
         $('nav-takes').click(); await page.settle();
-        $('wordmark').click(); await page.settle();
-        return {{ first, typed, left: !$('home-note').hidden }};""")
-    assert out == {"first": True, "typed": False, "left": False}
+        page.history.go(-1); await page.settle();
+        return {{ first, typed, left: !$('settings-note').hidden, screen: page.screen() }};""")
+    assert out == {"first": True, "typed": False, "left": False, "screen": "settings"}
 
 
 def test_an_old_failure_does_not_greet_a_new_visit(tmp_path, docs):
@@ -1589,7 +1595,7 @@ def test_the_channel_setup_just_heard_is_not_overruled_by_a_page_that_knew_less(
     assert out == [{"device": mic["id"]}]
 
 
-def test_a_channel_from_the_menu_gives_way_to_the_one_setup_just_heard(tmp_path, docs):
+def test_a_channel_from_settings_gives_way_to_the_one_setup_just_heard(tmp_path, docs):
     out = first_run(tmp_path, docs, f"""
         $('set-channel').value = '3'; $('set-channel').fire('change');
         page.replies['setup/listen'] = [200, {json.dumps({**COUNT, "channel": 2, "heard": HEARD, "others": []})}];
@@ -1598,7 +1604,7 @@ def test_a_channel_from_the_menu_gives_way_to_the_one_setup_just_heard(tmp_path,
     assert out == [{"device": COUNT["device"]}]
 
 
-def test_a_channel_from_the_menu_stands_when_there_was_nothing_to_listen_to(tmp_path, docs):
+def test_a_channel_from_settings_stands_when_there_was_nothing_to_listen_to(tmp_path, docs):
     interface = next(d for d in docs["home"]["devices"] if d["name"] == "Test Interface")
     out = first_run(tmp_path, docs, """
         $('set-channel').value = '3'; $('set-channel').fire('change');
@@ -1619,7 +1625,7 @@ def test_a_channel_she_chose_survives_a_listen_that_heard_nothing(tmp_path, docs
     assert out == 3
 
 
-def test_a_device_picked_in_the_menu_is_the_one_listened_to(tmp_path, docs):
+def test_a_device_picked_in_settings_is_the_one_listened_to(tmp_path, docs):
     mic = next(d for d in docs["home"]["devices"] if d["name"] == "Test Mic")
     out = first_run(tmp_path, docs, f"""
         $('set-device').value = {json.dumps(mic["id"])}; $('set-device').fire('change');
@@ -1684,12 +1690,12 @@ def test_start_anyway_is_not_held_to_a_device_nothing_was_heard_on(tmp_path, doc
     assert out == [{}]
 
 
-def test_a_device_gone_from_a_finished_setup_goes_home_and_says_so(tmp_path, docs):
+def test_a_device_gone_from_a_finished_setup_goes_to_settings_and_says_so(tmp_path, docs):
     out = first_run(tmp_path, docs, f"""
         page.replies['start'] = [400, {{ error: {json.dumps(guitake.DEVICE_MISSING)} }}];
         $('start').click(); await page.settle();
-        return {{ screen: page.screen(), note: $('home-note').textContent }};""", setup=COUNT)
-    assert out == {"screen": "home", "note": guitake.DEVICE_MISSING}
+        return {{ screen: page.screen(), note: $('settings-note').textContent }};""", setup=COUNT)
+    assert out == {"screen": "settings", "note": guitake.DEVICE_MISSING}
 
 
 def test_a_double_click_on_an_answer_does_not_answer_the_next_question(tmp_path, docs):
@@ -1904,10 +1910,9 @@ def test_a_choice_looks_pressed_while_its_answer_is_on_the_way(tmp_path, docs):
     assert out == [True, True]
 
 
-def test_set_up_again_is_one_link_in_the_menu_and_starts_nothing(tmp_path, docs):
+def test_set_up_again_is_one_link_in_settings_and_starts_nothing(tmp_path, docs):
     html = (STATIC / "index.html").read_text()
-    menu = html[html.index('<details id="home-menu"'):html.index("</details>")]
-    assert ">Set up again</button>" in menu and html.count("Set up again") == 1
+    assert ">Set up again</button>" in _settings_html() and html.count("Set up again") == 1
     out = run_page(tmp_path, docs, f"""
         page.replies['setup/answer'] = [200, {json.dumps({**COUNT, "hear_me": True})}];
         {TICK}
@@ -1976,3 +1981,218 @@ def test_real_bridge_answers_walk_the_whole_flow_into_the_take(tmp_path, docs, m
 def test_no_em_dash_in_anything_a_person_reads():
     for name in ("index.html", "app.js", "live.js", "session.js"):
         assert "\u2014" not in (STATIC / name).read_text(encoding="utf-8"), name
+
+
+# --------------------------------------------------------------------- settings as a screen
+
+ROOM_SPEAKERS = {"name": "Room Speakers", "inputs": 0, "outputs": 2}
+WITH_SPEAKERS = [*DEVICES, ROOM_SPEAKERS]
+SPEAKERS_ID = guitake.describe_outputs([ROOM_SPEAKERS])[0]["id"]
+OUTPUT = """{ row: !$('set-output').hidden, value: $('set-output').value, labels: $('set-output').children.map((o) => o.textContent),
+              note: $('output-note').hidden ? '' : $('output-note').textContent, gear: $('home-gear').textContent,
+              hearRow: !$('hear-row').hidden, sendRow: !$('send-row').hidden, sendOn: !!$('send-me').checked,
+              sendWords: $('send-words').hidden ? '' : $('send-words').textContent,
+              room: $('room-output').hidden ? '' : $('room-output').textContent }"""
+SEND_LINE = "It arrives slightly late. Only for an instrument plugged in: a mic on this channel would howl."
+WIRELESS = "Wireless speakers arrive late, which makes playing along hard."
+
+
+def _with_output(docs, saved=None, sends=None, name="Test Interface", devices=None):
+    docs["home"] = home_for(devices or WITH_SPEAKERS)
+    for device in docs["home"]["devices"]:
+        device.setdefault("output", None), device.setdefault("send_channel", None), device.setdefault("output_problem", None)
+        if device["name"] == name:
+            device["output"], device["send_channel"] = saved, sends
+
+
+def test_home_is_start_a_stone_and_a_line(tmp_path, docs):
+    html = (STATIC / "index.html").read_text()
+    home = html[html.index('<main id="home"'):html.index('<main id="settings"')]
+    assert set(re.findall(r'\bid="([^"]+)"', home)) == {"home", "start", "home-elsewhere", "elsewhere-text", "elsewhere-stop",
+                                                        "home-note", "home-gear", "home-stone"}
+    out = run_page(tmp_path, docs, "return { screen: page.screen(), gear: $('home-gear').textContent, note: $('home-note').hidden };")
+    assert out == {"screen": "home", "gear": "Test Interface, channel 1", "note": True}
+
+
+def test_the_settings_link_sits_next_to_takes_and_lives_in_the_address(tmp_path, docs):
+    html = (STATIC / "index.html").read_text()
+    assert html.index('id="nav-takes"') < html.index('id="nav-settings"') < html.index('id="nav-live"')
+    out = run_page(tmp_path, docs, f"""
+        $('nav-settings').click(); await page.settle();
+        const there = {LOOK};
+        $('settings-done').click(); await page.settle();
+        const done = {LOOK};
+        page.history.go(-1); await page.settle();
+        return {{ there, done, back: {LOOK}, posts: page.calls.filter((c) => c.method === 'POST').length }};""")
+    assert out == {"there": {"screen": "settings", "hash": "#/settings"}, "done": {"screen": "home", "hash": "#/"},
+                   "back": {"screen": "settings", "hash": "#/settings"}, "posts": 0}
+
+
+def test_a_reload_on_settings_stays_there(tmp_path, docs):
+    out = run_page(tmp_path, docs, f"return {LOOK};", address="#/settings", stored=KEY)
+    assert out == {"screen": "settings", "hash": "#/settings"}
+
+
+def test_settings_asks_after_devices_plugged_in_since(tmp_path, docs):
+    out = run_page(tmp_path, docs, """
+        const before = page.calls.filter((c) => c.path === '/api/home').length;
+        $('nav-settings').click(); await page.settle();
+        return page.calls.filter((c) => c.path === '/api/home').length - before;""")
+    assert out == 1
+
+
+def test_settings_is_not_there_during_a_take(tmp_path, docs):
+    out = live_page(tmp_path, docs, PLAYING, f"""
+        const hidden = $('nav-settings').hidden;
+        page.location.hash = '#/settings';
+        page.history.pushState(null, '', '#/settings');
+        page.fireWindow('popstate');
+        await page.settle();
+        return {{ hidden, ...{LOOK} }};""")
+    assert out == {"hidden": True, "screen": "live", "hash": "#/live"}
+
+
+def test_settings_comes_back_when_the_take_is_over(tmp_path, docs):
+    out = live_page(tmp_path, docs, WAITING, """
+        page.live = { state: 'idle' };
+        await page.poll();
+        return $('nav-settings').hidden;""")
+    assert out is False
+
+
+def test_a_take_started_elsewhere_takes_settings_over(tmp_path, docs):
+    out = run_page(tmp_path, docs, f"""
+        $('nav-settings').click(); await page.settle();
+        page.live = {json.dumps(PLAYING)};
+        await page.poll();
+        return {LOOK};""")
+    assert out == {"screen": "live", "hash": "#/live"}
+
+
+def test_a_device_problem_is_said_in_settings_too(tmp_path, docs):
+    docs["home"].update(devices=[], device=None, problem=guitake.NO_INPUT)
+    out = run_page(tmp_path, docs, """
+        $('nav-settings').click(); await page.settle();
+        return $('settings-note').textContent;""")
+    assert out == guitake.NO_INPUT
+
+
+# ------------------------------------------------------------------------------- the output
+
+def test_the_output_defaults_to_the_same_as_the_input(tmp_path, docs):
+    _with_output(docs)
+    out = run_page(tmp_path, docs, f"return {OUTPUT};")
+    assert out["value"] == "" and out["labels"] == ["Same as input", "Test Speakers", "Room Speakers"]
+    assert out["note"] == "" and out["hearRow"] is True and out["sendRow"] is False and out["room"] == ""
+    assert out["gear"] == "Test Interface, channel 1"
+
+
+def test_a_room_mic_is_not_told_its_sound_goes_to_the_mic(tmp_path, docs):
+    _with_output(docs)
+    mic = next(d for d in docs["home"]["devices"] if d["name"] == "Test Mic")
+    out = run_page(tmp_path, docs, f"""
+        $('set-device').value = {json.dumps(mic["id"])}; $('set-device').fire('change');
+        return {OUTPUT};""")
+    assert out["labels"] == ["System output", "Test Speakers", "Test Interface", "Room Speakers"]
+
+
+def test_choosing_an_output_is_saved_says_the_wireless_line_and_offers_the_opt_in_off(tmp_path, docs):
+    _with_output(docs)
+    answer = {**COUNT, "output": SPEAKERS_ID}
+    out = run_page(tmp_path, docs, f"""
+        page.replies['setup/answer'] = [200, {json.dumps(answer)}];
+        $('set-output').value = {json.dumps(SPEAKERS_ID)}; $('set-output').fire('change');
+        await page.settle();
+        return {{ ...{OUTPUT}, posts: page.posts('setup/answer'), starts: page.posts('start').length,
+                  meters: page.posts('setup/listen').length }};""")
+    device = next(d for d in docs["home"]["devices"] if d["name"] == "Test Interface")
+    assert out["posts"] == [{"step": "output", "answer": SPEAKERS_ID, "device": device["id"]}]
+    assert out["starts"] == 0 and out["meters"] == 0, "choosing opens nothing"
+    assert out["note"] == WIRELESS and out["gear"] == "Test Interface, channel 1, out to Room Speakers"
+    assert out["sendRow"] is True and out["sendOn"] is False and out["sendWords"] == SEND_LINE
+    assert out["hearRow"] is False, "a yes about headphones means nothing out there"
+
+
+def test_the_opt_in_is_told_to_the_bridge_with_its_channel(tmp_path, docs):
+    _with_output(docs, saved=SPEAKERS_ID)
+    out = run_page(tmp_path, docs, f"""
+        page.replies['setup/answer'] = [200, {json.dumps(COUNT)}];
+        $('send-me').checked = true; $('send-me').fire('change'); await page.settle();
+        return {{ ...{OUTPUT}, posts: page.posts('setup/answer') }};""")
+    device = next(d for d in docs["home"]["devices"] if d["name"] == "Test Interface")
+    assert out["posts"] == [{"step": "send", "answer": "on", "channel": 1, "device": device["id"]}]
+    assert out["sendOn"] is True
+
+
+def test_the_opt_in_shows_only_for_the_channel_it_was_given_on(tmp_path, docs):
+    _with_output(docs, saved=SPEAKERS_ID, sends=1)
+    out = run_page(tmp_path, docs, f"""
+        const first = {OUTPUT}.sendOn;
+        $('set-channel').value = '2'; $('set-channel').fire('change');
+        return {{ first, then: {OUTPUT}.sendOn }};""")
+    assert out == {"first": True, "then": False}
+
+
+def test_a_room_mic_on_another_output_is_offered_no_way_to_hear_itself(tmp_path, docs):
+    _with_output(docs, saved=SPEAKERS_ID, name="Test Mic")
+    mic = next(d for d in docs["home"]["devices"] if d["name"] == "Test Mic")
+    out = run_page(tmp_path, docs, f"""
+        $('set-device').value = {json.dumps(mic["id"])}; $('set-device').fire('change');
+        return {OUTPUT};""")
+    assert out["hearRow"] is False and out["sendRow"] is False
+    assert out["room"] == "Hear me stays off here: a room mic through speakers would howl."
+
+
+def test_an_output_that_has_gone_is_said_and_not_swapped(tmp_path, docs):
+    _with_output(docs, saved="f" * 16)
+    for device in docs["home"]["devices"]:
+        if device["name"] == "Test Interface":
+            device["output_problem"] = guitake.OUTPUT_MISSING
+    out = run_page(tmp_path, docs, f"return {OUTPUT};")
+    assert out["value"] == "f" * 16 and out["labels"][-1] == "Not plugged in"
+    assert out["note"] == guitake.OUTPUT_MISSING and out["sendRow"] is False
+    assert "has gone" in out["gear"]
+
+
+def test_a_refused_output_goes_to_settings_from_start(tmp_path, docs):
+    _with_output(docs)
+    out = run_page(tmp_path, docs, f"""
+        page.replies.setup = [400, {{ error: {json.dumps(guitake.OUTPUT_MISSING)} }}];
+        page.replies.start = [400, {{ error: {json.dumps(guitake.OUTPUT_MISSING)} }}];
+        $('start').click(); await page.settle();
+        return {{ ...{LOOK}, note: $('settings-note').textContent }};""")
+    assert out == {"screen": "settings", "hash": "#/settings", "note": guitake.OUTPUT_MISSING}
+
+
+def test_a_take_refused_by_the_pair_lands_on_settings_in_plain_words(tmp_path, docs):
+    _with_output(docs, saved=SPEAKERS_ID)
+    out = live_page(tmp_path, docs, WAITING, f"""
+        page.live = {{ state: 'failed', settings: true, message: {json.dumps(guitake.OUTPUT_REFUSED)} }};
+        await page.poll();
+        return {{ ...{LOOK}, note: $('settings-note').textContent }};""")
+    assert out == {"screen": "settings", "hash": "#/settings", "note": guitake.OUTPUT_REFUSED}
+
+
+def test_a_failed_save_says_so_and_a_take_started_since_takes_over(tmp_path, docs):
+    _with_output(docs)
+    failed = run_page(tmp_path, docs, f"""
+        $('nav-settings').click(); await page.settle();
+        page.failNext['setup/answer'] = 1;
+        $('set-output').value = {json.dumps(SPEAKERS_ID)}; $('set-output').fire('change');
+        await page.settle();
+        return {{ note: $('settings-note').textContent, value: $('set-output').value }};""")
+    assert failed == {"note": "no", "value": ""}, "the bridge's word, and the choice is as it was"
+    taken = run_page(tmp_path, docs, f"""
+        page.replies['setup/answer'] = [409, {{ error: 'A take is already running.', live: {json.dumps(PLAYING)} }}];
+        $('nav-settings').click(); await page.settle();
+        $('set-output').value = {json.dumps(SPEAKERS_ID)}; $('set-output').fire('change');
+        await page.settle();
+        return {LOOK};""")
+    assert taken == {"screen": "live", "hash": "#/live"}
+
+
+def test_the_take_says_what_it_really_sends(tmp_path, docs):
+    sending = {**PLAYING, "output": "Room Speakers", "hear_me": True, "stream": {"reported_ms": 40.2}}
+    out = live_page(tmp_path, docs, sending, "return { delay: $('live-delay').textContent, direct: $('live-direct').hidden };")
+    assert out["delay"] == "Your instrument reaches that output about 40 ms late, by your device's own count, and it could be more."
+    assert out["direct"] is True, "that button only reaches the interface's own outs"

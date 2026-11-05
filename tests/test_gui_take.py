@@ -799,7 +799,7 @@ def test_a_flat_channel_is_named(rig, runner):
         rig.clock.t += 5.0
         rig.more_audio(level=0.0)
         runner.tick()
-    assert runner.live()["hint"] == "Nothing on channel 2. Press Stop, then try another channel in the menu."
+    assert runner.live()["hint"] == "Nothing on channel 2. Press Stop, then try another channel in Settings."
 
 
 @pytest.mark.parametrize("devices", [
@@ -840,7 +840,7 @@ def test_stopping_before_the_band_on_a_flat_channel_leaves_no_take_and_says_why(
     _wait_flat(rig, runner)
     folder = rig.folder
     _stop_and_land(rig, runner)
-    assert runner.live() == {"state": "idle", "menu": True,
+    assert runner.live() == {"state": "idle", "settings": True,
                              "message": "Nothing came in on channel 2. Try another channel."}
     assert not folder.exists()
 

@@ -6,6 +6,7 @@ export function routeOf(hash) {
   if (found) return { name: 'take', id: found[1] };
   if (hash === '#/takes') return { name: 'takes' };
   if (hash === '#/live') return { name: 'live' };
+  if (hash === '#/settings') return { name: 'settings' };
   return { name: 'home' };
 }
 

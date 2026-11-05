@@ -600,7 +600,7 @@ def test_a_second_listen_on_a_finished_device_does_not_stop_at_the_delay_either(
     assert runner.listen({"device": next(d["id"] for d in runner.home()["devices"] if d["name"] == SCARLETT["name"])})["step"] == "count"
 
 
-def test_the_round_trip_shown_in_the_menu_is_still_the_whole_of_it(rig, runner):
+def test_the_round_trip_shown_in_settings_is_still_the_whole_of_it(rig, runner):
     _take_reports(rig, runner, input_ms=45.0, output_ms=40.0, reported_ms=85.0)
     assert next(d for d in runner.home()["devices"] if d["name"] == SCARLETT["name"])["reported_ms"] == 85.0
 
@@ -900,7 +900,7 @@ def test_a_tick_is_a_yes_kept_for_this_device_and_start_needs_nothing_more(rig, 
     assert runner.setup()["hear_me"] is True
 
 
-def test_turning_it_off_in_the_menu_is_kept(rig, runner, meter):
+def test_turning_it_off_in_settings_is_kept(rig, runner, meter):
     _finished(runner, meter)
     assert tick(runner, on=False)["hear_me"] is False
     runner.start({})

@@ -76,8 +76,12 @@ header { display: flex; align-items: center; gap: 16px; padding-top: 14px; min-h
 #problem h1 { font-size: 22px; font-weight: 500; margin: 0 0 6px; }
 #problem p { margin: 0; color: var(--secondary); }
 
-/* The first screen: one Start. Everything else waits behind the menu. */
+/* The first screen: one Start. Everything else waits in Settings. */
 .column { width: min(100%, 26rem); margin: 0 auto; display: flex; flex-direction: column; gap: 14px; }
+#settings { flex: 1; padding: 12px 0 40px; }
+#settings h1 { font-size: 22px; font-weight: 500; margin: 0; }
+#settings-note { margin: 0; }
+#home-gear { margin: 0; overflow-wrap: anywhere; }
 #home, #setup, #live { flex: 1; padding: clamp(40px, 18vh, 180px) 0 40px; }
 .solid { background: var(--text); color: var(--on-solid); border: 0; border-radius: 2px; font-weight: 500; }
 .solid:hover { opacity: .88; }
@@ -88,18 +92,20 @@ header { display: flex; align-items: center; gap: 16px; padding-top: 14px; min-h
 #start { height: 96px; font-size: 32px; letter-spacing: -.01em; }
 #home-elsewhere { display: flex; flex-direction: column; gap: 14px; align-items: flex-start; }
 #home-elsewhere p { margin: 0; font-size: 19px; }
-#hear-row { display: flex; align-items: center; gap: 8px; min-height: 32px; margin-top: 10px; cursor: pointer; }
-#hear-me { width: 18px; height: 18px; margin: 0; accent-color: var(--text); }
-#hear-short, #hear-direct { margin: 0; }
-#home-menu { color: var(--secondary); font-size: 14px; }
-#home-menu summary { cursor: pointer; padding: 6px 0; overflow-wrap: anywhere; }
-#menu-body { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 10px 14px; align-items: baseline; padding-top: 10px; }
-#menu-body input, #menu-body select { width: 100%; min-height: 32px; background: none; border: 0; border-bottom: 1px solid var(--hairline); border-radius: 0; font-size: 16px; color: var(--text); padding: 2px 0; }
-#menu-body input::placeholder { color: var(--secondary); opacity: 1; }
-#menu-body select option { background: var(--field); color: var(--text); }
+#sound-rows { color: var(--secondary); font-size: 14px; }
+#hear-row, #send-row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; min-height: 32px; cursor: pointer; }
+#hear-me, #send-me { appearance: none; -webkit-appearance: none; flex: none; width: 18px; height: 18px; margin: 0; border: 1px solid var(--hairline); border-radius: 2px; background: none; cursor: pointer; }
+#hear-me:checked, #send-me:checked { background: var(--text); box-shadow: inset 0 0 0 3px var(--field); }
+#hear-short, #hear-direct, #send-words, #room-output { margin: 0; }
+#settings-body { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 10px 14px; align-items: baseline; color: var(--secondary); font-size: 14px; }
+#output-note { grid-column: 2; margin: -4px 0 0; }
+#settings-body input, #settings-body select { width: 100%; min-height: 32px; background: none; border: 0; border-bottom: 1px solid var(--hairline); border-radius: 0; font-size: 16px; color: var(--text); padding: 2px 0; }
+#settings-body input::placeholder { color: var(--secondary); opacity: 1; }
+#settings-body select option { background: var(--field); color: var(--text); }
 #set-folder { font: 400 13px var(--mono); overflow-wrap: anywhere; color: var(--text); }
 #hear-words { padding-top: 12px; }
-#again-row { margin: 12px 0 0; }
+#again-row { margin: 0; color: var(--secondary); }
+#settings-done { align-self: flex-start; }
 .textlink { background: none; border: 0; padding: 6px 0; min-height: 32px; font-size: 14px; color: var(--secondary); text-decoration: underline; text-underline-offset: 3px; text-align: left; overflow-wrap: anywhere; }
 .textlink:hover { color: var(--text); }
 

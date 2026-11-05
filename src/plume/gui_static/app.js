@@ -7,7 +7,7 @@
 import { clearStones, cssVar, queueStone, rng, stonesIdle, tok } from '/static/stone.js';
 import { hitBoxes, lineSpans, nextIndex } from '/static/layout.js';
 import { lostWords, pinnedRoute, routeOf } from '/static/session.js';
-import { DIRECT_LINE, FADING_LINE, NO_ENDING, ROOM_END_LINE, askingLine, countWords, delayLine, endLine, endedNote, hearingWord, isFading, isRunning, keyLine, landing, meterShare, routeLine, settledLine, setupTrouble, setupView, stageWords, watchEnding, youView } from '/static/live.js';
+import { BAND_IN_INPUT_LINE, DIRECT_LINE, FADING_LINE, NO_ENDING, ROOM_END_LINE, askingLine, bandInInput, countWords, delayLine, endLine, endedNote, isFading, isRunning, keyLine, landing, meterShare, routeLine, settledLine, setupTrouble, setupView, signView, stageWords, watchEnding, youView } from '/static/live.js';
 
 const $ = function (id) { return document.getElementById(id); };
 const S = { csrf: '', take: null, selected: null, roastOn: true, screen: 'loading', nav: 0,
@@ -850,13 +850,14 @@ function drawLive() {
   $('live-say').textContent = liveWords(doc, row);
   $('live-stop').disabled = stopping;
   $('live-stop').textContent = stopping ? 'Stopping' : 'Stop';
-  const hint = S.liveLost ? 'Lost touch with plume gui. If it has closed, plume stop still ends the take.' : doc.message || doc.hint || '';
+  const inInput = bandInInput(row);
+  const hint = S.liveLost ? 'Lost touch with plume gui. If it has closed, plume stop still ends the take.' : doc.message || doc.hint || (inInput ? BAND_IN_INPUT_LINE : '');
   $('live-hint').hidden = !hint;
   $('live-hint').textContent = hint;
-  const hasLevel = you.level !== null;
-  $('hearing').hidden = $('meter').hidden = !hasLevel;
-  $('hearing-word').textContent = hasLevel ? hearingWord(you.level) : '';
-  $('meter-fill').style.width = (hasLevel ? Math.round(meterShare(you.level) * 100) : 0) + '%';
+  const hasLevel = you.level !== null, sign = signView(you, row, doc);
+  $('hearing').hidden = $('meter').hidden = !sign;
+  $('hearing-word').textContent = sign ? sign.word : '';
+  $('meter-fill').style.width = (sign ? Math.round(meterShare(sign.level) * 100) : 0) + '%';
   $('live-facts').hidden = !row;
   if (row) {
     $('live-bar').textContent = row.bar;
@@ -867,7 +868,7 @@ function drawLive() {
     $('live-level-box').hidden = !hasLevel;
     $('live-level').textContent = hasLevel ? Math.round(you.level) + ' dB' : '';
   }
-  $('live-why').hidden = !you.why;
+  $('live-why').hidden = !you.why || inInput;
   $('live-why').textContent = you.why;
   /* Only once a stream has said so, and only when this take is monitoring. */
   const ms = doc.hear_me && doc.stream ? doc.stream.reported_ms : null;
@@ -876,7 +877,8 @@ function drawLive() {
   $('live-direct').hidden = !doc.hear_me || doc.mode !== 'direct';
   $('live-direct').textContent = DIRECT_LINE;
   $('live-cues').hidden = doc.state !== 'playing';
-  /* Told once she has gone quiet, where the engine can tell. A room mic often can't. */
+  /* Told once she has gone quiet, where the engine can tell. A room mic can't, so it is told
+     once the band is in, for a few bars. */
   S.ending = watchEnding(S.ending, row);
   const ends = stopping ? '' : endLine(S.ending, row);
   $('live-end').hidden = !ends;

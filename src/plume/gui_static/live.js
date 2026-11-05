@@ -65,6 +65,21 @@ export function meterShare(db) {
 /* The small sign. -45 dB is where plume itself calls a signal silence. */
 export function hearingWord(db) { return db >= -45 ? 'Hearing you' : 'Listening'; }
 
+/* What the sign can honestly show. A room mic with the band in cannot pick her out, but the mic
+   is still live, so it says that much and nothing about her. null means no sign. */
+export function signView(you, row, doc) {
+  if (you.level !== null) return { word: hearingWord(you.level), level: you.level };
+  if (!row || row.input !== 'room' || typeof doc.level_db !== 'number') return null;
+  return { word: doc.level_db >= -45 ? 'Hearing the room' : 'Listening', level: doc.level_db };
+}
+
+/* A direct input that hears the band is the check on a wrong guess about what a device is, so it
+   is said where it will be read. */
+export function bandInInput(row) {
+  return !!row && row.input === 'direct' && !(row.you_trusted || []).includes('you_db');
+}
+export const BAND_IN_INPUT_LINE = 'Plume hears the band on this input. Press Stop and try another device in the menu.';
+
 /* The device's own number, called what it is. */
 export function delayLine(ms) {
   if (typeof ms !== 'number') return 'Use headphones. Plume shows the delay your device reports once a take starts.';
@@ -94,21 +109,27 @@ export function routeLine(device, channel, key, style) {
 const END_LINE = 'Stop playing and the band will finish on its own.';
 export const FADING_LINE = 'The band is finishing. Play and it comes back.';
 export const ROOM_END_LINE = 'A room mic may not hear you stop, so press Stop when you are done.';
-export const NO_ENDING = { played: false, quietFrom: null };
+export const NO_ENDING = { played: false, quietFrom: null, roomFrom: null };
+/* Long enough to be read during a take, and then it gets out of the way. Details keeps it. */
+const ROOM_END_BARS = 8;
 
 export function isFading(row) { return !!row && row.fade_db < 0; }
 
 /* What the engine has said about her playing, as a page polling it goes along. Only where the
    engine trusts that word: over a room mic with the band in, "playing" mostly means the band. */
 export function watchEnding(seen, row) {
-  if (!row || !row.playing_trusted) return { played: seen.played, quietFrom: null };
-  if (row.playing) return { played: true, quietFrom: null };
-  return { played: seen.played, quietFrom: seen.quietFrom === null ? row.bar : seen.quietFrom };
+  /* The moment the engine stops trusting a room mic is when Stop becomes how it ends. */
+  const lost = !!row && row.input === 'room' && row.playing_trusted === false;
+  const roomFrom = seen.roomFrom === null && lost ? row.bar : seen.roomFrom;
+  if (!row || !row.playing_trusted) return { played: seen.played, quietFrom: null, roomFrom };
+  if (row.playing) return { played: true, quietFrom: null, roomFrom };
+  return { played: seen.played, quietFrom: seen.quietFrom === null ? row.bar : seen.quietFrom, roomFrom };
 }
 
 /* Said once she has played and then gone quiet for more than a bar, which a rest can be too,
    so it stays calm. Drums waiting for her first note are not the end of anything. */
 export function endLine(seen, row) {
+  if (row && seen.roomFrom !== null && !isFading(row)) return row.bar - seen.roomFrom < ROOM_END_BARS ? ROOM_END_LINE : '';
   if (!row || !seen.played || seen.quietFrom === null || isFading(row)) return '';
   return row.bar - seen.quietFrom >= 1 ? END_LINE : '';
 }

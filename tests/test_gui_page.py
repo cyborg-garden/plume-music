@@ -923,7 +923,44 @@ def test_a_room_mic_never_promises_the_band_will_finish(tmp_path, docs):
         page.live = {json.dumps({**room, "row": {**room["row"], "bar": 9}})};
         await page.poll();
         return {{ end: {END}, how: $('live-how').hidden ? '' : $('live-how').textContent }};""")
-    assert out["end"] == "" and out["how"] == "A room mic may not hear you stop, so press Stop when you are done."
+    assert "finish on its own" not in out["end"]
+    assert out["how"] == "A room mic may not hear you stop, so press Stop when you are done."
+
+
+ROOM_BAND_IN = {**PLAYING, "mode": "room", "hear_me": False,
+                "row": {**ROW, "input": "room", "you_trusted": [], "playing": False, "playing_trusted": False, "fade_db": 0.0}}
+
+
+def _room_at(bar):
+    return {**ROOM_BAND_IN, "row": {**ROOM_BAND_IN["row"], "bar": bar}}
+
+
+def test_a_room_mic_says_how_it_ends_on_the_first_view_once_the_band_is_in_and_then_lets_go(tmp_path, docs):
+    out = live_page(tmp_path, docs, _room_at(12), f"""
+        const first = {END};
+        page.live = {json.dumps(_room_at(19))};
+        await page.poll();
+        const later = {END};
+        page.live = {json.dumps(_room_at(20))};
+        await page.poll();
+        return {{ first, later, gone: {END}, details: $('live-how').textContent }};""")
+    line = "A room mic may not hear you stop, so press Stop when you are done."
+    assert out == {"first": line, "later": line, "gone": "", "details": line}
+
+
+def test_the_room_line_waits_until_plume_really_cannot_hear_her_stop(tmp_path, docs):
+    drums = {**ROOM_BAND_IN, "row": {**ROOM_BAND_IN["row"], "stage": "drums", "playing_trusted": True}}
+    assert live_page(tmp_path, docs, drums, f"return {END};") == ""
+
+
+def test_an_old_row_with_no_word_about_trust_says_nothing_about_how_it_ends(tmp_path, docs):
+    old = {**PLAYING, "mode": "room", "row": {**ROW, "input": "room", "you_trusted": []}}
+    assert live_page(tmp_path, docs, old, f"return {END};") == ""
+
+
+def test_the_room_line_is_not_repeated_while_the_band_fades(tmp_path, docs):
+    fading = {**ROOM_BAND_IN, "row": {**ROOM_BAND_IN["row"], "fade_db": -3.0}}
+    assert live_page(tmp_path, docs, fading, f"return {END};") == ""
 
 
 def test_a_direct_input_is_not_told_to_press_stop(tmp_path, docs):
@@ -958,9 +995,50 @@ def test_the_small_sign_says_in_a_word_whether_it_hears_her(tmp_path, docs, leve
     assert out == {"word": word, "shown": True}
 
 
-def test_with_nothing_it_can_trust_there_is_no_sign(tmp_path, docs):
+def test_a_room_mic_with_the_band_in_still_shows_it_hears_the_room_and_claims_nothing_of_her(tmp_path, docs):
     room = {**PLAYING, "mode": "room", "hear_me": False, "row": {**ROW, "input": "room", "you_trusted": []}}
+    out = live_page(tmp_path, docs, room, f"""
+        return {{ word: $('hearing-word').textContent, shown: !$('hearing').hidden, meter: !$('meter').hidden,
+                 fill: $('meter-fill').style.width, level: {FACTS}.levelShown }};""")
+    assert out == {"word": "Hearing the room", "shown": True, "meter": True, "fill": "70%", "level": False}
+
+
+def test_a_quiet_room_mic_does_not_claim_to_hear_the_room(tmp_path, docs):
+    room = {**PLAYING, "mode": "room", "level_db": -60.0, "row": {**ROW, "input": "room", "you_trusted": []}}
+    assert live_page(tmp_path, docs, room, "return $('hearing-word').textContent;") == "Listening"
+
+
+def test_a_room_mic_with_no_recording_level_yet_has_no_sign(tmp_path, docs):
+    room = {**PLAYING, "mode": "room", "level_db": None, "row": {**ROW, "input": "room", "you_trusted": []}}
     assert live_page(tmp_path, docs, room, "return $('hearing').hidden;") is True
+
+
+BLEED = {**PLAYING, "row": {**ROW, "you_trusted": []}}
+BLEED_LINE = "Plume hears the band on this input. Press Stop and try another device in the menu."
+
+
+def test_the_band_in_a_direct_input_is_said_on_the_first_view(tmp_path, docs):
+    """A wrong guess at what a device is gets caught here, so it cannot sit in a closed menu."""
+    out = live_page(tmp_path, docs, BLEED, f"return {{ ...{FACTS}, open: $('live-details').open, sign: !$('hearing').hidden }};")
+    assert out["hint"] == BLEED_LINE
+    assert out["why"] == "" and out["open"] is False and out["sign"] is False
+    html = (STATIC / "index.html").read_text()
+    live = html[html.index('<main id="live"'):html.index('<main id="record"')]
+    assert 'id="live-hint"' in live[:live.index('<details id="live-details"')]
+
+
+def test_a_word_from_the_bridge_comes_before_the_routing_line(tmp_path, docs):
+    out = live_page(tmp_path, docs, {**BLEED, "hint": guitake.STALLED}, f"return {FACTS};")
+    assert out["hint"] == guitake.STALLED
+
+
+def test_a_room_mic_is_not_told_the_band_is_in_its_input(tmp_path, docs):
+    room = {**PLAYING, "mode": "room", "row": {**ROW, "input": "room", "you_trusted": []}}
+    assert live_page(tmp_path, docs, room, f"return {FACTS};")["hint"] == ""
+
+
+def test_a_direct_input_it_trusts_gets_no_routing_line(tmp_path, docs):
+    assert live_page(tmp_path, docs, PLAYING, f"return {FACTS};")["hint"] == ""
 
 
 def test_while_waiting_it_says_to_count_and_shows_a_level(tmp_path, docs):
@@ -1003,7 +1081,7 @@ def test_a_key_the_player_typed_is_not_called_a_guess(tmp_path, docs):
 def test_on_a_room_mic_it_hides_what_it_cannot_trust_and_says_so(tmp_path, docs):
     room = {**PLAYING, "mode": "room", "hear_me": False, "row": {**ROW, "input": "room", "you_trusted": []}}
     out = live_page(tmp_path, docs, room, f"return {FACTS};")
-    assert out["notesShown"] is False and out["levelShown"] is False and out["meter"] is False
+    assert out["notesShown"] is False and out["levelShown"] is False
     assert out["why"] == "Plume can't tell over the band on a room mic."
     assert out["delay"] == ""
 
@@ -1011,7 +1089,7 @@ def test_on_a_room_mic_it_hides_what_it_cannot_trust_and_says_so(tmp_path, docs)
 def test_over_drums_on_a_room_mic_only_the_notes_are_shown(tmp_path, docs):
     room = {**PLAYING, "mode": "room", "row": {**ROW, "input": "room", "stage": "drums", "you_trusted": ["you_notes"]}}
     out = live_page(tmp_path, docs, room, f"return {FACTS};")
-    assert out["notesShown"] is True and out["levelShown"] is False and out["meter"] is False
+    assert out["notesShown"] is True and out["levelShown"] is False
 
 
 def test_the_live_delay_shows_only_when_monitoring_and_reported(tmp_path, docs):

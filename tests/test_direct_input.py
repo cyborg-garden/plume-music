@@ -5,6 +5,7 @@ proves the routing and the logic.  How a real guitar reads against these thresho
 is what docs/DIRECT-INPUT-TEST.md is for.
 """
 import json
+import threading
 
 import numpy as np
 import pytest
@@ -868,3 +869,4 @@ def test_one_device_refusing_to_open_is_as_it_was(tmp_path, consent):
             realtime.lead(prompt="lofi", seed=0, role=roles_mod.RoleParams(role="lead"), status=False,
                           max_minutes=0.01, tap_start=True, direct=True, record_dir=str(tmp_path / "rec"),
                           socket_path=short_socket_path("oneref"), device="audio interface", input_channel=1)
+    assert "plume-cues" not in [th.name for th in threading.enumerate()], "the listener outlived the refusal"

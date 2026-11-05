@@ -165,6 +165,34 @@ def test_a_rest_does_not_interrupt_a_real_key_change():
     assert last.key == "G major"
 
 
+# The key waits the way the band's following does: a run of bars, and one bar
+# that cannot say is no evidence.
+def test_a_bar_the_tracker_cannot_name_does_not_reset_a_key_change():
+    e = BandEntry("lofi", min_drum_bars=4, release_bars=8)
+    for b in range(6):
+        e.update(b, h("C major"), True)
+    bar = 6
+    for _ in range(4):
+        e.update(bar, h("G major"), True)
+        bar += 1
+    e.update(bar, h(None), True)        # unsure, while playing: no evidence
+    bar += 1
+    last = None
+    for _ in range(4):
+        last = e.update(bar, h("G major"), True)
+        bar += 1
+    assert last.key == "G major"
+
+
+def test_one_bar_back_home_still_holds_the_key():
+    e = BandEntry("lofi", min_drum_bars=4, release_bars=8)
+    for b in range(6):
+        e.update(b, h("C major"), True)
+    keys = ["G major"] * 7 + ["C major"] + ["G major"] * 7
+    states = [e.update(6 + i, h(k), True) for i, k in enumerate(keys)]
+    assert {s.key for s in states} == {"C major"}
+
+
 def test_tap_tempo_ignores_one_rushed_knock():
     # her real knocks from 2026-11-02, clicks at 75 bpm
     bpm, nxt = tap_tempo([6.29, 6.93, 7.72, 8.53])

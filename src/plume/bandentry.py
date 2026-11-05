@@ -231,7 +231,10 @@ class BandEntry:
         # cycle keeps advancing while she rests, but a rest must neither let the
         # tracker's stale belief change key nor interrupt a real key change.
         if playing:
-            governed = self._gov.govern(bar, harmony)
+            # A bar the tracker could not name is no evidence either, the same as a
+            # rest: one unsure bar must not cost a real key change all its bars.
+            unsure = committed and harmony is not None and harmony.key is None
+            governed = self._gov.govern(bar, harmony, resting=unsure)
         elif committed:
             governed = self._gov.govern(bar, harmony, resting=True)
         else:

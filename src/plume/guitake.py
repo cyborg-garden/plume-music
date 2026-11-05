@@ -44,7 +44,7 @@ from .realtime import (AUDIO_CONSENT_ENV, AUDIO_CONSENT_OFF, REC_CUES, REC_DECIS
                        REC_HUMAN, REC_MACHINE, REC_MANIFEST, REC_MIDI, REC_STREAM, REC_VOICE,
                        LiveSession, RealtimeError, list_sessions, send_cue, stop_session)
 from .styles_lib import list_styles
-from .theory import parse_key, spell
+from .theory import parse_key
 
 # The page's words.  Nothing else about a failure ever reaches it.
 DEVICE_MISSING = "Plume could not find that device. Check it is plugged in."
@@ -64,6 +64,7 @@ ENDED_EARLY = "The take ended early."
 NO_PAGE = "No page was open, so plume stopped this take."
 WEDGED = "Still stopping. Run plume stop in a terminal."
 BAD_KEY = "Plume did not understand that key. Try F major or A minor."
+ONLY_MAJOR_MINOR = "Plume plays major and minor keys. Try F major or A minor."
 NO_HEAR_ME = "Hear me needs an audio interface. On a built-in mic it would feed back."
 
 #: A take needing a person to end it, with no page asking this long, stops itself.
@@ -87,6 +88,10 @@ _MAX_TEXT = 80
 _LOG_TAIL_BYTES = 8192
 
 CUES = ("busier", "sparser")
+#: Runs this plume whatever folder the bridge was started from: without -P, ``-m`` puts that
+#: folder first on the path, and a plume.py in it would run with the click's consent.
+PLUME_CHILD = (sys.executable, "-P", "-m", "plume")
+_TYPED_TONIC = re.compile(r"[A-Ga-g][#sb]?")
 _FIELDS = frozenset({"device", "channel", "key", "style", "hear_me"})
 #: A row may carry more than a page needs.  Only these fields leave the bridge.
 _ROW_FIELDS = ("bar", "t_s", "bpm", "section", "stage", "key", "chord", "style", "style_guess",
@@ -170,7 +175,7 @@ def default_lister() -> list[dict]:
     if _under_pytest():
         raise TakeError("the real device lister does not run under pytest")
     try:
-        done = subprocess.run([sys.executable, "-m", "plume", "inputs", "--json"],
+        done = subprocess.run([*PLUME_CHILD, "inputs", "--json"],
                               stdin=subprocess.DEVNULL, capture_output=True, check=False,
                               timeout=LIST_TIMEOUT_S, start_new_session=True)
         doc = json.loads(done.stdout)
@@ -275,18 +280,24 @@ def _is_detect(text: str) -> bool:
 
 
 def canonical_key(text: str) -> str | None:
-    """"F major" from whatever was typed, None for detect.  Only this ever reaches argv."""
+    """"F major" from whatever was typed, None for detect.  Only this ever reaches argv.
+
+    What the band will really commit to, spelled the way it was typed.  It plays major and
+    minor, so another mode is turned down here rather than quietly swapped for one of them.
+    """
     if _is_detect(text):
         return None
     text = text.strip()
     named = parse_prompt(f"in {text}").key
     try:
-        if named is None:            # 'Fm' or a bare 'F': the prompt grammar needs a mode word
-            key = parse_key(text)
-            named = f"{spell(key.tonic, key)} {key.mode.replace('_', ' ')}"
-        parse_key(named)
-    except ValueError:
+        # 'Fm' or a bare 'F' or 'Eb maj': the prompt grammar needs a whole mode word
+        key = parse_key(named or text)
+    except (ValueError, KeyError):
         raise Refused(400, BAD_KEY) from None
+    if key.mode not in ("major", "minor"):
+        raise Refused(400, ONLY_MAJOR_MINOR)
+    tonic = _TYPED_TONIC.match(named or text).group(0)
+    named = f"{tonic[0].upper()}{tonic[1:].replace('s', '#')} {key.mode}"
     if parse_prompt(f"in {named}").key != named:
         raise Refused(400, BAD_KEY)
     return named
@@ -319,7 +330,7 @@ def build_argv(route: Route, folder: Path, *, key: str | None, style: str | None
     No ``--max-minutes``: the take keeps the session cap.  After ``--`` a prompt is only
     ever a prompt.
     """
-    argv = [sys.executable, "-m", "plume", "lead", "--tap-start", "--detect",
+    argv = [*PLUME_CHILD, "lead", "--tap-start", "--detect",
             f"--record={folder}/", f"--seed={int(seed)}"]
     if route.mode == "direct":
         argv += [f"--device={route.name}", f"--input-channel={route.channel}", "--direct"]

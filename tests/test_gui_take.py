@@ -109,7 +109,7 @@ class Rig:
 
     @property
     def folder(self) -> Path:
-        return Path(self.spawned[-1][6].split("=", 1)[1])
+        return Path(self.spawned[-1][7].split("=", 1)[1])
 
     def open_stream(self, level=0.1, seconds=0.5):
         """What the child's recorder does: open the WAV, and flush a bit of input."""
@@ -197,6 +197,29 @@ def test_a_device_it_does_not_recognise_cannot_be_given_hear_me(rig, runner):
     assert rig.spawned == []
 
 
+@pytest.mark.parametrize("typed", ["FBm", "Fb#", "AMm"])
+def test_text_that_breaks_the_key_parser_gets_the_bad_key_words(typed):
+    with pytest.raises(guitake.Refused) as e:
+        guitake.canonical_key(typed)
+    assert (e.value.status, e.value.message) == (400, guitake.BAD_KEY)
+
+
+@pytest.mark.parametrize("typed", ["D dorian", "A harmonic minor", "E phrygian"])
+def test_a_mode_the_band_cannot_play_is_refused_rather_than_swapped(typed):
+    with pytest.raises(guitake.Refused) as e:
+        guitake.canonical_key(typed)
+    assert (e.value.status, e.value.message) == (400, guitake.ONLY_MAJOR_MINOR)
+
+
+@pytest.mark.parametrize("typed,want", [
+    ("F#", "F# major"), ("C#", "C# major"), ("F# major", "F# major"), ("Gb", "Gb major"), ("f#m", "F# minor"),
+    ("Bb", "Bb major"), ("Fm", "F minor"), ("F", "F major"), ("a minor", "A minor"), ("Eb maj", "Eb major"),
+])
+def test_a_typed_key_is_the_key_the_band_commits_to(typed, want):
+    got = guitake.canonical_key(typed)
+    assert got == want and realtime._named_key(f"in {got}") == want
+
+
 def test_the_only_interface_is_chosen_on_channel_one_with_hear_me(rig, runner):
     home = runner.home()
     chosen = next(d for d in home["devices"] if d["id"] == home["device"])
@@ -275,14 +298,14 @@ def test_a_device_plugged_in_later_shows_up(rig, runner):
 # -------------------------------------------------------------------- what Start runs
 
 def _argv_tail(rig):
-    return rig.spawned[-1][7:]
+    return rig.spawned[-1][8:]
 
 
 def test_the_default_argv_exactly(rig, runner, monkeypatch):
     monkeypatch.setattr(guitake.secrets, "randbelow", lambda n: 4242)
     runner.start({})
     assert rig.spawned == [[
-        sys.executable, "-m", "plume", "lead", "--tap-start", "--detect",
+        sys.executable, "-P", "-m", "plume", "lead", "--tap-start", "--detect",
         f"--record={rig.root}/2031-02-03-040506/", "--seed=4242",
         f"--device={SCARLETT['name']}", "--input-channel=1", "--direct", "--monitor"]]
 
@@ -295,7 +318,7 @@ def test_hear_me_off_drops_the_monitor(rig, runner):
 def test_a_room_mic_argv(rig, runner):
     rig.devices = [LAPTOP_MIC, LAPTOP_OUT]
     runner.start({})
-    assert _argv_tail(rig) == [f"--seed={rig.spawned[0][7].split('=')[1]}",
+    assert _argv_tail(rig) == [f"--seed={rig.spawned[0][8].split('=')[1]}",
                                f"--input-device={LAPTOP_MIC['name']}"]
     assert "--direct" not in rig.spawned[0] and "--monitor" not in rig.spawned[0]
 
@@ -364,7 +387,7 @@ def test_hear_me_must_be_a_real_boolean(rig, runner, hear_me):
 
 @pytest.mark.parametrize("text,canon", [
     ("F major", "F major"), ("f# minor", "F# minor"), ("Eb major", "Eb major"), ("  A minor ", "A minor"),
-    ("Fm", "F minor"), ("F", "F major"), ("a dorian", "A dorian"), ("c harmonic minor", "C harmonic minor"),
+    ("Fm", "F minor"), ("F", "F major"),
     ("in F major", "F major"), ("", None), ("  ", None), ("detect", None), ("Detect", None),
 ])
 def test_a_key_comes_out_canonical(text, canon):
@@ -415,8 +438,8 @@ def test_only_canonical_values_reach_the_prompt(rig, runner, body, prompt):
 
 
 def _parsed(argv):
-    assert argv[:3] == [sys.executable, "-m", "plume"]
-    return cli._build_parser().parse_args(argv[3:])
+    assert argv[:4] == [sys.executable, "-P", "-m", "plume"]
+    return cli._build_parser().parse_args(argv[4:])
 
 
 @pytest.mark.parametrize("name", ["--record=/etc", "-x", "--monitor", "--max-minutes=0", "two words", "a=b"])
@@ -445,7 +468,7 @@ def test_the_argv_runs_the_real_transport_on_the_fake_device(tmp_path, monkeypat
                    {"name": "Audio Interface 4x4", "max_input_channels": 4, "max_output_channels": 4}]
     route = guitake.Route("Audio Interface 4x4", "direct", 2, True)
     folder = tmp_path / "take"
-    argv = guitake.build_argv(route, folder, key=None, style=None, seed=3)[3:]
+    argv = guitake.build_argv(route, folder, key=None, style=None, seed=3)[4:]
     device = fake_audio(np.zeros(SR * 3, dtype=np.float32), devices=rig_devices, human_channel=1)
     with patched_module("sounddevice", device):
         code = cli.main([*argv, f"--socket={short_socket_path('guitake')}", "--max-minutes=0.02"])
@@ -461,7 +484,7 @@ def test_the_argv_runs_the_real_transport_on_the_fake_device(tmp_path, monkeypat
 def test_a_take_gets_a_fresh_timestamped_folder(rig, runner):
     runner.start({})
     assert rig.folder == rig.root / "2031-02-03-040506"
-    assert rig.folder.is_dir() and rig.spawned[0][6].endswith("/")
+    assert rig.folder.is_dir() and rig.spawned[0][7].endswith("/")
 
 
 def test_a_used_folder_is_never_used_again(rig, runner):
@@ -1291,7 +1314,7 @@ def test_the_whole_way_on_the_fake_device(tmp_path, monkeypatch, plume_registry)
 
     def spawner(argv, log_path):  # noqa: ARG001
         extra = [f"--socket={short_socket_path('guiwhole')}", "--max-minutes=1"]
-        return ThreadProc(lambda: cli.main([*argv[3:], *extra]))
+        return ThreadProc(lambda: cli.main([*argv[4:], *extra]))
 
     root = tmp_path / "shelf"
     runner = guitake.TakeRunner(
@@ -1414,7 +1437,7 @@ def test_the_lister_reads_the_json_and_never_asks_for_consent(monkeypatch):
     monkeypatch.setattr(guitake, "_under_pytest", lambda: False)
     monkeypatch.setattr(guitake.subprocess, "run", run)
     assert guitake.default_lister() == [SCARLETT]
-    assert seen["argv"] == [sys.executable, "-m", "plume", "inputs", "--json"]
+    assert seen["argv"] == [sys.executable, "-P", "-m", "plume", "inputs", "--json"]
     assert seen["timeout"] == guitake.LIST_TIMEOUT_S
     assert "--meter" not in seen["argv"] and "env" not in seen
 
@@ -1429,6 +1452,17 @@ def test_a_lister_that_says_no_is_said_plainly(monkeypatch, stdout, message):
                         lambda argv, **kw: subprocess.CompletedProcess(argv, 1, stdout=stdout))
     with pytest.raises(guitake.TakeError, match=message):
         guitake.default_lister()
+
+
+def test_a_plume_py_in_the_folder_it_was_started_from_is_not_what_runs(tmp_path, monkeypatch):
+    """Consent goes to the argv's child, so it has to be this plume and not the folder's."""
+    (tmp_path / "plume.py").write_text("print('SHADOW')\n")
+    argv = guitake.build_argv(guitake.Route(None, "room", 1, False), tmp_path, key=None, style=None, seed=1)
+    src = str(Path(gui.__file__).parents[1])
+    # --help opens no device: it stands in for the verb, on the argv's own prefix.
+    done = subprocess.run([*argv[:argv.index("lead")], "--help"], cwd=tmp_path, capture_output=True, text=True,
+                          timeout=60, check=False, env={**os.environ, "PYTHONPATH": src})
+    assert "SHADOW" not in done.stdout and done.returncode == 0
 
 
 def test_a_lister_that_hangs_is_said_plainly(monkeypatch):

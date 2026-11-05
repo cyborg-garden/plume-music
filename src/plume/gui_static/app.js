@@ -270,7 +270,7 @@ function refreshHead() {
   k.classList.toggle('undo', t.kept);
   k.textContent = t.kept ? 'Undo' : 'Keep';
   $('kept-status').hidden = !t.kept;
-  drawPlayAgain();
+  drawReplay();
   const ended = endedNote(S.live, t.id);
   $('rec-note').hidden = !ended;
   $('rec-note').textContent = ended;
@@ -285,7 +285,7 @@ function refreshHead() {
 }
 /* The next thing anyone wants after a take. Only on the one that just ended, so reading an old
    one is not an offer to start. */
-function drawPlayAgain() {
+function drawReplay() {
   $('rec-again').hidden = !(S.screen === 'record' && S.take && S.live.state === 'done' && S.live.take === S.take.id);
 }
 function stopAudio() {
@@ -950,7 +950,7 @@ function reflectNav() {
   const nav = $('nav-live'), running = isRunning(S.live);
   nav.hidden = S.screen === 'live' || !(running || S.following);
   nav.textContent = running ? 'Playing' : 'Last take';
-  drawPlayAgain();
+  drawReplay();
 }
 /* Asking is also what tells the bridge a page is still here, so this runs on every screen
    and never overlaps itself. */

@@ -146,6 +146,7 @@ header { display: flex; align-items: center; gap: 16px; padding-top: 14px; min-h
 #rec-title { margin: 0; font-size: 22px; font-weight: 500; letter-spacing: -.01em; overflow-wrap: anywhere; }
 #rec-meta { font: 400 14px var(--mono); color: var(--secondary); white-space: pre-wrap; }
 #rec-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-left: auto; align-items: center; }
+#rec-again { padding: 11px 20px; }
 #keep.undo { border: 0; padding-inline: 4px; font-weight: 400; color: var(--secondary); text-decoration: underline; text-underline-offset: 3px; }
 #kept-status { font-weight: 500; font-size: 17px; }
 #keep-panel { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: baseline; padding-top: 10px; font-size: 14px; color: var(--secondary); }

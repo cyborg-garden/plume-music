@@ -3964,7 +3964,7 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
     from .listen.features import FeatureExtractor  # noqa: PLC0415
     from .listen.harmony import HarmonyTracker  # noqa: PLC0415
     from .mind import (BarFeatures, Cue, Mind,  # noqa: PLC0415
-                       MindParams, flatten_sections)
+                       MindParams, flatten_sections, parse_cue)
     from .roles import (RoleNegotiator, RoleParams,  # noqa: PLC0415
                         effective_bpm, onset_phase_offset_ms)
 
@@ -4004,9 +4004,13 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
     named_key = None
     if tap_start:
         from .bandentry import (DETECT_KEY_FALLBACK_BARS, END_AFTER_S,  # noqa: PLC0415
-                                BandEntry, GuitarEar, SilenceEnding, StylePick, outro,
-                                song_section)
+                                FOLLOW, BandEntry, BandFollow, GuitarEar, SilenceEnding,
+                                StylePick, outro, song_section)
         guitar_ear = GuitarEar()
+        # The band follows how she plays.  FOLLOW is the only mode so far: the seam a
+        # "plume leads" mode would come in by.  A room mic hears the band too, so it
+        # follows more cautiously (see BandFollow).
+        follow = BandFollow(trusted=is_direct or midi_port is not None, mode=FOLLOW)
         from .listen.features import CountInDetector  # noqa: PLC0415
         # The ear confirms the player about a bar after a level would, so a direct input
         # waits one bar longer to give the player the same eight or so before the band.
@@ -4359,11 +4363,25 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
                                    and guitar_ear.last_bar_tonal), bar_len)
             if entered.key is not None:
                 mh = machine_harmony_state(t_bar, entered.key, entered.chord)
+            # A busier or sparser cue is her own word, and beats following.
+            for text in str(getattr(form, "applied_cue", None) or "").split("; "):
+                said = parse_cue(text) if text else {}
+                if said.get("kind") == "texture":
+                    follow.cue(str(said.get("value")))
+            ending_now = outro(t_bar - song_start[0], wind_down_s, bar_len)
+            followed = None
+            if ending_now is None:
+                # What she plays is only her on an input that hears nothing else, so a
+                # room mic's bars are weighed by BandFollow with that in mind.
+                followed = follow.bar(None if human is None else human.rms_db,
+                                      None if human is None else human.onset_density,
+                                      playing=playing and human is not None,
+                                      band_in=entry.band_is_in)
             if entered.stage == "drums":
                 section, density, resting = "intro", TAP_START_MIN_DENSITY, ()
             else:
                 section, density, resting = song_section(entry.bars_in)
-            ending_now = outro(t_bar - song_start[0], wind_down_s, bar_len)
+                density = follow.shape(density) * follow.density
             crash = False
             if ending_now is not None:
                 out_bar, out_db, out_done = ending_now
@@ -4382,8 +4400,9 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
                        if r not in entered.held_back and r not in resting},
                 # a live "busier" or "sparser" cue scales the song's own shape
                 density=float(min(1.0, max(0.05, density * lead_cues.density_scale))),
-                gain_db=plan.gain_db + TAP_START_GAIN_DB + fade_db,
-                reason=f"{entered.reason}; {plan.reason}")
+                gain_db=plan.gain_db + TAP_START_GAIN_DB + follow.gain_db + fade_db,
+                reason=f"{entered.reason}; {plan.reason}"
+                       + (f"; {followed.reason}" if followed is not None else ""))
         audio = duet.render_bar(plan, mbeat, mh)
         timeline.write_at(int(round(t_bar * SR)) - comp_samples[0], audio)
         loop_events = looper.pop_events()
@@ -4460,6 +4479,11 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
             doc["playing"] = playing
             doc["playing_trusted"] = playing_trusted
             doc["fade_db"] = round(fade_db, 2)
+            doc["follow"] = {"mode": follow.mode, "trusted": follow.trusted,
+                             "gain_db": round(follow.gain_db, 3),
+                             "density": round(follow.density, 4),
+                             "moved": list(followed.moved) if followed is not None else [],
+                             "bars": follow.hold_bars}
             if fade_done:
                 state["ended"] = True
                 shared["end_reason"] = END_SILENCE

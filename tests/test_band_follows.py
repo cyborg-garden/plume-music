@@ -207,3 +207,53 @@ def test_following_softens_the_song_arc_but_keeps_its_shape():
     assert shaped["break"] < shaped["verse"] < shaped["lift"]
     assert shaped["lift"] - shaped["break"] < arc["lift"] - arc["break"]
     assert song_section(16)[1] == SONG_ARC[1][2]    # the arc itself is unchanged
+
+
+# ------------------------------------------------------------ the real transport, no device
+
+RIG = [{"name": "Audio Interface 4x4", "max_input_channels": 4, "max_output_channels": 4}]
+
+
+@pytest.fixture
+def consent(tmp_path, monkeypatch, plume_registry):
+    from plume import realtime
+    monkeypatch.setenv("PLUME_CALIBRATION_FILE", str(tmp_path / "none.json"))
+    monkeypatch.setenv(realtime.AUDIO_CONSENT_ENV, "1")   # the FAKE device only
+
+
+def test_a_direct_take_comes_down_when_she_plays_softly(tmp_path, consent):
+    import json
+
+    from conftest import fake_audio, patched_module, short_socket_path
+    from test_bandentry import _take
+
+    from plume import realtime
+    from plume import roles as roles_mod
+
+    bpm, soft_at = 115.0, 50.0
+    human = _take(bpm=bpm, seconds=130.0)
+    human[int(soft_at * 48000):] *= 0.25          # 12 dB softer from here on
+    with patched_module("sounddevice", fake_audio(human, devices=RIG, rate_x=12.0)):
+        realtime.lead(prompt="midwest emo in C major", seed=0, tap_start=True, direct=True,
+                      role=roles_mod.RoleParams(role="lead"), record_dir=str(tmp_path / "rec"),
+                      status=False, socket_path=short_socket_path("follow"), max_minutes=1.5,
+                      input_device="audio interface", input_channel=1)
+    rows = [json.loads(x) for x in (tmp_path / "rec" / "decisions.ndjson").read_text().splitlines()]
+    rows = [r for r in rows if isinstance(r.get("bar"), int) and r.get("entry") != "drums"]
+    steady = [r for r in rows if r["t_s"] < soft_at]
+    # The fake device loops its input, so stop before it starts again.
+    late = [r for r in rows if soft_at + 25.0 < r["t_s"] < 120.0 and r["fade_db"] == 0.0]
+    assert steady and late, "the take did not reach both halves"
+    assert all(r["follow"]["gain_db"] == 0.0 and not r["follow"]["moved"] for r in steady)
+    assert late[-1]["follow"]["gain_db"] < -2.0 and late[-1]["follow"]["density"] < 1.0
+    assert any("softer" in r["follow"]["moved"] for r in rows)
+    assert late[-1]["gain_db"] < min(r["gain_db"] for r in steady)
+
+
+def test_the_start_of_a_soft_passage_does_not_teach_it_her_normal():
+    f = learned()
+    play(f, 2, db=NORMAL_DB - 9)
+    play(f, 1)                           # back before it landed
+    assert play(f, FOLLOW_HOLD_BARS, db=NORMAL_DB - 9)[-1].moved == ("softer",)
+    back = play(f, 12)
+    assert back[-1].gain_db == 0.0       # back to normal exactly, not a hair above it

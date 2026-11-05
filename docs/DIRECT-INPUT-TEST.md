@@ -1,8 +1,8 @@
 # Direct input test
 
-About ten minutes, with a guitar, an interface and headphones. Everything here has only
+About fifteen minutes, with a guitar, an interface and headphones. Everything here has only
 run against a fake device in the tests, so this is the first time any of it meets a real
-pickup. Plume makes sound during steps 3 and 5, and you are the one who starts it.
+pickup. Plume makes sound during steps 3, 5 and 7, and you are the one who starts it.
 
 ## 1. Set up (1 minute)
 
@@ -12,9 +12,12 @@ pickup. Plume makes sound during steps 3 and 5, and you are the one who starts i
 
 - Plug the guitar into the interface and set that input to instrument (INST), if it has
   the switch. Some small interfaces only take a guitar on one socket, so check the front.
-- Plug headphones into the interface. Turn direct monitoring on so you can hear yourself.
+- Plug headphones into the interface. Turn the interface's Direct button on so you can hear
+  yourself. It has no latency.
 - Set the interface to 48 kHz in Audio MIDI Setup.
-- Leave plume's `--monitor` off, or you'll hear yourself twice.
+- Leave plume's `--monitor` off, or you'll hear yourself twice. If the interface has no such
+  button, use `--monitor` instead: it follows `--input-channel` and stays out of both
+  recordings, but it adds the delay your device reports and has no limiter, so start quiet.
 
 ## 2. Find the channel (1 minute)
 
@@ -122,6 +125,30 @@ plume voice-replay takes1/human.wav | grep -i -E 'plum|bloom|flume|stop|busier|s
 
 Empty output means the model never wrote anything close, and the band is the likely cause.
 
+## 7. The Start button (5 minutes)
+
+**Untested.** The page's Start has only ever run a fake process on fake devices, so this is
+the first time it makes real sound. Plume makes sound during this step, and clicking Start is
+what starts it. Turn the headphones down first.
+
+```bash
+plume gui
+```
+
+| Do this | Look for |
+|---|---|
+| Read the first screen, without clicking | Your interface's name and channel 1 under Start. If it says room mic, it did not pick your interface, so open the menu and choose it |
+| Turn the Direct button off, leave Hear me on, and click Start | The folder is new, under `~/Music/Plume`. "Knock or clap 8 even beats." and the level moves when you play. You hear yourself |
+| Chuck muted strings 8 times | Drums land where the ninth would be, and the bar, tempo and stage appear |
+| Play | Your notes and level follow you. Key and style show as a guess once the band is in. Note whether the guess is any good |
+| Reload the page | The same take comes back, and there is still only one band |
+| Click Stop, or stop playing | The page lands on that take's Record. `human.wav` holds only guitar, with no band |
+| With the page open, unplug the interface, then click Start | "Plume could not find that device." and no sound. Reloading first would pick the built-in mic instead, and that take does make sound |
+
+Note the delay Hear me shows, and whether playing through it feels late. That number is what
+the device reports, not a measured round trip. If you can't stop it from the page, `plume stop`
+in a terminal always works.
+
 ## What to send back
 
 - Both rms numbers from step 2, and your interface's name.
@@ -129,6 +156,8 @@ Empty output means the model never wrote anything close, and the band is the lik
 - `takes-di1/ending.json`, and whether the band came in and faded on time.
 - Five lines of `plume watch` while playing and five after stopping.
 - The `text` column of `voice.ndjson` from step 5, and from the room mic in `di3`.
+- From step 7: what the first screen picked, the delay Hear me showed, how it felt to play
+  through, and the key and style plume guessed against what you played.
 
 ## What only you can answer
 

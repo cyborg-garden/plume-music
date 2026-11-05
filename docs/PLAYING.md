@@ -408,9 +408,23 @@ in a waveform. On headphones, turn phone Bluetooth off so the AirPods stay with 
 Phone videos can carry your location, so strip the metadata before posting one:
 `ffmpeg -i in.mov -map_metadata -1 -c copy out.mov`.
 
+## Starting from the page
+
+`plume gui` opens a page in your browser with one Start. The page opens no device and starts nothing until a person clicks Start. That click is the consent plume otherwise asks a terminal for, and it runs `plume lead --tap-start --detect` for you, in a new timestamped folder under `~/Music/Plume` (or `--takes DIR`). A used folder is never recorded over.
+
+With no typing, it picks the only audio interface it can find, channel 1, with the same device for sound in and out. Virtual devices like BlackHole or a Zoom or Teams driver don't count. With two interfaces or none it uses the built-in mic as a room mic, and you can change this in the menu under Start, which shows what Start will use. Key and style say Detect until you type over them, and what plume settles on says so: "F major, midwest (a guess)". A key or style you typed is never called a guess.
+
+After Start the page says to knock or clap 8 even beats, then shows the bar, the tempo, the stage, the key, the notes it hears from you and your level, with a Stop. A field plume can't trust over the band is hidden rather than guessed at, which on a room mic is most of them once the band is in. Busier and Sparser sit under Cues. When the take ends, by fading, by Stop or by a crash, the page lands on its Record, or says in plain words what went wrong.
+
+Hear me plays your input back to you, and is on by default for an interface. It is never offered on a built-in mic, where it would feed back through the speakers, so it needs headphones. The page shows the delay your device reports, which is not a measured round trip. A Direct button on your interface has no latency, and using both doubles the sound.
+
+Only one take runs at a time, including one started from a terminal, which the page offers to stop instead of offering Start. Reloading finds the running take again. Closing the page doesn't stop a take that fades by itself. A take that is still waiting for a count, or on a room mic that can't hear you stop, ends about 3 minutes after the last page stopped looking at it. `plume stop` works as usual, and Ctrl-C on `plume gui` stops the take it started.
+
+All of this has only run on fake devices and a fake process, in tests and in headless Chromium with the sound muted. It has never started a real take, so follow [the direct input test](DIRECT-INPUT-TEST.md#7-the-start-button-5-minutes) the first time.
+
 ## Reading a take
 
-`plume gui --take takes6/` opens The Record in your browser: a strip of what plume did and when, a plain sentence for each moment, and a roast. It opens no audio device, and it plays a recording only when you click Listen. `plume gui --takes DIR` shows a shelf of take folders, each with its own carved stone. Keep writes a small `keep.json` beside the take and deletes nothing, and `--record` refuses a folder holding a kept take. A name that fails to save says so on the next screen you land on, then clears. This page has only been checked on made-up take folders, in headless Chromium with the sound muted. Listen has not been pressed in a real browser, and it has not been tried on a take from a real mic or interface, or in Firefox or Safari.
+`plume gui --take takes6/` opens The Record in your browser: a strip of what plume did and when, a plain sentence for each moment, and a roast. It opens no device by itself, and it plays a recording only when you click Listen. `plume gui --takes DIR` shows a shelf of take folders, each with its own carved stone. Keep writes a small `keep.json` beside the take and deletes nothing, and `--record` refuses a folder holding a kept take. A name that fails to save says so on the next screen you land on, then clears. This page has only been checked on made-up take folders, in headless Chromium with the sound muted. Listen has not been pressed in a real browser, and it has not been tried on a take from a real mic or interface, or in Firefox or Safari.
 
 Once the band is in on a room mic plume cannot hear you, so the page says so and makes no claim about your playing. On a direct input or a `--midi` take it can still hear you, so the page drops that line, but it still makes no claim about your playing, because neither has been tried on real hardware. Takes recorded before `cues.ndjson` existed can only say "A cue landed", not who asked or when.
 

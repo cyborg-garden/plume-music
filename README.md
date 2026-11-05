@@ -46,7 +46,10 @@ pad, pluck, FM e-piano, lead, vinyl crackle — pure NumPy DSP, 48kHz.
 
 [docs/PLAYING.md](docs/PLAYING.md) covers playing a real instrument with plume:
 counting it in, talking to it, running it with a coding agent, and setting up for
-recording or filming.
+recording or filming. `plume gui` opens a local page with one Start and no typing, and it
+opens no device and starts nothing until a person clicks Start. That page has only ever
+started simulated takes, so [docs/DIRECT-INPUT-TEST.md](docs/DIRECT-INPUT-TEST.md) says how
+to try it on real hardware.
 
 ## Live mode (v1 — the sideman)
 
@@ -131,6 +134,7 @@ plume sessions                         # what is running: pid, role, style, upti
 plume stop                             # end it (finishes the bar, flushes the tail)
 plume stop --all                       # end every live session
 plume stop --pid 4212                  # end that one
+plume gui                              # a page with one Start: it starts nothing until you click
 plume gui --take takes6/               # read a take: what plume did, a roast, Keep
 plume gui url                          # a new link to the running page
 plume jam --max-minutes 20             # or lead: self-stops after 20 minutes

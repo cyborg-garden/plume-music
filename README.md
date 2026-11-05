@@ -38,9 +38,12 @@ plume render && plume analyze take1.wav --json
 
 Every mutating command returns a state hash; `plume show --json` dumps the
 whole score; `plume get`/`set`/`unset` address any field by dotted path.
-Styles: `trap`, `lofi`, `synthwave` (each a data file — new genres need zero
-code). Voices: 808 kick/sub (key-tuned, glides), hats, clap, snare, supersaw
-pad, pluck, FM e-piano, lead, vinyl crackle — pure NumPy DSP, 48kHz.
+Styles: `trap`, `lofi`, `midwest`, `synthwave`, `jazz`, `house`, `hiphop` and
+`rnb`, each a data file; a prompt can also say `boom bap`, `r&b` or `neo soul`.
+Voices: 808 kick/sub (key-tuned, glides), hats, clap, snare, supersaw pad, pluck,
+FM e-piano, lead, vinyl crackle, plus a house kick and stab, a boom bap kick, brush,
+upright and round bass, felt piano and a soft e-piano. All pure NumPy DSP at 48kHz,
+beside a small recorded kit and a few recorded pitched instruments.
 
 ## Play with it
 

@@ -41,8 +41,11 @@ with no settled key it takes its latest reading. If it has no reading at all, as
 that has no tonal centre, the band keeps waiting on drums until it gets one. It picks a
 style from your tempo when you count, then once more as the band comes in, using your key and
 how busy you are. On a room mic it can't tell your notes from the drums, so busyness doesn't
-count there. These are guesses, and the rule's thresholds are first guesses too. So far this
-has only run on a simulated device, never with a real guitar.
+count there. These are guesses, and the rule's thresholds are first guesses too. All it has
+to go on is tempo, key and how busy you are, so `rnb`, `hiphop` and `house` only mean a minor
+key with room in it at those tempos. Nothing it hears can tell jazz, so it only guesses `jazz`
+above 150 bpm, where no other style reaches. To play slower jazz, name it. So far this has
+only run on a simulated device, never with a real guitar.
 
 To stop from another terminal, run `plume stop` (`plume play` and `plume calibrate` too), or `plume sessions` to see what is
 running. A take also stops by itself after 60 minutes; `--max-minutes N` changes that.
@@ -60,8 +63,11 @@ six bars and ends, so you can wind down with it. At 52 bpm, the signal and fade 
 
 **Pick a tempo with your hands.** Plume plays exactly what you count. Below 70 bpm the
 `midwest` style plays a swung breakbeat with the snare on 2 and 4. At 70 and above it
-plays half-time trap with the snare on 3. The other styles are `lofi`, `trap` and
-`synthwave`, and a new take with a new `--seed` gets a new melody.
+plays half-time trap with the snare on 3. The other styles are `lofi`, `trap`, `synthwave`,
+`jazz`, `house`, `hiphop` and `rnb`, and a new take with a new `--seed` gets a new melody. A
+prompt can say `boom bap` for `hiphop`, or `r&b` or `neo soul` for `rnb`. Plume plays what you
+count in any style, so a house take at 90 is slow house. Each style's usual range is `lofi`
+70 to 90, `rnb` 60 to 90, `hiphop` 80 to 100, `house` 118 to 130 and `jazz` 70 to 220.
 
 ## Talking to it
 

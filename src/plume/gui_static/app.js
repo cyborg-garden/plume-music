@@ -14,7 +14,7 @@ const S = { csrf: '', take: null, selected: null, roastOn: true, screen: 'loadin
   shelfKey: null, shelfDone: false, shelfTakes: [], lastTake: null, shelfScroll: 0, cameByLink: false,
   nameFor: null, nameSent: '', keepTurn: {}, nameTurn: {}, moving: false, failed: null, newNames: {},
   live: { state: 'idle' }, liveTurn: 0, following: false, starting: false, stopSent: false, stopPending: false,
-  home: null, homeTurn: 0, homeNote: '', form: { device: null, channel: 1, hear: null } };
+  home: null, homeTurn: 0, homeNote: '', form: { device: null, channel: null, hear: null } };
 
 function load(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
 function save(k, v) { try { localStorage.setItem(k, v); } catch (e) { /* private window */ } }
@@ -511,7 +511,17 @@ function chosenDevice() {
   const id = S.form.device || S.home.device;
   return S.home.devices.find(function (d) { return d.id === id; }) || null;
 }
-function hearOn() { return S.form.hear === null ? true : S.form.hear; }
+/* Off until a person says otherwise, in setup or here. */
+function hearOn() {
+  if (S.form.hear !== null) return S.form.hear;
+  const device = chosenDevice();
+  return !!(device && device.hear_me);
+}
+function channelNow() {
+  if (S.form.channel !== null) return S.form.channel;
+  const device = chosenDevice();
+  return (device && device.channel) || 1;
+}
 function drawOptions(select, options, value) {
   select.textContent = '';
   options.forEach(function (o) {
@@ -525,9 +535,9 @@ function drawHomeMenu() {
   const doc = S.home;
   if (!doc) return;
   /* A device that went away falls back to the default rather than to nothing. */
-  if (S.form.device && !doc.devices.some(function (d) { return d.id === S.form.device; })) { S.form.device = null; S.form.channel = 1; }
+  if (S.form.device && !doc.devices.some(function (d) { return d.id === S.form.device; })) { S.form.device = null; S.form.channel = null; S.form.hear = null; }
   const device = chosenDevice(), most = device ? device.inputs : 1;
-  if (S.form.channel > most) S.form.channel = 1;
+  if (S.form.channel > most) S.form.channel = null;
   const devices = doc.devices.map(function (d) {
     return { value: d.id, label: d.name + (d.mode === 'room' ? ' (room mic)' : '') };
   });
@@ -535,7 +545,7 @@ function drawHomeMenu() {
   drawOptions($('set-device'), devices, device ? device.id : '');
   const channels = [];
   for (let n = 1; n <= most; n++) channels.push({ value: String(n), label: String(n) });
-  drawOptions($('set-channel'), channels, String(S.form.channel));
+  drawOptions($('set-channel'), channels, String(channelNow()));
   $('set-channel').hidden = $('channel-label').hidden = most < 2;
   const styles = $('style-list');
   styles.textContent = '';
@@ -545,18 +555,18 @@ function drawHomeMenu() {
   drawSummary();
 }
 function drawHear() {
-  /* Never offered on a built-in mic: through laptop speakers it would feed back. */
-  const device = chosenDevice(), allowed = !!(device && device.hear_me);
-  $('hear-row').hidden = !allowed;
-  $('hear-words').hidden = !allowed;
-  $('hear-me').checked = allowed && hearOn();
-  $('hear-short').hidden = !hearOn();
-  $('hear-direct').hidden = !allowed;
+  /* Any input, once a person says headphones are on: ticking this says so. Plume cannot tell
+     headphones from speakers, and the bridge refuses it without that yes. */
+  const device = chosenDevice(), on = hearOn();
+  $('hear-row').hidden = !S.home;
+  $('hear-words').hidden = !S.home || !on;
+  $('hear-me').checked = on;
+  $('hear-direct').hidden = !(device && device.mode === 'direct');
   $('hear-direct').textContent = DIRECT_LINE;
   $('hear-delay').textContent = delayLine(device && device.reported_ms);
 }
 function drawSummary() {
-  if (S.home) $('home-summary').textContent = routeLine(chosenDevice(), S.form.channel, $('set-key').value.trim(), $('set-style').value.trim());
+  if (S.home) $('home-summary').textContent = routeLine(chosenDevice(), channelNow(), $('set-key').value.trim(), $('set-style').value.trim());
 }
 /* A terminal's take is the only thing that takes Start's place. */
 function drawHomeState() {
@@ -589,16 +599,20 @@ function openHome() {
   drawHomeState();
   loadHome();
 }
-/* Only what was decided here. The bridge checks every field again. */
+/* Only what was decided here, so what setup learned is not overruled by a page that never
+   changed it. The bridge checks every field again. */
 function startBody() {
   const body = {}, key = $('set-key').value.trim(), style = $('set-style').value.trim();
   if (key) body.key = key;
   if (style) body.style = style;
-  if (S.home) {
+  if (S.home && (S.form.device || S.form.channel !== null)) {
     const device = chosenDevice();
     if (device) body.device = device.id;
-    body.channel = S.form.channel;
-    body.hear_me = !!(device && device.hear_me && hearOn());
+    body.channel = channelNow();
+  }
+  if (S.form.hear !== null) {
+    body.hear_me = S.form.hear;
+    if (S.form.hear) body.headphones = true;
   }
   return body;
 }
@@ -690,7 +704,7 @@ function drawLive() {
   const ms = doc.hear_me && doc.stream ? doc.stream.reported_ms : null;
   $('live-delay').hidden = typeof ms !== 'number';
   $('live-delay').textContent = typeof ms === 'number' ? delayLine(ms) : '';
-  $('live-direct').hidden = !doc.hear_me;
+  $('live-direct').hidden = !doc.hear_me || doc.mode !== 'direct';
   $('live-direct').textContent = DIRECT_LINE;
   $('live-cues').hidden = doc.state !== 'playing';
 }
@@ -821,7 +835,8 @@ async function init() {
   $('hear-me').addEventListener('change', function () { S.form.hear = $('hear-me').checked; drawHear(); });
   $('set-device').addEventListener('change', function () {
     S.form.device = $('set-device').value || null;
-    S.form.channel = 1;
+    S.form.channel = null;
+    S.form.hear = null;
     drawHomeMenu();
   });
   $('set-channel').addEventListener('change', function () { S.form.channel = parseInt($('set-channel').value, 10) || 1; drawSummary(); });

@@ -496,12 +496,12 @@ def test_start_posts_once_and_touches_no_audio(tmp_path, docs):
     assert out["screen"] == "live" and out["hash"] == "#/live"
 
 
-def test_with_nothing_changed_start_sends_the_bridges_own_choice(tmp_path, docs):
-    interface = next(d for d in docs["home"]["devices"] if d["name"] == "Test Interface")
+def test_with_nothing_changed_start_leaves_the_choice_to_the_bridge(tmp_path, docs):
+    """It knows what setup learned, and a page that never changed anything must not overrule it."""
     out = run_page(tmp_path, docs, """
         $('start').click(); await page.settle();
         return page.posts('start');""")
-    assert out == [{"device": interface["id"], "channel": 1, "hear_me": True}]
+    assert out == [{}]
 
 
 def test_start_works_with_no_device_list_yet(tmp_path, docs):
@@ -599,50 +599,95 @@ def home_for(devices):
     chosen = guitake.default_device(described)
     return {"devices": described, "device": chosen and chosen["id"],
             "mode": chosen["mode"] if chosen else "room", "channel": 1,
-            "hear_me": {"allowed": bool(chosen and chosen["hear_me"]),
-                        "default": bool(chosen and chosen["hear_me"]), "reported_ms": None},
+            "hear_me": {"allowed": False, "default": False, "reported_ms": None},
             "folder": "~/Music/Plume", "styles": ["lofi", "midwest"], "problem": None}
 
 
-def test_hear_me_is_on_by_default_for_an_interface(tmp_path, docs):
-    out = run_page(tmp_path, docs, f"return {HEAR};")
-    assert out["row"] is True and out["on"] is True and out["words"] is True
+def _saved_hear_me(docs, name="Test Interface"):
+    for device in docs["home"]["devices"]:
+        if device["name"] == name:
+            device["hear_me"], device["headphones"] = True, True
 
 
-def test_hear_me_is_not_offered_on_a_built_in_mic(tmp_path, docs):
-    docs["home"] = home_for(ROOM_ONLY)
+def test_the_first_screen_is_one_start_with_hear_me_in_the_menu():
+    html = (STATIC / "index.html").read_text()
+    first = html[html.index('<main id="home"'):html.index('<details id="home-menu"')]
+    menu = html[html.index('<details id="home-menu"'):html.index("</details>")]
+    assert "hear" not in first.lower() and "headphones" not in first.lower()
+    assert 'id="hear-row"' in menu and 'id="hear-direct"' in menu
+
+
+def test_hear_me_is_off_until_someone_says_otherwise(tmp_path, docs):
     out = run_page(tmp_path, docs, f"""
         const seen = {HEAR};
         $('start').click(); await page.settle();
         return {{ ...seen, body: page.posts('start')[0] }};""")
-    assert out["row"] is False and out["words"] is False and out["on"] is False
-    assert out["body"]["hear_me"] is False
+    assert out["row"] is True and out["on"] is False and out["words"] is False
+    assert out["body"] == {}
 
 
-def test_choosing_the_mic_takes_hear_me_away_and_back(tmp_path, docs):
+def test_hear_me_is_offered_on_a_built_in_mic_too(tmp_path, docs):
+    docs["home"] = home_for(ROOM_ONLY)
+    out = run_page(tmp_path, docs, f"return {HEAR};")
+    assert out["row"] is True and out["on"] is False
+
+
+def test_a_saved_hear_me_shows_ticked_and_is_left_to_the_bridge(tmp_path, docs):
+    _saved_hear_me(docs)
+    out = run_page(tmp_path, docs, f"""
+        const seen = {HEAR};
+        $('start').click(); await page.settle();
+        return {{ ...seen, body: page.posts('start')[0] }};""")
+    assert out["on"] is True and out["words"] is True and out["body"] == {}
+
+
+def test_ticking_hear_me_is_also_the_yes_about_headphones(tmp_path, docs):
+    out = run_page(tmp_path, docs, """
+        $('hear-me').checked = true; $('hear-me').fire('change');
+        $('start').click(); await page.settle();
+        return page.posts('start')[0];""")
+    assert out == {"hear_me": True, "headphones": True}
+
+
+def test_choosing_another_device_forgets_the_tick(tmp_path, docs):
     mic = next(d for d in docs["home"]["devices"] if d["name"] == "Test Mic")
     interface = next(d for d in docs["home"]["devices"] if d["name"] == "Test Interface")
     out = run_page(tmp_path, docs, f"""
         const pick = (id) => {{ $('set-device').value = id; $('set-device').fire('change'); }};
+        $('hear-me').checked = true; $('hear-me').fire('change');
         pick({json.dumps(mic["id"])});
         const onMic = {{ ...{HEAR}, line: $('home-summary').textContent, channel: !$('set-channel').hidden }};
         pick({json.dumps(interface["id"])});
         const back = {{ ...{HEAR}, line: $('home-summary').textContent, channel: !$('set-channel').hidden }};
-        return {{ onMic, back }};""")
-    assert out["onMic"]["row"] is False and out["onMic"]["line"] == "Test Mic, room mic" and out["onMic"]["channel"] is False
-    assert out["back"]["row"] is True and out["back"]["on"] is True and out["back"]["channel"] is True
+        $('start').click(); await page.settle();
+        return {{ onMic, back, body: page.posts('start')[0] }};""")
+    assert out["onMic"]["on"] is False and out["onMic"]["line"] == "Test Mic, room mic" and out["onMic"]["channel"] is False
+    assert out["back"]["on"] is False and out["back"]["channel"] is True
     assert out["back"]["line"] == "Test Interface, channel 1"
+    assert out["body"] == {"device": interface["id"], "channel": 1}
 
 
 def test_turning_hear_me_off_is_sent_and_kept_across_a_visit_to_the_shelf(tmp_path, docs):
+    _saved_hear_me(docs)
     out = run_page(tmp_path, docs, """
         $('hear-me').checked = false; $('hear-me').fire('change');
         $('nav-takes').click(); await page.settle();
         $('wordmark').click(); await page.settle();
-        const short = $('hear-short').hidden;
+        const ticked = $('hear-me').checked;
         $('start').click(); await page.settle();
-        return { short, body: page.posts('start')[0] };""")
-    assert out["body"]["hear_me"] is False and out["short"] is True
+        return { ticked, body: page.posts('start')[0] };""")
+    assert out == {"ticked": False, "body": {"hear_me": False}}
+
+
+def test_the_channel_setup_found_shows_and_is_left_to_the_bridge(tmp_path, docs):
+    for device in docs["home"]["devices"]:
+        if device["name"] == "Test Interface":
+            device["channel"] = 3
+    out = run_page(tmp_path, docs, """
+        const seen = { line: $('home-summary').textContent, value: $('set-channel').value };
+        $('start').click(); await page.settle();
+        return { ...seen, body: page.posts('start')[0] };""")
+    assert out == {"line": "Test Interface, channel 3", "value": "3", "body": {}}
 
 
 def test_the_delay_is_called_what_it_is(tmp_path, docs):
@@ -667,12 +712,10 @@ def test_the_delay_shown_is_the_chosen_devices_own(tmp_path, docs):
 DIRECT_LINE = "A Direct button on your interface has no latency. Using both doubles the sound."
 
 
-def test_the_direct_button_line_is_on_home_with_the_menu_closed(tmp_path, docs):
-    out = run_page(tmp_path, docs, "return { text: $('hear-direct').textContent, hidden: $('hear-direct').hidden, menu: $('home-menu').open };")
-    assert out == {"text": DIRECT_LINE, "hidden": False, "menu": False}
-    html = (STATIC / "index.html").read_text()
-    menu = html[html.index('<details id="home-menu"'):html.index("</details>")]
-    assert "hear-direct" not in menu
+def test_the_direct_button_line_waits_in_the_menu_for_hear_me(tmp_path, docs):
+    _saved_hear_me(docs)
+    out = run_page(tmp_path, docs, "return { text: $('hear-direct').textContent, hidden: $('hear-direct').hidden, words: $('hear-words').hidden, menu: $('home-menu').open };")
+    assert out == {"text": DIRECT_LINE, "hidden": False, "words": False, "menu": False}
 
 
 def test_the_direct_button_line_is_not_offered_on_a_built_in_mic(tmp_path, docs):
@@ -685,6 +728,11 @@ def test_the_direct_button_line_is_there_while_it_is_happening(tmp_path, docs):
     assert out == {"text": DIRECT_LINE, "hidden": False}
     off = live_page(tmp_path, docs, {**PLAYING, "hear_me": False}, "return $('live-direct').hidden;")
     assert off is True
+
+
+def test_the_direct_button_line_says_nothing_to_a_mic_hearing_itself(tmp_path, docs):
+    room = {**PLAYING, "mode": "room", "hear_me": True}
+    assert live_page(tmp_path, docs, room, "return $('live-direct').hidden;") is True
 
 
 def test_stop_never_lands_under_a_second_click_on_start():

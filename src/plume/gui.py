@@ -57,8 +57,9 @@ from .realtime import REC_HUMAN, REC_MACHINE, list_sessions
 STATE_DIR_ENV = "PLUME_GUI_STATE_DIR"
 
 GET_ROUTES = ("/", "/auth", "/static/{name}", "/api/session", "/api/takes",
-              "/api/take/{id}", "/api/take/{id}/audio/{track}", "/api/home", "/api/live")
-POST_OPS = frozenset({"keep", "rename", "start", "stop", "cue"})
+              "/api/take/{id}", "/api/take/{id}/audio/{track}", "/api/home", "/api/live", "/api/setup")
+POST_OPS = frozenset({"keep", "rename", "start", "stop", "cue", "setup/listen", "setup/answer",
+                      "setup/cancel", "setup/reset"})
 
 _STATIC_DIR = Path(__file__).with_name("gui_static")
 #: Every file the page may load, and its type.  Nothing else under the folder is served.
@@ -94,6 +95,13 @@ _RANGE_RE = re.compile(r"bytes=(\d{0,18})-(\d{0,18})")
 
 class GuiError(RuntimeError):
     """A clean, user-facing failure."""
+
+
+def platform_problem() -> str | None:
+    """Its sockets and its private files need these, and Windows has neither."""
+    if not hasattr(socket, "AF_UNIX") or not hasattr(os, "O_NOFOLLOW"):
+        return "plume gui needs macOS or Linux, and this computer is neither."
+    return None
 
 
 # ------------------------------------------------------------------ the state file
@@ -567,6 +575,10 @@ class _Handler(BaseHTTPRequestHandler):
             self.route = "/api/live"
             self._json(self.gui.takes.live())
             return
+        if path == "/api/setup":
+            self.route = "/api/setup"
+            self._setup_view(parts.query)
+            return
         if found:
             self.route = "/api/take/{id}/audio/{track}"
             self._audio(found.group(1), found.group(2))
@@ -618,6 +630,13 @@ class _Handler(BaseHTTPRequestHandler):
         else:
             self._take_op(op, body)
 
+    def _setup_view(self, query: str) -> None:
+        values = parse_qs(query, keep_blank_values=True).get("device", [])
+        try:
+            self._json(self.gui.takes.setup(values[0] if len(values) == 1 else None))
+        except guitake.Refused as refused:
+            self._json({"error": refused.message}, refused.status)
+
     def _take_op(self, op: str, body: dict) -> None:
         takes = self.gui.takes
         try:
@@ -625,6 +644,14 @@ class _Handler(BaseHTTPRequestHandler):
                 self._json(takes.start(body))
             elif op == "stop":
                 self._json(takes.stop())
+            elif op == "setup/listen":
+                self._json(takes.listen(body))
+            elif op == "setup/answer":
+                self._json(takes.answer(body))
+            elif op in ("setup/cancel", "setup/reset"):
+                if body:
+                    raise guitake.Refused(400, "That is not something setup understands.")
+                self._json(takes.cancel_listen() if op == "setup/cancel" else takes.reset_setup())
             else:
                 self._json(takes.cue(body))
         except guitake.Refused as refused:
@@ -772,6 +799,7 @@ class GuiServer:
         self.takes = guitake.TakeRunner(
             self.library.roots[0] if self.library.roots else default_library(),
             log_path=lambda: state_path().with_name("take.log"),
+            setup_path=lambda: state_path().with_name("setup.json"),
             id_of=self.library.id_of_folder, spawner=spawner, lister=lister,
             sessions=sessions, stopper=stopper, **take_options)
         self.log = log if log is not None else (lambda line: print(line, file=sys.stderr, flush=True))
@@ -919,6 +947,9 @@ def serve(*, take=None, takes=None, open_browser: bool = True, wait=None, **serv
     def write(line: str) -> None:
         print(line, flush=True)
 
+    problem = platform_problem()
+    if problem is not None:
+        raise GuiError(problem)
     pinned = None
     if take is not None:
         pinned = Path(take)

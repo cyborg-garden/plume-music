@@ -15,6 +15,13 @@ session registry, the take folder, and ``watch.Listener``.  The bridge itself ne
 loads PortAudio.  ``plume inputs --json`` runs in a short-lived child, which is also
 why a device plugged in after the bridge started still shows up.
 
+The first press of Start is the setup: one line at a time, and the answers stay in a small
+0600 file in the state folder, keyed by device ID, so it holds no device's name.  Listening
+is the only part that opens anything: a child of its own, only from a POST the page makes on
+a click, for a few seconds, closed before the next step.  A setup left halfway costs nothing,
+because Start always works, with Hear me off.  Plume cannot tell headphones from speakers, so
+Hear me takes a person's yes, never a device's name.
+
 A process that nobody can reach is the failure this file exists to avoid.  So the child
 keeps its own 60 minute cap and still answers ``plume stop``, closing the bridge stops
 the take it started, and a take that needs a person to end it stops itself when no page
@@ -31,6 +38,7 @@ import math
 import os
 import re
 import secrets
+import stat
 import subprocess
 import sys
 import threading
@@ -71,7 +79,23 @@ FLAT_MIC_HOME = "Plume heard nothing. Check this computer lets it use the microp
 KEPT_NOTHING = "The band had not come in yet, so plume kept nothing."
 BAD_KEY = "Plume did not understand that key. Try F major or A minor."
 ONLY_MAJOR_MINOR = "Plume plays major and minor keys. Try F major or A minor."
-NO_HEAR_ME = "Hear me needs an audio interface. On a built-in mic it would feed back."
+NO_HEAR_ME = "Hear me needs headphones on. Through speakers it would feed back."
+NO_READING = "Plume could not read that device. Try again, or just start."
+STILL_LISTENING = "Plume is still closing the device. Try again in a moment."
+PLAY_SOMETHING = "Play something."
+HOT_GAIN = "A bit hot. Turn the gain down a little and play again."
+LOW_GAIN = "Barely hearing you. Turn the gain up a little and play again."
+#: A mic like this has no gain to turn.
+HOT_ROOM = "A bit hot. Move back a little and play again."
+LOW_ROOM = "Barely hearing you. Move closer and play again."
+NOTHING_GAIN = "Nothing came in on {name}. Check the cable and the gain, then play again."
+NOTHING_ROOM = "Nothing came in on {name}. Check this computer lets plume use the microphone."
+LATE_GUESS = ("This output looks wireless (a guess). Wired headphones keep you in time, "
+              "because wireless ones can arrive late.")
+LATE_REPORTED = ("This output reports about {ms} ms. Wired headphones keep you in time, "
+                 "because wireless ones can arrive late.")
+COUNT_LINE = "Knock or clap 8 even beats."
+COUNT_PICKUP = "A knock may not reach a pickup, so chuck muted strings."
 
 #: A take needing a person to end it, with no page asking this long, stops itself.
 HEARTBEAT_S = 180.0
@@ -91,6 +115,24 @@ FLAT_DB = -70.0
 _FLOOR_DB = -120.0
 _LEVEL_WINDOW_S = 0.25
 
+#: How long the first step listens.  Long enough to play something, short enough to wait for.
+LISTEN_S = 4.0
+#: On top of that.  A computer asking about the microphone can hold the open for a while.
+METER_GRACE_S = 15.0
+#: How long leaving waits for a child to let go of its device.
+RELEASE_S = 3.0
+#: Two interfaces get listened to at once, so she plays once.  Each is its own child.
+MAX_LISTEN_DEVICES = 4
+#: Peaks.  docs/DIRECT-INPUT-TEST.md asks for about -18 to -6 dB, and 0 dB is clipping.
+#: Guesses: no real interface has been measured against them.  LOW_DB is where a guitar's rms
+#: drops under plume's -45 dB silence floor, and NOTHING_DB sits with FLAT_DB's rms.
+HOT_DB = -1.0
+LOW_DB = -33.0
+NOTHING_DB = -60.0
+#: An output this late is hard to play to.  A guess too: wired ones report far less than this.
+LATE_MS = 80.0
+SETUP_VERSION = 1
+
 LIST_TIMEOUT_S = 5.0
 SHUTDOWN_TIMEOUT_S = 70.0
 _MAX_TEXT = 80
@@ -101,7 +143,7 @@ CUES = ("busier", "sparser")
 #: folder first on the path, and a plume.py in it would run with the click's consent.
 PLUME_CHILD = (sys.executable, "-P", "-m", "plume")
 _TYPED_TONIC = re.compile(r"[A-Ga-g][#sb]?")
-_FIELDS = frozenset({"device", "channel", "key", "style", "hear_me"})
+_FIELDS = frozenset({"device", "channel", "key", "style", "hear_me", "headphones"})
 #: A row may carry more than a page needs.  Only these fields leave the bridge.
 _ROW_FIELDS = ("bar", "t_s", "bpm", "section", "stage", "key", "chord", "style", "style_guess",
                "key_guess", "you_db", "band_db", "you_busy", "you_notes", "you_source", "input",
@@ -111,23 +153,26 @@ _STREAM_FIELDS = ("input_ms", "output_ms", "reported_ms", "block_ms", "calibrate
 #: Software that shows up as a many-channel device.  "zoomaudio", not "zoom": Zoom also
 #: make real interfaces.
 _VIRTUAL = ("blackhole", "soundflower", "loopback", "aggregate", "zoomaudio", "zoom audio",
-            "microsoft teams", "teams audio", "vb-cable", "virtual")
-_BUILT_IN = ("built-in", "builtin", "macbook", "imac", "mac mini", "mac studio", "mac pro",
-             "internal microphone")
-#: What makes a device an audio interface.  Two inputs and two outputs is not enough: a
-#: laptop's own mic and speakers, or a display with both, look just the same, and Hear me
-#: would feed one into the other.  So it takes a name plume knows.  Anything else plays as a
-#: room mic with no Hear me, which is the safe way to be wrong about a device.
-_INTERFACE = re.compile(
-    r"\b(?:\d+i\d+|interface|scarlett|clarett|focusrite|motu|apollo|universal audio|volt"
-    r"|apogee|presonus|audiobox|babyface|fireface|rme|steinberg|ur\d+\w*|umc\d+\w*|behringer"
-    r"|ssl \d|solid state logic|audient|id\d+|m-track|m-audio|komplete audio|rubix|minifuse"
-    r"|tascam|zoom uac|antelope)(?!\w)", re.IGNORECASE)
+            "microsoft teams", "teams audio", "vb-cable", "voicemeeter", "virtual", "monitor of",
+            "null output", "dummy")
+#: The computer's own, or what comes with it: a mic and speakers in one box, which would hear
+#: the band.  Any computer's words, not one maker's.  A name not here is taken at its word, and
+#: being wrong is caught by hearing nothing at setup, or by the take's own routing check.
+_BUILT_IN = ("built-in", "builtin", "internal", "microphone array", "mic array", "laptop", "notebook",
+             "macbook", "imac", "mac mini", "mac studio", "mac pro", "hda intel", "realtek",
+             "conexant", "smart sound", "webcam", "camera", "facetime", "display", "hdmi", "dock",
+             "iphone", "ipad")
+#: Not a card at all: the sound system's own names for whatever is current.
+_SYSTEM_NAMES = frozenset({"default", "sysdefault", "pulse", "pipewire", "jack"})
+#: A mic, or wireless: the band belongs on the system's output, and it hears the room.
+_ROOM_ONLY = re.compile(r"\b(?:mic|microphone)\b|bluetooth|wireless|airpods|buds|hands-?free",
+                        re.IGNORECASE)
+_WIRELESS = re.compile(r"bluetooth|wireless|airpods|buds|hands-?free", re.IGNORECASE)
 
 #: What the child said, mapped to the page's words.  First match wins.
 _FAILURES = (
     (("sounddevice is not available",), AUDIO_PART_MISSING),
-    (("refusing to play live audio",), SOUND_OFF),
+    (("refusing to play live audio", "refusing to open a live input"), SOUND_OFF),
     (("another plume session",), TERMINAL_TAKE),
     (("no audio device matching", "has no inputs", "cannot form a duplex", "has channels 1 to",
       "choosing a channel", "no audio input device", "no audio output device",
@@ -200,15 +245,98 @@ def default_lister() -> list[dict]:
     return devices
 
 
+def default_meter(name: str, seconds: float, cancelled: threading.Event) -> dict | None:
+    """What ``plume inputs --meter`` heard, from a child that makes no sound.
+
+    The click that reached this is the consent, the same as Start's.  None means it was
+    called off, and the child is gone by the time this returns either way.
+    """
+    if _under_pytest():
+        raise TakeError("the real meter does not run under pytest")
+    if os.environ.get(AUDIO_CONSENT_ENV, "").strip().lower() in AUDIO_CONSENT_OFF:
+        raise SoundOff(SOUND_OFF)
+    if cancelled.is_set():
+        return None
+    try:
+        proc = subprocess.Popen(
+            # Glued to its flag, so a name cannot read as a flag of its own.
+            [*PLUME_CHILD, "inputs", f"--meter={name}", f"--seconds={seconds}", "--json"],
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            env={**os.environ, AUDIO_CONSENT_ENV: "1"}, start_new_session=True)
+    except OSError:
+        raise TakeError(NO_READING) from None
+    until = time.monotonic() + float(seconds) + METER_GRACE_S
+    try:
+        while True:
+            try:
+                out, err = proc.communicate(timeout=0.1)
+                break
+            except subprocess.TimeoutExpired:
+                if cancelled.is_set():
+                    return None
+                if time.monotonic() >= until:
+                    raise TakeError(OPENING) from None
+    finally:
+        if proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=1.0)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
+    try:
+        doc = json.loads(out)
+    except ValueError:
+        raise TakeError(_failure_words(err.decode("utf-8", "replace"), NO_READING)) from None
+    if isinstance(doc, dict) and "error" in doc:
+        raise TakeError(_failure_words(str(doc["error"]), NO_READING))
+    return doc
+
+
 # ------------------------------------------------------------------- choosing a device
 
 def _kind(name: str, inputs: int, outputs: int) -> str:
+    """No list of makers: inputs, not software, and not the computer's own is an interface.
+
+    With no output of its own it cannot be ``--device``, and a mic or a wireless headset would
+    take the band away from where she is listening, so those stay room mics.
+    """
     low = name.lower()
     if any(mark in low for mark in _VIRTUAL):
         return "virtual"
-    if any(mark in low for mark in _BUILT_IN):
+    if low in _SYSTEM_NAMES or any(mark in low for mark in _BUILT_IN):
         return "builtin"
-    return "interface" if inputs >= 2 and outputs >= 2 and _INTERFACE.search(name) else "other"
+    return "interface" if inputs >= 1 and outputs >= 1 and not _ROOM_ONLY.search(name) else "other"
+
+
+def _rows(listed) -> list[dict]:
+    """A listing, down to the fields that make sense.  Anything else is dropped here."""
+    rows = []
+    for item in listed if isinstance(listed, list) else []:
+        try:
+            name, inputs, outputs = str(item["name"]), int(item["inputs"]), int(item["outputs"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if not name:
+            continue
+        row = {"name": name, "inputs": inputs, "outputs": outputs}
+        ms = item.get("output_ms")
+        if isinstance(ms, (int, float)) and not isinstance(ms, bool) and math.isfinite(ms) and ms > 0:
+            row["output_ms"] = float(ms)
+        if item.get("default_output") is True:
+            row["default_output"] = True
+        rows.append(row)
+    return rows
+
+
+def device_list_mark(rows: list[dict]) -> str:
+    """Changes when what is plugged in changes, or where the system sends its sound.
+
+    Software coming and going does not count.
+    """
+    real = sorted((r["name"], r["inputs"], r["outputs"], r.get("default_output", False))
+                  for r in rows if _kind(r["name"], r["inputs"], r["outputs"]) != "virtual")
+    return hashlib.sha256(json.dumps(real).encode()).hexdigest()[:16]
 
 
 def describe_devices(listed) -> list[dict]:
@@ -216,15 +344,9 @@ def describe_devices(listed) -> list[dict]:
 
     ``plume lead`` finds a device by substring and takes the first match, so a name that
     would land on an earlier device cannot be offered: choosing it would open the other.
+    ``hear_me`` is only ever a person's answer, so it starts False for every name.
     """
-    rows = []
-    for item in listed if isinstance(listed, list) else []:
-        try:
-            name, inputs, outputs = str(item["name"]), int(item["inputs"]), int(item["outputs"])
-        except (KeyError, TypeError, ValueError):
-            continue
-        if name:
-            rows.append({"name": name, "inputs": inputs, "outputs": outputs})
+    rows = _rows(listed)
     out = []
     for row in rows:
         low = row["name"].lower()
@@ -235,14 +357,21 @@ def describe_devices(listed) -> list[dict]:
         # With --device the output is found by the same substring, and has to be this one too.
         if kind == "interface" and next(r for r in hits if r["outputs"] > 0) is not row:
             kind = "other"
-        out.append({"id": hashlib.sha256(row["name"].encode()).hexdigest()[:16], **row, "kind": kind,
-                    "mode": "direct" if kind == "interface" else "room",
-                    "hear_me": kind == "interface"})
+        out.append({"id": hashlib.sha256(row["name"].encode()).hexdigest()[:16], "name": row["name"],
+                    "inputs": row["inputs"], "outputs": row["outputs"], "kind": kind,
+                    "mode": "direct" if kind == "interface" else "room", "hear_me": False})
     return out
 
 
-def default_device(devices: list[dict]) -> dict | None:
-    """The only interface, or else the built-in mic.  None means the system default."""
+def default_device(devices: list[dict], preferred: str | None = None) -> dict | None:
+    """The one setup heard her on, or the only interface, or else the built-in mic.
+
+    None means the system default.
+    """
+    if preferred is not None:
+        kept = next((d for d in devices if d["id"] == preferred), None)
+        if kept is not None:
+            return kept
     interfaces = [d for d in devices if d["kind"] == "interface"]
     if len(interfaces) == 1:
         return interfaces[0]
@@ -258,29 +387,229 @@ class Route:
     channels: int = 1       # how many this device has, so what the page can offer her
 
 
-def _route(body: dict, devices: list[dict]) -> Route:
+def _route(body: dict, devices: list[dict], *, preferred=None, saved_for=lambda device: {}) -> tuple:
+    """(the route, the device it came from).  What setup learned fills in what she did not say.
+
+    Hear me needs a yes about headphones, for this device, saved or sent with this request.
+    Plume cannot tell headphones from speakers, and a stale page must not cause feedback.
+    """
     wanted = body.get("device")
     if wanted is None:
-        device = default_device(devices)
+        device = default_device(devices, preferred)
     else:
         device = next((d for d in devices if d["id"] == wanted), None)
         if device is None:
             raise Refused(400, DEVICE_MISSING)
+    saved = saved_for(device)
+    most = 1 if device is None else device["inputs"]
     channel = body.get("channel")
     if channel is None:
-        channel = 1
-    most = 1 if device is None else device["inputs"]
+        channel = _saved_channel(device, saved)
     if isinstance(channel, bool) or not isinstance(channel, int) or not 1 <= channel <= most:
         raise Refused(400, f"That device has channels 1 to {most}.")
     mode = "room" if device is None else device["mode"]
-    hear_me = body.get("hear_me")
-    if hear_me is None:
-        hear_me = mode == "direct"
-    if not isinstance(hear_me, bool):
+    hear_me, headphones = body.get("hear_me"), body.get("headphones")
+    if hear_me is not None and not isinstance(hear_me, bool):
         raise Refused(400, "hear_me must be true or false")
-    if hear_me and mode != "direct":
+    if headphones is not None and not isinstance(headphones, bool):
+        raise Refused(400, "headphones must be true or false")
+    if headphones is None:
+        headphones = saved.get("headphones")
+    if hear_me is None:
+        hear_me = saved.get("hear_me") is True and headphones is True
+    if hear_me and headphones is not True:
         raise Refused(400, NO_HEAR_ME)
-    return Route(None if device is None else device["name"], mode, channel, hear_me, most)
+    return Route(None if device is None else device["name"], mode, channel, hear_me, most), device
+
+
+# --------------------------------------------------------------------------------- setup
+
+_ANSWERS = {"headphones": ("yes", "no"), "hears_self": ("yes", "no"), "volume": ("fixed", "still"),
+            "latency": ("ok",)}
+_YES_NO = [{"answer": "yes", "label": "Yes"}, {"answer": "no", "label": "No"}]
+_STEPS = {
+    "headphones": ("Headphones on?", _YES_NO),
+    "hears_self": ("Can you hear yourself?", _YES_NO),
+    "volume": ("Check your headphone volume.", [{"answer": "fixed", "label": "That was it"},
+                                                {"answer": "still", "label": "Still nothing"}]),
+}
+#: After a level needs a hand or nothing came in: she is never kept here.
+_TRY_OR_START = [{"answer": "again", "label": "Play again"}, {"answer": "start", "label": "Start anyway"}]
+_DEVICE_KEY = re.compile(r"[0-9a-f]{16}|default")
+_ROOM_ANSWERS = ("headphones", "hears_self", "still", "hear_me", "late_said")
+
+
+def _setup_key(device: dict | None) -> str:
+    return "default" if device is None else device["id"]
+
+
+def _clean_entry(entry) -> dict:
+    """Only fields this file wrote, of the right type.  A hand-edited file earns no Hear me."""
+    if not isinstance(entry, dict):
+        return {}
+    out = {}
+    if isinstance(entry.get("list"), str):
+        out["list"] = entry["list"]
+    channel = entry.get("channel")
+    if isinstance(channel, int) and not isinstance(channel, bool) and channel >= 1:
+        out["channel"] = channel
+    if entry.get("level") in ("ok", "hot", "low"):
+        out["level"] = entry["level"]
+    for name in ("headphones", "hears_self", "still", "hear_me", "late_said"):
+        if isinstance(entry.get(name), bool):
+            out[name] = entry[name]
+    if out.get("headphones") is not True:
+        out.pop("hear_me", None)
+    return out
+
+
+class SetupStore:
+    """The answers, per device, in one small file.  It is fine for this to fail.
+
+    A file that cannot be read is a first run, and one that cannot be written leaves the
+    answers in memory for as long as this bridge lasts.
+    """
+
+    def __init__(self, path_of=None):
+        self._path_of = path_of
+        self._lock = threading.Lock()
+        self._doc: dict | None = None
+
+    def _read(self) -> dict:
+        empty = {"last": None, "devices": {}}
+        if self._path_of is None:
+            return empty
+        try:
+            # O_NOFOLLOW and O_NONBLOCK: a planted symlink or a FIFO is not this file.
+            fd = os.open(self._path_of(), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        except OSError:
+            return empty
+        try:
+            with os.fdopen(fd, encoding="utf-8") as f:
+                if not stat.S_ISREG(os.fstat(f.fileno()).st_mode):
+                    return empty
+                doc = json.load(f)
+        except (OSError, ValueError):
+            return empty
+        if not isinstance(doc, dict) or doc.get("version") != SETUP_VERSION:
+            return empty
+        devices = doc.get("devices")
+        if not isinstance(devices, dict):
+            return empty
+        kept = {k: _clean_entry(v) for k, v in devices.items()
+                if isinstance(k, str) and _DEVICE_KEY.fullmatch(k)}
+        last = doc.get("last")
+        return {"last": last if last in kept else None, "devices": kept}
+
+    def _loaded(self) -> dict:
+        if self._doc is None:
+            self._doc = self._read()
+        return self._doc
+
+    def _write(self) -> None:
+        if self._path_of is None:
+            return
+        try:
+            path = Path(self._path_of())
+            path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            os.chmod(path.parent, 0o700)
+            # A name nobody could have planted, and a rename that replaces a symlink rather
+            # than writing through it.
+            tmp = path.with_name(f".{path.name}.{secrets.token_hex(8)}.tmp")
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    f.write(json.dumps({"version": SETUP_VERSION, **self._doc}))
+                os.replace(tmp, path)
+            except OSError:
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
+                raise
+        except OSError:
+            pass
+
+    def last(self) -> str | None:
+        with self._lock:
+            return self._loaded()["last"]
+
+    def entry(self, key: str) -> dict:
+        with self._lock:
+            return dict(self._loaded()["devices"].get(key, {}))
+
+    def put(self, key: str, entry: dict, *, last: bool = False) -> None:
+        with self._lock:
+            doc = self._loaded()
+            doc["devices"][key] = _clean_entry(entry)
+            if last:
+                doc["last"] = key
+            self._write()
+
+    def forget(self) -> None:
+        with self._lock:
+            self._doc = {"last": None, "devices": {}}
+            self._write()
+
+
+def _saved_channel(device: dict | None, saved: dict) -> int:
+    most = 1 if device is None else device["inputs"]
+    return saved["channel"] if saved.get("channel", most + 1) <= most else 1
+
+
+def _next_step(entry: dict, late: str | None) -> str:
+    if entry.get("level") != "ok":
+        return "listen"
+    if "headphones" not in entry:
+        return "headphones"
+    if entry["headphones"]:
+        if "hears_self" not in entry:
+            return "hears_self"
+        if not entry["hears_self"] and "still" not in entry:
+            return "volume"
+    if late is not None and not entry.get("late_said"):
+        return "latency"
+    return "count"
+
+
+def _late_line(device: dict | None, rows: list[dict], reported_ms: float | None) -> str | None:
+    """One line if her sound may come back late.  Only an output she is really using counts."""
+    if device is not None and device["mode"] == "direct":
+        output = next((r for r in rows if r["name"] == device["name"]), None)
+    else:
+        output = next((r for r in rows if r.get("default_output")), None)
+    known = [ms for ms in (reported_ms, None if output is None else output.get("output_ms"))
+             if ms is not None]
+    if known and max(known) >= LATE_MS:
+        return LATE_REPORTED.format(ms=round(max(known)))
+    if output is not None and _WIRELESS.search(output["name"]):
+        return LATE_GUESS
+    return None
+
+
+def _reading(doc, device: dict) -> tuple[int, float] | None:
+    """(the loudest channel, its peak) from what a meter said, or None if it made no sense."""
+    rows = doc.get("channels") if isinstance(doc, dict) else None
+    if not isinstance(rows, list) or not rows:
+        return None
+    best = None
+    for row in rows:
+        channel, peak = (row.get("channel"), row.get("peak_db")) if isinstance(row, dict) else (None, None)
+        if (isinstance(channel, bool) or not isinstance(channel, int)
+                or not 1 <= channel <= device["inputs"] or isinstance(peak, bool)
+                or not isinstance(peak, (int, float)) or not math.isfinite(peak)):
+            return None
+        if best is None or peak > best[1]:
+            best = (channel, float(peak))
+    return best
+
+
+class _Listening:
+    """One listen in progress: how to call it off, and how to know the device was let go."""
+
+    def __init__(self):
+        self.cancel = threading.Event()
+        self.done = threading.Event()
 
 
 # ------------------------------------------------------------- free text, made canonical
@@ -344,12 +673,12 @@ def build_argv(route: Route, folder: Path, *, key: str | None, style: str | None
             f"--record={folder}/", f"--seed={int(seed)}"]
     if route.mode == "direct":
         argv += [f"--device={route.name}", f"--input-channel={route.channel}", "--direct"]
-        if route.hear_me:
-            argv.append("--monitor")
     elif route.name is not None:
         argv.append(f"--input-device={route.name}")
         if route.channel != 1:
             argv.append(f"--input-channel={route.channel}")
+    if route.hear_me:
+        argv.append("--monitor")
     words = [w for w in (style, f"in {key}" if key else None) if w]
     if words:
         argv += ["--", " ".join(words)]
@@ -442,19 +771,24 @@ def _clear_fresh_folder(folder: Path, *, false_start: bool = False) -> None:
         pass
 
 
+def _failure_words(text: str, otherwise: str) -> str:
+    low = text.lower()
+    for marks, message in _FAILURES:
+        if any(mark in low for mark in marks):
+            return message
+    return otherwise
+
+
 def classify_failure(log_path: Path) -> str:
     """The page's sentence for what the child wrote.  Never the words it wrote."""
     try:
         with open(log_path, "rb") as f:
             f.seek(0, os.SEEK_END)
             f.seek(max(0, f.tell() - _LOG_TAIL_BYTES))
-            text = f.read().decode("utf-8", "replace").lower()
+            text = f.read().decode("utf-8", "replace")
     except OSError:
         return DID_NOT_START
-    for marks, message in _FAILURES:
-        if any(mark in text for mark in marks):
-            return message
-    return DID_NOT_START
+    return _failure_words(text, DID_NOT_START)
 
 
 def _finite(value):
@@ -497,12 +831,15 @@ class TakeRunner:
 
     def __init__(self, root, *, log_path, id_of, spawner=None, lister=None, sessions=None,
                  stopper=None, cue=None, listener=None, clock=time.monotonic, now=datetime.now,
-                 tick_s: float = 0.5, watch: bool = True):
+                 tick_s: float = 0.5, watch: bool = True, meter=None, setup_path=None):
         self.root = Path(root)
         self._log_path = log_path
         self._id_of = id_of
         self._spawn = default_spawner if spawner is None else spawner
         self._list = default_lister if lister is None else lister
+        self._meter = default_meter if meter is None else meter
+        self._setup = SetupStore(setup_path)
+        self._listening: _Listening | None = None
         self._sessions = (lambda: list_sessions(prune=False)) if sessions is None else sessions
         self._stopper = stop_session if stopper is None else stopper
         self._cue = send_cue if cue is None else cue
@@ -527,27 +864,73 @@ class TakeRunner:
     def home(self) -> dict:
         problem = None
         try:
-            devices = self._devices()
+            devices, rows, mark = self._look()
         except TakeError as e:
-            devices, problem = [], str(e)
+            devices, rows, mark, problem = [], [], "", str(e)
+        preferred = self._preferred(mark)
         with self._lock:
             # Each device's own number.  One device's delay says nothing about another's.
-            devices = [{**d, "reported_ms": self._reported.get(d["name"])} for d in devices]
-        chosen = default_device(devices)
+            reported = dict(self._reported)
+        devices = [self._device_view(d, reported, rows, mark) for d in devices]
+        chosen = default_device(devices, preferred)
         if problem is None and not devices:
             problem = NO_INPUT
+        saved = self._saved(chosen, mark)
         return {
             "devices": devices,
             "device": None if chosen is None else chosen["id"],
             "mode": "room" if chosen is None else chosen["mode"],
-            "channel": 1,
-            "hear_me": {"allowed": chosen is not None and chosen["hear_me"],
-                        "default": chosen is not None and chosen["hear_me"],
+            "channel": _saved_channel(chosen, saved),
+            "hear_me": {"allowed": saved.get("headphones") is True,
+                        "default": saved.get("hear_me") is True,
                         "reported_ms": None if chosen is None else chosen["reported_ms"]},
             "folder": pretty_path(self.root),
             "styles": list_styles(),
             "problem": problem,
+            "setup": self._setup_doc(chosen, rows, mark, reported),
         }
+
+    def _device_view(self, device: dict, reported: dict, rows: list[dict], mark: str) -> dict:
+        saved = self._saved(device, mark)
+        ms = reported.get(device["name"])
+        return {**device, "reported_ms": ms, "hear_me": saved.get("hear_me") is True,
+                "headphones": saved.get("headphones"), "channel": _saved_channel(device, saved),
+                "setup_done": _next_step(saved, _late_line(device, rows, ms)) == "count"}
+
+    def _saved(self, device: dict | None, mark: str) -> dict:
+        """What is known about this device, as of the devices there are now.
+
+        When they change she is heard again.  A room mic's sound goes wherever the system
+        sends it, which may just have become speakers, so its answers go too.
+        """
+        entry = self._setup.entry(_setup_key(device))
+        if entry and entry.get("list") != mark:
+            entry.pop("level", None)
+            if device is None or device["mode"] == "room":
+                for name in _ROOM_ANSWERS:
+                    entry.pop(name, None)
+        return entry
+
+    def _setup_doc(self, device: dict | None, rows: list[dict], mark: str, reported: dict) -> dict:
+        saved = self._saved(device, mark)
+        ms = None if device is None else reported.get(device["name"])
+        late = _late_line(device, rows, ms)
+        step = _next_step(saved, late)
+        direct = device is not None and device["mode"] == "direct"
+        line, choices, note = PLAY_SOMETHING, [], None
+        if step in _STEPS:
+            line, choices = _STEPS[step]
+        elif step == "latency":
+            line, choices = late, [{"answer": "ok", "label": "OK"}]
+        elif step == "count":
+            line, note = COUNT_LINE, COUNT_PICKUP if direct else None
+        return {"step": step, "line": line, "note": note, "choices": choices,
+                "done": step == "count", "seconds": LISTEN_S,
+                "device": None if device is None else device["id"],
+                "device_name": None if device is None else device["name"],
+                "mode": "direct" if direct else "room",
+                "channel": _saved_channel(device, saved),
+                "hear_me": saved.get("hear_me") is True}
 
     def live(self, *, poll: bool = True) -> dict:
         """The state document.  A page asking is also what proves a page is still there."""
@@ -594,10 +977,224 @@ class TakeRunner:
         except OSError:
             return []
 
-    def _devices(self) -> list[dict]:
+    def _look(self) -> tuple[list[dict], list[dict], str]:
+        """(the devices a person can pick, everything listed, its mark)."""
         # One child at a time, however many pages are open.
         with self._list_lock:
-            return describe_devices(self._list())
+            listed = self._list()
+        rows = _rows(listed)
+        return describe_devices(listed), rows, device_list_mark(rows)
+
+    # -- setup
+
+    def setup(self, device_id: str | None = None) -> dict:
+        """Where this device has got to.  Opens nothing."""
+        try:
+            devices, rows, mark = self._look()
+        except TakeError:
+            devices, rows, mark = [], [], ""
+        return self._setup_doc(self._named(device_id, devices, mark), rows, mark, self._reported_now())
+
+    def _reported_now(self) -> dict:
+        with self._lock:
+            return dict(self._reported)
+
+    def _preferred(self, mark: str) -> str | None:
+        """The device setup heard her on, while what is plugged in is what it was then."""
+        last = self._setup.last()
+        return last if last is not None and self._setup.entry(last).get("list") == mark else None
+
+    def _named(self, device_id, devices: list[dict], mark: str) -> dict | None:
+        if device_id is None:
+            return default_device(devices, self._preferred(mark))
+        device = next((d for d in devices if d["id"] == device_id), None)
+        if device is None:
+            raise Refused(400, DEVICE_MISSING)
+        return device
+
+    def answer(self, body: dict) -> dict:
+        """One answer from a person.  Hear me only ever follows from a yes about headphones."""
+        if not isinstance(body, dict) or set(body) - {"device", "step", "answer"}:
+            raise Refused(400, "That is not something setup understands.")
+        step, answer = body.get("step"), body.get("answer")
+        if not isinstance(step, str) or not isinstance(answer, str) or answer not in _ANSWERS.get(step, ()):
+            raise Refused(400, "That is not an answer setup asked for.")
+        try:
+            devices, rows, mark = self._look()
+        except TakeError as e:
+            raise Refused(409, str(e)) from None
+        device = self._named(body.get("device"), devices, mark)
+        entry = self._saved(device, mark)
+        if step == "headphones":
+            for name in ("hears_self", "still"):
+                entry.pop(name, None)
+            entry["headphones"], entry["hear_me"] = answer == "yes", False
+        elif step == "hears_self":
+            if entry.get("headphones") is not True:
+                raise Refused(409, "Setup has moved on. Please start again.")
+            entry.pop("still", None)
+            entry["hears_self"], entry["hear_me"] = answer == "yes", False
+        elif step == "volume":
+            if entry.get("headphones") is not True or entry.get("hears_self") is not False:
+                raise Refused(409, "Setup has moved on. Please start again.")
+            if answer == "fixed":
+                entry["hears_self"], entry["hear_me"] = True, False
+            else:
+                entry["still"], entry["hear_me"] = True, True
+        else:
+            entry["late_said"] = True
+        entry["list"] = mark
+        self._setup.put(_setup_key(device), entry)
+        return self._setup_doc(device, rows, mark, self._reported_now())
+
+    def reset_setup(self) -> dict:
+        """Set up again.  The next press of Start begins from the first step."""
+        self._release(self._call_off_listening())
+        self._setup.forget()
+        return self.setup()
+
+    def cancel_listen(self) -> dict:
+        """She left.  When this returns, no device is open on setup's account."""
+        self._release(self._call_off_listening())
+        return self.setup()
+
+    def _call_off_listening(self) -> _Listening | None:
+        with self._lock:
+            job = self._listening
+        if job is not None:
+            job.cancel.set()
+        return job
+
+    @staticmethod
+    def _release(job: _Listening | None) -> bool:
+        return job is None or job.done.wait(RELEASE_S)
+
+    def listen(self, body: dict) -> dict:
+        """Step 1.  The one thing here that opens a device, for :data:`LISTEN_S` seconds.
+
+        Only ever from a POST the page makes on a click, which is the consent for this input.
+        """
+        if not isinstance(body, dict) or set(body) - {"device"}:
+            raise Refused(400, "That is not something setup understands.")
+        wanted = body.get("device")
+        if wanted is not None and not isinstance(wanted, str):
+            raise Refused(400, DEVICE_MISSING)
+        job = _Listening()
+        with self._lock:
+            if self._closing:
+                raise Refused(409, "plume gui is closing.", live=self._doc())
+            if self._take is not None or self._preparing:
+                raise Refused(409, ALREADY_RUNNING, live=self._doc())
+            prior, self._listening = self._listening, job
+        try:
+            if prior is not None:
+                prior.cancel.set()
+                if not self._release(prior):
+                    raise Refused(409, STILL_LISTENING)
+            others = self._others()
+            if others:
+                raise Refused(409, TERMINAL_TAKE, live=self._elsewhere(others))
+            try:
+                devices, rows, mark = self._look()
+            except TakeError as e:
+                return self._heard("failed", None, rows=[], mark="", line=str(e))
+            if wanted is not None:
+                tried = [self._named(wanted, devices, mark)]
+            else:
+                tried = self._candidates(devices, mark)
+            if not tried:
+                return self._heard("failed", None, rows=rows, mark=mark, line=NO_INPUT)
+            readings = self._read_meters(tried, job)
+            return self._judge(job, tried, readings, devices, rows, mark)
+        finally:
+            job.done.set()
+            with self._lock:
+                if self._listening is job:
+                    self._listening = None
+
+    def _candidates(self, devices: list[dict], mark: str) -> list[dict]:
+        """Who to listen to with nothing chosen.  Never software, and never anything arbitrary:
+        every interface at once, so that hearing her is what picks one.  Something new plugged
+        in may be why she is here, so the one she was heard on is only tried alongside it."""
+        preferred = self._preferred(mark)
+        if preferred is not None:
+            kept = [d for d in devices if d["id"] == preferred]
+            if kept:
+                return kept
+        last = self._setup.last()
+        known = next((d for d in devices if d["id"] == last), None)
+        tried = [d for d in devices if d["kind"] == "interface" and d is not known]
+        tried = ([] if known is None else [known]) + tried
+        if tried:
+            return tried[:MAX_LISTEN_DEVICES]
+        chosen = default_device(devices)
+        if chosen is not None:
+            return [chosen]
+        return [d for d in devices if d["kind"] != "virtual"][:1]
+
+    def _read_meters(self, tried: list[dict], job: _Listening) -> list:
+        """A (channel, peak), or a sentence, or None for numbers that made no sense."""
+        out: list = [None] * len(tried)
+
+        def one(n: int, device: dict) -> None:
+            try:
+                out[n] = _reading(self._meter(device["name"], LISTEN_S, job.cancel), device)
+            except TakeError as e:
+                out[n] = str(e)
+            except Exception:  # noqa: BLE001 - a failed step must not cost her the page
+                out[n] = NO_READING
+
+        if len(tried) == 1:
+            one(0, tried[0])
+            return out
+        workers = [threading.Thread(target=one, args=(n, d), name="plume-gui-meter", daemon=True)
+                   for n, d in enumerate(tried)]
+        for worker in workers:
+            worker.start()
+        until = time.monotonic() + LISTEN_S + METER_GRACE_S + RELEASE_S
+        for worker in workers:
+            worker.join(max(0.0, until - time.monotonic()))
+        return out
+
+    def _judge(self, job: _Listening, tried: list[dict], readings: list, devices: list[dict],
+               rows: list[dict], mark: str) -> dict:
+        others = [{"id": d["id"], "name": d["name"]} for d in devices
+                  if d["kind"] != "virtual" and d not in tried]
+        if job.cancel.is_set():
+            return self._heard("cancelled", tried[0], rows=rows, mark=mark)
+        heard = [(r[1], r[0], d) for r, d in zip(readings, tried)
+                 if isinstance(r, tuple) and r[1] >= NOTHING_DB]
+        if not heard:
+            if not any(isinstance(r, tuple) for r in readings):
+                said = next((r for r in readings if isinstance(r, str)), NO_READING)
+                return self._heard("failed", tried[0], rows=rows, mark=mark, line=said, others=others)
+            names = " or ".join(d["name"] for d in tried)
+            words = NOTHING_GAIN if tried[0]["mode"] == "direct" else NOTHING_ROOM
+            return self._heard("nothing", tried[0], rows=rows, mark=mark, line=words.format(name=names),
+                               others=others)
+        # An interface that hears her beats a mic that also does: a mic hears everything.
+        peak, channel, device = max(heard, key=lambda h: (h[2]["kind"] == "interface", h[0]))
+        level = "hot" if peak >= HOT_DB else "low" if peak < LOW_DB else "ok"
+        entry = self._saved(device, mark)
+        # The channel is right whatever the gain is, so a Start from here uses it.
+        entry.update(list=mark, channel=channel, level=level)
+        self._setup.put(_setup_key(device), entry, last=True)
+        line = None
+        if level != "ok":
+            direct = device["mode"] == "direct"
+            line = {"hot": HOT_GAIN if direct else HOT_ROOM, "low": LOW_GAIN if direct else LOW_ROOM}[level]
+        return self._heard(level, device, rows=rows, mark=mark, line=line, channel=channel,
+                           peak_db=round(peak, 1))
+
+    def _heard(self, result: str, device: dict | None, *, rows: list[dict], mark: str, line: str | None = None,
+               others: list | None = None, channel: int | None = None, peak_db: float | None = None) -> dict:
+        doc = self._setup_doc(device, rows, mark, self._reported_now())
+        doc["heard"] = {"result": result, "channel": channel, "peak_db": peak_db}
+        doc["others"] = others or []
+        if line is not None:
+            doc["step"], doc["line"], doc["note"] = "listen", line, None
+            doc["done"], doc["choices"] = False, _TRY_OR_START
+        return doc
 
     # -- start
 
@@ -611,7 +1208,12 @@ class TakeRunner:
                 raise Refused(409, ALREADY_RUNNING, live=self._doc())
             self._preparing = True
             self._cancelled = False
+            listening = self._listening
         try:
+            if listening is not None:
+                listening.cancel.set()
+                if not self._release(listening):
+                    raise Refused(409, STILL_LISTENING)
             return self._start(body)
         except BaseException:
             with self._lock:
@@ -625,12 +1227,14 @@ class TakeRunner:
         key = canonical_key(_text_field(body, "key"))
         style = canonical_style(_text_field(body, "style"))
         try:
-            devices = self._devices()
+            devices, _, mark = self._look()
         except TakeError as e:
             return self._failed(str(e))
         if not devices:
             return self._failed(NO_INPUT)
-        route = _route(body, devices)
+        route, device = _route(body, devices, preferred=self._preferred(mark),
+                               saved_for=lambda d: self._saved(d, mark))
+        self._keep_what_she_said(body, device, route, mark)
         try:
             folder = make_take_folder(self.root, self._now())
         except OSError:
@@ -670,6 +1274,20 @@ class TakeRunner:
                              daemon=True).start()
         return doc
 
+    def _keep_what_she_said(self, body: dict, device: dict | None, route: Route, mark: str) -> None:
+        """A yes or no sent with Start, or Hear me set in the menu, holds for next time."""
+        headphones = body.get("headphones")
+        if headphones is None and body.get("hear_me") is None:
+            return
+        entry = self._saved(device, mark)
+        if headphones is not None:
+            entry["headphones"] = headphones
+            for name in ("hears_self", "still"):
+                entry.pop(name, None)
+        entry["hear_me"] = route.hear_me
+        entry["list"] = mark
+        self._setup.put(_setup_key(device), entry)
+
     def _failed(self, message: str) -> dict:
         with self._lock:
             self._preparing = False
@@ -684,6 +1302,9 @@ class TakeRunner:
             if take is None and self._preparing:
                 self._cancelled = True
                 return {"state": "starting"}
+            listening = self._listening
+        if listening is not None:
+            listening.cancel.set()
         if take is not None:
             self._ask_stop(take)
             return self.live(poll=False)
@@ -747,6 +1368,10 @@ class TakeRunner:
             self._closing = True
             self._cancelled = True
             take = self._take
+            listening = self._listening
+        if listening is not None:
+            listening.cancel.set()
+            self._release(listening)
         if take is None:
             return True
         self._ask_stop(take)

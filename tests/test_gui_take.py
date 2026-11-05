@@ -170,13 +170,12 @@ def test_what_kind_of_device_this_is(name, inputs, outputs, kind):
 
 @pytest.mark.parametrize("name", [
     "HDA Intel PCH: ALC257 Analog (hw:0,0)", "sysdefault", "default", "pulse", "pipewire",
-    "Laptop Mic", "Studio Display", "Some Dock Audio", "USB Audio Device", "Mystery Box",
+    "Laptop Mic", "Studio Display", "Some Dock Audio",
 ])
-def test_two_in_two_out_is_not_enough_to_be_called_an_interface(name):
-    """Its own mic and speakers look just like this, and Hear me would feed one into the other."""
+def test_two_in_two_out_is_not_enough_when_the_name_says_it_is_the_computers_own(name):
+    """Its own mic and speakers look just like this, and it would hear the band."""
     device = guitake.describe_devices([{"name": name, "inputs": 2, "outputs": 2}])[0]
-    assert (device["kind"], device["mode"], device["hear_me"]) == ("other", "room", False)
-    assert guitake.default_device([device]) is None
+    assert (device["kind"], device["mode"], device["hear_me"]) == ("builtin", "room", False)
 
 
 @pytest.mark.parametrize("name", [
@@ -184,12 +183,12 @@ def test_two_in_two_out_is_not_enough_to_be_called_an_interface(name):
     "Apogee Duet", "PreSonus AudioBox USB 96", "Babyface Pro", "Steinberg UR22C", "UMC204HD 192k",
     "SSL 2+", "Audient iD14", "Komplete Audio 2", "MiniFuse 2", "Some Audio Interface",
 ])
-def test_a_named_interface_is_still_one(name):
+def test_a_named_interface_is_still_one_and_its_name_earns_no_hear_me(name):
     device = guitake.describe_devices([{"name": name, "inputs": 2, "outputs": 2}])[0]
-    assert (device["kind"], device["mode"], device["hear_me"]) == ("interface", "direct", True)
+    assert (device["kind"], device["mode"], device["hear_me"]) == ("interface", "direct", False)
 
 
-def test_a_device_it_does_not_recognise_cannot_be_given_hear_me(rig, runner):
+def test_a_device_with_no_word_about_headphones_cannot_be_given_hear_me(rig, runner):
     rig.devices = [LAPTOP_MIC, {"name": "Mystery Box", "inputs": 2, "outputs": 2}]
     box = next(d for d in runner.home()["devices"] if d["name"] == "Mystery Box")
     with pytest.raises(guitake.Refused):
@@ -220,12 +219,12 @@ def test_a_typed_key_is_the_key_the_band_commits_to(typed, want):
     assert got == want and realtime._named_key(f"in {got}") == want
 
 
-def test_the_only_interface_is_chosen_on_channel_one_with_hear_me(rig, runner):
+def test_the_only_interface_is_chosen_on_channel_one_with_hear_me_off(rig, runner):
     home = runner.home()
     chosen = next(d for d in home["devices"] if d["id"] == home["device"])
     assert chosen["name"] == SCARLETT["name"]
     assert (home["mode"], home["channel"]) == ("direct", 1)
-    assert home["hear_me"]["allowed"] is True and home["hear_me"]["default"] is True
+    assert home["hear_me"]["allowed"] is False and home["hear_me"]["default"] is False
 
 
 def test_a_virtual_device_does_not_count_as_the_only_interface(rig, runner):
@@ -307,7 +306,7 @@ def test_the_default_argv_exactly(rig, runner, monkeypatch):
     assert rig.spawned == [[
         sys.executable, "-P", "-m", "plume", "lead", "--tap-start", "--detect",
         f"--record={rig.root}/2031-02-03-040506/", "--seed=4242",
-        f"--device={SCARLETT['name']}", "--input-channel=1", "--direct", "--monitor"]]
+        f"--device={SCARLETT['name']}", "--input-channel=1", "--direct"]]
 
 
 def test_hear_me_off_drops_the_monitor(rig, runner):
@@ -323,7 +322,7 @@ def test_a_room_mic_argv(rig, runner):
     assert "--direct" not in rig.spawned[0] and "--monitor" not in rig.spawned[0]
 
 
-def test_hear_me_on_a_room_mic_is_refused_and_starts_nothing(rig, runner):
+def test_hear_me_on_a_room_mic_with_no_word_about_headphones_starts_nothing(rig, runner):
     rig.devices = [LAPTOP_MIC, LAPTOP_OUT]
     with pytest.raises(guitake.Refused) as e:
         runner.start({"hear_me": True})
@@ -331,7 +330,7 @@ def test_hear_me_on_a_room_mic_is_refused_and_starts_nothing(rig, runner):
     assert rig.spawned == [] and runner.live()["state"] == "idle"
 
 
-def test_hear_me_on_a_named_room_device_is_refused_too(rig, runner):
+def test_hear_me_on_a_named_room_device_with_no_word_is_refused_too(rig, runner):
     mic = next(d for d in runner.home()["devices"] if d["kind"] == "builtin")
     with pytest.raises(guitake.Refused):
         runner.start({"device": mic["id"], "hear_me": True})
@@ -661,7 +660,7 @@ def test_playing_once_a_bar_is_decided(rig, runner):
 
 
 def test_the_live_doc_says_what_the_take_is(rig, runner):
-    runner.start({"key": "F major", "channel": 2, "hear_me": True})
+    runner.start({"key": "F major", "channel": 2, "hear_me": True, "headphones": True})
     doc = runner.live()
     assert doc["device"] == SCARLETT["name"]
     assert (doc["mode"], doc["channel"], doc["hear_me"]) == ("direct", 2, True)
@@ -1464,7 +1463,7 @@ def test_the_whole_way_on_the_fake_device(tmp_path, monkeypatch, plume_registry)
         return doc
 
     with patched_module("sounddevice", fake_audio(_strummed_take(115.0), devices=devices, rate_x=12.0)):
-        assert runner.start({"hear_me": True})["state"] == "starting"
+        assert runner.start({"hear_me": True, "headphones": True})["state"] == "starting"
         assert wait_until(lambda: state()["state"] in ("waiting", "playing"), timeout=20.0)
         assert wait_until(lambda: state()["level_db"] is not None, timeout=20.0)
         assert wait_until(lambda: state()["stream"] is not None, timeout=20.0)
@@ -1658,11 +1657,23 @@ def test_consent_is_handled_in_one_function_only():
     """By syntax, so a comment cannot satisfy it and moving the line cannot dodge it."""
     tree = ast.parse(Path(guitake.__file__).read_text())
     names = _functions_using(tree, lambda n: isinstance(n, ast.Name) and n.id == "AUDIO_CONSENT_ENV")
-    assert names == {"default_spawner"}
+    assert names == {"default_spawner", "default_meter"}
     text = _functions_using(tree, lambda n: isinstance(n, ast.Constant) and n.value == "PLUME_ALLOW_AUDIO")
     assert text == set()
     for source in (gui.__file__, guitake.__file__):
         assert "check_audio_consent" not in Path(source).read_text()
+
+
+def test_only_a_listen_post_can_reach_the_meter():
+    tree = ast.parse(Path(guitake.__file__).read_text())
+    metering = _functions_using(tree, lambda n: isinstance(n, ast.Attribute) and n.attr == "_meter"
+                                and isinstance(n.ctx, ast.Load))
+    assert metering == {"one"}
+    assert _functions_using(tree, lambda n: isinstance(n, ast.Attribute) and n.attr == "_read_meters") == {"listen"}
+    bridge = ast.parse(Path(gui.__file__).read_text())
+    callers = _functions_using(bridge, lambda n: isinstance(n, ast.Attribute) and n.attr == "listen"
+                               and isinstance(n.value, ast.Name) and n.value.id == "takes")
+    assert callers == {"_take_op"}
 
 
 def test_only_start_can_reach_the_spawner():
@@ -1805,7 +1816,7 @@ def test_a_second_start_over_http_is_a_409_with_state(rig, page):
 
 @pytest.mark.parametrize("body,status", [
     ({"key": "--evil"}, 400), ({"style": "--evil"}, 400), ({"channel": 99}, 400),
-    ({"hear_me": "yes"}, 400), ({"device": "--direct"}, 400), ({"prompt": "x"}, 400),
+    ({"hear_me": "yes"}, 400), ({"headphones": "yes"}, 400), ({"device": "--direct"}, 400), ({"prompt": "x"}, 400),
     ([], 400), (b"not json", 400), (b"", 400),
 ])
 def test_a_bad_start_over_http_starts_nothing(rig, page, body, status):

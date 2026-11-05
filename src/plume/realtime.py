@@ -1157,13 +1157,31 @@ def resolve_input(sd, device: str | None = None, *, input_device: str | None = N
 
 
 def input_devices(sd) -> list[dict]:
-    """Every device and its channel counts.  Opens nothing."""
+    """Every device and its channel counts.  Opens nothing.
+
+    And, where the library says, how late it reports its output would be, and which one the
+    system sends its sound to.
+    """
     try:
         devices = list(sd.query_devices())
     except Exception as e:  # noqa: BLE001
         raise RealtimeError(f"audio device query failed: {e}") from None
-    return [{"name": str(d.get("name", "?")), "inputs": int(d.get("max_input_channels", 0)),
-             "outputs": int(d.get("max_output_channels", 0))} for d in devices]
+    try:
+        system_output = str(sd.query_devices(kind="output")["name"])
+    except Exception:  # noqa: BLE001 - nothing depends on it, and a stream would still say
+        system_output = None
+    rows = []
+    for d in devices:
+        row = {"name": str(d.get("name", "?")), "inputs": int(d.get("max_input_channels", 0)),
+               "outputs": int(d.get("max_output_channels", 0))}
+        if row["outputs"] > 0:
+            late = d.get("default_low_output_latency")
+            if isinstance(late, (int, float)) and math.isfinite(late) and late > 0:
+                row["output_ms"] = round(float(late) * 1000.0, 1)
+            if row["name"] == system_output:
+                row["default_output"] = True
+        rows.append(row)
+    return rows
 
 
 #: Sessions with no ending to finish: nothing to flush, and sound to silence.

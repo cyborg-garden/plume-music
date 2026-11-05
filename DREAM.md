@@ -195,6 +195,57 @@ Nobody notices a new player entered. The music got wider.
   risk is the tempo evidence: sparse acoustic takes have fooled the tracker into
   4/3 and 3/2 readings, so a loop's own length, which is a very strong tempo
   clue, should feed the tracker and not just take orders from it.
+- **Scoring to picture.** (Juniper, 2026-11-05.) The first time plume played
+  with a film instead of a person. A three-minute Super 8 short came with a
+  cue sheet in plain words: breathing at 0:04, a scene change at 0:58, a
+  moment of shame at 1:24 that turns to approval at 1:28, a touch, a poem that
+  has to stand out, then a wordless beach scene that wants a band and drums.
+  Plume rendered a cue-locked sketch. The notes came back in plain words
+  ("too jarring", "half a step higher than ours", "come in at 2:31, with a
+  pause before it"), and each one became an exact change in minutes. Stems
+  from the sketch ended up in the final cut.
+
+  How it was done, with plume as it is:
+  - **One session per scene, tempo solved from the clock.** Each scene's tempo
+    is `bars × 240 / seconds`, so its bar lines land on the cue to the sample.
+    Scene tempos ran from 60 to 123 bpm.
+  - **A script did the timeline.** It laid each render at its timecode, with a
+    fade per boundary, a deliberate silence before the last scene, and a fade
+    to nothing before the picture ends. It stacked the stems on the same
+    timeline, and laid the mix over the film's own sound, turned down under
+    dialogue.
+  - **A guide part where the human goes.** Plume has no guitar voice, so a
+    quiet part plays the open strings of the guitarist's tuning. Its stem is
+    muted once the real guitar is recorded.
+
+  What plume would need for this to be a mode rather than a script:
+  - **A timeline.** Sections pinned to timecodes, tempo per section, and hit
+    points. Boundaries as real choices: cut, crossfade, silence, tail.
+    Something shaped like `plume score cues.json --picture film.mp4`.
+  - **Phrases per bar.** `< >` takes single tokens only, so a melody that
+    changes every bar needed one section per bar.
+  - **Transpose.** "Half a step down" meant rewriting every note token by
+    script. It should be one field.
+  - **Concert pitch.** The capo arithmetic and the sound in the room disagreed
+    by a semitone. Measuring the render showed F at A440, so the guitar was
+    sounding E. Better: let plume hear thirty seconds of the guitar and set
+    the key itself, the same wish as "detect" in live mode.
+  - **Automation inside a section.** Filter, level and reverb curves. Every
+    scene was static, so any change in feel needed a new scene.
+  - **Quiet-safe lofi.** Master `lofi` above 0.5 adds a 12-bit crush, which
+    is audible on quiet material under dialogue. Crush wants its own control.
+  - **A room bed.** The film's own ambience had been removed, so the script
+    made air and dust from filtered noise. Plume's crackle loops each bar.
+  - **Dialogue-aware mixing.** Read the film's speech level and sit under it,
+    with a separate level for scenes without words.
+  - **Credits travel with stems.** The Wurlitzer samples are CC-BY. A stem
+    used in a film carries that credit, so `render` should list the credits
+    each render needs.
+
+  Why it belongs here: the sideman ethic transfers. The film is the player
+  who owns the clock, and the notes in words are the cues. What plume
+  listens to is cut points and spoken lines instead of a downbeat, and the
+  first instinct is still to make room.
 - **v3 — The form.** (Juniper, 2026-08-14.) Right now plume hears *beat* and
   *chord*. It does not hear **the tune**. Teach it a form vocabulary — three-chord
   I-IV-V songs, 12-bar blues, AABA, rhythm changes, ii-V-I turnarounds, modal

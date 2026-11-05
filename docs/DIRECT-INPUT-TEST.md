@@ -14,7 +14,7 @@ pickup. Plume makes sound during steps 3, 5 and 7, and you are the one who start
   the switch. Some small interfaces only take a guitar on one socket, so check the front.
 - Plug headphones into the interface. Turn the interface's Direct button on so you can hear
   yourself. It has no latency.
-- Set the interface to 48 kHz in Audio MIDI Setup.
+- Set the interface to 48 kHz (on a Mac, in Audio MIDI Setup).
 - Leave plume's `--monitor` off, or you'll hear yourself twice. If the interface has no such
   button, use `--monitor` instead: it follows `--input-channel` and stays out of both
   recordings, but it adds the delay your device reports and has no limiter, so start quiet.
@@ -76,7 +76,7 @@ Afterwards:
 
 ```bash
 cat takes-di1/ending.json                 # want: "faded out after hearing nothing from you"
-open takes-di1/human.wav                  # want: only guitar, no band at all
+open takes-di1/human.wav                  # want: only guitar, no band at all (xdg-open on Linux)
 ```
 
 Any band in `human.wav` means the routing is wrong, and `--direct` is claiming something

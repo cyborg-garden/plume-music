@@ -82,6 +82,13 @@ header { display: flex; align-items: center; gap: 16px; padding-top: 14px; min-h
 .solid { background: var(--text); color: var(--on-solid); border: 0; border-radius: 2px; font-weight: 500; }
 .solid:hover { opacity: .88; }
 .solid:disabled { background: none; color: var(--secondary); border: 1px solid var(--hairline); cursor: default; opacity: 1; }
+#home { position: relative; }
+/* The latest take's stone, low on the left, clear of the column until the window is narrow. */
+#home-stone { position: absolute; left: 0; bottom: 28px; width: clamp(120px, 13vw, 170px); padding: 0; background: none; border: 0; }
+#home-stone[hidden] { display: none; }
+#home-stone:disabled { cursor: default; }
+#home-stone:not(:disabled):hover { opacity: .85; }
+#home-stone canvas { display: block; width: 100%; height: auto; }
 #start { height: 96px; font-size: 32px; letter-spacing: -.01em; }
 #home-elsewhere { display: flex; flex-direction: column; gap: 14px; align-items: flex-start; }
 #home-elsewhere p { margin: 0; font-size: 19px; }
@@ -213,6 +220,7 @@ header { display: flex; align-items: center; gap: 16px; padding-top: 14px; min-h
 .shelf-take:hover .t { text-decoration: underline; text-underline-offset: 3px; }
 
 @media (max-width: 899px) {
+  #home-stone { position: static; display: block; width: 104px; margin-top: 32px; }
   #rec-lower { grid-template-columns: minmax(120px, 170px) minmax(0, 1fr); }
   #rec-lower > section:last-child { grid-column: 1 / -1; }
   #rec-actions { margin-left: 0; }

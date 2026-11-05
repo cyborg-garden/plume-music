@@ -429,11 +429,32 @@ def test_the_recording_is_named_for_what_it_was_recorded_from(tmp_path, docs):
 LOOK = """{ screen: page.screen(), hash: page.location.hash }"""
 
 
-def test_the_first_screen_is_home_and_asks_for_no_takes(tmp_path, docs):
+def test_the_first_screen_is_home_and_opens_nothing_of_a_take(tmp_path, docs):
     out = run_page(tmp_path, docs, f"""
         return {{ ...{LOOK}, start: !$('start').hidden, paths: page.calls.map((c) => c.path) }};""")
     assert out["screen"] == "home" and out["start"] is True
-    assert "/api/takes" not in out["paths"]
+    assert not [p for p in out["paths"] if p.startswith("/api/take/")]
+
+
+def test_the_stone_on_home_is_the_newest_take_and_opens_it(tmp_path, docs):
+    newest = docs["takes"][0]["id"]
+    out = run_page(tmp_path, docs, f"""
+        await page.settle();
+        const seen = {{ shown: !$('home-stone').hidden, off: $('home-stone').disabled }};
+        $('home-stone').click(); await page.settle();
+        return {{ ...seen, ...{LOOK}, hash: location.hash }};""")
+    assert out["shown"] is True and out["off"] is False
+    assert out["screen"] == "record" and out["hash"] == "#/take/" + newest
+
+
+def test_with_no_takes_home_still_has_a_stone_that_goes_nowhere(tmp_path, docs):
+    out = run_page(tmp_path, {**docs, "takes": []}, f"""
+        await page.settle();
+        const seen = {{ shown: !$('home-stone').hidden, off: $('home-stone').disabled }};
+        $('home-stone').click(); await page.settle();
+        return {{ ...seen, ...{LOOK}, start: !$('start').hidden }};""")
+    assert out["shown"] is True and out["off"] is True
+    assert out["screen"] == "home" and out["start"] is True
 
 
 def test_the_wordmark_goes_home_and_takes_goes_to_the_shelf(tmp_path, docs):

@@ -196,6 +196,7 @@ _ROMAN_QUALITY = {
     ("7", False): "m7",
     ("9", True): "9",
     ("9", False): "m9",
+    ("11", False): "m11",
     ("maj7", True): "maj7",
     ("maj7", False): "mmaj7",
     ("maj9", True): "maj9",

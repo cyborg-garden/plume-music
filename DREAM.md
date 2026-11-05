@@ -195,6 +195,77 @@ Nobody notices a new player entered. The music got wider.
   risk is the tempo evidence: sparse acoustic takes have fooled the tracker into
   4/3 and 3/2 readings, so a loop's own length, which is a very strong tempo
   clue, should feed the tracker and not just take orders from it.
+- **Scoring to picture.** (Juniper, 2026-11-05.) The first time plume played
+  with a film instead of a person. A three-minute short came with a cue sheet
+  in plain words: where the voices start, a scene change, a dark turn and the
+  moment it lifts, a line that has to stand out, then a wordless ending that
+  wants a band and drums. Plume rendered a cue-locked sketch. Notes on it came
+  back in plain words, about a harsh transition, the key, and an entry that
+  should land a second earlier after a pause, and each one became an exact
+  change in minutes. The stems were good enough to use.
+
+  How it was done, with plume as it is:
+  - **One session per scene, tempo solved from the clock.** Each scene's tempo
+    is `bars × 240 / seconds`, so its bar lines land on the cue to the sample.
+    Scene tempos ran from 60 to 123 bpm.
+  - **A script did the timeline.** It laid each render at its timecode, with a
+    fade per boundary, a deliberate silence before the last scene, and a fade
+    to nothing before the picture ends. It stacked the stems on the same
+    timeline, and laid the mix over the film's own sound, turned down under
+    dialogue.
+  - **A guide part where the human goes.** Plume has no guitar voice, so a
+    quiet part plays the open strings of the guitarist's tuning. Its stem is
+    muted once the real guitar is recorded.
+
+  What plume would need for this to be a mode rather than a script:
+  - **A timeline.** Sections pinned to timecodes, tempo per section, and hit
+    points. Boundaries as real choices: cut, crossfade, silence, tail.
+    Something shaped like `plume score cues.json --picture film.mp4`.
+  - **Phrases per bar.** `< >` takes single tokens only, so a melody that
+    changes every bar needed one section per bar.
+  - **Transpose.** "Half a step down" meant rewriting every note token by
+    script. It should be one field.
+  - **Concert pitch.** The capo arithmetic and the sound in the room disagreed
+    by a semitone. Measuring the render showed F at A440, so the guitar was
+    sounding E. Better: let plume hear thirty seconds of the guitar and set
+    the key itself, the same wish as "detect" in live mode.
+  - **Automation inside a section.** Filter, level and reverb curves. Every
+    scene was static, so any change in feel needed a new scene.
+  - **Quiet-safe lofi.** Master `lofi` above 0.5 adds a 12-bit crush, which
+    is audible on quiet material under dialogue. Crush wants its own control.
+  - **A room bed.** The film's own ambience had been removed, so the script
+    made air and dust from filtered noise. Plume's crackle loops each bar.
+  - **Dialogue-aware mixing.** Read the film's speech level and sit under it,
+    with a separate level for scenes without words.
+  - **Credits travel with stems.** The Wurlitzer samples are CC-BY. A stem
+    used in a film carries that credit, so `render` should list the credits
+    each render needs.
+
+  Why it belongs here: the sideman ethic transfers. The film is the player
+  who owns the clock, and the notes in words are the cues. What plume
+  listens to is cut points and spoken lines instead of a downbeat, and the
+  first instinct is still to make room.
+- **The conductor.** (Juniper, 2026-11-06.) Scoring the film was the first
+  time the agent driving plume was asked for a whole chain of musical work in
+  one breath. The next step is to make that the normal way to play:
+
+  > Pull that sample, listen to this melody I play, loop it and fix my tempo
+  > mistakes, smooth the joins where you had to cut, then set the samples
+  > under it in a synthwave arrangement.
+
+  Each verb in that sentence is a plume command or close to one: fetch a
+  sample, `listen`, the smart looper's trim and align, a crossfade at the
+  cut, `make` in a style. The new part is an agent holding the whole
+  sentence, running it, and playing back what it heard and what it changed,
+  so the human can say "no, keep my rush in bar 3" and it does. Everything
+  it changes is logged with a reason, as the decision log already does.
+
+  Where this sits: much of AI music generates the finished track from a
+  prompt. Plume keeps the human making the music, on real instruments and
+  MIDI, and the machine does the handling around it: tidying, looping,
+  arranging, effects. The working phrase is **the analog effects wing of AI
+  music**. That frame has rules: sources must be ones the player has rights
+  to, and every sample's licence and credit travels with the take.
 - **v3 — The form.** (Juniper, 2026-08-14.) Right now plume hears *beat* and
   *chord*. It does not hear **the tune**. Teach it a form vocabulary — three-chord
   I-IV-V songs, 12-bar blues, AABA, rhythm changes, ii-V-I turnarounds, modal

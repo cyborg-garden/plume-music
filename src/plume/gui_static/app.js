@@ -788,7 +788,7 @@ function leaveSetup() {
   if (S.listening) send('setup/cancel', {}).catch(function () { /* it ends by itself in seconds */ });
   S.listening = S.answering = false;
 }
-async function setUpAgain() {
+async function resetSetup() {
   const note = $('set-again-note');
   note.textContent = '';
   let answer = null;
@@ -991,7 +991,7 @@ async function init() {
   $('nav-live').addEventListener('click', goLive);
   $('start').addEventListener('click', pressStart);
   $('setup-leave').addEventListener('click', goHome);
-  $('set-again').addEventListener('click', setUpAgain);
+  $('set-again').addEventListener('click', resetSetup);
   $('live-stop').addEventListener('click', stopTake);
   $('elsewhere-stop').addEventListener('click', function () { stopTake(); });
   $('cue-busier').addEventListener('click', function () { sendCue('busier'); });

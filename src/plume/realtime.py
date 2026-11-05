@@ -4105,8 +4105,8 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
     named_key = None
     if tap_start:
         from .bandentry import (DETECT_KEY_FALLBACK_BARS, END_AFTER_S,  # noqa: PLC0415
-                                FOLLOW, BandEntry, BandFollow, GuitarEar, SilenceEnding,
-                                StylePick, outro, song_section)
+                                FOLLOW, PLAIN_INTRO_GAIN_DB, BandEntry, BandFollow,
+                                GuitarEar, SilenceEnding, StylePick, outro, song_section)
         guitar_ear = GuitarEar()
         # The band follows how she plays.  FOLLOW is the only mode so far: the seam a
         # "plume leads" mode would come in by.  A room mic hears the band too, so it
@@ -4157,14 +4157,21 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
             return 0.5
     machine_swing = swing_of(style)
 
-    def change_style(name: str) -> "np.ndarray":
-        """A new engine in another style.  Returns what the old one still had ringing."""
+    #: The plain beat is playing: a detected take before its style and key are known.
+    plain_intro = [False]
+
+    def change_style(name: str, *, plain: bool = False) -> "np.ndarray":
+        """A new engine in another style.  Returns what the old one still had ringing.
+        ``plain``: that style's harmony under the plain beat (plain_intro_style)."""
         nonlocal duet, style, machine_swing
         old = duet
-        duet = DuetEngine(style=name, key_fallback=str(composed_key or "A minor"),
-                          seed=seed, sr=SR)
+        if plain:
+            from .bandentry import plain_intro_style  # noqa: PLC0415
+        duet = DuetEngine(style=plain_intro_style(name) if plain else name,
+                          key_fallback=str(composed_key or "A minor"), seed=seed, sr=SR)
         style = name
-        machine_swing = swing_of(name)
+        plain_intro[0] = plain
+        machine_swing = 0.5 if plain else swing_of(name)
         entry.restyle(name)
         cues.info["style"] = name
         return old.flush_tail()
@@ -4450,7 +4457,9 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
                     style_pick.heard_bar(len(onsets))
                 if entry.band_is_in:
                     picked = style_pick.at_entry(bpm, entered.key)
-                    if picked != style:
+                    # Style and key are both known now, so the plain beat gives way to
+                    # the style's own drums, on this bar line.
+                    if picked != style or plain_intro[0]:
                         # Before anything of this bar is rendered, and it rings out
                         # under the new engine's first bar, so there is no gap.
                         timeline.write_at(int(round(t_bar * SR)) - comp_samples[0],
@@ -4515,7 +4524,8 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
                        if r not in entered.held_back and r not in resting},
                 # a live "busier" or "sparser" cue scales the song's own shape
                 density=float(min(1.0, max(0.05, density * lead_cues.density_scale))),
-                gain_db=plan.gain_db + TAP_START_GAIN_DB + follow.gain_db + fade_db,
+                gain_db=(plan.gain_db + TAP_START_GAIN_DB + follow.gain_db + fade_db
+                         + (PLAIN_INTRO_GAIN_DB if plain_intro[0] else 0.0)),
                 reason=f"{entered.reason}; {plan.reason}"
                        + (f"; {followed.reason}" if followed is not None else ""))
         audio = duet.render_bar(plan, mbeat, mh)
@@ -4589,6 +4599,8 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
             # Heard or worked out, rather than named by the player: a page must say so.
             doc["style"] = style
             doc["style_guess"] = style_pick is not None
+            # plain until a detected take knows her style and key, else the style's own
+            doc["intro_beat"] = "plain" if plain_intro[0] else "style"
             doc["key_guess"] = named_key is None
             if state["tempo_from_loop"]:
                 doc["tempo_from"] = "loop"
@@ -4645,9 +4657,9 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
                 # the third bar line of the count, or the next one if that has gone.
                 next_beat = taps[0] + 8.0 * 60.0 / composed_bpm
             if style_pick is not None:
-                picked = style_pick.at_count(composed_bpm)
-                if picked != style:
-                    change_style(picked)         # no bar has been rendered yet
+                # No bar has been rendered yet.  The count's pick is a guess from the
+                # tempo alone, so its drums wait: a plain beat until the band comes in.
+                change_style(style_pick.at_count(composed_bpm), plain=True)
             negotiator = RoleNegotiator(role, composed_bpm=composed_bpm,
                                         composed_key=composed_key)
             period = 60.0 / composed_bpm

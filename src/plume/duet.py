@@ -111,6 +111,7 @@ its tests stand alone while the mind is built concurrently.
 """
 from __future__ import annotations
 
+import json
 import math
 from typing import TYPE_CHECKING
 
@@ -390,14 +391,17 @@ class _PlanEcho:
 class DuetEngine:
     """Bar-by-bar accompanist over one style (SPEC-V1 section 5)."""
 
-    def __init__(self, *, style: str, key_fallback: str = "A minor",
+    def __init__(self, *, style: "str | dict", key_fallback: str = "A minor",
                  seed: int, sr: int = 48000,
                  fade_in_bars: float | None = None,
                  fade_out_bars: float | None = None,
                  texture_xfade_beats: float | None = None,
                  announce_gain_db: float | None = None,
                  announce_beats: float | None = None):
-        self._style = load_style(style)
+        # A style is a bundled one's name, or a style already loaded and changed (the
+        # plain beat a detected take starts on: bandentry.plain_intro_style).
+        self._style = (load_style(style) if isinstance(style, str)
+                       else json.loads(json.dumps(style)))
         self._key_fallback = parse_key(key_fallback)
         self._seed = int(seed)
         self._sr = int(sr)

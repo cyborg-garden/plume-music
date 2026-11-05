@@ -80,6 +80,44 @@ def _mode_of(key: str | None) -> str | None:
         return None
 
 
+#: The beat a detected take plays until it knows her style and key.  Juniper,
+#: 2026-11-06: "the lofi intro drum beat felt weird and clunky ... it should give a
+#: simple beat until it both key and genre deduces".  The count's pick was a guess from
+#: the tempo alone, so its swing, its pushed and dragged hits and its 808 were a style
+#: she had not chosen yet.  Kick on one and three, snare on two and four, soft eighth
+#: hats on a recorded kit, straight, a little under the style's level.
+PLAIN_INTRO_PATTERNS = {
+    "kick": ("bd ~ ~ ~ ~ ~ ~ ~ bd ~ ~ ~ ~ ~ ~ ~",),
+    "snare": ("~ ~ ~ ~ sd ~ ~ ~ ~ ~ ~ ~ sd ~ ~ ~",),
+    "hat": ("hh:v0.6 ~ hh:v0.45 ~ hh:v0.6 ~ hh:v0.45 ~ "
+            "hh:v0.6 ~ hh:v0.45 ~ hh:v0.6 ~ hh:v0.45 ~",),
+}
+PLAIN_INTRO_VOICES = {"kick": "kit_kick", "snare": "kit_snare", "hat": "kit_hat"}
+PLAIN_INTRO_GAIN_DB = -3.0
+
+
+def plain_intro_style(name: str) -> dict:
+    """``name``'s style with its drums swapped for the plain beat.
+
+    Its harmony and melody stay, unheard (the drums stage holds them back), so the
+    engine is a whole one; every drum role it had that the plain beat lacks goes."""
+    from .styles_lib import load_style  # noqa: PLC0415
+    s = load_style(name)
+    keep = HARMONY_ROLES + MELODY_ROLES
+    s["swing"] = 0.5
+    s["timing_bias_ms"] = {}
+    s["drum_patterns"] = {r: list(p) for r, p in PLAIN_INTRO_PATTERNS.items()}
+    s.pop("slow_drum_patterns", None)
+    s["fills"] = {}
+    s["voices"] = {**{r: v for r, v in s["voices"].items() if r in keep},
+                   **PLAIN_INTRO_VOICES}
+    s["fx_defaults"] = {r: v for r, v in s.get("fx_defaults", {}).items() if r in keep}
+    s["role_gain_db"] = {r: v for r, v in (s.get("role_gain_db") or {}).items()
+                         if r in keep}
+    s.pop("live_only_roles", None)
+    return s
+
+
 class StylePick:
     """Where a detected style comes from over a take.
 

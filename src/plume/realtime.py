@@ -4538,15 +4538,18 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
             timeline.write_at(int(round(clock.t_s * SR)) - comp_samples[0],
                               looper.mix_bar(clock.bar, DECLICK_SAMPLES, stop=True))
 
-    def refuse_pair(e: Exception):
-        # Two devices have two clocks, and some pairs will not open together.  Nothing has
-        # played yet, so this is a sentence and not a traceback.
+    def release_before_sound():
         if midi_in is not None:
             midi_in.close()
         cues.close()
         if recorder is not None:
             recorder.close()
         unregister_session()
+
+    def refuse_pair(e: Exception):
+        # Two devices have two clocks, and some pairs will not open together.  Nothing has
+        # played yet, so this is a sentence and not a traceback.
+        release_before_sound()
         raise RealtimeError(f"{OPEN_TOGETHER_FAILED}: {e}") from None
 
     try:
@@ -4556,6 +4559,7 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
         )
     except Exception as e:  # noqa: BLE001 - PortAudio's error, or sounddevice's own
         if output_device is None:
+            release_before_sound()
             raise
         refuse_pair(e)
     # v1.6 — see jam(): masking is aligned to the bus->speaker->mic round trip,

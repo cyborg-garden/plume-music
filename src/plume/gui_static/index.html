@@ -17,6 +17,7 @@
     <button id="wordmark" type="button">plume</button>
     <button id="nav-takes" class="navlink" type="button">Takes</button>
     <button id="nav-settings" class="navlink" type="button">Settings</button>
+    <button id="nav-guide" class="navlink" type="button">Guide</button>
     <button id="nav-live" class="navlink" type="button" hidden></button>
     <span id="busy" role="status" hidden>Opening</span>
     <span class="spacer"></span>
@@ -78,7 +79,16 @@
         <p id="room-output" class="note" hidden></p>
       </div>
       <p id="again-row"><button id="set-again" class="textlink" type="button">Set up again</button> <span id="set-again-note" class="note" role="status"></span></p>
+      <button id="settings-terminal" class="textlink" type="button">Play from a terminal or a coding agent</button>
       <button id="settings-done" class="textlink" type="button">Done</button>
+    </div>
+  </main>
+
+  <main id="guide" hidden tabindex="-1">
+    <div id="guide-wrap">
+      <nav id="guide-pages" aria-label="Guide pages"></nav>
+      <article id="guide-body"></article>
+      <p id="guide-next"></p>
     </div>
   </main>
 

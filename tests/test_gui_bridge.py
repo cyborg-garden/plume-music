@@ -217,7 +217,7 @@ def test_the_token_link_works_from_a_terminal(anon):
 
 # ------------------------------------------------------------- token and cookie
 
-@pytest.mark.parametrize("path", ["/", "/static/app.js", "/api/session", "/api/takes"])
+@pytest.mark.parametrize("path", ["/", "/static/app.js", "/api/session", "/api/takes", "/api/guide"])
 def test_nothing_is_served_without_the_cookie(anon, path):
     assert anon.get(path)[0].status == 401
 
@@ -446,7 +446,7 @@ def test_errors_do_not_echo_the_request(client):
 def test_the_route_table_is_exactly_what_the_page_needs():
     assert gui.GET_ROUTES == ("/", "/auth", "/static/{name}", "/api/session", "/api/takes",
                               "/api/take/{id}", "/api/take/{id}/audio/{track}",
-                              "/api/home", "/api/live", "/api/setup")
+                              "/api/home", "/api/live", "/api/setup", "/api/guide")
     assert sorted(gui.POST_OPS) == ["cue", "keep", "rename", "setup/answer", "setup/cancel", "setup/listen",
                                     "setup/reset", "start", "stop"]
 

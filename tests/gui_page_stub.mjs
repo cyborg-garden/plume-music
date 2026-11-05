@@ -70,7 +70,7 @@ function store() {
     removeItem: (k) => map.delete(k) };
 }
 
-export async function start(html, { takes, docs, home = null, live = null, address = '#k=' + 'ab'.repeat(32), pinned = null, stored = null, setup = null }) {
+export async function start(html, { takes, docs, guide = null, home = null, live = null, address = '#k=' + 'ab'.repeat(32), pinned = null, stored = null, setup = null }) {
   const page = { byId: new Map(), activeElement: null, calls: [], held: [], failNext: {}, saved: {},
     home, live: live || { state: 'idle' }, replies: {}, down: false, later: new Map(),
     /* A person who has been through setup, unless a test says otherwise. */
@@ -114,6 +114,7 @@ export async function start(html, { takes, docs, home = null, live = null, addre
     /* Set a reply to answer that op with: [status, doc], used once. */
     if (page.replies[op]) { const [status, doc] = page.replies[op]; delete page.replies[op]; return reply(status, doc); }
     if (path === '/api/home') return reply(200, page.home);
+    if (path === '/api/guide') return reply(200, guide);
     if (path.startsWith('/api/setup')) return reply(200, page.setup);
     if (path === '/api/live') return reply(200, liveWhenAsked);
     if (op === 'start') { page.live = { state: 'starting' }; return reply(200, page.live); }

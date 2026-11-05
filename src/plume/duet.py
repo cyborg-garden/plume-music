@@ -230,11 +230,36 @@ _ROLE_PAN = {"hat": 0.25, "openhat": 0.2, "clap": -0.1, "lead": -0.15,
              "arp": 0.2, "tom": -0.2, "crash": -0.3}
 
 
+_CHORUS_PEAK_ROOM = 2.0 ** 0.5
+
+
+def _hold_level(wet: np.ndarray, dry: np.ndarray, peak_room: float = 1.0) -> np.ndarray:
+    """``wet`` at the RMS of ``dry``, its peak no more than ``peak_room`` times that of ``dry``
+    and never past full scale because of this."""
+    wet_rms = float(np.sqrt(np.mean(wet ** 2))) if wet.size else 0.0
+    if wet_rms <= 0.0:
+        return wet
+    dry_peak = float(np.abs(dry).max())
+    ceiling = max(dry_peak, min(1.0, peak_room * dry_peak))
+    return wet * min(float(np.sqrt(np.mean(dry ** 2))) / wet_rms,
+                     ceiling / float(np.abs(wet).max()))
+
+
 def _saturate(y: np.ndarray, amount: float) -> np.ndarray:
-    """fx.drive with its level boost taken back out: the peaks round off and nothing gets
-    louder.  This drives one note at a time, where an offline render drives the whole mix."""
-    a = 1.0 + 3.0 * float(amount)
-    return _fx.drive(y, amount).astype(np.float64) * (np.tanh(a) / a)
+    """fx.drive at the note's own level: the peaks round off, so it is as loud as before
+    with a lower peak.  This drives one note at a time, where an offline render drives the
+    whole mix."""
+    return _hold_level(_fx.drive(y, amount).astype(np.float64), y)
+
+
+def _chorus(y: np.ndarray, sr: int, depth: float, at_s: float) -> np.ndarray:
+    """fx.chorus on one note, level held.  ``at_s`` is when the note plays: the wobble carries
+    on from there, as it does across a whole part offline, so a pitch that falls in a dip of
+    the delay on one note does not fall in it on every note.  Offline the part goes through
+    one chorus and overlapping notes share it; here each note has its own.  Half the note goes
+    through the delay, so the level comes back at about 3 dB and the peak gets that much room."""
+    wet = _fx.chorus(y.astype(np.float32), sr, depth, phase_s=at_s).astype(np.float64)
+    return _hold_level(wet, y, peak_room=_CHORUS_PEAK_ROOM)
 
 
 # roles Mind may name that a style spells differently
@@ -974,7 +999,8 @@ class DuetEngine:
             y *= gain * level
             pan = float(np.clip(_ROLE_PAN.get(role, 0.0), -1.0, 1.0))
             theta = (pan + 1.0) * (np.pi / 4.0)
-            spread = (_fx.chorus(y.astype(np.float32), sr, float(lfx["chorus"])).astype(np.float64)
+            spread = (_chorus(y, sr, float(lfx["chorus"]),
+                              int(getattr(plan, "bar", 0)) * bar_s + onset_s)
                       if float(lfx.get("chorus", 0.0)) > 0.0 else y[:, None])
             st = spread * np.array([np.cos(theta), np.sin(theta)])[None, :]
             i0 = int(round(onset_s * sr))

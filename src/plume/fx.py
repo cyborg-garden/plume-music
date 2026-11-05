@@ -283,15 +283,16 @@ def _var_delay_tap(x: np.ndarray, sr: int, delay_s: np.ndarray) -> np.ndarray:
     return x[i0] * (1.0 - frac) + x[i1] * frac
 
 
-def chorus(x: np.ndarray, sr: int, depth: float = 0.5) -> np.ndarray:
+def chorus(x: np.ndarray, sr: int, depth: float = 0.5, phase_s: float = 0.0) -> np.ndarray:
     """Juno-style chorus: 2 modulated delay lines (1-10 ms), LFOs 0.5/0.8 Hz.
 
     Mono in -> stereo (N, 2). 50% wet per channel; the two lines' LFOs are
-    quadrature-offset so L/R decorrelate.
+    quadrature-offset so L/R decorrelate.  ``phase_s`` is how far into their
+    cycle the LFOs start, for a caller running this on one note of a longer part.
     """
     xm = _mono(x).astype(np.float64)
     n = xm.shape[0]
-    t = np.arange(n, dtype=np.float64) / sr
+    t = np.arange(n, dtype=np.float64) / sr + float(phase_s)
     depth = float(np.clip(depth, 0.0, 1.0))
     base = 5.5e-3                      # centre of the 1-10 ms range
     amp = 4.5e-3 * depth               # stays within 1..10 ms

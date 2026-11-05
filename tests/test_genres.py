@@ -18,7 +18,9 @@ import soundfile as sf
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "src"))
 
 from conftest import fake_audio, patched_module, short_socket_path  # noqa: E402
+from plume import duet as duet_mod  # noqa: E402
 from plume import figures, realtime  # noqa: E402
+from plume import fx as fx_mod  # noqa: E402
 from plume import mind as mind_mod  # noqa: E402
 from plume import roles as roles_mod  # noqa: E402
 from plume.compose import PromptSpec, compose, describe_prompt, parse_prompt  # noqa: E402
@@ -53,6 +55,13 @@ SAMPLE_NAMES_SHA256 = "dca742b7476cbe36829d1428d709c13aa66b050f996ed913c6007dec9
     ("house, 3 movements", "house"), ("house 124 bpm", "house"), ("play some house", "house"),
     ("make me some house at 124", "house"), ("chill house", "house"),
     ("dark house track", "house"), ("tech-house", "house"), ("acid  house", "house"),
+    # the word means the genre unless it plainly means something else
+    ("i want some house", "house"), ("can you play some house", "house"),
+    ("house please", "house"), ("124 bpm house", "house"), ("C minor house", "house"),
+    ("french house", "house"), ("classic house", "house"), ("piano house", "house"),
+    ("house for coding", "house"), ("good house music", "house"), ("my house music", "house"),
+    ("house in a minor", "house"), ("a house in C minor", "house"), ("chill house", "house"),
+    ("house catchy and fast", "house"), ("house online", "house"),
 ])
 def test_aliases_reach_their_style(text, style):
     assert parse_prompt(text).styles == [style]
@@ -64,7 +73,8 @@ def test_aliases_reach_their_style(text, style):
     "something for grandma's house", "the white house", "the opera house",
     "open house vibe", "a warm cozy house in C minor", "house sitting", "house arrest",
     "a house band", "house band", "the  house", "a house", "the house",
-    "a house in the woods", "house in the woods", "house at night",
+    "a house in the woods", "house in the woods", "house at night", "my house", "our house",
+    "house in a tree", "house-party", "the house, please", "powerhouse", "housewife",
 ])
 def test_house_the_building_is_not_house_the_genre(text):
     assert parse_prompt(text).styles == []
@@ -119,6 +129,17 @@ def test_the_genre_that_adds_nothing_is_not_reported_as_understood(text, kept, d
 def test_a_genre_word_the_prompt_set_aside_is_reported_as_ignored():
     said = describe_prompt("trap jazz")
     assert said["understood"]["style"] == ["trap"] and "jazz" in said["ignored"]
+
+
+@pytest.mark.parametrize("text,word", [
+    ("jazz, dark house beat", "dark"), ("jazz, chill house", "chill"),
+    ("trap, dark house music", "dark"), ("jazz, deep house at 124 bpm", "124"),
+])
+def test_a_word_that_was_applied_is_never_reported_as_not_understood(text, word):
+    said = describe_prompt(text)
+    assert word not in said["ignored"] and "house" in said["ignored"]
+    if word in {"dark", "chill"}:
+        assert said["understood"]["mood"] == [word]
 
 
 @pytest.mark.parametrize("cue,value", [
@@ -579,7 +600,45 @@ def test_live_rnb_keys_are_chorused_into_stereo():
     mono, _ = _plain_take("rnb", {"keys": 1.0}, live_fx={})
     assert np.abs(mono[:, 0] - mono[:, 1]).max() < 1e-6
     assert np.sqrt(np.mean((wide[:, 0] - wide[:, 1]) ** 2)) > 0.1 * np.sqrt(np.mean(wide ** 2))
-    assert abs(_rms_db(wide) - _rms_db(mono)) < 3.0
+    assert abs(_rms_db(wide) - _rms_db(mono)) < 0.3
+
+
+@pytest.mark.parametrize("midi", range(48, 73, 3))
+def test_the_live_chorus_loses_no_pitch_and_no_peak_room(midi):
+    """A note can catch a dip of the delay for a moment, with its peak at the limit, but as
+    the wobble moves on no pitch stays down."""
+    y = _note(load_style("rnb")["voices"]["keys"], midi_to_hz(midi), dur=0.8).astype(np.float64)
+    wides = [duet_mod._chorus(y, SR, 0.4, at_s) for at_s in np.arange(0.0, 16.0, 0.37)]
+    losses = [_rms_db(wide) - _rms_db(y) for wide in wides]
+    assert np.mean(losses) > -1.5 and min(losses) > -5.0
+    assert max(np.abs(wide).max() for wide in wides) <= 2.0 ** 0.5 * np.abs(y).max() + 1e-9
+
+
+def test_the_live_chorus_wobble_moves_on_from_note_to_note():
+    """It used to start from one phase, so a repeated note came out the same every time."""
+    y = _note(load_style("rnb")["voices"]["keys"], midi_to_hz(60), dur=0.8).astype(np.float64)
+    first = duet_mod._chorus(y, SR, 0.4, 0.0)
+    assert np.array_equal(first, duet_mod._chorus(y, SR, 0.4, 0.0))
+    assert np.abs(first - duet_mod._chorus(y, SR, 0.4, 1.3)).max() > 0.01
+
+
+def test_a_live_keys_note_gets_the_time_it_plays_at(monkeypatch):
+    seen = []
+    real = duet_mod._chorus
+    monkeypatch.setattr(duet_mod, "_chorus", lambda y, sr, depth, at_s: (
+        seen.append(at_s), real(y, sr, depth, at_s))[1])
+    engine = _engine("rnb")
+    engine._groove = dataclasses.replace(engine._groove, humanize_ms=0.0, humanize_vel=0.0)
+    for b in (3, 4):
+        plan, harm = _bar("rnb", {"keys": 1.0}, b, density=0.3)
+        engine.render_bar(plan, SimpleNamespace(bpm=75.0), harm)
+    bar_s = 240.0 / 75.0
+    assert seen and min(seen) >= 3 * bar_s and max(seen) >= 4 * bar_s
+
+
+def test_the_chorus_starts_where_it_always_did_unless_told_otherwise():
+    x = _note("pad", 220.0, dur=0.3)
+    assert np.array_equal(fx_mod.chorus(x, SR, 0.5), fx_mod.chorus(x, SR, 0.5, phase_s=0.0))
 
 
 def _crest_db(y):
@@ -587,12 +646,22 @@ def _crest_db(y):
 
 
 @pytest.mark.parametrize("role", ["kick", "snare", "bass"])
-def test_live_hip_hop_is_saturated_without_getting_louder(role):
+def test_live_hip_hop_is_saturated_at_the_same_level(role):
     dusty, _ = _plain_take("hiphop", {role: 1.0})
     clean, _ = _plain_take("hiphop", {role: 1.0}, live_fx={})
     assert np.abs(dusty).max() < 0.98 * np.abs(clean).max()
     assert _crest_db(dusty) < _crest_db(clean)
-    assert _rms_db(dusty) <= _rms_db(clean) + 0.1
+    assert abs(_rms_db(dusty) - _rms_db(clean)) < 0.3
+
+
+def test_saturating_a_note_keeps_its_level_and_stays_in_its_peak():
+    for preset, hz in (("boomkick", 50.0), ("roundbass", 55.0), ("kit_snare", None)):
+        y = _note(preset, hz).astype(np.float64)
+        driven = duet_mod._saturate(y, 0.25)
+        assert abs(_rms_db(driven) - _rms_db(y)) < 0.1, preset
+        assert np.abs(driven).max() <= np.abs(y).max() + 1e-9, preset
+    silence = np.zeros(100)
+    assert np.array_equal(duet_mod._saturate(silence, 0.25), silence)
 
 
 def test_older_styles_keep_their_live_sound():

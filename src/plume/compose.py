@@ -36,24 +36,22 @@ class PromptSpec:
 
 _MOOD_WORDS = ("chill", "dark", "eerie", "hopeful", "aggressive", "ambient",
                "dreamy", "mellow", "sad", "moody", "warm", "spooky")
-# "house" is also just a word, and far more often a building than a genre, so the genre
-# has to be asked for: a kind of house ("deep house"), house before a music word from a
-# plain start ("a house beat"), or house as the whole request ("play some house at 124").
-# Anything else stays a building and shows up as an ignored word.
-_MOOD_ALT = "|".join(_MOOD_WORDS)
-_GENRE_ALT = r"jazz(?:y)?|hip[\s\-]?hop|boom[\s\-]?bap|r\s*&\s*b|rnb|neo[\s\-]?soul"
-_HOUSE_KINDS = ("deep|tech|acid|chicago|detroit|funky|soulful|progressive|tropical|disco"
-                "|electro|afro|" + _GENRE_ALT)
-_HOUSE_ASKS = r"make|play|give|gimme|me|us|some|more|just|try|let'?s|please"
-_HOUSE_RE = (
-    rf"\b(?:{_HOUSE_KINDS})[\s\-]+house\b"
-    r"(?![\s\-]+(?:of|party|plants?|cat|keys?|call|fire|rules|hold|band|sitting|arrest)\b)"
-    rf"|(?:^\s*|\b(?:the|a|an|my|our|your|his|her|their|this|that|{_HOUSE_ASKS}|{_MOOD_ALT})\s+)"
-    r"house(?=[\s\-]+(?:music|beat|track|groove|song|tune|jam|loop|vibes?|style)\b)"
-    rf"|^\s*(?:(?:{_HOUSE_ASKS}|{_MOOD_ALT})\s+)*house\b"
-    r"(?=\s*(?:$|[,.;:?]|\d|@"
-    r"|(?:at|around|about|near|tempo)\s*\d|key\s+of\b"
-    r"|in\s+[a-g][#b]?\s+(?:maj|min|dorian|phrygian|harmonic)))")
+# "house" is the genre unless the prompt plainly means a building or a saying.  So rather
+# than list the ways to ask for it, this lists the ways not to: a phrase here is blanked
+# out before the style patterns look at the prompt.
+_MUSIC_WORDS = r"music|beat|track|groove|song|tune|jam|loop|vibes?|style"
+_NOT_HOUSE_RE = re.compile(
+    rf"\b(?:my|our|your|his|her|their|\w+['\u2019]s)[\s\-]+house\b(?![\s\-]+(?:{_MUSIC_WORDS})\b)"
+    r"|\b(?:white|opera|coffee|haunted|full|open|tree|farm|green|ware|dog|doll|guest|beach"
+    r"|lake|cozy|cosy)[\s\-]+house\b"
+    r"|\bhouse[\s\-]+(?:(?:party|parties|arrest|sitting|sitter|band|plants?|cat|dog|keys?|call"
+    r"|fire|rules|hold|of|on|is|was|down|next|at\s+night|in\s+(?:the|my|our))\b"
+    r"|in\s+a\s+(?!maj|min|dor|phr|har))"
+    r"|\b(?:a|an|the|this|that)\s+house\s*(?=$|[,.;:!?])", re.I)
+# Kept in the match so a report can say they were understood; a mood word or another genre
+# is not, since it is read in its own right.
+_HOUSE_RE = (r"\b(?:(?:deep|tech|acid|chicago|detroit|funky|soulful|progressive|tropical|disco"
+             rf"|electro|afro|french|classic|piano)[\s\-]+)?house(?:[\s\-]+(?:{_MUSIC_WORDS}))?\b")
 _STYLE_PATTERNS = [
     (re.compile(r"\b(?:midwest|emo)\b", re.I), "midwest"),
     (re.compile(r"\btrap\b", re.I), "trap"),
@@ -105,6 +103,11 @@ _NAME_STOPWORDS = {
 }
 
 
+def _style_text(text: str) -> str:
+    """``text`` with its building-and-saying uses of "house" blanked, same length."""
+    return _NOT_HOUSE_RE.sub(lambda m: " " * len(m.group(0)), text)
+
+
 def _one_new_genre(text: str, hits: dict[str, re.Match]) -> str:
     """The one recipe a prompt naming several new genres plays.
 
@@ -129,15 +132,16 @@ def parse_prompt(text: str) -> PromptSpec:
     t = text or ""
 
     found: dict[str, re.Match] = {}
+    style_text = _style_text(t)
     for rx, canon in _STYLE_PATTERNS:
-        m = rx.search(t)
+        m = rx.search(style_text)
         if m and (canon not in found or m.start() < found[canon].start()):
             found[canon] = m
     spec.styles = [c for c, _ in sorted(found.items(), key=lambda kv: kv[1].start())]
     if _ORIGINAL_STYLES & set(spec.styles):
         spec.styles = [c for c in spec.styles if c in _ORIGINAL_STYLES]
     elif len(spec.styles) > 1:
-        spec.styles = [_one_new_genre(t, found)]
+        spec.styles = [_one_new_genre(style_text, found)]
     # "lofi midwest emo" describes midwest emo with a lofi colour, not lofi.
     if "midwest" in spec.styles:
         spec.styles.remove("midwest")
@@ -204,16 +208,12 @@ def describe_prompt(text: str) -> dict:
         understood["mood"] = list(spec.mood)
 
     claimed = set(_MOOD_WORDS)
+    style_text = _style_text(raw)
     for rx, canon in _STYLE_PATTERNS:
         if canon not in spec.styles:
             continue
-        for m in rx.finditer(raw):
+        for m in rx.finditer(style_text):
             claimed.update(re.findall(r"[a-z0-9#]+", m.group(0).lower()))
-    # "jazzy house" matches as a kind of house, but the jazz in it added nothing.
-    for rx, canon in _STYLE_PATTERNS:
-        if canon not in spec.styles:
-            for m in rx.finditer(raw):
-                claimed.difference_update(re.findall(r"[a-z0-9#]+", m.group(0).lower()))
     for rx in (_BPM_RE, _TEMPO_AT_RE, _KEY_RE, _MOV_RE):
         for m in rx.finditer(raw):
             claimed.update(re.findall(r"[a-z0-9#]+", m.group(0).lower()))

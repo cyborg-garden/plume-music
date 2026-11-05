@@ -7,7 +7,7 @@
 import { clearStones, cssVar, queueStone, rng, stonesIdle, tok } from '/static/stone.js';
 import { hitBoxes, lineSpans, nextIndex } from '/static/layout.js';
 import { lostWords, pinnedRoute, routeOf } from '/static/session.js';
-import { BAND_IN_INPUT_LINE, DIRECT_LINE, FADING_LINE, NO_ENDING, ROOM_END_LINE, ROOM_OUTPUT_LINE, SEND_LINE, WIRELESS_LINE, askingLine, bandInInput, countWords, delayLine, endLine, endedNote, isFading, isRunning, keyLine, landing, meterShare, routeLine, sendDelayLine, settledLine, setupTrouble, setupView, signView, stageWords, watchEnding, youView } from '/static/live.js';
+import { BAND_IN_INPUT_LINE, DIRECT_LINE, FADING_LINE, NO_ENDING, ROOM_END_LINE, ROOM_OUTPUT_LINE, SEND_LINE, WIRELESS_LINE, askingLine, bandInInput, countWords, delayLine, endLine, endedNote, isFading, isRunning, keyLine, landing, meterShare, movedOutput, routeLine, sendDelayLine, settledLine, setupTrouble, setupView, signView, stageWords, watchEnding, youView } from '/static/live.js';
 
 const $ = function (id) { return document.getElementById(id); };
 const S = { csrf: '', take: null, selected: null, roastOn: true, screen: 'loading', nav: 0,
@@ -718,7 +718,9 @@ function showSettingsNote(words) {
   drawSettingsNote();
 }
 function drawSettingsNote() {
-  const note = S.settingsNote || (S.home && S.home.problem) || '';
+  let note = S.settingsNote || (S.home && S.home.problem) || '';
+  /* The Output choice already says this, right where it can be fixed. */
+  if (note === outputProblem()) note = '';
   $('settings-note').hidden = !note;
   $('settings-note').textContent = note;
 }
@@ -845,6 +847,8 @@ async function pressStart() {
   S.homeNote = '';
   S.setup = null;
   S.listening = S.answering = false;
+  const seen = chosenDevice();
+  S.setupShown = S.home ? { device: seen ? seen.id : null, output: outputSaved() } : null;
   if (location.hash !== '#/setup') history.pushState(null, '', '#/setup');
   arriveAt('setup');
   drawSetup();
@@ -862,10 +866,34 @@ async function pressStart() {
   followSetup(doc);
 }
 function followSetup(doc) {
-  S.setup = doc;
   S.listening = S.answering = false;
+  if (askAboutOutput(doc)) return;
+  S.setup = doc;
   if (doc.done) startTake(doc.device);
   else drawSetup();
+}
+/* Nothing plays while this is asked: she is told where the band would go first. */
+function askAboutOutput(doc, force) {
+  const moved = movedOutput(S.setupShown, doc, S.home && S.home.outputs, force);
+  if (!moved) return false;
+  S.setup = Object.assign(moved, { then: force ? Object.assign({}, doc, { done: true }) : doc });
+  drawSetup();
+  return true;
+}
+/* What home said is settled now, one way or the other, for this input. */
+async function answerMoved(answer) {
+  const asked = S.setup, then = asked.then, turn = S.setupTurn;
+  S.setupShown = { device: then.device, output: answer === 'yes' ? asked.output : then.output || null };
+  if (answer !== 'yes') { followSetup(then); return; }
+  S.answering = true;
+  Array.from($('setup-choices').children).forEach(setOff);
+  let reply = null;
+  try { reply = await send('setup/answer', { step: 'output', answer: asked.output, device: then.device }); } catch (err) { /* said below */ }
+  if (turn !== S.setupTurn) return;
+  S.answering = false;
+  if (reply && reply.ok) { followSetup(then.done || then.step === 'listen' ? then : reply.doc); return; }
+  if (reply && reply.status === 400 && reply.doc && reply.doc.error) { backHome(reply.doc.error, true); return; }
+  settleSetup(reply);
 }
 function pickedName() {
   const device = S.form.device && chosenDevice();
@@ -909,8 +937,9 @@ function drawSetup() {
 }
 function chooseSetup(answer) {
   if (S.answering || S.listening) return;
-  if (answer === 'again') setupListen();
-  else if (answer === 'start') startTake();
+  if (S.setup.step === 'moved') answerMoved(answer);
+  else if (answer === 'again') setupListen();
+  else if (answer === 'start') { if (!askAboutOutput(S.setup, true)) startTake(); }
   else setupAnswer(S.setup.step, answer);
 }
 let slowTimer = 0;

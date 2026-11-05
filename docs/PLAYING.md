@@ -325,7 +325,7 @@ plume lead --tap-start "lofi midwest emo in F major" \
 
 Use part of the name `plume inputs` printed. `--device` names the interface for both directions, which keeps one clock and the lowest
 delay. To keep your output elsewhere, use `--input-device` instead, which leaves it on the
-system default, or add `--output-device NAME` to `plume lead` to name it. Channels count from 1,
+system default, or add `--output-device NAME` to `plume lead` to name it, using its whole name. Channels count from 1,
 as printed on the interface. `--direct` tells plume the band can't reach this input, which
 turns off self-masking and lets the level alone say whether you are playing, even with the
 band in. It also applies to a mic when the band is only in your headphones.
@@ -451,6 +451,8 @@ Output in Settings sends the band somewhere other than your input's own outs, so
 So on a direct input Settings offers one more tick, off by default: Send my instrument to this output. It arrives slightly late, and it is only for an instrument plugged in, since a mic on that channel would howl. Plume cannot tell an instrument from a mic, so the tick is your word for it, and it is for that output and that channel only. Change either and it goes off. Plume also treats another output as speakers, so a yes about headphones does not reach it: Hear me saved for your headphones stays with your interface's outs, and comes back when you do. A room mic is never sent through another output at all, and setup does not ask about headphones while one is chosen, since those questions are about your own output.
 
 Wireless speakers arrive late, which makes playing along hard. Plume cannot tell wireless from a name, so it says this for any other output.
+
+The choice belongs to one input, and with more than one interface plugged in setup can hear you on a different input from the one Settings was showing. It then asks whether to send the band to that output from the new input too, before anything plays. Say no and that input keeps its own.
 
 **Not yet tried on real gear.** All of this has only run against a fake device. Three things only real gear can answer:
 

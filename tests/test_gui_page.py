@@ -2196,3 +2196,144 @@ def test_the_take_says_what_it_really_sends(tmp_path, docs):
     out = live_page(tmp_path, docs, sending, "return { delay: $('live-delay').textContent, direct: $('live-direct').hidden };")
     assert out["delay"] == "Your instrument reaches that output about 40 ms late, by your device's own count, and it could be more."
     assert out["direct"] is True, "that button only reaches the interface's own outs"
+
+
+# ------------------------------------------------- setup moving off the input the output was for
+
+BUILT_IN_MIC = {"name": "Laptop Mic", "inputs": 1, "outputs": 0}
+TWO_BOXES = [BUILT_IN_MIC, DEVICES[2], {"name": "Other Box", "inputs": 2, "outputs": 2}, ROOM_SPEAKERS]
+BOX = guitake.describe_devices([DEVICES[2]])[0]["id"]
+
+
+def _on_the_mic(docs):
+    """Two interfaces, so home shows the mic, and Room Speakers is saved on it."""
+    _with_output(docs, saved=SPEAKERS_ID, name="Laptop Mic", devices=TWO_BOXES)
+    assert docs["home"]["device"] == guitake.describe_devices([BUILT_IN_MIC])[0]["id"]
+
+
+def _heard_on_box(step="count"):
+    line = guitake.COUNT_LINE if step == "count" else "Headphones on?"
+    return setup_doc(step, line, *(() if step == "count" else ("yes", "no")), device=BOX, output=None,
+                     heard=HEARD, others=[])
+
+
+def _press(reply):
+    return f"""
+        page.replies['setup/listen'] = [200, {json.dumps(reply)}];
+        $('start').click(); await page.settle();"""
+
+
+def test_setup_moving_to_another_input_asks_before_any_band_plays(tmp_path, docs):
+    """Home said the band goes to Room Speakers.  Starting on the box without a word would break that."""
+    _on_the_mic(docs)
+    out = first_run(tmp_path, docs, f"""{_press(_heard_on_box())}
+        return {{ ...{SEEN}, starts: page.posts('start').length, saved: page.posts('setup/answer') }};""")
+    assert out["starts"] == 0 and out["saved"] == []
+    assert out["say"] == "Plume heard you on Test Interface."
+    assert out["more"] == "Send the band to Room Speakers? If not, it comes out of Test Interface."
+    assert out["choices"] == ["Yes", "No"], "short, because a long name overflowed the button on a phone"
+
+
+def test_a_yes_saves_the_output_on_the_new_input_and_then_starts(tmp_path, docs):
+    _on_the_mic(docs)
+    out = first_run(tmp_path, docs, f"""{_press(_heard_on_box())}
+        page.replies['setup/answer'] = [200, {json.dumps({**COUNT, "device": BOX, "output": SPEAKERS_ID})}];
+        $('setup-yes').click(); await page.settle();
+        return {{ saved: page.posts('setup/answer'), starts: page.posts('start') }};""")
+    assert out["saved"] == [{"step": "output", "answer": SPEAKERS_ID, "device": BOX}]
+    assert out["starts"] == [{"device": BOX}]
+
+
+def test_a_no_changes_nothing_and_carries_on_with_setup(tmp_path, docs):
+    _on_the_mic(docs)
+    out = first_run(tmp_path, docs, f"""{_press(_heard_on_box("headphones"))}
+        $('setup-no').click(); await page.settle();
+        return {{ ...{SEEN}, saved: page.posts('setup/answer'), starts: page.posts('start') }};""")
+    assert out["saved"] == [] and out["starts"] == [] and out["say"] == "Headphones on?"
+
+
+def test_a_yes_keeps_what_setup_had_to_say_about_the_level(tmp_path, docs):
+    _on_the_mic(docs)
+    low = {**_heard_on_box(), "step": "listen", "line": guitake.LOW_GAIN, "done": False,
+           "choices": steps("again", "start"), "heard": {**HEARD, "result": "low"}}
+    out = first_run(tmp_path, docs, f"""{_press(low)}
+        const asked = $('setup-more').textContent;
+        page.replies['setup/answer'] = [200, {json.dumps({**COUNT, "device": BOX, "output": SPEAKERS_ID})}];
+        $('setup-yes').click(); await page.settle();
+        return {{ asked, say: $('setup-say').textContent, starts: page.posts('start') }};""")
+    assert out["asked"].startswith("Send the band to Room Speakers?")
+    assert out["starts"] == [] and out["say"] in guitake.LOW_GAIN
+
+
+def test_start_anyway_on_an_input_she_tried_asks_too(tmp_path, docs):
+    """Heard nothing, tried the box by name, heard nothing, Start anyway: still a different input."""
+    _on_the_mic(docs)
+    nothing = {**_heard_on_box(), "step": "listen", "line": "Nothing there.", "done": False,
+               "choices": steps("again", "start"), "heard": {**HEARD, "result": "nothing", "channel": None}}
+    out = first_run(tmp_path, docs, f"""{_press(nothing)}
+        const first = $('setup-say').textContent;
+        $('setup-start').click(); await page.settle();
+        const asked = $('setup-more').textContent, starts = page.posts('start').length;
+        $('setup-no').click(); await page.settle();
+        return {{ first, asked, starts, after: page.posts('start') }};""")
+    assert out["first"] == "Nothing there.", "nothing was heard, so nothing has moved yet"
+    assert out["asked"].startswith("Send the band to Room Speakers?") and out["starts"] == 0
+    assert out["after"] == [{"device": BOX}]
+
+
+def test_no_question_when_the_band_goes_where_home_said(tmp_path, docs):
+    _on_the_mic(docs)
+    agrees = {**_heard_on_box(), "output": SPEAKERS_ID}
+    out = first_run(tmp_path, docs, f"{_press(agrees)} return page.posts('start');")
+    assert out == [{"device": BOX}]
+
+
+def test_no_question_when_the_input_it_moved_to_is_that_output(tmp_path, docs):
+    box_out = guitake.describe_outputs([DEVICES[2]])[0]["id"]
+    _with_output(docs, saved=box_out, name="Laptop Mic", devices=TWO_BOXES)
+    out = first_run(tmp_path, docs, f"{_press(_heard_on_box())} return page.posts('start');")
+    assert out == [{"device": BOX}]
+
+
+def test_no_question_with_no_output_chosen(tmp_path, docs):
+    _with_output(docs, devices=TWO_BOXES)
+    out = first_run(tmp_path, docs, f"{_press(_heard_on_box())} return page.posts('start');")
+    assert out == [{"device": BOX}]
+
+
+def test_an_output_gone_by_the_answer_goes_to_settings_and_starts_nothing(tmp_path, docs):
+    _on_the_mic(docs)
+    out = first_run(tmp_path, docs, f"""{_press(_heard_on_box())}
+        page.replies['setup/answer'] = [400, {{ error: {json.dumps(guitake.OUTPUT_MISSING)} }}];
+        $('setup-yes').click(); await page.settle();
+        return {{ ...{LOOK}, note: $('settings-note').textContent, shown: !$('settings-note').hidden, starts: page.posts('start').length }};""")
+    assert out["screen"] == "settings" and out["starts"] == 0
+    assert out["note"] == guitake.OUTPUT_MISSING and out["shown"] is True
+
+
+# ------------------------------------------------------------- saying a missing output only once
+
+def test_an_output_that_has_gone_is_said_once_and_not_sent_to_where_she_already_is(tmp_path, docs):
+    _with_output(docs, saved="f" * 16)
+    for device in docs["home"]["devices"]:
+        if device["name"] == "Test Interface":
+            device["output_problem"] = guitake.OUTPUT_MISSING
+    out = run_page(tmp_path, docs, f"""
+        page.replies.setup = [400, {{ error: {json.dumps(guitake.OUTPUT_MISSING)} }}];
+        page.replies.start = [400, {{ error: {json.dumps(guitake.OUTPUT_MISSING)} }}];
+        $('start').click(); await page.settle();
+        return {{ ...{OUTPUT}, screen: page.screen(), top: !$('settings-note').hidden }};""")
+    assert out["screen"] == "settings"
+    assert out["top"] is False, "the same red sentence twice"
+    assert out["note"] == guitake.OUTPUT_MISSING
+    assert "in Settings" not in guitake.OUTPUT_MISSING
+
+
+# ------------------------------------------------------------------- the header on a narrow phone
+
+def test_the_header_cannot_push_a_phone_page_sideways():
+    """The stub has no layout, so this reads the rules.  Measured in headless Chrome at 320 too."""
+    css = (STATIC / "plume.css").read_text()
+    assert "flex-wrap: wrap" in re.search(r"(?m)^header \{([^}]*)\}", css)[1]
+    assert "white-space: nowrap" in re.search(r"(?m)^\.navlink \{([^}]*)\}", css)[1]
+    assert "margin-left: auto" in re.search(r"(?m)^\.seg \{([^}]*)\}", css)[1], "wrapped, the light switch stays on the right"

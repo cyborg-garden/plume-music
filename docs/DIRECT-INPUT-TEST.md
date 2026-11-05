@@ -163,6 +163,7 @@ To try speakers in the room, open Settings and pick them under Output. This is t
 | Pick the speakers, leave the tick off, click Start and play | The band comes out of the speakers. Your guitar comes only through your interface's own monitoring. `session.json` names the output under `input` |
 | Tick Send my instrument to this output, with an instrument plugged in, and start again | Your guitar comes out of the speakers too, slightly late. Note how late it feels, against the delay in Details |
 | Move to another channel in Settings | The tick shows off until you say so again |
+| With two interfaces plugged in and no setup yet, pick the speakers, click Start and play into the interface Settings was not showing | Plume says which input it heard you on and asks about the speakers before the count |
 | Unplug the speakers, then click Start | Settings says it could not find that output, and nothing plays anywhere else |
 | Try a pair that may refuse, such as a display's speakers | Either it plays, or Settings says the two would not open together. Note which |
 | Play ten minutes | Note whether the band and your guitar drift apart. Plume does nothing about this |

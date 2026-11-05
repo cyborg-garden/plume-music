@@ -1,13 +1,20 @@
-/* The Record and the shelf. Everything shown comes from the bridge, already filtered
-   and already in sentences. Words go in with textContent only. */
+/* Home, the live view, the Record and the shelf. Everything shown comes from the bridge,
+   already filtered and already in sentences. Words go in with textContent only.
+
+   Nothing here starts anything by itself: the one POST to /api/start is in the Start
+   button's click handler, and nothing here gives that button focus, so a stray key cannot
+   press it. */
 import { clearStones, cssVar, queueStone, rng, stonesIdle, tok } from '/static/stone.js';
 import { hitBoxes, lineSpans, nextIndex } from '/static/layout.js';
-import { lostWords, pinnedRoute } from '/static/session.js';
+import { lostWords, pinnedRoute, routeOf } from '/static/session.js';
+import { delayLine, endedNote, isRunning, keyLine, landing, meterShare, routeLine, stageWords, youView } from '/static/live.js';
 
 const $ = function (id) { return document.getElementById(id); };
 const S = { csrf: '', take: null, selected: null, roastOn: true, screen: 'loading', nav: 0,
   shelfKey: null, shelfDone: false, shelfTakes: [], lastTake: null, shelfScroll: 0, cameByLink: false,
-  nameFor: null, nameSent: '', keepTurn: {}, nameTurn: {}, moving: false, failed: null, newNames: {} };
+  nameFor: null, nameSent: '', keepTurn: {}, nameTurn: {}, moving: false, failed: null, newNames: {},
+  live: { state: 'idle' }, liveTurn: 0, following: false, starting: false, stopSent: false, stopPending: false,
+  home: null, homeTurn: 0, homeNote: '', form: { device: null, channel: 1, hear: null } };
 
 function load(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
 function save(k, v) { try { localStorage.setItem(k, v); } catch (e) { /* private window */ } }
@@ -30,14 +37,21 @@ async function api(path) {
   if (!r.ok) { const e = new Error('http ' + r.status); e.status = r.status; throw e; }
   return r.json();
 }
-async function post(op, body) {
+/* The answer as well as the status: a refused Start says why, and what is running instead. */
+async function send(op, body) {
   const r = await fetch('/api/' + op, {
     method: 'POST', credentials: 'same-origin',
     headers: { 'Content-Type': 'application/json', 'X-Plume-Token': S.csrf },
     body: JSON.stringify(body)
   });
-  if (!r.ok) { const e = new Error('http ' + r.status); e.status = r.status; throw e; }
-  return r.json();
+  let doc = null;
+  try { doc = await r.json(); } catch (e) { /* the status still says what happened */ }
+  return { ok: r.ok, status: r.status, doc: doc };
+}
+async function post(op, body) {
+  const answer = await send(op, body);
+  if (!answer.ok) { const e = new Error('http ' + answer.status); e.status = answer.status; throw e; }
+  return answer.doc;
 }
 
 function fmtTime(s) { const m = Math.floor(s / 60), r = Math.floor(s % 60); return m + ':' + (r < 10 ? '0' : '') + r; }
@@ -58,9 +72,10 @@ function metaOf(t) {
 function setScreen(name) {
   S.screen = name;
   document.body.setAttribute('data-screen', name);
-  ['record', 'shelf', 'problem'].forEach(function (s) { $(s).hidden = s !== name; });
+  ['home', 'live', 'record', 'shelf', 'problem'].forEach(function (s) { $(s).hidden = s !== name; });
   if (name !== 'record') stopAudio();
   window.scrollTo(0, 0);
+  reflectNav();
 }
 /* A moment's wait says so. Anything quicker says nothing, so it does not flicker. */
 let busyTimer = 0;
@@ -253,6 +268,9 @@ function refreshHead() {
   k.classList.toggle('undo', t.kept);
   k.textContent = t.kept ? 'Undo' : 'Keep';
   $('kept-status').hidden = !t.kept;
+  const ended = endedNote(S.live, t.id);
+  $('rec-note').hidden = !ended;
+  $('rec-note').textContent = ended;
   $('keep-panel').hidden = !t.kept;
   if (t.kept) {
     const box = $('take-name');
@@ -296,13 +314,12 @@ function paintPortrait() {
 }
 
 /* Screens live in the address, so Back and reload work. Only the last request to start counts. */
-function routedTake() {
-  const found = /^#\/take\/([0-9a-f]{16})$/.exec(location.hash);
-  return found ? found[1] : null;
-}
 function showRoute() {
-  const id = routedTake();
-  if (id) openRecord(id); else openShelf();
+  const route = routeOf(location.hash);
+  if (route.name === 'take') openRecord(route.id);
+  else if (route.name === 'takes') openShelf();
+  else if (route.name === 'live') openLive();
+  else openHome();
 }
 function goTake(id) {
   S.lastTake = id; S.shelfScroll = window.scrollY;
@@ -310,8 +327,28 @@ function goTake(id) {
   openRecord(id);
 }
 function goShelf() {
-  if (location.hash) history.pushState(null, '', location.pathname);
+  S.homeNote = '';
+  if (location.hash !== '#/takes') history.pushState(null, '', '#/takes');
   openShelf();
+}
+function goHome() {
+  if (routeOf(location.hash).name !== 'home') history.pushState(null, '', '#/');
+  openHome();
+}
+function goLive() {
+  if (location.hash !== '#/live') history.pushState(null, '', '#/live');
+  openLive();
+}
+/* A screen with nothing to fetch. Leaving a Record still saves what was typed there. */
+function arriveAt(name) {
+  S.nav += 1;
+  busy(false);
+  S.moving = true;
+  saveName();
+  leaveName();
+  setScreen(name);
+  arrived(null);
+  $(name).focus({ preventScroll: true });
 }
 
 async function openRecord(id) {
@@ -467,6 +504,269 @@ function repaintShelf() {
   S.shelfKey = JSON.stringify(S.shelfTakes) + currentTheme();
 }
 
+/* ------------------------------------------------------------------------ home */
+
+function chosenDevice() {
+  if (!S.home) return null;
+  const id = S.form.device || S.home.device;
+  return S.home.devices.find(function (d) { return d.id === id; }) || null;
+}
+function hearOn() { return S.form.hear === null ? true : S.form.hear; }
+function drawOptions(select, options, value) {
+  select.textContent = '';
+  options.forEach(function (o) {
+    const el = document.createElement('option');
+    el.value = o.value; el.textContent = o.label;
+    select.appendChild(el);
+  });
+  select.value = value;
+}
+function drawHomeMenu() {
+  const doc = S.home;
+  if (!doc) return;
+  /* A device that went away falls back to the default rather than to nothing. */
+  if (S.form.device && !doc.devices.some(function (d) { return d.id === S.form.device; })) { S.form.device = null; S.form.channel = 1; }
+  const device = chosenDevice(), most = device ? device.inputs : 1;
+  if (S.form.channel > most) S.form.channel = 1;
+  const devices = doc.devices.map(function (d) {
+    return { value: d.id, label: d.name + (d.mode === 'room' ? ' (room mic)' : '') };
+  });
+  if (!doc.device) devices.unshift({ value: '', label: 'System default (room mic)' });
+  drawOptions($('set-device'), devices, device ? device.id : '');
+  const channels = [];
+  for (let n = 1; n <= most; n++) channels.push({ value: String(n), label: String(n) });
+  drawOptions($('set-channel'), channels, String(S.form.channel));
+  $('set-channel').hidden = $('channel-label').hidden = most < 2;
+  const styles = $('style-list');
+  styles.textContent = '';
+  doc.styles.forEach(function (name) { const o = document.createElement('option'); o.value = name; styles.appendChild(o); });
+  $('set-folder').textContent = doc.folder;
+  drawHear();
+  drawSummary();
+}
+function drawHear() {
+  /* Never offered on a built-in mic: through laptop speakers it would feed back. */
+  const device = chosenDevice(), allowed = !!(device && device.hear_me);
+  $('hear-row').hidden = !allowed;
+  $('hear-words').hidden = !allowed;
+  $('hear-me').checked = allowed && hearOn();
+  $('hear-short').hidden = !hearOn();
+  $('hear-delay').textContent = delayLine(S.home && S.home.hear_me.reported_ms);
+}
+function drawSummary() {
+  if (S.home) $('home-summary').textContent = routeLine(chosenDevice(), S.form.channel, $('set-key').value.trim(), $('set-style').value.trim());
+}
+/* A terminal's take is the only thing that takes Start's place. */
+function drawHomeState() {
+  const there = S.live.state === 'elsewhere';
+  $('start').hidden = there;
+  $('home-elsewhere').hidden = !there;
+  if (there) {
+    $('elsewhere-text').textContent = S.live.message;
+    $('elsewhere-stop').disabled = !!S.live.stopping;
+    $('elsewhere-stop').textContent = S.live.stopping ? 'Stopping' : 'Stop it';
+  }
+  const note = there ? '' : S.homeNote || (S.home && S.home.problem) || '';
+  $('home-note').hidden = !note;
+  $('home-note').textContent = note;
+}
+async function loadHome() {
+  const turn = ++S.homeTurn;
+  let doc;
+  /* Start does not need this: with nothing chosen the bridge makes the same choice itself. */
+  try { doc = await api('/api/home'); } catch (err) { if (turn === S.homeTurn && err.status === 401) problem(err); return; }
+  if (turn !== S.homeTurn) return;
+  S.home = doc;
+  drawHomeMenu();
+  drawHomeState();
+}
+function openHome() {
+  if (isRunning(S.live)) { history.replaceState(null, '', '#/live'); openLive(); return; }
+  arriveAt('home');
+  drawHomeMenu();
+  drawHomeState();
+  loadHome();
+}
+/* Only what was decided here. The bridge checks every field again. */
+function startBody() {
+  const body = {}, key = $('set-key').value.trim(), style = $('set-style').value.trim();
+  if (key) body.key = key;
+  if (style) body.style = style;
+  if (S.home) {
+    const device = chosenDevice();
+    if (device) body.device = device.id;
+    body.channel = S.form.channel;
+    body.hear_me = !!(device && device.hear_me && hearOn());
+  }
+  return body;
+}
+function backHome(message, openMenu) {
+  S.following = false;
+  S.homeNote = message || '';
+  history.replaceState(null, '', '#/');
+  openHome();
+  if (openMenu) $('home-menu').open = true;
+}
+/* The page goes to the live view straight away. Listing devices can take seconds, and Stop
+   has to be there during them. */
+async function startTake() {
+  if (S.starting || isRunning(S.live)) return;
+  S.starting = true;
+  S.stopSent = false; S.stopPending = false;
+  S.liveTurn += 1;
+  S.homeNote = '';
+  S.following = true;
+  S.live = { state: 'starting' };
+  $('cue-note').textContent = '';
+  goLive();
+  let answer = null;
+  try { answer = await send('start', startBody()); } catch (err) { /* said below */ }
+  S.starting = false;
+  S.liveTurn += 1;
+  if (answer && answer.status === 401) { problem(answer); return; }
+  if (answer && answer.ok) applyLive(answer.doc);
+  else if (answer && answer.status === 409 && answer.doc && answer.doc.live) applyLive(answer.doc.live);
+  else {
+    /* Nothing started, as far as this page knows. The next look at the bridge corrects that. */
+    S.live = { state: 'idle' };
+    if (!answer) backHome('Plume could not reach plume gui. Is it still running in your terminal?');
+    else if (answer.status === 400 && answer.doc && answer.doc.error) backHome(answer.doc.error, true);
+    else backHome('The take did not start.');
+    return;
+  }
+  if (S.stopPending && isRunning(S.live)) { S.stopPending = false; S.stopSent = false; stopTake(); }
+  pollSoon();
+}
+
+/* ------------------------------------------------------------------- a live take */
+
+function openLive() {
+  if (!isRunning(S.live)) { land(S.live); return; }
+  S.following = true;
+  arriveAt('live');
+  drawLive();
+}
+function land(doc) {
+  const to = landing(doc);
+  S.following = false;
+  if (to.take) {
+    history.replaceState(null, '', '#/take/' + to.take);
+    openRecord(to.take);
+  } else backHome(to.message);
+}
+function liveWords(doc, row) {
+  if (doc.state === 'starting') return 'Opening the device.';
+  if (doc.state === 'waiting') return 'Knock or clap 8 even beats.';
+  if (doc.state === 'stopping') return 'Stopping.';
+  return keyLine(row, doc);
+}
+function drawLive() {
+  const doc = S.live, row = doc.row || null, you = youView(row, doc);
+  const stopping = doc.state === 'stopping' || S.stopSent;
+  $('live-say').textContent = liveWords(doc, row);
+  $('live-stop').disabled = stopping;
+  $('live-stop').textContent = stopping ? 'Stopping' : 'Stop';
+  const hint = S.liveLost ? 'Lost touch with plume gui. If it has closed, plume stop still ends the take.' : doc.message || doc.hint || '';
+  $('live-hint').hidden = !hint;
+  $('live-hint').textContent = hint;
+  const hasLevel = you.level !== null;
+  $('meter').hidden = !hasLevel;
+  $('meter-fill').style.width = (hasLevel ? Math.round(meterShare(you.level) * 100) : 0) + '%';
+  $('live-facts').hidden = !row;
+  if (row) {
+    $('live-bar').textContent = row.bar;
+    $('live-tempo').textContent = Math.round(row.bpm) + ' bpm';
+    $('live-stage').textContent = stageWords(row.stage);
+    $('live-notes-box').hidden = !you.notes;
+    $('live-notes').textContent = you.notes && you.notes.length ? you.notes.join(' ') : 'None';
+    $('live-level-box').hidden = !hasLevel;
+    $('live-level').textContent = hasLevel ? Math.round(you.level) + ' dB' : '';
+  }
+  $('live-why').hidden = !you.why;
+  $('live-why').textContent = you.why;
+  /* Only once a stream has said so, and only when this take is monitoring. */
+  const ms = doc.hear_me && doc.stream ? doc.stream.reported_ms : null;
+  $('live-delay').hidden = typeof ms !== 'number';
+  $('live-delay').textContent = typeof ms === 'number' ? delayLine(ms) : '';
+  $('live-cues').hidden = doc.state !== 'playing';
+}
+/* A click sends one request. The bridge signals a take once however often it is asked, and
+   a second interrupt would cut the band's ending short. */
+async function stopTake() {
+  if (S.stopSent) return;
+  S.stopSent = true;
+  if (S.starting) S.stopPending = true;
+  if (S.screen === 'live') drawLive();
+  try {
+    const doc = await post('stop', {});
+    if (!S.starting) applyLive(doc);
+  } catch (err) {
+    S.stopSent = false;
+    if (err.status === 401) { problem(err); return; }
+    S.liveLost = true;
+    if (S.screen === 'live') drawLive();
+    else if (S.screen === 'home') { S.homeNote = 'That did not reach plume gui. plume stop in a terminal still ends the take.'; drawHomeState(); }
+  }
+}
+async function sendCue(cue) {
+  const note = $('cue-note');
+  note.textContent = '';
+  let answer = null;
+  try { answer = await send('cue', { cue: cue }); } catch (err) { /* said below */ }
+  if (answer && answer.status === 401) { problem(answer); return; }
+  if (answer && answer.ok) note.textContent = 'Asked for ' + cue + '.';
+  else note.textContent = answer && answer.doc && answer.doc.error ? answer.doc.error : 'The band did not answer that cue.';
+}
+/* Everything the bridge says about the take comes through here. */
+function applyLive(doc) {
+  S.live = doc;
+  if (isRunning(doc)) S.following = true;
+  else {
+    S.stopSent = false;
+    /* Stopped before it made a sound: there is no take to go back to. */
+    if (doc.state === 'idle' && S.screen !== 'live') S.following = false;
+  }
+  reflectNav();
+  if (isRunning(doc)) {
+    if (S.screen === 'home') goLive();
+    else if (S.screen === 'live') drawLive();
+    return;
+  }
+  if (S.screen === 'live') { land(doc); return; }
+  if (S.screen === 'home') drawHomeState();
+}
+/* A person reading the shelf during a take stays there, with a way back to it. */
+function reflectNav() {
+  const nav = $('nav-live'), running = isRunning(S.live);
+  nav.hidden = S.screen === 'live' || !(running || S.following);
+  nav.textContent = running ? 'Playing' : 'Last take';
+}
+/* Asking is also what tells the bridge a page is still here, so this runs on every screen
+   and never overlaps itself. */
+let pollTimer = 0;
+function pollSoon() {
+  clearTimeout(pollTimer);
+  pollTimer = setTimeout(pollLive, isRunning(S.live) ? 1000 : 3000);
+}
+async function pollLive() {
+  const turn = S.liveTurn;
+  try {
+    const doc = await api('/api/live');
+    /* Asked before a Start, this can describe the take before. */
+    if (turn === S.liveTurn && !S.starting) {
+      S.liveLost = false;
+      applyLive(doc);
+    }
+  } catch (err) {
+    if (err.status === 401 && (S.screen === 'live' || S.screen === 'home')) problem(err);
+    else if (err.status !== 401) {
+      S.liveLost = true;
+      if (S.screen === 'live') drawLive();
+    }
+  }
+  pollSoon();
+}
+
 /* --------------------------------------------------------------- light and grain */
 
 function paintGrain() {
@@ -506,8 +806,27 @@ function setTheme(name) {
 
 async function init() {
   S.roastOn = load('plume-roast') !== 'off';
-  $('wordmark').addEventListener('click', goShelf);
+  $('wordmark').addEventListener('click', goHome);
   $('nav-takes').addEventListener('click', goShelf);
+  $('nav-live').addEventListener('click', goLive);
+  $('start').addEventListener('click', startTake);
+  $('live-stop').addEventListener('click', stopTake);
+  $('elsewhere-stop').addEventListener('click', stopTake);
+  $('cue-busier').addEventListener('click', function () { sendCue('busier'); });
+  $('cue-sparser').addEventListener('click', function () { sendCue('sparser'); });
+  $('hear-me').addEventListener('change', function () { S.form.hear = $('hear-me').checked; drawHear(); });
+  $('set-device').addEventListener('change', function () {
+    S.form.device = $('set-device').value || null;
+    S.form.channel = 1;
+    drawHomeMenu();
+  });
+  $('set-channel').addEventListener('change', function () { S.form.channel = parseInt($('set-channel').value, 10) || 1; drawSummary(); });
+  /* Typing a fix answers the complaint about what was there. */
+  ['set-key', 'set-style'].forEach(function (id) {
+    $(id).addEventListener('input', function () { S.homeNote = ''; drawSummary(); drawHomeState(); });
+  });
+  /* A device plugged in since the page opened shows up here. */
+  $('home-menu').addEventListener('toggle', function () { if ($('home-menu').open && S.screen === 'home') loadHome(); });
   window.addEventListener('popstate', showRoute);
   $('events').addEventListener('keydown', function (ev) {
     const list = S.take ? S.take.events : [];
@@ -542,9 +861,13 @@ async function init() {
   reflectTheme();
   let session;
   try { session = await api('/api/session'); } catch (err) { problem(err); return; }
+  /* A reload finds the take it left, and never starts a second one. */
+  try { S.live = await api('/api/live'); } catch (err) { if (err.status === 401) { problem(err); return; } }
   const pinned = pinnedRoute(S.cameByLink, session.open_take, location.hash);
-  if (pinned) history.replaceState(null, '', pinned);
+  if (isRunning(S.live)) history.replaceState(null, '', '#/live');
+  else if (pinned) history.replaceState(null, '', pinned);
   showRoute();
+  pollSoon();
 }
 window.plumeStonesIdle = stonesIdle;
 init();

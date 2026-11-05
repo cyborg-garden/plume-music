@@ -16,6 +16,7 @@
   <header>
     <button id="wordmark" type="button">plume</button>
     <button id="nav-takes" class="navlink" type="button">Takes</button>
+    <button id="nav-live" class="navlink" type="button" hidden></button>
     <span id="busy" role="status" hidden>Opening</span>
     <span class="spacer"></span>
     <span class="seg" role="group" aria-label="Light">
@@ -31,6 +32,64 @@
     <p id="problem-text"></p>
   </main>
 
+  <main id="home" hidden tabindex="-1">
+    <div class="column">
+      <button id="start" class="solid" type="button">Start</button>
+      <div id="home-elsewhere" hidden>
+        <p id="elsewhere-text"></p>
+        <button id="elsewhere-stop" class="quiet" type="button">Stop it</button>
+      </div>
+      <p id="home-note" class="note warn" role="status" hidden></p>
+      <label id="hear-row" hidden><input id="hear-me" type="checkbox"> Hear me <span id="hear-short" class="note">Use headphones.</span></label>
+      <details id="home-menu">
+        <summary id="home-summary">Settings</summary>
+        <div id="menu-body">
+          <label for="set-key">Key</label>
+          <input id="set-key" type="text" autocomplete="off" spellcheck="false" maxlength="80" placeholder="Detect">
+          <label for="set-style">Style</label>
+          <input id="set-style" type="text" autocomplete="off" spellcheck="false" maxlength="80" placeholder="Detect" list="style-list">
+          <datalist id="style-list"></datalist>
+          <label for="set-device">Device</label>
+          <select id="set-device"></select>
+          <label id="channel-label" for="set-channel">Channel</label>
+          <select id="set-channel"></select>
+          <span id="folder-label">Takes go in</span>
+          <span id="set-folder"></span>
+        </div>
+        <div id="hear-words" hidden>
+          <p id="hear-delay" class="note"></p>
+          <p class="note">A Direct button on your interface has no latency. Using both doubles the sound.</p>
+        </div>
+      </details>
+    </div>
+  </main>
+
+  <main id="live" hidden tabindex="-1">
+    <div class="column">
+      <h1 id="live-say" aria-live="polite"></h1>
+      <button id="live-stop" class="solid" type="button">Stop</button>
+      <p id="live-hint" class="note warn" role="status" hidden></p>
+      <div id="meter" hidden><div id="meter-fill"></div></div>
+      <dl id="live-facts" hidden>
+        <div><dt>Bar</dt><dd id="live-bar"></dd></div>
+        <div><dt>Tempo</dt><dd id="live-tempo"></dd></div>
+        <div><dt>Stage</dt><dd id="live-stage"></dd></div>
+        <div id="live-notes-box"><dt>Your notes</dt><dd id="live-notes"></dd></div>
+        <div id="live-level-box"><dt>Your level</dt><dd id="live-level"></dd></div>
+      </dl>
+      <p id="live-why" class="note" hidden></p>
+      <p id="live-delay" class="note" hidden></p>
+      <details id="live-cues" hidden>
+        <summary>Cues</summary>
+        <div id="cue-buttons">
+          <button id="cue-busier" class="quiet" type="button">Busier</button>
+          <button id="cue-sparser" class="quiet" type="button">Sparser</button>
+        </div>
+        <p id="cue-note" class="note" role="status"></p>
+      </details>
+    </div>
+  </main>
+
   <main id="record" hidden tabindex="-1">
     <div id="rec-head">
       <h1 id="rec-title"></h1>
@@ -40,6 +99,7 @@
         <button id="keep" class="quiet" type="button">Keep</button>
       </div>
     </div>
+    <p id="rec-note" class="note" role="status" hidden></p>
     <div id="keep-panel" hidden>
       <label for="take-name">Name <input id="take-name" type="text" autocomplete="off" maxlength="120" placeholder="Name this take"></label>
       <span id="keep-path"></span>
@@ -79,7 +139,7 @@
   <main id="shelf" hidden tabindex="-1">
     <h1>Takes</h1>
     <p id="shelf-how">Height is the length of the take, up to five minutes. Lean is its tempo, the deep cut is where the band came in, and its slope is major or minor. Each nick is a cue that landed, up to eight. The seed sets the rest, which is only identity.</p>
-    <p id="shelf-empty" hidden>No takes here yet. Point this at a folder of takes with plume gui --takes, or open one with plume gui --take.</p>
+    <p id="shelf-empty" hidden>No takes here yet. Press Start on the first screen, point this at a folder of takes with plume gui --takes, or open one with plume gui --take.</p>
     <div id="shelf-grid"></div>
   </main>
 </div>

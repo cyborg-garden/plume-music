@@ -1,7 +1,16 @@
 /* What the page does about its link and its key. Pure, so it can be tested without a browser. */
 
+/* Which screen an address means. Anything else is home. */
+export function routeOf(hash) {
+  const found = /^#\/take\/([0-9a-f]{16})$/.exec(hash);
+  if (found) return { name: 'take', id: found[1] };
+  if (hash === '#/takes') return { name: 'takes' };
+  if (hash === '#/live') return { name: 'live' };
+  return { name: 'home' };
+}
+
 /* Where a pinned take sends the page. Only a link just opened goes there: after that
-   the address already says where the player is, and an empty one means the shelf. */
+   the address already says where the player is, and an empty one means home. */
 export function pinnedRoute(cameByLink, pinned, address) {
   return cameByLink && pinned && !address ? '#/take/' + pinned : null;
 }

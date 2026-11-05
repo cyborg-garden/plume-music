@@ -110,6 +110,97 @@ def test_only_the_first_load_jumps_to_the_pinned_take(tmp_path, came_by_link, pi
     assert run_js(tmp_path, "session", body=f"return session.pinnedRoute({args});") == want
 
 
+@pytest.mark.parametrize("address,want", [
+    ("", {"name": "home"}), ("#/", {"name": "home"}), ("#/takes", {"name": "takes"}),
+    ("#/live", {"name": "live"}), ("#/take/0123456789abcdef", {"name": "take", "id": "0123456789abcdef"}),
+    ("#/take/nothex", {"name": "home"}), ("#/take/0123456789abcdef/x", {"name": "home"}), ("#k=ab", {"name": "home"}),
+])
+def test_an_address_names_one_screen(tmp_path, address, want):
+    assert run_js(tmp_path, "session", body=f"return session.routeOf({json.dumps(address)});") == want
+
+
+def live_js(tmp_path, expr):
+    return run_js(tmp_path, "live", body=f"return {expr};")
+
+
+@pytest.mark.parametrize("row,doc,want", [
+    ({"key": "F major", "style": "midwest", "key_guess": True, "style_guess": True}, {}, "F major, midwest (a guess)"),
+    ({"key": "F major", "style": "midwest", "key_guess": False, "style_guess": True}, {"key": "F major"}, "F major, midwest (the style is a guess)"),
+    ({"key": "F major", "style": "midwest", "key_guess": True, "style_guess": False}, {"style": "midwest"}, "F major, midwest (the key is a guess)"),
+    ({"key": "F major", "style": "midwest", "key_guess": False, "style_guess": False}, {"key": "F major", "style": "midwest"}, "F major, midwest"),
+    ({"key": None, "style": "lofi", "key_guess": True, "style_guess": True}, {}, "Listening for the key, lofi (the style is a guess)"),
+    # A typed value wins, even over a row that calls it a guess.
+    ({"key": "F major", "style": "lofi", "key_guess": True, "style_guess": True}, {"key": "F major", "style": "lofi"}, "F major, lofi"),
+    # A key named by the player but held back until the band comes in.
+    ({"key": None, "style": "lofi", "key_guess": False, "style_guess": True}, {"key": "F major"}, "F major, lofi (the style is a guess)"),
+    (None, {}, "Listening for the key"),
+])
+def test_the_key_line_calls_a_guess_a_guess(tmp_path, row, doc, want):
+    assert live_js(tmp_path, f"live.keyLine({json.dumps(row)}, {json.dumps(doc)})") == want
+
+
+@pytest.mark.parametrize("trusted,notes,level", [
+    (["you_db", "you_busy", "you_notes"], ["F"], -18.0),
+    (["you_notes"], ["F"], None),
+    ([], None, None),
+    (None, None, None),
+])
+def test_a_field_the_bridge_does_not_trust_is_not_there(tmp_path, trusted, notes, level):
+    row = {"input": "room", "you_notes": ["F"], "you_db": -30.0, "you_trusted": trusted}
+    out = live_js(tmp_path, f"live.youView({json.dumps(row)}, {{level_db: -18.0}})")
+    assert out["notes"] == notes and out["level"] == level
+    assert bool(out["why"]) == (trusted != ["you_db", "you_busy", "you_notes"])
+
+
+def test_the_row_level_stands_in_when_the_recording_has_not_said(tmp_path):
+    row = {"input": "direct", "you_notes": [], "you_db": -30.0, "you_trusted": ["you_db", "you_notes"]}
+    assert live_js(tmp_path, f"live.youView({json.dumps(row)}, {{level_db: null}})")["level"] == -30.0
+
+
+def test_with_no_row_the_level_is_the_recordings(tmp_path):
+    assert live_js(tmp_path, "live.youView(null, {level_db: -44.0})") == {"notes": None, "level": -44.0, "why": ""}
+    assert live_js(tmp_path, "live.youView(null, {})")["level"] is None
+
+
+def test_a_direct_input_is_not_blamed_on_a_room_mic(tmp_path):
+    out = live_js(tmp_path, "live.youView({input: 'direct', you_trusted: []}, {level_db: -18})")
+    assert "room mic" not in out["why"] and out["why"]
+
+
+@pytest.mark.parametrize("db,want", [(-120.0, 0), (-60.0, 0), (-30.0, 0.5), (0.0, 1), (6.0, 1), (None, 0)])
+def test_the_meter_stays_on_its_scale(tmp_path, db, want):
+    assert live_js(tmp_path, f"live.meterShare({json.dumps(db)})") == want
+
+
+@pytest.mark.parametrize("doc,want", [
+    ({"state": "done", "take": "t1"}, {"take": "t1"}),
+    ({"state": "failed", "message": "words"}, {"home": True, "message": "words"}),
+    ({"state": "idle"}, {"home": True, "message": ""}),
+    ({"state": "elsewhere", "message": "not a failure"}, {"home": True, "message": ""}),
+])
+def test_where_a_take_lands(tmp_path, doc, want):
+    assert live_js(tmp_path, f"live.landing({json.dumps(doc)})") == want
+
+
+@pytest.mark.parametrize("state,running", [("starting", True), ("waiting", True), ("playing", True), ("stopping", True),
+                                           ("idle", False), ("done", False), ("failed", False), ("elsewhere", False)])
+def test_what_counts_as_running(tmp_path, state, running):
+    assert live_js(tmp_path, f"live.isRunning({{state: '{state}'}})") is running
+
+
+def test_no_number_means_no_claimed_delay(tmp_path):
+    words = live_js(tmp_path, "live.delayLine(null)")
+    assert "headphones" in words and "ms" not in words.split()
+
+
+def test_the_closed_menu_says_what_start_will_use(tmp_path):
+    direct = {"name": "Box", "mode": "direct"}
+    room = {"name": "Mic", "mode": "room"}
+    assert live_js(tmp_path, f"live.routeLine({json.dumps(direct)}, 2, '', '')") == "Box, channel 2"
+    assert live_js(tmp_path, f"live.routeLine({json.dumps(room)}, 1, 'F major', 'lofi')") == "Mic, room mic, F major, lofi"
+    assert live_js(tmp_path, "live.routeLine(null, 1, '', '')") == "System default, room mic"
+
+
 def test_a_tab_with_no_key_is_told_why_and_how_to_get_one(tmp_path):
     words = run_js(tmp_path, "session", body="return session.lostWords(false);")
     assert "session" not in words["title"].lower()

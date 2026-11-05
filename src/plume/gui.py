@@ -69,6 +69,7 @@ STATIC_FILES = {
     "stone.js": "text/javascript; charset=utf-8",
     "layout.js": "text/javascript; charset=utf-8",
     "session.js": "text/javascript; charset=utf-8",
+    "live.js": "text/javascript; charset=utf-8",
     "app.js": "text/javascript; charset=utf-8",
     "fonts/schibsted-grotesk-latin-400-normal.woff2": "font/woff2",
     "fonts/schibsted-grotesk-latin-500-normal.woff2": "font/woff2",

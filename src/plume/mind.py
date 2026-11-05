@@ -414,6 +414,17 @@ _DIRECTIONAL = ("go to", "back to", "hit the", "into the", "take it to",
                 "jump to", "to the", "onto the", "move to", "switch to",
                 "straight to", "cut to")
 
+#: Directionals that are ordinary English as often as they are a jump: "strip it
+#: back to just the groove", "back to normal", "listen to the drums".  These count
+#: only in front of a section name the parser knows; the others ("go to", "jump
+#: to", ...) still capture whatever name follows (a map's own names).  The cost,
+#: written down: "back to the drift-b" no longer jumps; "go to the drift-b" does.
+_WEAK_DIRECTIONAL = frozenset({"back to", "to the", "into the", "onto the"})
+
+#: "the top" of a song is its intro, however it is asked for.
+_TOP_PHRASES = ("to the top", "from the top", "top of the song", "to the start",
+                "from the start", "to the beginning", "from the beginning")
+
 #: section names that are also ordinary words ("drop it down", "break it up",
 #: "build it") — these need a directional phrase to read as a section cue.
 _AMBIGUOUS_SECTIONS = frozenset({"drop", "break", "build", "head", "hook"})
@@ -448,47 +459,94 @@ _STYLE_NAMES = {
     "soul": "soul", "gospel": "gospel",
 }
 
-_END_PHRASES = ("take it out", "take us out", "take it home", "bring it home",
+_END_PHRASES = ("take it out", "take us out", "take it home", "take us home",
+                "bring it home", "bring us home",
                 "wrap it up", "wrap it", "end it", "the end", "ending",
-                "last chorus", "final chorus", "last time", "one more and out",
+                "last chorus", "final chorus", "last time", "final time",
+                "one more and out",
                 "let it end", "cut it off", "finish it", "stop it", "stop",
                 "finish", "land it", "out chorus")
+
+#: A bare "end" is an ending only as (nearly) the whole utterance — "end", "ok
+#: end", "end it now" — and never inside a longer sentence ("end of the verse").
+_END_ALONE_MAX_WORDS = 3
 
 _TEMPO_PHRASES = (
     ("half", ("half time", "halftime", "half speed", "half tempo")),
     ("double", ("double time", "doubletime", "double speed", "double up",
-                "double tempo")),
+                "double it up", "double tempo")),
     ("ritard", ("ritard", "ritardando", "rit", "slow to a stop",
                 "slow it to a stop")),
     ("faster", ("faster", "speed up", "speed it up", "pick it up",
                 "push the tempo", "push it along", "up the tempo")),
     ("slower", ("slower", "slow down", "slow it down", "pull the tempo back",
-                "ease off the tempo", "back off the tempo")),
+                "ease off the tempo", "back off the tempo", "ease the tempo back",
+                "bring the tempo down")),
 )
 
 _TEXTURE_PHRASES = (
     ("darker", ("darker", "dark", "murkier", "moodier", "gloomier")),
-    ("brighter", ("brighter", "bright", "shinier", "crisper", "open it up")),
+    ("brighter", ("brighter", "bright", "shinier", "crisper", "open it up",
+                  "sparkle", "sparkly", "sparklier")),
     ("warmer", ("warmer", "warm", "rounder", "softer tone")),
     ("sparser", ("sparser", "sparse", "strip it back", "strip it down",
                  "thin it out", "thinner", "less busy", "pare it back",
-                 "simplify", "space")),
-    ("busier", ("busier", "busy", "fill it up", "denser", "dense",
+                 "simplify", "space", "drop out", "lay back", "give me room",
+                 "give me some room")),
+    ("busier", ("busier", "busy", "fill it up", "fill it in", "denser", "dense",
                 "more notes", "ornament")),
-    ("dry", ("dry", "drier", "less reverb", "kill the reverb")),
-    ("wet", ("wet", "wetter", "more reverb", "washier", "more space")),
+    ("dry", ("dry", "drier", "less reverb", "kill the reverb", "no reverb",
+             "reverb off", "lose the reverb")),
+    ("wet", ("wet", "wetter", "more reverb", "washier", "more space",
+             "reverb", "drench", "drenched", "soak it")),
 )
 
 _ENERGY_UP = ("louder", "harder", "bigger", "lift it", "lift", "build it",
               "more energy", "turn it up", "turn up", "go off", "hype",
-              "amp it up", "bring it up", "raise it", "hotter", "heavier",
-              "more")
+              "amp it up", "pump it up", "bring it up", "raise it", "hotter",
+              "heavier", "more")
 _ENERGY_DOWN = ("quieter", "softer", "calmer", "mellow", "mellower", "chill",
                 "chiller", "back off", "pull back", "drop it down",
                 "bring it down", "take it down", "cool it", "smaller",
                 "lighter", "less")
 
 _ENERGY_DELTA = 0.2
+
+#: "too <word>" asks for the opposite of the word.  Checked before the word
+#: itself, so "too busy" thins the band out instead of filling it in.
+_TOO = {
+    "busy": ("texture", "sparser"), "busier": ("texture", "sparser"),
+    "much": ("texture", "sparser"), "sparse": ("texture", "busier"),
+    "empty": ("texture", "busier"), "dark": ("texture", "brighter"),
+    "bright": ("texture", "darker"), "harsh": ("texture", "darker"),
+    "wet": ("texture", "dry"), "dry": ("texture", "wet"),
+    "loud": ("energy", "down"), "quiet": ("energy", "up"),
+    "soft": ("energy", "up"), "fast": ("tempo", "slower"),
+    "slow": ("tempo", "faster"),
+}
+
+#: Single words that are cues in a terse instruction and ordinary words in
+#: talk: "stop", "more coffee later?".  When one of these is the ONLY thing
+#: that matched, and the utterance reads as talk (a question, or someone
+#: talking about themselves), it is not a cue.  A clear phrase ("wrap it up",
+#: "more reverb", "go to the chorus") is never second-guessed.  The cost:
+#: "is it time to stop?" is not an ending, and "I want more" does not lift.
+_LOOSE_WORDS = frozenset({
+    "stop", "finish", "more", "less", "lift", "bigger", "harder", "heavier",
+    "hype", "chill", "lighter", "smaller", "space", "dark", "bright", "warm",
+    "busy", "dense", "sparse", "dry", "wet", "reverb", "simplify", "ornament",
+    "mellow", "calmer", "softer", "quieter", "louder"})
+_SELF_TALK = ("i", "i m", "im", "i ve", "i ll", "i d", "my", "myself", "mine")
+_QUESTION_OPENERS = ("what", "where", "who", "when", "why", "how", "is", "are",
+                     "was", "were", "did", "does", "do", "has", "have")
+
+
+def _reads_as_talk(raw: str, words: str) -> bool:
+    """A question, or someone talking about themselves rather than to the band."""
+    if raw.rstrip().endswith("?"):
+        return True
+    first = words.split(" ", 1)[0]
+    return first in _QUESTION_OPENERS or _has(words, _SELF_TALK) is not None
 
 
 def _cue_words(text: object) -> str:
@@ -536,10 +594,32 @@ def parse_cue(text: str) -> dict:
     if not w:
         return out("unknown", None)
 
+    talk = _reads_as_talk(raw, w)
+
+    def loose(phrase: str | None) -> bool:
+        """Only a loose word matched, inside talk: not a cue."""
+        return phrase in _LOOSE_WORDS and talk
+
     # Order matters: "drop to half time" is a TEMPO cue, not a section jump
     # to "drop" nor an energy drop; "last chorus" is an ENDING, not a jump.
-    if _has(w, _END_PHRASES):
+    end = _has(w, _END_PHRASES)
+    if end is not None and not loose(end):
         return out("end", "out")
+    if (_has(w, ("end",)) and len(w.split()) <= _END_ALONE_MAX_WORDS
+            and not talk):
+        return out("end", "out")
+
+    too = re.search(r"(?<!\w)too (\w+)(?: (\w+))?", w)
+    if too is not None and too.group(1) in _TOO and not talk:
+        kind, value = _TOO[too.group(1)]
+        if too.group(1) == "much" and too.group(2) in ("reverb", "echo", "wash"):
+            kind, value = "texture", "dry"
+        if kind == "tempo":
+            return out(kind, value, ratio=None)
+        if kind == "energy":
+            return out(kind, value,
+                       delta=_ENERGY_DELTA if value == "up" else -_ENERGY_DELTA)
+        return out(kind, value)
 
     for value, phrases in _TEMPO_PHRASES:
         if _has(w, phrases):
@@ -551,11 +631,18 @@ def parse_cue(text: str) -> dict:
     if _has(w, ("previous section", "last section", "back a section",
                "previous part")):
         return out("section", "prev")
+    if _has(w, _TOP_PHRASES):
+        return out("section", "intro")
     name = _has(w, _SECTION_NAMES)
     directional = _has(w, _DIRECTIONAL)
     if name is not None and (directional is not None
                              or name not in _AMBIGUOUS_SECTIONS):
         return out("section", "prechorus" if name == "pre chorus" else name)
+    if directional is not None and directional in _WEAK_DIRECTIONAL:
+        # Only a strong directional anywhere in the text may name a map's own
+        # section: "strip it back to just the groove" is not a jump.
+        directional = _has(w, tuple(d for d in _DIRECTIONAL
+                                    if d not in _WEAK_DIRECTIONAL))
     if directional is not None:
         # v2.1 AMENDMENT (SPEC-V2 section 3).  THE DEFECT: the parser knew
         # nineteen generic song-section names and v0 `compose` never emits one
@@ -587,12 +674,15 @@ def parse_cue(text: str) -> dict:
         return out("style", _STYLE_NAMES[style])
 
     for value, phrases in _TEXTURE_PHRASES:
-        if _has(w, phrases):
+        hit = _has(w, phrases)
+        if hit is not None and not loose(hit):
             return out("texture", value)
 
-    if _has(w, _ENERGY_UP):
+    hit = _has(w, _ENERGY_UP)
+    if hit is not None and not loose(hit):
         return out("energy", "up", delta=_ENERGY_DELTA)
-    if _has(w, _ENERGY_DOWN):
+    hit = _has(w, _ENERGY_DOWN)
+    if hit is not None and not loose(hit):
         return out("energy", "down", delta=-_ENERGY_DELTA)
 
     return out("unknown", None)

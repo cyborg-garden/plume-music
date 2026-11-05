@@ -62,14 +62,17 @@ export function meterShare(db) {
   return Math.max(0, Math.min(1, (db + 60) / 60));
 }
 
+/* The small sign. -45 dB is where plume itself calls a signal silence. */
+export function hearingWord(db) { return db >= -45 ? 'Hearing you' : 'Listening'; }
+
 /* The device's own number, called what it is. */
 export function delayLine(ms) {
   if (typeof ms !== 'number') return 'Use headphones. Plume shows the delay your device reports once a take starts.';
-  return 'Use headphones. Plume adds about ' + Math.round(ms) + ' ms, as your device reports it. This is not a measured round trip.';
+  return 'Use headphones. Hear me adds about ' + Math.round(ms) + ' ms, by your device\'s own count, and it could be more.';
 }
 
 /* Said where it can be read while it is happening: on home, and during the take. */
-export const DIRECT_LINE = 'A Direct button on your interface has no latency. Using both doubles the sound.';
+export const DIRECT_LINE = 'A Direct or monitor button on your interface has no delay. Using both doubles the sound.';
 
 /* A clap can't reach a pickup, and only a room mic hears the room. */
 export function countWords(mode) {
@@ -84,4 +87,70 @@ export function routeLine(device, channel, key, style) {
   if (key) bits.push(key);
   if (style) bits.push(style);
   return bits.join(', ');
+}
+
+/* ------------------------------------------------------------------ how a take ends */
+
+const END_LINE = 'Stop playing and the band will finish on its own.';
+export const FADING_LINE = 'The band is finishing. Play and it comes back.';
+export const ROOM_END_LINE = 'A room mic may not hear you stop, so press Stop when you are done.';
+export const NO_ENDING = { played: false, quietFrom: null };
+
+export function isFading(row) { return !!row && row.fade_db < 0; }
+
+/* What the engine has said about her playing, as a page polling it goes along. Only where the
+   engine trusts that word: over a room mic with the band in, "playing" mostly means the band. */
+export function watchEnding(seen, row) {
+  if (!row || !row.playing_trusted) return { played: seen.played, quietFrom: null };
+  if (row.playing) return { played: true, quietFrom: null };
+  return { played: seen.played, quietFrom: seen.quietFrom === null ? row.bar : seen.quietFrom };
+}
+
+/* Said once she has played and then gone quiet for more than a bar, which a rest can be too,
+   so it stays calm. Drums waiting for her first note are not the end of anything. */
+export function endLine(seen, row) {
+  if (!row || !seen.played || seen.quietFrom === null || isFading(row)) return '';
+  return row.bar - seen.quietFrom >= 1 ? END_LINE : '';
+}
+
+/* ---------------------------------------------------------------------- the first press */
+
+const TRY_OR_START = [{ answer: 'again', label: 'Play again' }, { answer: 'start', label: 'Start anyway' }];
+const LOST_PLACE = 'Plume lost its place. You can still start.';
+const ASKING = 'This computer may be asking to use the microphone.';
+
+/* The line while the bridge is being asked, from what it last said, so nothing flickers. */
+export function askingLine(known) {
+  if (known && known.done) return 'Opening the device.';
+  if (known && known.step === 'listen') return known.line;
+  return 'One moment.';
+}
+
+/* Somewhere to go when a step could not be done. A failed step never keeps her here. */
+export function setupTrouble(words) {
+  return { step: 'listen', line: words || LOST_PLACE, note: null, choices: TRY_OR_START, others: [] };
+}
+
+function heardNote(doc) {
+  if (!doc.heard || doc.heard.result !== 'ok' || !doc.device_name) return null;
+  return 'Heard you on ' + doc.device_name + (doc.mode === 'direct' ? ', channel ' + doc.channel : '') + '.';
+}
+
+/* The big line is the first sentence, and the rest sits under it in smaller words. */
+function splitLine(line) {
+  const found = /^(.*?[.?!])\s+(\S.*)$/.exec(line);
+  return found ? { line: found[1], more: found[2] } : { line: line, more: '' };
+}
+
+/* One line and what can be pressed. picked: a device she chose by name, if any.
+   slow: listening has gone on past the point a device should have opened. */
+export function setupView(doc, listening, picked, slow) {
+  if (listening) {
+    return { line: doc && doc.step === 'listen' && !(doc.choices || []).length ? doc.line : 'Play something.',
+      more: '', note: slow ? ASKING : picked ? 'Listening on ' + picked + '.' : null,
+      choices: [], others: [], listening: true };
+  }
+  /* The bridge wants step 1 again and nobody has clicked for it yet. */
+  const choices = doc.choices.length || doc.step !== 'listen' ? doc.choices : TRY_OR_START;
+  return Object.assign(splitLine(doc.line), { note: doc.note || heardNote(doc), choices: choices, others: doc.others || [], listening: false });
 }

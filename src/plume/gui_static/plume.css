@@ -78,7 +78,7 @@ header { display: flex; align-items: center; gap: 16px; padding-top: 14px; min-h
 
 /* The first screen: one Start. Everything else waits behind the menu. */
 .column { width: min(100%, 26rem); margin: 0 auto; display: flex; flex-direction: column; gap: 14px; }
-#home, #live { flex: 1; padding: clamp(40px, 18vh, 180px) 0 40px; }
+#home, #setup, #live { flex: 1; padding: clamp(40px, 18vh, 180px) 0 40px; }
 .solid { background: var(--text); color: var(--on-solid); border: 0; border-radius: 2px; font-weight: 500; }
 .solid:hover { opacity: .88; }
 .solid:disabled { background: none; color: var(--secondary); border: 1px solid var(--hairline); cursor: default; opacity: 1; }
@@ -96,22 +96,46 @@ header { display: flex; align-items: center; gap: 16px; padding-top: 14px; min-h
 #menu-body select option { background: var(--field); color: var(--text); }
 #set-folder { font: 400 13px var(--mono); overflow-wrap: anywhere; color: var(--text); }
 #hear-words { padding-top: 12px; }
+#again-row { margin: 12px 0 0; }
+.textlink { background: none; border: 0; padding: 6px 0; min-height: 32px; font-size: 14px; color: var(--secondary); text-decoration: underline; text-underline-offset: 3px; text-align: left; overflow-wrap: anywhere; }
+.textlink:hover { color: var(--text); }
+
+/* The first press: one line and one obvious thing to do, where Start was. The words, with the
+   gap, are taller than Start, so a double click on Start lands on the words and not on a choice. */
+#setup-words { min-height: 90px; }
+#setup-say { margin: 0; font-size: 28px; font-weight: 500; line-height: 1.2; letter-spacing: -.01em; }
+#setup-more { margin: 6px 0 0; font-size: 17px; line-height: 1.3; color: var(--secondary); }
+/* A double click on Start lands on words. It should not leave them selected. */
+#setup, #live-say { -webkit-user-select: none; user-select: none; }
+#setup-choices { display: flex; gap: 8px; }
+#setup-choices:empty { display: none; }
+#setup-choices button { flex: 1; min-width: 0; height: 64px; font-size: 22px; padding: 0 12px; }
+#setup-others { display: flex; flex-wrap: wrap; gap: 0 16px; }
+#setup-others:empty { display: none; }
+#setup-note { margin: 0; }
+#setup-leave { align-self: flex-start; }
+#setup-listening { height: 3px; border-bottom: 1px solid var(--hairline); }
+#setup-listening-fill { height: 100%; width: 100%; background: var(--text); transform-origin: left; animation: listening 4s linear both; }
+@keyframes listening { from { transform: scaleX(0); } to { transform: scaleX(1); } }
 
 /* A take in progress. Stop keeps its place while the words under it come and go. The words
    above it, with the gap, are taller than Start, so Stop begins below where Start ended and
    a double click anywhere on Start lands on the words. */
-#live-say { margin: 0; font-size: 24px; font-weight: 500; line-height: 1.2; letter-spacing: -.01em; min-height: 90px; }
+#live-say { margin: 0; font-size: 28px; font-weight: 500; line-height: 1.2; letter-spacing: -.01em; min-height: 90px; }
 #live-stop { height: 64px; font-size: 22px; }
 #live-hint { margin: 0; }
-#meter { height: 6px; border-bottom: 1px solid var(--hairline); }
+#hearing { display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--secondary); }
+#meter { flex: 1; height: 3px; border-bottom: 1px solid var(--hairline); }
 #meter-fill { height: 100%; width: 0; background: var(--text); }
 #live-facts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px 16px; margin: 0; }
 #live-facts dt { font-size: 12px; color: var(--secondary); }
 #live-facts dd { margin: 0; font: 400 17px/1.3 var(--mono); overflow-wrap: anywhere; }
-#live-why, #live-delay, #live-direct { margin: 0; }
-#live-cues { color: var(--secondary); font-size: 14px; }
-#live-cues summary { cursor: pointer; padding: 6px 0; }
-#cue-buttons { display: flex; gap: 8px; padding-top: 6px; }
+#live-why, #live-how, #live-delay, #live-direct { margin: 0; }
+#live-end { margin: 0; font-size: 16px; }
+#live-details { color: var(--secondary); font-size: 14px; }
+#live-details summary { cursor: pointer; padding: 6px 0; }
+#details-body { display: flex; flex-direction: column; gap: 12px; padding-top: 8px; }
+#cue-buttons { display: flex; gap: 8px; }
 #cue-buttons button { padding: 8px 14px; font-weight: 400; color: var(--text); }
 #cue-note { min-height: 1.45em; }
 #rec-note { margin: 8px 0 0; }

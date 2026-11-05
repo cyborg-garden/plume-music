@@ -70,9 +70,12 @@ function store() {
     removeItem: (k) => map.delete(k) };
 }
 
-export async function start(html, { takes, docs, home = null, live = null, address = '#k=' + 'ab'.repeat(32), pinned = null, stored = null }) {
+export async function start(html, { takes, docs, home = null, live = null, address = '#k=' + 'ab'.repeat(32), pinned = null, stored = null, setup = null }) {
   const page = { byId: new Map(), activeElement: null, calls: [], held: [], failNext: {}, saved: {},
-    home, live: live || { state: 'idle' }, replies: {}, down: false, later: new Map() };
+    home, live: live || { state: 'idle' }, replies: {}, down: false, later: new Map(),
+    /* A person who has been through setup, unless a test says otherwise. */
+    setup: setup || { step: 'count', line: 'Knock or clap 8 even beats.', note: null, choices: [], done: true, seconds: 4,
+      device: null, device_name: null, mode: 'room', channel: 1, hear_me: false } };
   page.body = new El(page, 'body');
   page.root = new El(page, 'html');
   page.activeElement = page.body;
@@ -102,7 +105,7 @@ export async function start(html, { takes, docs, home = null, live = null, addre
     const method = opts.method || 'GET', body = opts.body ? JSON.parse(opts.body) : null;
     const call = { method, path, body, key: opts.headers && opts.headers['X-Plume-Token'] };
     page.calls.push(call);
-    const op = path.replace('/api/', '');
+    const op = path.replace('/api/', '').split('?')[0];
     const liveWhenAsked = page.live;   // a held answer still says what was true when it was asked
     const held = page.held.find((h) => h.op === op && !h.taken);
     if (held) { held.taken = true; await held.until; }
@@ -111,6 +114,7 @@ export async function start(html, { takes, docs, home = null, live = null, addre
     /* Set a reply to answer that op with: [status, doc], used once. */
     if (page.replies[op]) { const [status, doc] = page.replies[op]; delete page.replies[op]; return reply(status, doc); }
     if (path === '/api/home') return reply(200, page.home);
+    if (path.startsWith('/api/setup')) return reply(200, page.setup);
     if (path === '/api/live') return reply(200, liveWhenAsked);
     if (op === 'start') { page.live = { state: 'starting' }; return reply(200, page.live); }
     if (op === 'stop') { if (page.live.state !== 'elsewhere') page.live = { state: 'stopping' }; return reply(200, page.live); }

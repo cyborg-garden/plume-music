@@ -664,7 +664,7 @@ def test_choosing_another_device_forgets_the_tick(tmp_path, docs):
     assert out["onMic"]["on"] is False and out["onMic"]["line"] == "Test Mic, room mic" and out["onMic"]["channel"] is False
     assert out["back"]["on"] is False and out["back"]["channel"] is True
     assert out["back"]["line"] == "Test Interface, channel 1"
-    assert out["body"] == {"device": interface["id"], "channel": 1}
+    assert out["body"] == {"device": interface["id"]}, "the channel is setup's to fill in, unless she changed it"
 
 
 def test_turning_hear_me_off_is_sent_and_kept_across_a_visit_to_the_shelf(tmp_path, docs):
@@ -695,8 +695,7 @@ def test_the_delay_is_called_what_it_is(tmp_path, docs):
         if device["name"] == "Test Interface":
             device["reported_ms"] = 12.4
     out = run_page(tmp_path, docs, f"return {HEAR};")
-    assert out["delay"] == ("Use headphones. Plume adds about 12 ms, as your device reports it. "
-                            "This is not a measured round trip.")
+    assert out["delay"] == "Use headphones. Hear me adds about 12 ms, by your device's own count, and it could be more."
 
 
 def test_the_delay_shown_is_the_chosen_devices_own(tmp_path, docs):
@@ -709,7 +708,7 @@ def test_the_delay_shown_is_the_chosen_devices_own(tmp_path, docs):
     assert out["delay"] == "Use headphones. Plume shows the delay your device reports once a take starts."
 
 
-DIRECT_LINE = "A Direct button on your interface has no latency. Using both doubles the sound."
+DIRECT_LINE = "A Direct or monitor button on your interface has no delay. Using both doubles the sound."
 
 
 def test_the_direct_button_line_waits_in_the_menu_for_hear_me(tmp_path, docs):
@@ -812,6 +811,119 @@ def test_a_running_take_beats_a_pinned_one_and_an_old_address(tmp_path, docs):
     assert pinned["screen"] == "live" and old["screen"] == "live"
 
 
+def test_the_first_view_of_a_take_is_one_line_a_sign_and_stop():
+    """Everything else waits in one menu, cues and the delay included."""
+    html = (STATIC / "index.html").read_text()
+    live = html[html.index('<main id="live"'):html.index('<main id="record"')]
+    first = live[:live.index('<details id="live-details"')]
+    details = live[live.index('<details id="live-details"'):]
+    assert 'id="live-say"' in first and 'id="live-stop"' in first and 'id="meter"' in first
+    for name in ("live-facts", "live-why", "live-delay", "live-direct", "live-cues", "cue-busier", "cue-sparser"):
+        assert f'id="{name}"' in details and f'id="{name}"' not in first
+    assert live.count("<details") == 1 and ">Details</summary>" in details
+
+
+def test_details_stays_shut_on_its_own_and_is_there_once_there_is_something_in_it(tmp_path, docs):
+    room = {**WAITING, "mode": "room", "hear_me": False}
+    out = live_page(tmp_path, docs, room, f"""
+        const waiting = !$('live-details').hidden;
+        page.live = {json.dumps(PLAYING)};
+        await page.poll();
+        return {{ waiting, playing: !$('live-details').hidden, open: $('live-details').open }};""")
+    assert out == {"waiting": False, "playing": True, "open": False}
+
+
+def test_the_delay_can_be_found_while_waiting_when_it_is_known(tmp_path, docs):
+    out = live_page(tmp_path, docs, WAITING, f"return {{ details: !$('live-details').hidden, ...{FACTS} }};")
+    assert out["details"] is True and "about 8 ms" in out["delay"]
+
+
+# Her own playing, as the engine saw it, is what the words about the ending go by.
+PLAYED = {**PLAYING, "row": {**ROW, "playing": True, "playing_trusted": True, "fade_db": 0.0}}
+
+
+def _rest(bar, **more):
+    return {**PLAYED, "row": {**PLAYED["row"], "bar": bar, "playing": False, **more}}
+
+
+END = "$('live-end').hidden ? '' : $('live-end').textContent"
+
+
+def test_it_says_how_the_take_ends_when_she_has_stopped_playing(tmp_path, docs):
+    out = live_page(tmp_path, docs, PLAYED, f"""
+        const playing = {END};
+        page.live = {json.dumps(_rest(13))};
+        await page.poll();
+        const oneBar = {END};
+        page.live = {json.dumps(_rest(14))};
+        await page.poll();
+        const twoBars = {END};
+        page.live = {json.dumps({**PLAYED, "row": {**PLAYED["row"], "bar": 15}})};
+        await page.poll();
+        return {{ playing, oneBar, twoBars, back: {END} }};""")
+    assert out["playing"] == "" and out["oneBar"] == ""
+    assert out["twoBars"] == "Stop playing and the band will finish on its own."
+    assert out["back"] == ""
+
+
+def test_the_drums_waiting_for_her_are_not_the_end_of_anything(tmp_path, docs):
+    """Nothing has been played yet, so telling her how to finish would be nonsense."""
+    out = live_page(tmp_path, docs, _rest(1), f"""
+        page.live = {json.dumps(_rest(4))};
+        await page.poll();
+        return {END};""")
+    assert out == ""
+
+
+def test_a_room_mic_never_promises_the_band_will_finish(tmp_path, docs):
+    """It cannot hear her stop, so that is said in Details and Stop is how it ends."""
+    room = {**PLAYING, "mode": "room", "hear_me": False,
+            "row": {**ROW, "input": "room", "you_trusted": [], "playing": False, "playing_trusted": False, "fade_db": 0.0}}
+    played = {**room, "row": {**room["row"], "playing": True, "bar": 3}}
+    out = live_page(tmp_path, docs, played, f"""
+        page.live = {json.dumps({**room, "row": {**room["row"], "bar": 9}})};
+        await page.poll();
+        return {{ end: {END}, how: $('live-how').hidden ? '' : $('live-how').textContent }};""")
+    assert out["end"] == "" and out["how"] == "A room mic may not hear you stop, so press Stop when you are done."
+
+
+def test_a_direct_input_is_not_told_to_press_stop(tmp_path, docs):
+    assert live_page(tmp_path, docs, PLAYED, "return $('live-how').hidden;") is True
+
+
+def test_the_fade_is_one_line_that_says_she_can_bring_it_back(tmp_path, docs):
+    out = live_page(tmp_path, docs, _rest(20, fade_db=-3.0), f"return {{ end: {END}, ...{FACTS} }};")
+    assert out["say"] == "The band is finishing. Play and it comes back."
+    assert out["end"] == "" and out["stop"] == "Stop"
+
+
+def test_a_take_after_this_one_starts_with_a_clean_slate(tmp_path, docs):
+    out = live_page(tmp_path, docs, PLAYED, f"""
+        page.live = {json.dumps(_rest(13))};
+        await page.poll();
+        page.live = {json.dumps({"state": "idle"})};
+        await page.poll();
+        $('start').click(); await page.settle();
+        page.live = {json.dumps(_rest(1))};
+        await page.poll();
+        page.live = {json.dumps(_rest(3))};
+        await page.poll();
+        return {END};""")
+    assert out == ""
+
+
+@pytest.mark.parametrize("level,word", [(-18.0, "Hearing you"), (-60.0, "Listening")])
+def test_the_small_sign_says_in_a_word_whether_it_hears_her(tmp_path, docs, level, word):
+    out = live_page(tmp_path, docs, {**WAITING, "level_db": level},
+                    "return { word: $('hearing-word').textContent, shown: !$('hearing').hidden };")
+    assert out == {"word": word, "shown": True}
+
+
+def test_with_nothing_it_can_trust_there_is_no_sign(tmp_path, docs):
+    room = {**PLAYING, "mode": "room", "hear_me": False, "row": {**ROW, "input": "room", "you_trusted": []}}
+    assert live_page(tmp_path, docs, room, "return $('hearing').hidden;") is True
+
+
 def test_while_waiting_it_says_to_count_and_shows_a_level(tmp_path, docs):
     out = live_page(tmp_path, docs, {**WAITING, "mode": "room", "hear_me": False}, f"return {FACTS};")
     assert out["say"] == "Knock or clap 8 even beats."
@@ -867,7 +979,7 @@ def test_the_live_delay_shows_only_when_monitoring_and_reported(tmp_path, docs):
     on = live_page(tmp_path, docs, PLAYING, f"return {FACTS};")
     off = live_page(tmp_path, docs, {**PLAYING, "hear_me": False}, f"return {FACTS};")
     unknown = live_page(tmp_path, docs, {**PLAYING, "stream": {**PLAYING["stream"], "reported_ms": None}}, f"return {FACTS};")
-    assert "about 8 ms" in on["delay"] and "not a measured round trip" in on["delay"]
+    assert "about 8 ms" in on["delay"] and "could be more" in on["delay"]
     assert off["delay"] == "" and unknown["delay"] == ""
 
 
@@ -1155,6 +1267,411 @@ def test_start_refused_for_a_terminal_take_shows_that_take(tmp_path, docs):
         $('start').click(); await page.settle();
         return {OTHER};""")
     assert out["screen"] == "home" and out["box"] is True and out["start"] is False
+
+
+# ------------------------------------------------------------------- the first press
+
+def steps(*names):
+    return [{"answer": n, "label": n.title()} for n in names]
+
+
+def setup_doc(step, line, *choices, device="dev0000000000000", device_name="Test Interface", **more):
+    return {"step": step, "line": line, "note": None, "choices": steps(*choices), "done": step == "count",
+            "seconds": 4.0, "device": device, "device_name": device_name, "mode": "direct", "channel": 1,
+            "hear_me": False, **more}
+
+
+LISTEN = setup_doc("listen", guitake.PLAY_SOMETHING)
+HEADPHONES = setup_doc("headphones", "Headphones on?", "yes", "no")
+HEARD = {"result": "ok", "channel": 2, "peak_db": -12.0}
+COUNT = setup_doc("count", guitake.COUNT_LINE)
+SEEN = """{ screen: page.screen(), say: $('setup-say').textContent, more: $('setup-more').hidden ? '' : $('setup-more').textContent, note: $('setup-note').hidden ? '' : $('setup-note').textContent,
+  choices: $('setup-choices').children.map((b) => b.textContent), others: $('setup-others').children.map((b) => b.textContent),
+  listening: !$('setup-listening').hidden }"""
+MUTATIONS = "page.calls.filter((c) => c.method === 'POST').map((c) => c.path.replace('/api/', ''))"
+
+
+def first_run(tmp_path, docs, body, setup=LISTEN, **options):
+    return run_page(tmp_path, docs, body, setup=setup, **options)
+
+
+def test_loading_the_page_listens_to_nothing(tmp_path, docs):
+    out = first_run(tmp_path, docs, f"return {MUTATIONS};")
+    assert out == []
+
+
+def test_the_click_on_start_is_what_starts_the_listening(tmp_path, docs):
+    out = first_run(tmp_path, docs, f"""
+        const open = page.hold('setup/listen');
+        $('start').click(); await page.settle();
+        const during = {SEEN}, posts = {MUTATIONS};
+        open();
+        return {{ during, posts, body: page.posts('setup/listen') }};""")
+    assert out["during"]["screen"] == "setup" and out["during"]["say"] == guitake.PLAY_SOMETHING
+    assert out["during"]["choices"] == [] and out["during"]["listening"] is True
+    assert out["posts"] == ["setup/listen"] and out["body"] == [{}]
+
+
+def test_two_clicks_on_start_listen_once(tmp_path, docs):
+    out = first_run(tmp_path, docs, f"""
+        page.hold('setup/listen');
+        $('start').click(); $('start').click(); await page.settle();
+        return {MUTATIONS};""")
+    assert out == ["setup/listen"]
+
+
+def test_a_reload_on_the_setup_address_listens_to_nothing(tmp_path, docs):
+    out = first_run(tmp_path, docs, f"return {{ screen: page.screen(), posts: {MUTATIONS} }};", address="#/setup", stored=KEY)
+    assert out == {"screen": "home", "posts": []}
+
+
+def test_a_good_level_goes_straight_to_the_next_question_and_says_who_heard(tmp_path, docs):
+    out = first_run(tmp_path, docs, f"""
+        page.replies['setup/listen'] = [200, {json.dumps({**HEADPHONES, "channel": 2, "heard": HEARD, "others": []})}];
+        $('start').click(); await page.settle();
+        return {SEEN};""")
+    assert out["screen"] == "setup" and out["say"] == "Headphones on?" and out["choices"] == ["Yes", "No"]
+    assert out["note"] == "Heard you on Test Interface, channel 2." and out["listening"] is False
+
+
+def test_a_level_that_needs_a_hand_says_so_and_offers_both_ways_on(tmp_path, docs):
+    hot = {**setup_doc("listen", guitake.HOT_GAIN, "again", "start"),
+           "heard": {"result": "hot", "channel": 1, "peak_db": -0.2}, "others": []}
+    out = first_run(tmp_path, docs, f"""
+        page.replies['setup/listen'] = [200, {json.dumps(hot)}];
+        $('start').click(); await page.settle();
+        const seen = {SEEN};
+        page.hold('setup/listen');
+        $('setup-again').click(); await page.settle();
+        return {{ seen, again: {SEEN}, posts: {MUTATIONS} }};""")
+    assert out["seen"]["say"] == "A bit hot." and out["seen"]["choices"] == ["Again", "Start"]
+    assert out["seen"]["more"] == "Turn the gain down a little and play again."
+    assert out["again"]["say"] == guitake.PLAY_SOMETHING and out["again"]["listening"] is True
+    assert out["posts"] == ["setup/listen", "setup/listen"]
+
+
+def test_start_anyway_never_traps_her_and_never_turns_on_hear_me(tmp_path, docs):
+    nothing = {**setup_doc("listen", "Nothing came in on Test Interface.", "again", "start"),
+               "heard": {"result": "nothing", "channel": None, "peak_db": None}, "others": []}
+    out = first_run(tmp_path, docs, f"""
+        page.replies['setup/listen'] = [200, {json.dumps(nothing)}];
+        $('start').click(); await page.settle();
+        $('setup-start').click(); await page.settle();
+        return {{ screen: page.screen(), hash: page.location.hash, body: page.posts('start') }};""")
+    assert out == {"screen": "live", "hash": "#/live", "body": [{}]}
+
+
+def test_when_nothing_arrives_another_device_can_be_tried(tmp_path, docs):
+    nothing = {**setup_doc("listen", "Nothing came in on Test Interface.", "again", "start"),
+               "heard": {"result": "nothing", "channel": None, "peak_db": None},
+               "others": [{"id": "b" * 16, "name": "Second Box"}]}
+    out = first_run(tmp_path, docs, f"""
+        page.replies['setup/listen'] = [200, {json.dumps(nothing)}];
+        $('start').click(); await page.settle();
+        const seen = {SEEN};
+        page.replies['setup/listen'] = [200, {json.dumps({**HEADPHONES, "device": "b" * 16, "device_name": "Second Box", "heard": HEARD, "others": []})}];
+        $('setup-others').children[0].click(); await page.settle();
+        const then = {SEEN};
+        $('setup-no').click(); await page.settle();
+        return {{ seen, then, listens: page.posts('setup/listen'), answers: page.posts('setup/answer') }};""")
+    assert out["seen"]["others"] == ["Try Second Box"]
+    assert out["listens"] == [{}, {"device": "b" * 16}]
+    assert out["then"]["say"] == "Headphones on?" and out["then"]["note"].startswith("Heard you on Second Box")
+    assert out["answers"] == [{"device": "b" * 16, "step": "headphones", "answer": "no"}]
+
+
+def test_the_channel_setup_just_heard_is_not_overruled_by_a_page_that_knew_less(tmp_path, docs):
+    """The page's device rows are from before she was heard, on channel 1."""
+    mic = next(d for d in docs["home"]["devices"] if d["name"] == "Test Interface")
+    out = first_run(tmp_path, docs, f"""
+        $('set-device').value = {json.dumps(mic["id"])}; $('set-device').fire('change');
+        page.replies['setup/listen'] = [200, {json.dumps({**COUNT, "channel": 3, "heard": HEARD, "others": []})}];
+        $('start').click(); await page.settle();
+        return page.posts('start');""")
+    assert out == [{"device": mic["id"]}]
+
+
+def test_a_device_picked_in_the_menu_is_the_one_listened_to(tmp_path, docs):
+    mic = next(d for d in docs["home"]["devices"] if d["name"] == "Test Mic")
+    out = first_run(tmp_path, docs, f"""
+        $('set-device').value = {json.dumps(mic["id"])}; $('set-device').fire('change');
+        page.hold('setup/listen');
+        $('start').click(); await page.settle();
+        return {{ asked: page.calls.filter((c) => c.path.startsWith('/api/setup?')).map((c) => c.path),
+                  body: page.posts('setup/listen'), note: {SEEN}.note }};""")
+    assert out["asked"] == [f"/api/setup?device={mic['id']}"]
+    assert out["body"] == [{"device": mic["id"]}]
+    assert out["note"] == "Listening on Test Mic."
+
+
+def test_a_long_wait_says_the_computer_may_be_asking(tmp_path, docs):
+    out = first_run(tmp_path, docs, f"""
+        page.hold('setup/listen');
+        $('start').click(); await page.settle();
+        const before = {SEEN}.note;
+        await page.poll();
+        return {{ before, after: {SEEN}.note }};""")
+    assert out["before"] == "" and out["after"] == "This computer may be asking to use the microphone."
+
+
+def test_an_answer_goes_to_the_bridge_and_a_done_setup_starts_with_no_click(tmp_path, docs):
+    out = first_run(tmp_path, docs, f"""
+        $('start').click(); await page.settle();
+        page.replies['setup/answer'] = [200, {json.dumps(COUNT)}];
+        $('setup-no').click(); await page.settle();
+        return {{ screen: page.screen(), hash: page.location.hash, answers: page.posts('setup/answer'), starts: page.posts('start') }};""",
+                    setup=HEADPHONES)
+    assert out["answers"] == [{"device": HEADPHONES["device"], "step": "headphones", "answer": "no"}]
+    assert out["screen"] == "live" and out["hash"] == "#/live" and out["starts"] == [{}]
+
+
+def test_a_question_already_answered_is_not_asked_and_nothing_is_listened_to(tmp_path, docs):
+    out = first_run(tmp_path, docs, f"""
+        $('start').click(); await page.settle();
+        return {{ ...{SEEN}, posts: {MUTATIONS} }};""", setup=HEADPHONES)
+    assert out["say"] == "Headphones on?" and out["posts"] == [] and out["listening"] is False
+
+
+def test_a_finished_setup_goes_straight_to_the_count(tmp_path, docs):
+    out = first_run(tmp_path, docs, f"""
+        $('start').click(); await page.settle();
+        return {{ screen: page.screen(), posts: {MUTATIONS} }};""", setup=COUNT)
+    assert out == {"screen": "live", "posts": ["start"]}
+
+
+def test_a_double_click_on_an_answer_does_not_answer_the_next_question(tmp_path, docs):
+    hears = setup_doc("hears_self", "Can you hear yourself?", "yes", "no")
+    out = first_run(tmp_path, docs, f"""
+        $('start').click(); await page.settle();
+        page.replies['setup/answer'] = [200, {json.dumps(hears)}];
+        $('setup-yes').click();
+        await page.settle();
+        $('setup-yes').fire('click', {{ detail: 2 }});
+        await page.settle();
+        return {{ answers: page.posts('setup/answer').length, say: {SEEN}.say }};""", setup=HEADPHONES)
+    assert out == {"answers": 1, "say": "Can you hear yourself?"}
+
+
+def test_two_quick_answers_send_one(tmp_path, docs):
+    out = first_run(tmp_path, docs, """
+        $('start').click(); await page.settle();
+        const open = page.hold('setup/answer');
+        $('setup-yes').click(); $('setup-no').click(); await page.settle();
+        open();
+        return page.posts('setup/answer').length;""", setup=HEADPHONES)
+    assert out == 1
+
+
+def test_setup_says_no_on_headphones_beats_a_tick_left_in_the_menu(tmp_path, docs):
+    """A page must not put Hear me on after she has just said speakers."""
+    out = first_run(tmp_path, docs, f"""
+        $('hear-me').checked = true; $('hear-me').fire('change');
+        $('start').click(); await page.settle();
+        page.replies['setup/answer'] = [200, {json.dumps(COUNT)}];
+        $('setup-no').click(); await page.settle();
+        return page.posts('start');""", setup=HEADPHONES)
+    assert out == [{}]
+
+
+@pytest.mark.parametrize("leave", ["$('setup-leave').click();", "$('wordmark').click();", "$('nav-takes').click();",
+                                   "page.history.go(-1);"])
+def test_leaving_while_it_listens_lets_go_of_the_device_and_keeps_nothing_running(tmp_path, docs, leave):
+    out = first_run(tmp_path, docs, f"""
+        const open = page.hold('setup/listen');
+        $('start').click(); await page.settle();
+        {leave}
+        await page.settle();
+        const screen = page.screen(), posts = {MUTATIONS};
+        page.replies['setup/listen'] = undefined;
+        open(); await page.settle();
+        return {{ screen, posts, now: page.screen(), starts: page.posts('start').length }};""")
+    assert out["screen"] != "setup" and out["now"] == out["screen"] and out["starts"] == 0
+    assert out["posts"] == ["setup/listen", "setup/cancel"]
+
+
+def test_leaving_at_a_question_sends_nothing_it_does_not_need_to(tmp_path, docs):
+    out = first_run(tmp_path, docs, f"""
+        $('start').click(); await page.settle();
+        $('setup-leave').click(); await page.settle();
+        return {{ screen: page.screen(), posts: {MUTATIONS} }};""", setup=HEADPHONES)
+    assert out == {"screen": "home", "posts": []}
+
+
+def test_an_answer_that_comes_back_after_she_left_starts_nothing(tmp_path, docs):
+    out = first_run(tmp_path, docs, f"""
+        $('start').click(); await page.settle();
+        const open = page.hold('setup/answer');
+        page.replies['setup/answer'] = [200, {json.dumps(COUNT)}];
+        $('setup-no').click(); await page.settle();
+        $('setup-leave').click(); await page.settle();
+        open(); await page.settle();
+        return {{ screen: page.screen(), starts: page.posts('start').length }};""", setup=HEADPHONES)
+    assert out == {"screen": "home", "starts": 0}
+
+
+def test_when_setup_cannot_be_asked_start_still_starts(tmp_path, docs):
+    out = first_run(tmp_path, docs, """
+        page.failNext.setup = 1;
+        $('start').click(); await page.settle();
+        return { screen: page.screen(), body: page.posts('start') };""")
+    assert out == {"screen": "live", "body": [{}]}
+
+
+@pytest.mark.parametrize("op,click", [("setup/listen", ""), ("setup/answer", "$('setup-yes').click(); await page.settle();")])
+def test_a_failed_step_leaves_a_way_on(tmp_path, docs, op, click):
+    setup = LISTEN if op == "setup/listen" else HEADPHONES
+    out = first_run(tmp_path, docs, f"""
+        page.failNext[{json.dumps(op)}] = 1;
+        $('start').click(); await page.settle();
+        {click}
+        const seen = {SEEN};
+        $('setup-start').click(); await page.settle();
+        return {{ seen, screen: page.screen(), body: page.posts('start') }};""", setup=setup)
+    assert out["seen"]["choices"] == ["Play again", "Start anyway"] and out["seen"]["listening"] is False
+    assert out["screen"] == "live" and out["body"] == [{}]
+
+
+def test_a_refused_step_says_the_bridges_words(tmp_path, docs):
+    out = first_run(tmp_path, docs, f"""
+        page.replies['setup/listen'] = [400, {{ error: {json.dumps(guitake.DEVICE_MISSING)} }}];
+        $('start').click(); await page.settle();
+        const seen = {SEEN};
+        return seen.say + ' ' + seen.more;""")
+    assert out == guitake.DEVICE_MISSING
+
+
+def test_a_lost_key_during_setup_says_how_to_get_a_new_link(tmp_path, docs):
+    out = first_run(tmp_path, docs, """
+        page.replies['setup/listen'] = [401, { error: 'no' }];
+        $('start').click(); await page.settle();
+        return page.screen();""")
+    assert out == "problem"
+
+
+def test_a_terminal_take_found_while_listening_goes_home_and_says_so(tmp_path, docs):
+    out = first_run(tmp_path, docs, f"""
+        page.replies['setup/listen'] = [409, {{ error: {json.dumps(guitake.TERMINAL_TAKE)}, live: {json.dumps(ELSEWHERE)} }}];
+        $('start').click(); await page.settle();
+        return {OTHER};""")
+    assert out["screen"] == "home" and out["box"] is True and out["start"] is False
+
+
+def test_a_take_that_starts_elsewhere_during_setup_takes_the_page_there(tmp_path, docs):
+    out = first_run(tmp_path, docs, f"""
+        const open = page.hold('setup/listen');
+        $('start').click(); await page.settle();
+        page.live = {json.dumps(WAITING)};
+        await page.poll();
+        const screen = page.screen(), posts = {MUTATIONS};
+        open(); await page.settle();
+        return {{ screen, posts, now: page.screen() }};""")
+    assert out["screen"] == "live" and out["now"] == "live" and "setup/cancel" in out["posts"]
+
+
+def test_no_answer_in_the_doc_still_leaves_a_way_on(tmp_path, docs):
+    """What is plugged in changed under her: the bridge asks for step 1 again, with no click yet."""
+    out = first_run(tmp_path, docs, f"""
+        $('start').click(); await page.settle();
+        page.replies['setup/answer'] = [200, {json.dumps(LISTEN)}];
+        $('setup-yes').click(); await page.settle();
+        return {{ ...{SEEN}, listens: page.posts('setup/listen').length }};""", setup=HEADPHONES)
+    assert out["say"] == guitake.PLAY_SOMETHING and out["listens"] == 0 and out["listening"] is False
+    assert out["choices"] == ["Play again", "Start anyway"]
+
+
+def test_the_choices_never_land_under_a_second_click_on_start():
+    css = (STATIC / "plume.css").read_text()
+    start = int(re.search(r"#start \{ height: (\d+)px", css).group(1))
+    say = int(re.search(r"#setup-words \{[^}]*min-height: (\d+)px", css).group(1))
+    gap = int(re.search(r"\.column \{[^}]*gap: (\d+)px", css).group(1))
+    assert say + gap > start
+
+
+def test_nothing_gives_a_choice_focus_so_a_stray_key_cannot_answer(tmp_path, docs):
+    out = first_run(tmp_path, docs, """
+        $('start').click(); await page.settle();
+        return page.activeElement.id;""", setup=HEADPHONES)
+    assert out == "setup"
+
+
+def test_a_double_click_on_start_selects_no_words_where_it_lands():
+    css = (STATIC / "plume.css").read_text()
+    rule = re.search(r"#setup, #live-say \{([^}]*)\}", css).group(1)
+    assert "user-select: none" in rule and "-webkit-user-select: none" in rule
+
+
+def test_a_choice_looks_pressed_while_its_answer_is_on_the_way(tmp_path, docs):
+    out = first_run(tmp_path, docs, """
+        $('start').click(); await page.settle();
+        const open = page.hold('setup/answer');
+        $('setup-yes').click(); await page.settle();
+        const off = [$('setup-yes').disabled, $('setup-no').disabled];
+        open();
+        return off;""", setup=HEADPHONES)
+    assert out == [True, True]
+
+
+def test_set_up_again_is_one_link_in_the_menu_and_starts_nothing(tmp_path, docs):
+    html = (STATIC / "index.html").read_text()
+    menu = html[html.index('<details id="home-menu"'):html.index("</details>")]
+    assert ">Set up again</button>" in menu and html.count("Set up again") == 1
+    out = run_page(tmp_path, docs, f"""
+        $('hear-me').checked = true; $('hear-me').fire('change');
+        $('set-again').click(); await page.settle();
+        const seen = {{ note: $('set-again-note').textContent, ticked: $('hear-me').checked }};
+        return {{ ...seen, posts: {MUTATIONS}, bodies: page.posts('setup/reset'), screen: page.screen() }};""")
+    assert out["posts"] == ["setup/reset"] and out["bodies"] == [{}] and out["screen"] == "home"
+    assert out["note"] == "Start will ask again." and out["ticked"] is False
+
+
+def test_a_set_up_again_that_fails_says_so(tmp_path, docs):
+    out = run_page(tmp_path, docs, """
+        page.failNext['setup/reset'] = 1;
+        $('set-again').click(); await page.settle();
+        return $('set-again-note').textContent;""")
+    assert out == "That did not reach plume gui."
+
+
+def test_real_bridge_answers_walk_the_whole_flow_into_the_take(tmp_path, docs, monkeypatch):
+    """The page against documents a real bridge wrote, with a fake meter and a spawner that refuses."""
+    monkeypatch.setenv(gui.STATE_DIR_ENV, str(tmp_path / "walk-state"))
+    meter = lambda name, seconds, cancelled: {"channels": [{"channel": 1, "peak_db": -90.0}, {"channel": 2, "peak_db": -12.0},  # noqa: E731
+                                                           {"channel": 3, "peak_db": -90.0}, {"channel": 4, "peak_db": -90.0}]}
+    srv = gui.GuiServer(roots=[tmp_path / "walk"], log=lambda line: None, lister=lambda: DEVICES, spawner=_no_spawner,
+                        sessions=lambda: [], meter=meter, write_state=False).start()
+    try:
+        client = Client(srv).login()
+        site = {"Sec-Fetch-Site": "same-origin", "Origin": client.origin, "Content-Type": "application/json"}
+
+        def post(op, body):
+            return json.loads(client.request("POST", f"/api/{op}", headers=site, body=body)[1])
+        first = json.loads(client.get("/api/setup", headers={"Sec-Fetch-Site": "same-origin"})[1])
+        heard = post("setup/listen", {})
+        hears = post("setup/answer", {"step": "headphones", "answer": "yes"})
+        volume = post("setup/answer", {"step": "hears_self", "answer": "no"})
+        done = post("setup/answer", {"step": "volume", "answer": "still"})
+    finally:
+        srv.close()
+    assert first["step"] == "listen" and heard["step"] == "headphones" and done["done"] is True
+    out = first_run(tmp_path, docs, f"""
+        const said = [];
+        page.replies['setup/listen'] = [200, {json.dumps(heard)}];
+        $('start').click(); await page.settle();
+        said.push({SEEN});
+        page.replies['setup/answer'] = [200, {json.dumps(hears)}];
+        $('setup-yes').click(); await page.settle();
+        said.push({SEEN});
+        page.replies['setup/answer'] = [200, {json.dumps(volume)}];
+        $('setup-no').click(); await page.settle();
+        said.push({SEEN});
+        page.replies['setup/answer'] = [200, {json.dumps(done)}];
+        $('setup-still').click(); await page.settle();
+        return {{ said, screen: page.screen(), body: page.posts('start'), answers: page.posts('setup/answer') }};""", setup=first)
+    assert [s["say"] for s in out["said"]] == ["Headphones on?", "Can you hear yourself?", "Check your headphone volume."]
+    assert out["said"][0]["note"] == "Heard you on Test Interface, channel 2."
+    assert out["said"][2]["choices"] == ["That was it", "Still nothing"]
+    assert out["screen"] == "live" and out["body"] == [{}], "Hear me comes from what the bridge saved"
+    assert [a["step"] for a in out["answers"]] == ["headphones", "hears_self", "volume"]
 
 
 # --------------------------------------------------------------------- honest words

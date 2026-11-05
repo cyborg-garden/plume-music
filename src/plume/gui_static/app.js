@@ -1,20 +1,21 @@
 /* Home, the live view, the Record and the shelf. Everything shown comes from the bridge,
    already filtered and already in sentences. Words go in with textContent only.
 
-   Nothing here starts anything by itself: the one POST to /api/start is in the Start
-   button's click handler, and nothing here gives that button focus, so a stray key cannot
-   press it. */
+   Nothing here starts anything by itself: every POST that opens a device follows a click on
+   Start or on a choice it led to, and nothing here gives those buttons focus, so a stray key
+   cannot press them. */
 import { clearStones, cssVar, queueStone, rng, stonesIdle, tok } from '/static/stone.js';
 import { hitBoxes, lineSpans, nextIndex } from '/static/layout.js';
 import { lostWords, pinnedRoute, routeOf } from '/static/session.js';
-import { DIRECT_LINE, countWords, delayLine, endedNote, isRunning, keyLine, landing, meterShare, routeLine, settledLine, stageWords, youView } from '/static/live.js';
+import { DIRECT_LINE, FADING_LINE, NO_ENDING, ROOM_END_LINE, askingLine, countWords, delayLine, endLine, endedNote, hearingWord, isFading, isRunning, keyLine, landing, meterShare, routeLine, settledLine, setupTrouble, setupView, stageWords, watchEnding, youView } from '/static/live.js';
 
 const $ = function (id) { return document.getElementById(id); };
 const S = { csrf: '', take: null, selected: null, roastOn: true, screen: 'loading', nav: 0,
   shelfKey: null, shelfDone: false, shelfTakes: [], lastTake: null, shelfScroll: 0, cameByLink: false,
   nameFor: null, nameSent: '', keepTurn: {}, nameTurn: {}, moving: false, failed: null, newNames: {},
   live: { state: 'idle' }, liveTurn: 0, following: false, starting: false, stopSent: false, stopPending: false,
-  home: null, homeTurn: 0, homeNote: '', form: { device: null, channel: null, hear: null } };
+  home: null, homeTurn: 0, homeNote: '', form: { device: null, channel: null, hear: null },
+  setup: null, setupTurn: 0, listening: false, listenSlow: false, answering: false, ending: NO_ENDING };
 
 function load(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
 function save(k, v) { try { localStorage.setItem(k, v); } catch (e) { /* private window */ } }
@@ -70,9 +71,10 @@ function metaOf(t) {
 }
 
 function setScreen(name) {
+  if (S.screen === 'setup' && name !== 'setup') leaveSetup();
   S.screen = name;
   document.body.setAttribute('data-screen', name);
-  ['home', 'live', 'record', 'shelf', 'problem'].forEach(function (s) { $(s).hidden = s !== name; });
+  ['home', 'setup', 'live', 'record', 'shelf', 'problem'].forEach(function (s) { $(s).hidden = s !== name; });
   if (name !== 'record') stopAudio();
   window.scrollTo(0, 0);
   reflectNav();
@@ -594,6 +596,8 @@ async function loadHome() {
 }
 function openHome() {
   if (isRunning(S.live)) { history.replaceState(null, '', '#/live'); openLive(); return; }
+  /* Setup is only ever reached by a click, never by reload, Back or Forward. */
+  if (location.hash === '#/setup') history.replaceState(null, '', '#/');
   arriveAt('home');
   drawHomeMenu();
   drawHomeState();
@@ -608,7 +612,8 @@ function startBody() {
   if (S.home && (S.form.device || S.form.channel !== null)) {
     const device = chosenDevice();
     if (device) body.device = device.id;
-    body.channel = channelNow();
+    /* The rows here are from before setup heard her, so only a channel she changed is sent. */
+    if (S.form.channel !== null) body.channel = S.form.channel;
   }
   if (S.form.hear !== null) {
     body.hear_me = S.form.hear;
@@ -633,7 +638,10 @@ async function startTake() {
   S.homeNote = '';
   S.following = true;
   S.live = { state: 'starting' };
+  S.ending = NO_ENDING;
   $('cue-note').textContent = '';
+  /* Back from a take goes home, not to a step that is over. */
+  if (location.hash === '#/setup') history.replaceState(null, '', '#/live');
   goLive();
   let answer = null;
   try { answer = await send('start', startBody()); } catch (err) { /* said below */ }
@@ -652,6 +660,145 @@ async function startTake() {
   }
   if (S.stopPending && isRunning(S.live)) { S.stopPending = false; S.stopSent = false; stopTake(); }
   pollSoon();
+}
+
+/* ---------------------------------------------------------------- the first press */
+
+/* A press of Start asks the bridge how far this device has got. With everything known that is
+   the count, and the band. The click is the consent for the short listen, and for nothing else:
+   a reload or Back never comes here. */
+async function pressStart() {
+  if (S.starting || isRunning(S.live) || S.screen === 'setup') return;
+  const turn = ++S.setupTurn;
+  S.homeNote = '';
+  S.setup = null;
+  S.listening = S.answering = false;
+  if (location.hash !== '#/setup') history.pushState(null, '', '#/setup');
+  arriveAt('setup');
+  drawSetup();
+  let doc;
+  try {
+    doc = await api('/api/setup' + (S.form.device ? '?device=' + encodeURIComponent(S.form.device) : ''));
+  } catch (err) {
+    if (turn !== S.setupTurn) return;
+    if (err.status === 401) problem(err);
+    else startTake();
+    return;
+  }
+  if (turn !== S.setupTurn) return;
+  if (!doc.done && doc.step === 'listen') { S.setup = doc; setupListen(); return; }
+  followSetup(doc);
+}
+function followSetup(doc) {
+  S.setup = doc;
+  S.listening = S.answering = false;
+  if (doc.done) startTake();
+  else drawSetup();
+}
+function pickedName() {
+  const device = S.form.device && chosenDevice();
+  return device ? device.name : '';
+}
+function drawSetup() {
+  const known = S.home && !S.form.device ? S.home.setup : null;
+  const view = S.setup || S.listening
+    ? setupView(S.setup, S.listening, pickedName(), S.listenSlow)
+    : { line: askingLine(known), more: '', note: null, choices: [], others: [], listening: false };
+  $('setup-say').textContent = view.line;
+  $('setup-more').hidden = !view.more;
+  $('setup-more').textContent = view.more;
+  $('setup-note').hidden = !view.note;
+  $('setup-note').textContent = view.note || '';
+  $('setup-listening').hidden = !view.listening;
+  /* Time going by, not a level: the child only reports when it has finished. */
+  if (view.listening) $('setup-listening-fill').style.animationDuration = ((S.setup && S.setup.seconds) || 4) + 's';
+  const choices = $('setup-choices');
+  choices.textContent = '';
+  view.choices.forEach(function (choice, i) {
+    const b = document.createElement('button');
+    b.type = 'button'; b.id = 'setup-' + choice.answer; b.className = i === 0 ? 'solid' : 'quiet';
+    b.textContent = choice.label;
+    b.addEventListener('click', function (ev) { if (!(ev && ev.detail > 1)) chooseSetup(choice.answer); });
+    choices.appendChild(b);
+  });
+  const others = $('setup-others');
+  others.textContent = '';
+  view.others.forEach(function (device) {
+    const b = document.createElement('button');
+    b.type = 'button'; b.className = 'textlink';
+    b.textContent = 'Try ' + device.name;
+    b.addEventListener('click', function (ev) {
+      if (ev && ev.detail > 1) return;
+      S.form.device = device.id; S.form.channel = null; S.form.hear = null;
+      setupListen();
+    });
+    others.appendChild(b);
+  });
+}
+function chooseSetup(answer) {
+  if (S.answering || S.listening) return;
+  if (answer === 'again') setupListen();
+  else if (answer === 'start') startTake();
+  else setupAnswer(S.setup.step, answer);
+}
+let slowTimer = 0;
+async function setupListen() {
+  const turn = S.setupTurn;
+  S.listening = true;
+  S.listenSlow = false;
+  drawSetup();
+  clearTimeout(slowTimer);
+  slowTimer = setTimeout(function () {
+    if (turn === S.setupTurn && S.listening) { S.listenSlow = true; drawSetup(); }
+  }, (((S.setup && S.setup.seconds) || 4) + 3) * 1000);
+  let answer = null;
+  try { answer = await send('setup/listen', S.form.device ? { device: S.form.device } : {}); } catch (err) { /* said below */ }
+  if (turn !== S.setupTurn) return;
+  clearTimeout(slowTimer);
+  S.listening = false;
+  settleSetup(answer);
+}
+/* Whatever she said here is what counts, not a tick left in the menu before she was asked. */
+function setOff(b) { b.disabled = true; }
+async function setupAnswer(step, value) {
+  const turn = S.setupTurn, body = { step: step, answer: value };
+  if (S.setup.device) body.device = S.setup.device;
+  S.answering = true;
+  S.form.hear = null;
+  Array.from($('setup-choices').children).forEach(setOff);
+  let answer = null;
+  try { answer = await send('setup/answer', body); } catch (err) { /* said below */ }
+  if (turn !== S.setupTurn) return;
+  S.answering = false;
+  settleSetup(answer);
+}
+function settleSetup(answer) {
+  if (answer && answer.status === 401) { problem(answer); return; }
+  if (answer && answer.ok) { followSetup(answer.doc); return; }
+  if (answer && answer.status === 409 && answer.doc && answer.doc.live) { applyLive(answer.doc.live); return; }
+  /* A device that has gone is no reason to ask for it again. */
+  if (answer && answer.status === 400) S.form.device = null;
+  followSetup(setupTrouble(answer && answer.doc && answer.doc.error));
+}
+/* Every way off this screen comes through here. A listen in progress is called off, and an
+   answer still on its way lands on nothing. */
+function leaveSetup() {
+  S.setupTurn += 1;
+  clearTimeout(slowTimer);
+  if (S.listening) send('setup/cancel', {}).catch(function () { /* it ends by itself in seconds */ });
+  S.listening = S.answering = false;
+}
+async function setUpAgain() {
+  const note = $('set-again-note');
+  note.textContent = '';
+  let answer = null;
+  try { answer = await send('setup/reset', {}); } catch (err) { /* said below */ }
+  if (answer && answer.status === 401) { problem(answer); return; }
+  if (!answer || !answer.ok) { note.textContent = 'That did not reach plume gui.'; return; }
+  S.form.hear = null; S.form.channel = null;
+  note.textContent = 'Start will ask again.';
+  drawHear();
+  loadHome();
 }
 
 /* ------------------------------------------------------------------- a live take */
@@ -674,6 +821,7 @@ function liveWords(doc, row) {
   if (doc.state === 'starting') return 'Opening the device.';
   if (doc.state === 'waiting') return countWords(doc.mode);
   if (doc.state === 'stopping') return 'Stopping.';
+  if (isFading(row)) return FADING_LINE;
   return keyLine(row, doc);
 }
 function drawLive() {
@@ -686,7 +834,8 @@ function drawLive() {
   $('live-hint').hidden = !hint;
   $('live-hint').textContent = hint;
   const hasLevel = you.level !== null;
-  $('meter').hidden = !hasLevel;
+  $('hearing').hidden = $('meter').hidden = !hasLevel;
+  $('hearing-word').textContent = hasLevel ? hearingWord(you.level) : '';
   $('meter-fill').style.width = (hasLevel ? Math.round(meterShare(you.level) * 100) : 0) + '%';
   $('live-facts').hidden = !row;
   if (row) {
@@ -707,11 +856,21 @@ function drawLive() {
   $('live-direct').hidden = !doc.hear_me || doc.mode !== 'direct';
   $('live-direct').textContent = DIRECT_LINE;
   $('live-cues').hidden = doc.state !== 'playing';
+  /* Told once she has gone quiet, where the engine can tell. A room mic often can't. */
+  S.ending = watchEnding(S.ending, row);
+  const ends = stopping ? '' : endLine(S.ending, row);
+  $('live-end').hidden = !ends;
+  $('live-end').textContent = ends;
+  $('live-how').hidden = !row || row.input !== 'room';
+  $('live-how').textContent = ROOM_END_LINE;
+  /* An empty menu is not offered. */
+  $('live-details').hidden = !row && $('live-delay').hidden && $('live-direct').hidden;
 }
 /* A click sends one request. The bridge signals a take once however often it is asked, and
    a second interrupt would cut the band's ending short. */
-async function stopTake() {
-  if (S.stopSent) return;
+async function stopTake(ev) {
+  /* Stop opens where an answer was, and a double click there is not a Stop. */
+  if (S.stopSent || (ev && ev.detail > 1)) return;
   S.stopSent = true;
   if (S.starting) S.stopPending = true;
   if (S.screen === 'live') drawLive();
@@ -741,16 +900,19 @@ function applyLive(doc) {
   if (isRunning(doc)) S.following = true;
   else {
     S.stopSent = false;
+    S.ending = NO_ENDING;
     /* Stopped before the band came in: there is no take to go back to. */
     if (doc.state === 'idle' && S.screen !== 'live') S.following = false;
   }
   reflectNav();
   if (isRunning(doc)) {
-    if (S.screen === 'home') goLive();
+    if (S.screen === 'home' || S.screen === 'setup') goLive();
     else if (S.screen === 'live') drawLive();
     return;
   }
   if (S.screen === 'live') { land(doc); return; }
+  /* A take started from a terminal: Start gives way to it, so setup does too. */
+  if (S.screen === 'setup' && doc.state === 'elsewhere') { backHome(''); return; }
   if (S.screen === 'home') drawHomeState();
 }
 /* A person reading the shelf during a take stays there, with a way back to it. */
@@ -827,9 +989,11 @@ async function init() {
   $('wordmark').addEventListener('click', goHome);
   $('nav-takes').addEventListener('click', goShelf);
   $('nav-live').addEventListener('click', goLive);
-  $('start').addEventListener('click', startTake);
+  $('start').addEventListener('click', pressStart);
+  $('setup-leave').addEventListener('click', goHome);
+  $('set-again').addEventListener('click', setUpAgain);
   $('live-stop').addEventListener('click', stopTake);
-  $('elsewhere-stop').addEventListener('click', stopTake);
+  $('elsewhere-stop').addEventListener('click', function () { stopTake(); });
   $('cue-busier').addEventListener('click', function () { sendCue('busier'); });
   $('cue-sparser').addEventListener('click', function () { sendCue('sparser'); });
   $('hear-me').addEventListener('change', function () { S.form.hear = $('hear-me').checked; drawHear(); });

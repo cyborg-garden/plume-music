@@ -1,9 +1,10 @@
 """How soon a take ends after the player stops.
 
 A direct input or keys can really tell, so the take ends about 20 seconds later.  Bars
-are read two bars late, so the tempo sets a floor under that: the stated ranges below
-are what the numbers come to, and docs/PLAYING.md repeats them.  A room mic cannot hear
-a player stop over the band, so it keeps the long wait it always had.
+are read two bars late and an ordinary rest must not dip the band, so the tempo sets a
+floor under that: the stated ranges below are what the numbers come to, and
+docs/PLAYING.md repeats them.  A room mic cannot hear a player stop over the band, so it
+keeps the long wait it always had.
 """
 import json
 
@@ -13,7 +14,7 @@ from test_bandentry import _take
 
 from plume import realtime
 from plume import roles as roles_mod
-from plume.bandentry import END_AFTER_S, SilenceEnding
+from plume.bandentry import END_AFTER_S, MIN_REST_S, SilenceEnding
 
 RIG = [{"name": "Audio Interface 4x4", "max_input_channels": 4, "max_output_channels": 4}]
 
@@ -41,11 +42,11 @@ PHASES = [20 + i / 10 + 0.05 for i in range(10)]
 
 
 @pytest.mark.parametrize("bpm,low,high", [
-    (45, 31.0, 38.0),
-    (60, 24.0, 28.0),
-    (70, 20.0, 24.0),
-    (75, 19.0, 23.0),
-    (90, 18.5, 22.0),
+    (45, 37.0, 43.0),
+    (60, 28.0, 32.0),
+    (70, 24.0, 28.0),
+    (75, 22.0, 26.0),
+    (90, 21.0, 24.0),
     (100, 19.0, 22.0),
     (115, 19.0, 23.0),
     (130, 19.0, 23.0),
@@ -62,6 +63,41 @@ def test_it_ends_about_twenty_seconds_after_she_stops(bpm, low, high):
 def test_a_room_mic_keeps_the_numbers_it_always_had(bpm, low, high):
     for stops_at in PHASES:
         assert low <= seconds_to_the_end(bpm, stops_at, SilenceEnding()) <= high
+
+
+def dips_in_a_rest(bpm, stops_at, rest_s):
+    """She rests ``rest_s`` seconds from ``stops_at`` bars in, then plays on.  A bar counts as
+    played if any of it was, and bar b reads bar b - 2.  Does the band ever dip?"""
+    bar_s = 240.0 / bpm
+    back_at = stops_at + rest_s / bar_s
+    e = direct()
+    for b in range(2, int(back_at) + 12):
+        read = b - 2
+        played = read < stops_at or read + 1 > back_at
+        gain, done = e.update(b * bar_s, played, bar_s)
+        assert not done
+        if gain < 0.0:
+            return True
+    return False
+
+
+@pytest.mark.parametrize("bpm", [45, 60, 66, 70, 75, 80, 90, 100, 115, 130, 150, 170])
+def test_an_ordinary_rest_never_dips_the_band_at_any_tempo(bpm):
+    for stops_at in PHASES:
+        assert not dips_in_a_rest(bpm, stops_at, MIN_REST_S - 0.01), (bpm, stops_at)
+
+
+@pytest.mark.parametrize("bpm", [45, 66, 115, 170])
+def test_one_silent_bar_is_never_enough(bpm):
+    bar_s = 240.0 / bpm
+    e = direct()
+    e.update(0.0, True, bar_s)
+    assert e.update(bar_s, False, bar_s)[0] == 0.0
+
+
+@pytest.mark.parametrize("bpm", [66, 115])
+def test_a_long_enough_rest_still_fades(bpm):
+    assert dips_in_a_rest(bpm, 20.05, 25.0)
 
 
 def test_a_room_mic_ending_is_unchanged_even_given_the_bar_length():

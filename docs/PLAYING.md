@@ -25,17 +25,20 @@ are faint it still finds them once the later ones confirm the tempo.
 The drums stay alone until you play. The bass and chords come in about eight bars after
 you start, and the melody four bars after that. If you stop, the take fades out and ends
 by itself. On a direct input or MIDI it is over about 20 seconds after you stop, from about
-75 bpm up. Slower bars can't be read any sooner: about 26 seconds at 60 bpm, about 35 at 45.
+100 bpm up, and about 23 from 80 bpm. Slower bars can't end any sooner without a rest in the
+song dipping the band: about 27 seconds at 66 bpm, about 30 at 60, about 40 at 45.
 A room mic can't tell you from the band, so it keeps waiting for 30 seconds of silence at the
 mic, and a band coming out of speakers can keep it from ever hearing that: stop those takes
 yourself. Until you have played a bar, every input waits the 30 seconds,
 so you have time to get your hands back on the strings after the count. Play during the
-fade and the band comes straight back. A rest of more than about 10 seconds on a direct input
-dips the band, and it can take two or three bars to come back up.
+fade and the band comes straight back. On a direct input a rest under 6 seconds never dips the
+band. A longer one can: from about 6 to 11 seconds depending on the tempo and where in the bar
+you stop, later at very slow tempos. It can take two or three bars to come back up.
 
 Add `--detect` and you need no prompt at all: `plume lead --tap-start --detect`. Whatever a
 prompt doesn't name, plume works out as you play. It listens for the key, and after 16 bars
-with no settled key it takes its latest reading, so you can't get stuck on drums. It picks a
+with no settled key it takes its latest reading. If it has no reading at all, as with playing
+that has no tonal centre, the band keeps waiting on drums until it gets one. It picks a
 style from your tempo when you count, then once more as the band comes in, using your key and
 how busy you are. On a room mic it can't tell your notes from the drums, so busyness doesn't
 count there. These are guesses, and the rule's thresholds are first guesses too. So far this
@@ -269,7 +272,8 @@ band, and about a third of steady 4-note takes with loose timing were refused.
   loop's name and does nothing. None of this was tried on real speech, only on the words the
   model might write.
 - On a `--tap-start` take the silence ending still applies: stop playing and the take fades
-  out, loops and all, about 20 seconds later on a direct input or MIDI, after 30 on a room mic.
+  out, loops and all, about 20 seconds later on a direct input or MIDI. A room mic waits 30
+  seconds before the fade starts, so it ends later than that, about 45 at 115 bpm.
 
 Loops live in memory and end with the take. Only `--record` writes audio, into the same
 `human.wav` and `machine.wav` as always, and `.gitignore` keeps those out of git.
@@ -375,7 +379,8 @@ port that hasn't opened after a second counts the same way, so a stuck driver ca
 a take or stop you ending it. A driver that won't list its ports within 5 seconds gets the
 session refused before it starts. All of that was tested with a simulated driver, never a
 real one.
-Under `--tap-start`, that ends the take about 20 seconds later, the way any silence does. `--record`
+Under `--tap-start`, that ends the take the way any silence does: about 20 seconds later once
+you have played a bar. Until then the fade waits 30 seconds first, so it takes longer. `--record`
 adds `midi.ndjson`, every note with its time.
 
 Things to watch for:

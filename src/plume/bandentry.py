@@ -297,21 +297,25 @@ _FADE_MIN_BARS, _FADE_MAX_BARS = 2, 6
 #: player stops somewhere inside one, so a stop is noticed one to two bars after it
 #: happens.  Waiting in whole bars can add up to one more, so a take lands a little over.
 _READ_LAG_BARS = 1.5
+#: A rest shorter than this never dips the band, at any tempo, however late that makes the
+#: ending at a slow one.  Bars are read late, so a dip for a rest would land after she is back.
+MIN_REST_S = 6.0
 
 
 class SilenceEnding:
     """Nobody playing: wait, then fade out and end (Juniper, 2026-11-02).
 
     Times are bar starts in stream seconds.  A bar of playing during the fade
-    brings the band straight back, so a long rest is not punished.  Bars are read
+    brings the band straight back, so a rest costs at most a short dip.  Bars are read
     two bars late, so the take stays open ``listen_bars`` past the fade: a return
     in the last bars of the fade is still heard.
 
     ``end_after_s``: for an input that really can tell the player stopped (direct,
     MIDI), size the wait and fade so the take ends about that long after they stop,
-    given ``bar_s`` on each update.  Reading and fading take at least six and a half
-    bars, so below about 75 bpm it ends later than asked.  Until they have played a
-    bar it keeps ``silence_s`` and ``fade_bars``: they have only just knocked, and
+    given ``bar_s`` on each update.  The wait never drops below :data:`MIN_REST_S` or two
+    bars, and reading and fading take six more, so below about 90 bpm it ends later than
+    asked: that is the price of a phrase rest not ducking a slow song.  Until they have
+    played a bar it keeps ``silence_s`` and ``fade_bars``: they have only just knocked, and
     their hands are still on the way back to the strings.  A room mic leaves it unset
     and keeps those numbers throughout, because it cannot hear a player stop over the
     band.
@@ -336,7 +340,7 @@ class SilenceEnding:
             return self._silence_s, self._fade_bars
         fade = max(_FADE_MIN_BARS, min(_FADE_MAX_BARS, round(_FADE_TARGET_S / bar_s)))
         spent = (fade + self._listen_bars + _READ_LAG_BARS) * bar_s
-        return max(self._end_after_s - spent, bar_s), fade
+        return max(self._end_after_s - spent, MIN_REST_S, 2.0 * bar_s), fade
 
     def update(self, t_bar: float, playing: bool,
                bar_s: float | None = None) -> tuple[float, bool]:

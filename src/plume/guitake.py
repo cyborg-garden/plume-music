@@ -134,6 +134,7 @@ NOTHING_DB = -60.0
 #: about headphones, and the one that finishes setup, wait for a fresh look.
 LOOK_RECENT_S = 20.0
 #: An output this late is hard to play to.  A guess too: wired ones report far less than this.
+#: The output's own number: a stream's reported_ms adds the input's to it.
 LATE_MS = 80.0
 SETUP_VERSION = 1
 
@@ -564,23 +565,22 @@ def _next_step(entry: dict, late: str | None) -> str:
         return "listen"
     if "headphones" not in entry:
         return "headphones"
-    if entry["headphones"]:
-        if "hears_self" not in entry:
-            return "hears_self"
-        if not entry["hears_self"] and "still" not in entry:
-            return "volume"
-    if late is not None and not entry.get("late_said"):
-        return "latency"
-    return "count"
+    if not entry["headphones"]:
+        return "count"              # the late line is about headphones she just said she isn't using
+    if "hears_self" not in entry:
+        return "hears_self"
+    if not entry["hears_self"] and "still" not in entry:
+        return "volume"
+    return "latency" if late is not None and not entry.get("late_said") else "count"
 
 
-def _late_line(device: dict | None, rows: list[dict], reported_ms: float | None) -> str | None:
+def _late_line(device: dict | None, rows: list[dict], output_ms: float | None) -> str | None:
     """One line if her sound may come back late.  Only an output she is really using counts."""
     if device is not None and device["mode"] == "direct":
         output = next((r for r in rows if r["name"] == device["name"]), None)
     else:
         output = next((r for r in rows if r.get("default_output")), None)
-    known = [ms for ms in (reported_ms, None if output is None else output.get("output_ms"))
+    known = [ms for ms in (output_ms, None if output is None else output.get("output_ms"))
              if ms is not None]
     if known and max(known) >= LATE_MS:
         return LATE_REPORTED.format(ms=round(max(known)))
@@ -859,6 +859,7 @@ class TakeRunner:
         self._closing = False
         self._last_poll = clock()
         self._reported: dict[str | None, float] = {}
+        self._output_ms: dict[str | None, float] = {}
         self._stopping_others: set[int] = set()
         self._last_look: tuple[float, tuple] | None = None
 
@@ -873,8 +874,8 @@ class TakeRunner:
         preferred = self._preferred(mark)
         with self._lock:
             # Each device's own number.  One device's delay says nothing about another's.
-            reported = dict(self._reported)
-        devices = [self._device_view(d, reported, rows, mark) for d in devices]
+            reported, output = dict(self._reported), dict(self._output_ms)
+        devices = [self._device_view(d, reported, output, rows, mark) for d in devices]
         chosen = default_device(devices, preferred)
         if problem is None and not devices:
             problem = NO_INPUT
@@ -890,15 +891,15 @@ class TakeRunner:
             "folder": pretty_path(self.root),
             "styles": list_styles(),
             "problem": problem,
-            "setup": self._setup_doc(chosen, rows, mark, reported),
+            "setup": self._setup_doc(chosen, rows, mark, output),
         }
 
-    def _device_view(self, device: dict, reported: dict, rows: list[dict], mark: str) -> dict:
+    def _device_view(self, device: dict, reported: dict, output: dict, rows: list[dict], mark: str) -> dict:
         saved = self._saved(device, mark)
-        ms = reported.get(device["name"])
-        return {**device, "reported_ms": ms, "hear_me": saved.get("hear_me") is True,
+        late = _late_line(device, rows, output.get(device["name"]))
+        return {**device, "reported_ms": reported.get(device["name"]), "hear_me": saved.get("hear_me") is True,
                 "headphones": saved.get("headphones"), "channel": _saved_channel(device, saved),
-                "setup_done": _next_step(saved, _late_line(device, rows, ms)) == "count"}
+                "setup_done": _next_step(saved, late) == "count"}
 
     def _saved(self, device: dict | None, mark: str) -> dict:
         """What is known about this device, as of the devices there are now.
@@ -914,10 +915,19 @@ class TakeRunner:
                     entry.pop(name, None)
         return entry
 
-    def _setup_doc(self, device: dict | None, rows: list[dict], mark: str, reported: dict) -> dict:
+    def _late_for(self, device: dict | None, rows: list[dict], output: dict) -> str | None:
+        return _late_line(device, rows, None if device is None else output.get(device["name"]))
+
+    def _keep(self, device: dict | None, entry: dict, rows: list[dict], mark: str, *, last: bool = False) -> None:
+        """Save what is known.  Once she is through, a delay a take reports later stops nobody."""
+        entry["list"] = mark
+        if _next_step(entry, self._late_for(device, rows, self._output_now())) == "count":
+            entry["late_said"] = True
+        self._setup.put(_setup_key(device), entry, last=last)
+
+    def _setup_doc(self, device: dict | None, rows: list[dict], mark: str, output: dict) -> dict:
         saved = self._saved(device, mark)
-        ms = None if device is None else reported.get(device["name"])
-        late = _late_line(device, rows, ms)
+        late = self._late_for(device, rows, output)
         step = _next_step(saved, late)
         direct = device is not None and device["mode"] == "direct"
         line, choices, note = PLAY_SOMETHING, [], None
@@ -1006,11 +1016,11 @@ class TakeRunner:
             devices, rows, mark = self._look()
         except TakeError:
             devices, rows, mark = [], [], ""
-        return self._setup_doc(self._named(device_id, devices, mark), rows, mark, self._reported_now())
+        return self._setup_doc(self._named(device_id, devices, mark), rows, mark, self._output_now())
 
-    def _reported_now(self) -> dict:
+    def _output_now(self) -> dict:
         with self._lock:
-            return dict(self._reported)
+            return dict(self._output_ms)
 
     def _preferred(self, mark: str) -> str | None:
         """The device setup heard her on, while what is plugged in is what it was then."""
@@ -1044,9 +1054,8 @@ class TakeRunner:
         entry, asked_again = self._in_the_flow(device, mark)
         if not asked_again or fresh:
             self._apply_answer(entry, step, answer)
-        entry["list"] = mark
-        self._setup.put(_setup_key(device), entry)
-        doc = self._setup_doc(device, rows, mark, self._reported_now())
+        self._keep(device, entry, rows, mark)
+        doc = self._setup_doc(device, rows, mark, self._output_now())
         return doc if fresh or not doc["done"] else self._still_so(device, doc, mark)
 
     def _in_the_flow(self, device: dict | None, mark: str) -> tuple[dict, bool]:
@@ -1073,9 +1082,8 @@ class TakeRunner:
             return doc
         device = self._named(None if device is None else device["id"], devices, now)
         entry, _ = self._in_the_flow(device, now)
-        entry["list"] = now
-        self._setup.put(_setup_key(device), entry)
-        return self._setup_doc(device, rows, now, self._reported_now())
+        self._keep(device, entry, rows, now)
+        return self._setup_doc(device, rows, now, self._output_now())
 
     @staticmethod
     def _apply_answer(entry: dict, step: str, answer: str) -> None:
@@ -1116,9 +1124,8 @@ class TakeRunner:
             if entry.get("headphones") is True:
                 entry["hears_self"] = True
                 entry.pop("still", None)
-        entry["list"] = mark
-        self._setup.put(_setup_key(device), entry)
-        return self._setup_doc(device, rows, mark, self._reported_now())
+        self._keep(device, entry, rows, mark)
+        return self._setup_doc(device, rows, mark, self._output_now())
 
     def reset_setup(self) -> dict:
         """Set up again.  The next press of Start begins from the first step."""
@@ -1250,8 +1257,8 @@ class TakeRunner:
         level = "hot" if peak >= HOT_DB else "low" if peak < LOW_DB else "ok"
         entry = self._saved(device, mark)
         # The channel is right whatever the gain is, so a Start from here uses it.
-        entry.update(list=mark, channel=channel, level=level)
-        self._setup.put(_setup_key(device), entry, last=True)
+        entry.update(channel=channel, level=level)
+        self._keep(device, entry, rows, mark, last=True)
         line = None
         if level != "ok":
             direct = device["mode"] == "direct"
@@ -1261,7 +1268,7 @@ class TakeRunner:
 
     def _heard(self, result: str, device: dict | None, *, rows: list[dict], mark: str, line: str | None = None,
                others: list | None = None, channel: int | None = None, peak_db: float | None = None) -> dict:
-        doc = self._setup_doc(device, rows, mark, self._reported_now())
+        doc = self._setup_doc(device, rows, mark, self._output_now())
         doc["heard"] = {"result": result, "channel": channel, "peak_db": peak_db}
         doc["others"] = others or []
         if line is not None:
@@ -1505,6 +1512,8 @@ class TakeRunner:
                 take.stream = stream
                 if stream["reported_ms"] is not None:
                     self._reported[take.route.name] = stream["reported_ms"]
+                if stream["output_ms"] is not None:
+                    self._output_ms[take.route.name] = stream["output_ms"]
             if take.phase == "starting" and take.frames > 0:
                 take.phase, take.opened = "waiting", now
             if take.phase == "waiting" and played:

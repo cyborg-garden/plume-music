@@ -456,7 +456,7 @@ def test_a_wireless_name_gets_one_line_that_calls_itself_a_guess(rig, runner, me
     rig.devices = [LAPTOP_MIC, {"name": "Her Wireless Earbuds", "inputs": 0, "outputs": 2, "default_output": True}]
     good(meter, LAPTOP_MIC, -12.0)
     runner.listen({})
-    doc = walk(runner, ("headphones", "no"))
+    doc = walk(runner, ("headphones", "yes"), ("hears_self", "yes"))
     assert doc["step"] == "latency" and "a guess" in doc["line"] and "wired headphones" in doc["line"].lower()
     assert walk(runner, ("latency", "ok"))["step"] == "count"
     assert runner.setup()["step"] == "count"
@@ -466,7 +466,7 @@ def test_a_large_reported_delay_gets_the_same_line_with_its_number(rig, runner, 
     rig.devices = [LAPTOP_MIC, {"name": "Odd Output", "inputs": 0, "outputs": 2, "default_output": True, "output_ms": 180.4}]
     good(meter, LAPTOP_MIC, -12.0)
     runner.listen({})
-    line = walk(runner, ("headphones", "no"))["line"]
+    line = walk(runner, ("headphones", "yes"), ("hears_self", "yes"))["line"]
     assert "180 ms" in line and "guess" not in line
 
 
@@ -475,8 +475,20 @@ def test_a_late_line_leads_with_what_to_do(rig, runner, meter):
     rig.devices = [LAPTOP_MIC, {"name": "Odd Output", "inputs": 0, "outputs": 2, "default_output": True, "output_ms": 180.4}]
     good(meter, LAPTOP_MIC, -14.0)
     runner.listen({})
-    doc = walk(runner, ("headphones", "no"))
+    doc = walk(runner, ("headphones", "yes"), ("hears_self", "yes"))
     assert doc["step"] == "latency" and doc["line"].startswith("Try wired headphones. ")
+
+
+@pytest.mark.parametrize("output", [
+    {"name": "Bluetooth Speaker", "inputs": 0, "outputs": 2, "default_output": True},
+    {"name": "Odd Output", "inputs": 0, "outputs": 2, "default_output": True, "output_ms": 180.4},
+])
+def test_someone_on_speakers_is_never_told_to_try_wired_headphones(rig, runner, meter, output):
+    rig.devices = [LAPTOP_MIC, output]
+    good(meter, LAPTOP_MIC, -12.0)
+    runner.listen({})
+    doc = walk(runner, ("headphones", "no"))
+    assert doc["step"] == "count" and doc["done"] is True
 
 
 def test_a_question_that_does_not_finish_setup_waits_for_no_look_at_the_devices(rig, runner, meter):
@@ -508,21 +520,64 @@ def test_a_quick_wired_output_is_not_nagged(rig, runner, meter):
     rig.devices = [LAPTOP_MIC, {"name": "Plain Output", "inputs": 0, "outputs": 2, "default_output": True, "output_ms": 12.0}]
     good(meter, LAPTOP_MIC, -12.0)
     runner.listen({})
-    assert walk(runner, ("headphones", "no"))["step"] == "count"
+    assert walk(runner, ("headphones", "yes"), ("hears_self", "yes"))["step"] == "count"
 
 
 def test_a_wireless_output_elsewhere_says_nothing_about_a_direct_device(rig, runner, meter):
     rig.devices = [{**SCARLETT, "output_ms": 6.0}, {"name": "Wireless Buds", "inputs": 0, "outputs": 2, "default_output": True}]
     good(meter)
     runner.listen({})
-    assert walk(runner, ("headphones", "no"))["step"] == "count"
+    assert walk(runner, ("headphones", "yes"), ("hears_self", "yes"))["step"] == "count"
 
 
-def test_the_delay_of_the_last_take_counts_too(rig, runner, meter):
+def _take_reports(rig, runner, **stream):
+    """A take whose stream says this about itself, and which then ends."""
+    runner.start({})
+    rig.open_stream()
+    (rig.folder / guitake.REC_STREAM).write_text(json.dumps(stream))
+    runner.tick()
+    rig.die(0)
+    runner.tick()
+
+
+def test_the_output_delay_of_the_last_take_counts_too(rig, runner, meter):
+    _take_reports(rig, runner, input_ms=3.0, output_ms=200.0, reported_ms=203.0)
     good(meter)
     runner.listen({})
-    runner._reported[SCARLETT["name"]] = 200.0
-    assert walk(runner, ("headphones", "no"))["step"] == "latency"
+    doc = walk(runner, ("headphones", "yes"), ("hears_self", "yes"))
+    assert doc["step"] == "latency" and "200 ms" in doc["line"]
+
+
+def test_an_input_delay_is_no_reason_to_try_wired_headphones(rig, runner, meter):
+    """The threshold is about the output, and a stream reports both added together."""
+    _take_reports(rig, runner, input_ms=45.0, output_ms=40.0, reported_ms=85.0)
+    good(meter)
+    runner.listen({})
+    assert walk(runner, ("headphones", "yes"), ("hears_self", "yes"))["step"] == "count"
+
+
+def test_a_take_reporting_a_delay_does_not_undo_a_finished_setup(rig, runner, meter):
+    """After setup a press of Start goes straight to the count."""
+    good(meter)
+    runner.listen({})
+    assert walk(runner, ("headphones", "yes"), ("hears_self", "yes"))["done"] is True
+    _take_reports(rig, runner, input_ms=3.0, output_ms=200.0, reported_ms=203.0)
+    assert runner.setup()["step"] == "count"
+    assert next(d for d in runner.home()["devices"] if d["name"] == SCARLETT["name"])["setup_done"] is True
+
+
+def test_a_second_listen_on_a_finished_device_does_not_stop_at_the_delay_either(rig, runner, meter):
+    good(meter)
+    runner.listen({})
+    walk(runner, ("headphones", "yes"), ("hears_self", "yes"))
+    _take_reports(rig, runner, input_ms=3.0, output_ms=200.0, reported_ms=203.0)
+    rig.devices = [*rig.devices, OTHER_BOX]
+    assert runner.listen({"device": next(d["id"] for d in runner.home()["devices"] if d["name"] == SCARLETT["name"])})["step"] == "count"
+
+
+def test_the_round_trip_shown_in_the_menu_is_still_the_whole_of_it(rig, runner):
+    _take_reports(rig, runner, input_ms=45.0, output_ms=40.0, reported_ms=85.0)
+    assert next(d for d in runner.home()["devices"] if d["name"] == SCARLETT["name"])["reported_ms"] == 85.0
 
 
 # ------------------------------------------------- something plugged in during the flow

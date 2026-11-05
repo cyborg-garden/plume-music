@@ -1,8 +1,11 @@
 # Playing with plume
 
-Plume plays a band around you through your Mac's speakers while you play a real
-instrument into its mic. You count it in, it holds your tempo, and the band joins
-once it hears you start.
+Plume plays a band around you through your computer's speakers or your headphones while
+you play a real instrument into a mic or an audio interface. You count it in, it holds your
+tempo, and the band joins once it hears you start.
+
+The page `plume gui` opens has a Guide next to Settings with the short version of this
+document. This is the long one.
 
 To hear what this sounds like, listen to
 [`examples/first-keeper.m4a`](examples/first-keeper.m4a): one take on a guitar in
@@ -35,15 +38,15 @@ fade and the band comes straight back. On a direct input a rest under 6 seconds 
 band. A longer one can: from about 6 to 11 seconds depending on the tempo and where in the bar
 you stop, later at very slow tempos. It can take two or three bars to come back up.
 
-Add `--detect` and you need no prompt at all: `plume lead --tap-start --detect`. Whatever a
-prompt doesn't name, plume works out as you play. It listens for the key, and after 16 bars
+Add `--detect` and you need no prompt at all: `plume lead --tap-start --detect`. Plume works
+out whatever the prompt doesn't name as you play. It listens for the key, and after 16 bars
 with no settled key it takes its latest reading. If it has no reading at all, as with playing
 that has no tonal centre, the band keeps waiting on drums until it gets one. It picks a
 style from your tempo when you count, then once more as the band comes in, using your key and
 how busy you are. On a room mic it can't tell your notes from the drums, so busyness doesn't
-count there. These are guesses, and the rule's thresholds are first guesses too. All it has
-to go on is tempo, key and how busy you are, so `rnb`, `hiphop` and `house` only mean a minor
-key with room in it at those tempos. Nothing it hears can tell jazz, so it only guesses `jazz`
+count there. These are guesses, and so are the thresholds behind them. Tempo, key and
+busyness are all it has, so a guess of `rnb`, `hiphop` or `house` only means a minor key
+with room in it at those tempos. Nothing it hears can tell jazz, so it only guesses `jazz`
 above 150 bpm, where no other style reaches, and only for a player a direct input knows is
 leaving a lot of room. Anyone else that fast gets `midwest`. To play jazz at other tempos or on
 a room mic, name it. So far this has only run on a simulated device, never with a real guitar.
@@ -80,8 +83,8 @@ overlapping notes do not share it. `hiphop`'s tape wobble and every style's reve
 
 ## Talking to it
 
-`plume voice` starts the same take and also listens for spoken commands. Speech is
-transcribed on your Mac with Whisper, and nothing leaves the machine.
+`plume voice` starts the same take and also listens for spoken commands. Whisper turns
+the speech into text on this computer, and nothing leaves it.
 
 ```bash
 plume voice "lofi midwest emo in F major" --base . --wind-down 150
@@ -102,12 +105,13 @@ Every other word, the other stop words included, has to come right after "plume"
 
 Save "plume" for commands. When a stop is in doubt it stops, so "plume, stop rushing", "plume,
 stop the hats", "plume, that's it, keep going", "plume, I'm done, you take it" and "when plume
-stops I'll come in" all end the take. Some plain ways to say stop are still missed, and one with
-more than 8 words before "stop" is too, so keep a keyboard nearby. None of this has met real speech. It reacts a few
-seconds late, because it listens in four-second windows. This has not yet been proven
-on a live voice: from a transcript to a change in the running take is tested, but the
-one real session it ran in never caught a spoken command, and nothing recorded what the
-model had heard. Speak up and keep a keyboard nearby.
+stops I'll come in" all end the take. Some plain ways to say stop are still missed, and so is
+a stop with more than 8 words before it.
+
+It reacts a few seconds late, because it listens in four-second windows. It has not yet
+worked on a live voice. The path from a transcript to a change in the running take is
+tested, but the one real session it ran in never caught a spoken command, and nothing
+recorded what the model had heard. Speak up and keep a keyboard nearby.
 
 Each take now keeps `voice.ndjson`, with one line per window: how loud it was, what the
 model wrote, and whether that counted as a command. `plume voice-replay takes/human.wav`
@@ -119,9 +123,9 @@ guitar it is the only way plume can hear you: add `--voice-channel N` (see
 
 ## With a coding agent as the brains
 
-An agent is far too slow to play notes, but it is fast enough to decide what the next
-section should do. Plume's bar-by-bar playing stays local, and the agent steers from
-outside it.
+An agent is far too slow to play notes, but fast enough to decide what the next section
+should do. Plume plays bar by bar on its own, and the agent steers from outside. A take
+started from the page's Start takes cues the same way, so an agent can steer that too.
 
 ```bash
 # start the take. The variable is deliberate: without a terminal attached, plume
@@ -147,7 +151,9 @@ A `watch` line looks like this:
  "changes": ["section:lift", "you:busier"], "playing": true, "playing_trusted": true, "fade_db": 0.0}
 ```
 
-`playing` is what the engine decided about you, and what it fades the band by. `playing_trusted` says whether that word means much: over a room mic with the band in, it mostly means the band. `fade_db` goes below 0 while the band is fading out.
+`playing` is what the engine decided about you, and what it fades the band by.
+`playing_trusted` says whether to believe it: over a room mic with the band in, it mostly
+describes the band. `fade_db` goes below 0 while the band is fading out.
 
 Trust `section`, `stage`, `key` and `chord`, which report what the band is doing. The
 `you_*` fields come with their own verdict. Every line has `input` (`room`, `direct` or `midi`),
@@ -162,8 +168,8 @@ Trust `section`, `stage`, `key` and `chord`, which report what the band is doing
 
 Report nothing from a field that isn't listed. `you:*` entries in `changes` come from the
 same fields, so they get the same doubt. On a room mic those fields measure the mic with
-plume's sound subtracted, and that subtraction removes only a few dB in a real room, so a reader who skips this check will report notes
-from the player while the player sits silent.
+plume's sound subtracted, and in a real room that removes only a few dB. A reader who skips
+this check will report notes from a player who is sitting silent.
 
 A line's `you_source` says where its `you_*` fields came from: `mic`, or `midi` on a
 `--midi` take. A `midi` line can be trusted with the band in: `you_notes` and `you_busy`
@@ -321,8 +327,8 @@ how the take feels.
 
 **Never use the AirPods mic.** Opening it switches them to a phone-call codec: audio cuts
 off at 12 kHz, a clap takes 50 ms to rise when it should take 1 to 3, and the output is
-likely to stutter. Set your input to the laptop mic first, in System Settings or with
-`SwitchAudioSource -t input -s "MacBook Pro Microphone"`.
+likely to stutter. Set your input to the laptop mic first. On a Mac that is System Settings,
+or `SwitchAudioSource -t input -s "MacBook Pro Microphone"`.
 
 ### Plug the instrument in if you can
 
@@ -433,19 +439,77 @@ Phone videos can carry your location, so strip the metadata before posting one:
 
 ## Starting from the page
 
-`plume gui` opens a page in your browser with one Start. The page opens no device and starts nothing until a person clicks Start. That click is the consent plume otherwise asks a terminal for, and it runs `plume lead --tap-start --detect` for you, in a new timestamped folder under `~/Music/Plume` (or `--takes DIR`). A used folder is never recorded over.
+`plume gui` opens a page in your browser with one Start. The page opens no device and
+starts nothing until a person clicks Start. That click is the consent plume otherwise asks
+a terminal for. It runs `plume lead --tap-start --detect` for you, in a new timestamped
+folder under `~/Music/Plume` (or `--takes DIR`). A used folder is never recorded over.
 
-With no typing, it picks the device setup heard you on, or else the only audio interface it can find, with the same device for sound in and out. Plume keeps no list of makers: a device with inputs and outputs counts as an interface unless its name says it is software (BlackHole, a Zoom or Teams driver), the computer's own (built-in, internal, a microphone array, a laptop, a display or webcam), or a mic or something wireless, which all play as room mics. That is a guess from a name, and a laptop chip with a name plume does not know can pass as an interface, because its mic does hear you. If the guess is wrong, a take that hears the band in a direct input says so on the first view, and tells you to try another device. With two interfaces setup listens to both and keeps the one that heard you. With none it uses the built-in mic, and you can change all of this in Settings, next to Takes. One small line under Start says what it will use. Key and style say Detect until you type over them, and what plume settles on says so: "F major, midwest (a guess)". A key or style you typed is never called a guess.
+### Which device it picks
 
-After setup the page says to knock or clap 8 even beats, or on an interface to play them on muted strings, since a clap can't reach a pickup. Once the band is in, the first view is what plume settled on, a small sign that it hears you, and Stop. Everything else is in one Details menu: the bar, the tempo, the stage, the notes it hears from you and your level, the delay, and the Busier and Sparser cues. A field plume can't trust over the band is hidden rather than guessed at, which on a room mic is most of them once the band is in. The sign then says it hears the room, which is all it knows: it makes no claim about you.
+With no typing, it picks the device setup heard you on, or else the only audio interface
+it can find, using the same device for sound in and out. With two interfaces, setup
+listens to both and keeps the one that heard you. With none, it uses the built-in mic.
+Settings, next to Takes, changes any of this, and one small line under Start says what
+it will use.
 
-When you have played and then go quiet for more than a bar on a direct input or MIDI, one line says "Stop playing and the band will finish on its own." During the fade the big line says the band is finishing, and that playing brings it back. A room mic may never hear you stop, so nothing promises that there. Instead, for a few bars once the band is in, one line says to press Stop when you are done, and Details keeps saying it. When the take ends, by fading, by Stop or by a crash, the page lands on its Record, with a New take button, or says in plain words what went wrong.
+Plume keeps no list of makers. A device with inputs and outputs counts as an interface
+unless its name says it is software (BlackHole, a Zoom or Teams driver), the computer's
+own (built-in, internal, a microphone array, a laptop, a display or webcam), or a mic or
+something wireless. Those all play as room mics. This is a guess from a name, and a laptop
+chip with a name plume does not know can pass as an interface, because its mic does hear
+you. When the guess is wrong, a take that hears the band in a direct input says so on the
+first view and tells you to try another device.
 
-Hear me plays your input back to you. It lives in Settings and is off until you say otherwise, on any input, including a built-in mic. Plume cannot tell headphones from speakers across gear, so it asks, and the bridge refuses Hear me without a yes about headphones saved for that device. Ticking the box is that yes, saved when you tick it. Start itself never carries one, so a page left open cannot bring it back: on a room mic a change in what is plugged in takes the answer away. Through speakers it would feed back. It stays out of `human.wav` and `machine.wav` on every input. Details shows the delay your device reports, which can be less than the real one, since nobody has measured it. A Direct or monitor button on your interface has no delay, and using both doubles the sound.
+Key and style say Detect until you type over them. What plume settles on is marked: "F
+major, midwest (a guess)". A key or style you typed is never called a guess.
 
-Stop before the band has come in and no take is kept, so trying a wrong channel leaves nothing on the shelf, and the page goes to Settings and says so if it heard nothing. If you played for more than a minute and the count never caught, the recording is kept.
+### During a take
 
-Only one take runs at a time, including one started from a terminal, which the page offers to stop instead of offering Start. Reloading finds the running take again. Closing the page doesn't stop a take that fades by itself. A take that is still waiting for a count, or on a room mic that can't hear you stop, ends about 3 minutes after the last page stopped looking at it. `plume stop` works as usual, and Ctrl-C on `plume gui` stops the take it started.
+After setup the page says to knock or clap 8 even beats. On an interface it says to play
+them on muted strings, since a clap can't reach a pickup. Once the band is in, the first
+view is what plume settled on, a small sign that it hears you, and Stop.
+
+Everything else is in one Details menu: the bar, the tempo, the stage, the notes it hears
+from you and your level, the delay, and the Busier and Sparser cues. A field plume can't
+trust over the band is hidden rather than guessed at. On a room mic that is most of them
+once the band is in, and the sign then says it hears the room. That is all it knows, so it
+makes no claim about you.
+
+On a direct input or MIDI, when you have played and then go quiet for more than a bar, one
+line says "Stop playing and the band will finish on its own." During the fade the big line
+says the band is finishing, and that playing brings it back. A room mic may never hear you
+stop, so nothing promises that there. Instead, for a few bars once the band is in, one line
+says to press Stop when you are done, and Details keeps saying it.
+
+When the take ends, by fading, by Stop or by a crash, the page lands on its Record with a
+New take button, or says in plain words what went wrong.
+
+Stop before the band has come in and no take is kept, so trying a wrong channel leaves
+nothing on the shelf. If plume heard nothing, the page goes to Settings and says so. If
+you played for more than a minute and the count never caught, the recording is kept.
+
+### Hear me
+
+Hear me plays your input back to you. It lives in Settings and is off until you say
+otherwise, on any input, including a built-in mic. Through speakers it would feed back,
+and plume cannot tell headphones from speakers, so the bridge refuses Hear me without a
+yes about headphones saved for that device. Ticking the box is that yes, saved when you
+tick it. Start never carries one, so a page left open cannot bring it back, and on a room
+mic a change in what is plugged in takes the answer away.
+
+Hear me stays out of `human.wav` and `machine.wav` on every input. Details shows the delay
+your device reports, which can be less than the real one, since nobody has measured it. A
+Direct or monitor button on your interface has no delay. Using both doubles the sound.
+
+### One take at a time
+
+Only one take runs at a time, including one started from a terminal: the page then offers
+to stop it instead of offering Start. Reloading finds the running take again. Closing the
+page doesn't stop a take that fades by itself. A take still waiting for a count, or on a
+room mic that can't hear you stop, ends about 3 minutes after the last page stopped looking
+at it. `plume stop` works as usual, and Ctrl-C on `plume gui` stops the take it started.
+
+### The first press
 
 The first press of Start is the setup, one line at a time, in the same place Start was:
 
@@ -455,9 +519,26 @@ The first press of Start is the setup, one line at a time, in the same place Sta
 4. If you said headphones, an output that reports a large delay, or looks wireless (which it says is a guess), gets one line suggesting wired headphones.
 5. Then the count, with no click, and the band coming in is the end of the setup.
 
-After that Start goes straight to the count. The answers stay in `setup.json` in plume's state folder (`~/.plume`, 0600), by device ID, with no device names. A different device, or a change in what is plugged in, asks again for only what it needs. Plugging headphones in when it asks is fine and costs nothing. If the device it heard you on goes away during setup, it says so rather than moving the take to another one. Set up again, in Settings, forgets all of it. No device stays open between steps. Not now, the wordmark, Takes, Back, a reload or closing the tab all leave at any step, call off a listen in progress and leave nothing running, and only a click ever starts a listen. If a closing tab cannot get that word out, the short child still ends by itself within about 20 seconds. A failed step offers Start anyway, with Hear me off unless you said otherwise. The level and delay numbers are guesses, since no real interface has been measured against them.
+After that, Start goes straight to the count. The answers stay in `setup.json` in plume's
+state folder (`~/.plume`, 0600), by device ID, with no device names. A different device, or
+a change in what is plugged in, asks again for only what it needs. Plugging headphones in
+when it asks is fine. If the device it heard you on goes away during setup, it says so
+rather than moving the take to another one. Set up again, in Settings, forgets all of it.
 
-All of this has only run on fake devices and a fake process, in tests and in headless Chromium with the sound muted. It has never started a real take, so follow [the direct input test](DIRECT-INPUT-TEST.md#7-the-start-button-5-minutes) the first time. Only one Mac and one interface have ever been tried with plume at all, so other computers and other gear are untested. The names it uses to recognise software and laptop devices on Linux come from what those systems usually list, not from a real machine. `plume gui` refuses to run where there are no unix sockets, such as Windows.
+No device stays open between steps. Not now, the wordmark, Takes, Back, a reload or
+closing the tab all leave at any step, call off a listen in progress and leave nothing
+running, and only a click ever starts a listen. If a closing tab cannot get that word out,
+the short child still ends by itself within about 20 seconds. A failed step offers Start
+anyway, with Hear me off unless you said otherwise. The level and delay numbers are
+guesses, since no real interface has been measured against them.
+
+All of this has only run on fake devices and a fake process, in tests and in headless
+Chromium with the sound muted. It has never started a real take, so follow
+[the direct input test](DIRECT-INPUT-TEST.md#7-the-start-button-5-minutes) the first time.
+Only one Mac and one interface have been tried with plume at all, so other computers and
+other gear are untested. The names it uses to recognise software and laptop devices on
+Linux come from what those systems usually list, not from a real machine. `plume gui`
+refuses to run where there are no unix sockets, such as Windows.
 
 ### Another output
 
@@ -477,7 +558,18 @@ The choice belongs to one input, and with more than one interface plugged in set
 
 ## Reading a take
 
-`plume gui --take takes6/` opens The Record in your browser: a strip of what plume did and when, a plain sentence for each moment, and a roast. It opens no device by itself, and it plays a recording only when you click Listen. `plume gui --takes DIR` shows a shelf of take folders, each with its own carved stone. Keep writes a small `keep.json` beside the take and deletes nothing, and `--record` refuses a folder holding a kept take. A name that fails to save says so on the next screen you land on, then clears. This page has only been checked on made-up take folders, in headless Chromium with the sound muted. Listen has not been pressed in a real browser, and it has not been tried on a take from a real mic or interface, or in Firefox or Safari.
+`plume gui --take takes6/` opens The Record in your browser: a strip of what plume did and
+when, a plain sentence for each moment, and a roast. It opens no device by itself, and it
+plays a recording only when you press Play. `plume gui --takes DIR` shows a shelf of take
+folders, each with its own carved stone.
+
+Keep writes a small `keep.json` beside the take and deletes nothing, and `--record`
+refuses a folder holding a kept take. A name that fails to save says so on the next screen
+you land on, then clears.
+
+This page has only been checked on made-up take folders, in headless Chromium with the
+sound muted. Play has not been pressed in a real browser, and the page has not been tried
+on a take from a real mic or interface, or in Firefox or Safari.
 
 Once the band is in on a room mic plume cannot hear you, so the page says so and makes no claim about your playing. On a direct input or a `--midi` take it can still hear you, so the page drops that line, but it still makes no claim about your playing, because neither has been tried on real hardware. Takes recorded before `cues.ndjson` existed can only say "A cue landed", not who asked or when.
 

@@ -1,19 +1,28 @@
 """The band follows the player, with patience (Juniper, 2026-11-06).
 
 "if i just make like a little mistake it doesnt assume thats the whole direction
-we're going."  So nothing moves on one bar or two: a new way of playing has to hold
-for :data:`FOLLOW_HOLD_BARS` before the band answers, and then it answers gradually
-and within bounds.  Pure, so all of it is testable without a device.
+we're going."  So nothing moves on one bar: a clear change has to hold for
+:data:`FOLLOW_HOLD_BARS` and a slight one for :data:`FOLLOW_STEADY_HOLD_BARS` before
+the band answers, and then it answers gradually and within bounds.  These feed whole
+bars; ``test_follow_faster`` feeds the half bars the live planner does.  Pure, so all
+of it is testable without a device.
 """
+import math
+
 import pytest
 
 from plume.bandentry import (FOLLOW, FOLLOW_CUE_HOLD_BARS, FOLLOW_DENSITY_MAX,
                              FOLLOW_DENSITY_MIN, FOLLOW_DENSITY_STEP, FOLLOW_GAIN_MAX_DB,
-                             FOLLOW_GAIN_MIN_DB, FOLLOW_GAIN_STEP_DB, FOLLOW_HOLD_BARS,
-                             FOLLOW_HOLD_BARS_ROOM, FOLLOW_LEARN_BARS, SONG_ARC, BandFollow,
-                             song_section)
+                             FOLLOW_GAIN_MIN_DB, FOLLOW_GAIN_RETURN_STEP_DB,
+                             FOLLOW_GAIN_STEP_DB, FOLLOW_HOLD_BARS, FOLLOW_HOLD_BARS_ROOM,
+                             FOLLOW_LEARN_BARS, FOLLOW_STEADY_HOLD_BARS, SONG_ARC,
+                             BandFollow, song_section)
 
 NORMAL_DB, NORMAL_BUSY = -24.0, 1.0
+#: Whole bars a clear change (12 or 9 dB) and a slight one (5 dB) hold, fed a bar at a time.
+CLEAR_BARS = math.ceil(FOLLOW_HOLD_BARS)
+SLIGHT_BARS = math.ceil(FOLLOW_STEADY_HOLD_BARS)
+ROOM_BARS = math.ceil(FOLLOW_HOLD_BARS_ROOM)
 
 
 def learned(*, trusted=True, bars=FOLLOW_LEARN_BARS):
@@ -45,10 +54,17 @@ def test_one_wild_bar_moves_nothing():
     assert all(neutral(s) for s in states)
 
 
-@pytest.mark.parametrize("bars", range(1, FOLLOW_HOLD_BARS))
+@pytest.mark.parametrize("bars", range(1, CLEAR_BARS))
 def test_a_short_mistake_moves_nothing(bars):
     f = learned()
     states = play(f, bars, db=NORMAL_DB - 12, busy=0.2) + play(f, 12)
+    assert all(neutral(s) for s in states)
+
+
+@pytest.mark.parametrize("bars", range(1, SLIGHT_BARS))
+def test_a_short_slight_wander_moves_nothing(bars):
+    f = learned()
+    states = play(f, bars, db=NORMAL_DB - 5) + play(f, 12)
     assert all(neutral(s) for s in states)
 
 
@@ -60,8 +76,10 @@ def test_nothing_follows_before_it_knows_how_they_normally_play():
 
 def test_a_rest_is_no_evidence_either_way():
     f = learned()
-    soft = NORMAL_DB - 9
-    states = play(f, 2, db=soft) + play(f, 3, db=-90.0, playing=False) + play(f, 1, db=soft)
+    soft = NORMAL_DB - 5
+    states = (play(f, SLIGHT_BARS - 1, db=soft) + play(f, 3, db=-90.0, playing=False)
+              + play(f, 1, db=soft))
+    assert all(neutral(s) for s in states[:-1])
     assert states[-1].moved == ("softer",)
 
 
@@ -71,9 +89,16 @@ def test_sustained_soft_playing_brings_the_band_down_to_find_them():
     f = learned()
     states = play(f, 10, db=NORMAL_DB - 9, busy=0.5)
     first = next(i for i, s in enumerate(states) if not neutral(s))
-    assert first == FOLLOW_HOLD_BARS - 1          # lands on the third soft bar
+    assert first == CLEAR_BARS - 1                # a clear drop: the second soft bar
     assert "softer" in states[first].moved
     assert states[-1].gain_db < -2.0 and states[-1].density < 0.9
+
+
+def test_a_slight_change_waits_longer_than_a_clear_one():
+    f = learned()
+    states = play(f, 10, db=NORMAL_DB - 5)
+    first = next(i for i, s in enumerate(states) if not neutral(s))
+    assert first == SLIGHT_BARS - 1 > CLEAR_BARS - 1
 
 
 def test_sustained_wild_playing_lifts_the_band():
@@ -108,7 +133,8 @@ def test_every_move_is_gradual():
     f = learned()
     states = play(f, 15, db=NORMAL_DB - 30, busy=0.0) + play(f, 15, db=NORMAL_DB + 30, busy=2.4)
     for a, b in zip(states, states[1:]):
-        assert abs(b.gain_db - a.gain_db) <= FOLLOW_GAIN_STEP_DB + 1e-9
+        most = max(FOLLOW_GAIN_STEP_DB, FOLLOW_GAIN_RETURN_STEP_DB)
+        assert abs(b.gain_db - a.gain_db) <= most + 1e-9
         assert abs(b.density - a.density) <= FOLLOW_DENSITY_STEP + 1e-9
 
 
@@ -131,7 +157,7 @@ def test_a_room_mic_waits_longer():
     f = learned(trusted=False)
     states = play(f, 10, db=NORMAL_DB - 9)
     first = next(i for i, s in enumerate(states) if not neutral(s))
-    assert first == FOLLOW_HOLD_BARS_ROOM - 1 > FOLLOW_HOLD_BARS - 1
+    assert first == ROOM_BARS - 1 > CLEAR_BARS - 1
 
 
 def test_a_room_mic_cannot_count_notes():
@@ -144,7 +170,7 @@ def test_a_room_mic_does_not_chase_its_own_band():
     # The mic hears the band, so a band that lifts would read as a player who lifted.
     # A mic that hears nothing but the band must settle, not climb to the ceiling.
     f = learned(trusted=False)
-    states = play(f, FOLLOW_HOLD_BARS_ROOM + 6, db=NORMAL_DB + 6)
+    states = play(f, ROOM_BARS + 6, db=NORMAL_DB + 6)
     for _ in range(60):
         states.append(f.bar(NORMAL_DB + 6 + states[-1].gain_db, None, playing=True))
     assert states[-1].gain_db < FOLLOW_GAIN_MAX_DB
@@ -252,8 +278,8 @@ def test_a_direct_take_comes_down_when_she_plays_softly(tmp_path, consent):
 
 def test_the_start_of_a_soft_passage_does_not_teach_it_her_normal():
     f = learned()
-    play(f, 2, db=NORMAL_DB - 9)
+    play(f, SLIGHT_BARS - 1, db=NORMAL_DB - 5)
     play(f, 1)                           # back before it landed
-    assert play(f, FOLLOW_HOLD_BARS, db=NORMAL_DB - 9)[-1].moved == ("softer",)
+    assert play(f, SLIGHT_BARS, db=NORMAL_DB - 5)[-1].moved == ("softer",)
     back = play(f, 12)
     assert back[-1].gain_db == 0.0       # back to normal exactly, not a hair above it

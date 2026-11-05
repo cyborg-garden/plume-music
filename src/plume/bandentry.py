@@ -298,14 +298,32 @@ def song_section(bars_in: int) -> tuple[str, float, tuple[str, ...]]:
 FOLLOW = "follow"
 FOLLOW_MODES = (FOLLOW,)
 
-#: Bars a new way of playing has to hold before the band answers.  One bar is a
-#: stumble, and two is a fill or the end of a phrase, which breathe in twos.  A third
-#: bar the same way is past any fill and is a choice, and it is still inside the
-#: four-bar phrase that changed, so the answer is not a section late.  Bars are read two
-#: bars late on top of this, so the band moves about five bars after she does.
-FOLLOW_HOLD_BARS = 3
+#: How long a new way of playing has to hold before the band answers.  Juniper,
+#: 2026-11-06, on a take at 60 bpm: "it did not get quieter when i was playing quieter
+#: tho."  Three whole bars, read two bars late and answered a decibel a bar, was
+#: sixteen seconds after she went soft: not following.
+#:
+#: Her level is read every half bar, and a clear change is answered sooner than a
+#: slight one.  A clear change, :data:`FOLLOW_CLEAR_DB` from what the band follows
+#: or her coming back to her normal, holds a bar and a half: three readings, where one
+#: odd bar is two, so it can never be a move, and one odd hit sits in a single half.
+#: At a fast tempo a bar and a half goes by too quickly to be a choice, so it is never
+#: under :data:`FOLLOW_HOLD_MIN_S`, and never over two bars.
+#:
+#: A slight change, past the deadband but not clear, holds three bars as it always
+#: did, even at a slow tempo: her own level wanders by that much from bar to bar (5-7
+#: dB on that take, at 60 bpm), and two bars of it moved the band twice where she
+#: had not changed.  A band answering every wander is not following either.
+FOLLOW_HOLD_BARS = 1.5
+FOLLOW_HOLD_MIN_S = 3.0
+FOLLOW_HOLD_MAX_BARS = 2.0
+FOLLOW_STEADY_HOLD_BARS = 3.0
+FOLLOW_CLEAR_DB = 8.0
 #: A room mic hears the band as well as the player, so it is less sure what it heard.
-FOLLOW_HOLD_BARS_ROOM = 4
+FOLLOW_HOLD_BARS_ROOM = 2.5
+FOLLOW_HOLD_MIN_S_ROOM = 6.0
+FOLLOW_HOLD_MAX_BARS_ROOM = 4.0
+FOLLOW_STEADY_HOLD_BARS_ROOM = 4.0
 #: Played bars it listens to before it knows how this player normally plays.
 FOLLOW_LEARN_BARS = 4
 #: How far a bar has to be from what the band already follows to count as different.
@@ -318,10 +336,15 @@ FOLLOW_BUSY_DEADBAND = 0.5
 _BUSY_FLOOR = 0.25
 #: The band moves half as far as she did: it answers rather than mirrors (the idea
 #: behind mind.py's delayed recovery), and comes down to find a soft player without
-#: vanishing under her.
+#: vanishing under her.  Past :data:`FOLLOW_GAIN_BIG_DB` of drop it answers with
+#: :data:`FOLLOW_GAIN_PER_DB_BIG` of each further decibel: she went 14 dB down on
+#: the 2026-11-06 take, and half of that, capped at 6, was too small to hear as an
+#: answer under her.
 FOLLOW_GAIN_PER_DB = 0.5
+FOLLOW_GAIN_BIG_DB = 6.0
+FOLLOW_GAIN_PER_DB_BIG = 0.75
 #: Up is bounded tighter than down: a band that lifts with her must not bury her.
-FOLLOW_GAIN_MIN_DB, FOLLOW_GAIN_MAX_DB = -6.0, 3.0
+FOLLOW_GAIN_MIN_DB, FOLLOW_GAIN_MAX_DB = -10.0, 3.0
 #: Density, as a multiple of the song's own.  Softer playing thins the band as well as
 #: quietening it; busier playing fills it in.
 FOLLOW_DENSITY_PER_DB = 0.04
@@ -331,9 +354,13 @@ FOLLOW_DENSITY_MIN, FOLLOW_DENSITY_MAX = 0.6, 1.3
 _ROOM_GAIN_DB = (-4.0, 2.0)
 _ROOM_DENSITY = (0.75, 1.15)
 #: The most it moves in one bar, so an answer is a glide.  The engine glides a gain
-#: change across the bar as well, so a decibel is never heard as a step.
-FOLLOW_GAIN_STEP_DB = 1.0
-FOLLOW_DENSITY_STEP = 0.05
+#: change across the bar as well, so even this is never heard as a step.  A decibel a
+#: bar was too slow to hear at all: at 60 bpm the answer to a soft passage took
+#: longer than the passage.  Going back towards her normal it moves faster still, so
+#: when she comes back up the band is not still on its way down.
+FOLLOW_GAIN_STEP_DB = 3.0
+FOLLOW_GAIN_RETURN_STEP_DB = 4.0
+FOLLOW_DENSITY_STEP = 0.1
 #: Notes per beat past which more band buries the player: mind.py's density_high.
 #: Over it the band never fills in, however busy that is for them.
 FOLLOW_TORRENT = 2.5
@@ -359,37 +386,90 @@ class FollowState:
     reason: str
 
 
-class _Patience:
-    """One reading's patience: commit only to what has held for ``hold`` bars.
+def _half_bars_over(seconds: float, bar_s: float | None) -> float:
+    return (math.ceil(2.0 * seconds / float(bar_s) - 1e-9) / 2.0
+            if bar_s is not None and bar_s > 0.0 else 0.0)
 
-    Each bar is compared with what is already committed.  A bar inside the deadband is
-    more of the same and ends any run, and a bar on the other side starts a new one.  So
-    a mistake moves nothing, and cannot be half of a real move either: the same rule
-    the key governor keeps.
+
+def follow_hold_bars(bar_s: float | None, *, trusted: bool) -> float:
+    """Bars a clear change must hold, at bars of ``bar_s`` seconds.
+
+    In half bars, the unit her level is read in: :data:`FOLLOW_HOLD_BARS`, raised to
+    cover :data:`FOLLOW_HOLD_MIN_S` and capped at :data:`FOLLOW_HOLD_MAX_BARS` (the
+    room mic's own).  No tempo known means the bars alone."""
+    hold, min_s, most = ((FOLLOW_HOLD_BARS, FOLLOW_HOLD_MIN_S, FOLLOW_HOLD_MAX_BARS)
+                         if trusted else
+                         (FOLLOW_HOLD_BARS_ROOM, FOLLOW_HOLD_MIN_S_ROOM,
+                          FOLLOW_HOLD_MAX_BARS_ROOM))
+    return min(max(hold, _half_bars_over(min_s, bar_s)), most)
+
+
+class _Patience:
+    """One reading's patience: commit only to what has held long enough.
+
+    Each reading is compared with what is already committed, and carries how much of a
+    bar it covers.  A reading inside the deadband is more of the same and ends any run,
+    and one on the other side starts a new one.  So a mistake moves nothing, and cannot
+    be half of a real move either: the same rule the key governor keeps.
+
+    A clear reading (``clear`` or more from what is committed, or back inside the
+    deadband of her normal while the band leans) also counts towards a shorter run,
+    ``quick``; one that is not clear ends that run.
     """
 
-    def __init__(self, hold: int, deadband: float):
-        self._hold, self._deadband = int(hold), float(deadband)
+    def __init__(self, hold: float, deadband: float, *, quick: float | None = None,
+                 clear: float | None = None):
+        self.hold, self._deadband = float(hold), float(deadband)
+        self.quick = self.hold if quick is None else float(quick)
+        self._clear = clear
         self.value = 0.0
         self._run: list[float] = []
+        self._run_bars = 0.0
+        self._fast: list[float] = []
+        self._fast_bars = 0.0
         self._side = 0
 
-    def heard(self, reading: float) -> int:
-        """-1 or +1 when this bar commits a move that way, else 0."""
+    def _reset(self) -> None:
+        self._run, self._run_bars, self._fast, self._fast_bars = [], 0.0, [], 0.0
+
+    def _is_clear(self, reading: float, off: float) -> bool:
+        if self._clear is None:
+            return False
+        # Back towards her normal by more than half the lean is her coming back.
+        return (abs(off) >= self._clear
+                or (self.value != 0.0 and abs(reading) <= 0.5 * abs(self.value)))
+
+    def heard(self, reading: float, bars: float = 1.0) -> int:
+        """-1 or +1 when this reading commits a move that way, else 0."""
         off = reading - self.value
         side = 0 if abs(off) <= self._deadband else (1 if off > 0 else -1)
         if side == 0:
-            self._run, self._side = [], 0
+            self._reset()
+            self._side = 0
             return 0
         if side != self._side:
-            self._run, self._side = [], side
+            self._reset()
+            self._side = side
         self._run.append(reading)
-        if len(self._run) < self._hold:
+        self._run_bars += float(bars)
+        if self._is_clear(reading, off):
+            self._fast.append(reading)
+            self._fast_bars += float(bars)
+        else:
+            self._fast, self._fast_bars = [], 0.0
+        if self._fast and self._fast_bars >= self.quick - 1e-9:
+            held, held_bars = self._fast, self._fast_bars
+        elif self._run_bars >= self.hold - 1e-9:
+            held, held_bars = self._run, self._run_bars
+        else:
             return 0
-        self.value = sum(self._run) / len(self._run)
+        # Where she is now: the run's last ``quick`` worth, not where it began.
+        held = held[-max(1, round(self.quick * len(held) / held_bars)):]
+        self.value = sum(held) / len(held)
         if abs(self.value) <= self._deadband:
             self.value = 0.0          # back inside normal is normal, not a lean
-        self._run, self._side = [], 0
+        self._reset()
+        self._side = 0
         return side
 
     @property
@@ -406,6 +486,12 @@ class BandFollow:
     nobody is soft in absolute terms.  A bar she sat out is no evidence of anything, so
     it neither moves the band nor breaks a run.
 
+    ``parts``, when given, are her level over each half bar heard since the last call
+    (None for a half she sat out), and the level is followed from those instead of the
+    whole bar: the planner reads a half bar as soon as it has been played, so the band
+    finds her sooner.  ``bar_s`` is the bar's length, which the hold is counted against
+    (see :func:`follow_hold_bars`).  The bar's own level still teaches her normal.
+
     ``trusted`` is False on a room mic, where the band is in the signal.  Then it
     ignores busyness (the drums are onsets too), waits longer, moves less far, learns
     her normal only once the band is in, and takes its own lean back off what it hears,
@@ -418,9 +504,11 @@ class BandFollow:
                              f"leading is on the roadmap")
         self.mode = mode
         self.trusted = bool(trusted)
-        self.hold_bars = FOLLOW_HOLD_BARS if self.trusted else FOLLOW_HOLD_BARS_ROOM
-        self._level = _Patience(self.hold_bars, FOLLOW_LEVEL_DEADBAND_DB)
-        self._busy = _Patience(self.hold_bars, FOLLOW_BUSY_DEADBAND)
+        steady = FOLLOW_STEADY_HOLD_BARS if self.trusted else FOLLOW_STEADY_HOLD_BARS_ROOM
+        self._level = _Patience(steady, FOLLOW_LEVEL_DEADBAND_DB,
+                                quick=follow_hold_bars(None, trusted=self.trusted),
+                                clear=FOLLOW_CLEAR_DB)
+        self._busy = _Patience(steady, FOLLOW_BUSY_DEADBAND)
         self._gain_lim = ((FOLLOW_GAIN_MIN_DB, FOLLOW_GAIN_MAX_DB) if self.trusted
                           else _ROOM_GAIN_DB)
         self._dens_lim = ((FOLLOW_DENSITY_MIN, FOLLOW_DENSITY_MAX) if self.trusted
@@ -432,6 +520,11 @@ class BandFollow:
         self.gain_db = 0.0
         self.density = 1.0
         self._cue_hold = 0
+
+    @property
+    def hold_bars(self) -> float:
+        """Bars a clear change holds before the band answers, at this tempo."""
+        return self._level.quick
 
     def shape(self, arc_density: float) -> float:
         """The song arc's density, keeping only part of its swing while following."""
@@ -453,9 +546,12 @@ class BandFollow:
                 self._normal_busy += _NORMAL_ALPHA * (busy - self._normal_busy)
 
     def bar(self, rms_db: float | None, onsets_per_beat: float | None, *,
-            playing: bool, band_in: bool = True) -> FollowState:
+            playing: bool, band_in: bool = True, parts=None,
+            bar_s: float | None = None) -> FollowState:
         """This bar's lean.  ``band_in`` False: drums alone, so only listen."""
         busy = None if onsets_per_beat is None or not self.trusted else float(onsets_per_beat)
+        if bar_s is not None:
+            self._level.quick = follow_hold_bars(bar_s, trusted=self.trusted)
         if not band_in:
             # A room mic over drums alone hears another mix than it will with the band
             # in, so only a trusted input learns from these bars.
@@ -463,22 +559,32 @@ class BandFollow:
                 self._learn(float(rms_db), busy)
             return FollowState(0.0, 1.0, (), "follow: listening until the band is in")
         moved: list[str] = []
-        if playing and rms_db is not None:
-            # Off a room mic, take back what the band's own lean put into it.
-            db = float(rms_db) - (0.0 if self.trusted else self.gain_db)
-            if self._learned >= FOLLOW_LEARN_BARS:
-                step = self._level.heard(db - self._normal_db)
+        known = self._learned >= FOLLOW_LEARN_BARS
+        # Off a room mic, take back what the band's own lean put into it.
+        own = 0.0 if self.trusted else self.gain_db
+        if known:
+            if parts is not None:
+                readings = [(float(p) - own, 0.5) for p in parts if p is not None]
+            elif playing and rms_db is not None:
+                readings = [(float(rms_db) - own, 1.0)]
+            else:
+                readings = []
+            for db, bars in readings:
+                step = self._level.heard(db - self._normal_db, bars)
                 if step:
                     moved.append("louder" if step > 0 else "softer")
-                if busy is not None and self._normal_busy is not None:
-                    self._torrent = busy > FOLLOW_TORRENT
-                    ratio = math.log2((busy + _BUSY_FLOOR) / (self._normal_busy + _BUSY_FLOOR))
-                    step = self._busy.heard(ratio)
-                    if step:
-                        moved.append("busier" if step > 0 else "sparser")
-            self._learn(db, busy)
+        if playing and rms_db is not None:
+            if known and busy is not None and self._normal_busy is not None:
+                self._torrent = busy > FOLLOW_TORRENT
+                ratio = math.log2((busy + _BUSY_FLOOR) / (self._normal_busy + _BUSY_FLOOR))
+                step = self._busy.heard(ratio)
+                if step:
+                    moved.append("busier" if step > 0 else "sparser")
+            self._learn(float(rms_db) - own, busy)
         gain_t, dens_t = self._targets()
-        self.gain_db = _toward(self.gain_db, gain_t, FOLLOW_GAIN_STEP_DB)
+        back = abs(gain_t) < abs(self.gain_db)
+        self.gain_db = _toward(self.gain_db, gain_t, FOLLOW_GAIN_RETURN_STEP_DB if back
+                               else FOLLOW_GAIN_STEP_DB)
         if self._cue_hold > 0:
             self._cue_hold -= 1
         else:
@@ -487,7 +593,11 @@ class BandFollow:
 
     def _targets(self) -> tuple[float, float]:
         lvl, busy = self._level.value, self._busy.value
-        gain = _clip(FOLLOW_GAIN_PER_DB * lvl, *self._gain_lim)
+        gain = FOLLOW_GAIN_PER_DB * lvl
+        if lvl < -FOLLOW_GAIN_BIG_DB:
+            gain = -(FOLLOW_GAIN_PER_DB * FOLLOW_GAIN_BIG_DB
+                     + FOLLOW_GAIN_PER_DB_BIG * (-lvl - FOLLOW_GAIN_BIG_DB))
+        gain = _clip(gain, *self._gain_lim)
         dens = 1.0 + FOLLOW_DENSITY_PER_DB * lvl + FOLLOW_DENSITY_PER_OCTAVE * busy
         hi = min(1.0, self._dens_lim[1]) if self._torrent else self._dens_lim[1]
         return gain, _clip(dens, self._dens_lim[0], hi)
@@ -506,7 +616,7 @@ class BandFollow:
 
     def _state(self, moved: tuple[str, ...]) -> FollowState:
         why = (f"follow: level {self.gain_db:+.1f}dB density x{self.density:.2f}"
-               + (f", {' and '.join(moved)} for {self.hold_bars} bars" if moved else ""))
+               + (f", {' and '.join(moved)} for {self.hold_bars:g} bars" if moved else ""))
         return FollowState(round(self.gain_db, 3), round(self.density, 4), moved, why)
 
 

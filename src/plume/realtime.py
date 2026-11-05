@@ -310,6 +310,97 @@ def trim_events(events: list, now_t_s: float, *,
     return [e for e in events if e[0] >= cut]
 
 
+#: How long after a half bar ends its frames are trusted to have all arrived: the input
+#: latency and an analysis hop, with room to spare.
+FOLLOW_READ_MARGIN_S = 0.1
+#: Planning may cost this many times its measured median before a bar is late.
+PLAN_BUDGET_X = 4.0
+
+
+def follow_parts(bar_events, later_events, w_start: float, w_end: float,
+                 next_start: float, *, fed_until: float | None, heard_until: float,
+                 silence_rms_db: float, ref_db: float | None):
+    """Her level over each half bar not yet handed to BandFollow, oldest first.
+
+    ``bar_events`` are the frames of the bar just finished, ``[w_start, w_end)``, and
+    ``later_events`` those since, in the bar now playing, ``[w_end, next_start)``.  The
+    first half of the bar now playing is read too once ``heard_until`` (the latest
+    frame) is past its end: that is the half bar sooner the band hears her.  A half is
+    read only once, whichever call reaches it.  None for a half she sat out, by
+    :func:`bar_features_dict`'s own silence rule.  Returns ``(levels, fed_until)``.
+    """
+    mid, mid2 = 0.5 * (w_start + w_end), 0.5 * (w_end + next_start)
+    spans = [(w_start, mid, bar_events), (mid, w_end, bar_events)]
+    if heard_until >= mid2:
+        spans.append((w_end, mid2, later_events))
+    eps = 1e-6
+    levels = []
+    for t0, t1, evs in spans:
+        if fed_until is not None and t0 < fed_until - eps:
+            continue
+        inside = [e for e in evs if t0 <= e[0] < t1]
+        kw = bar_features_dict(0, inside, silence_rms_db=silence_rms_db, ref_db=ref_db,
+                               beats_per_bar=2)
+        levels.append(None if kw["silent"] else kw["rms_db"])
+        fed_until = t1
+    return levels, fed_until
+
+
+def plan_lead_s(bar_s: float, *, plan_cost_s: float | None, pace: float | None,
+                comp_s: float) -> float:
+    """How far ahead of the playhead a lead take plans its next bar, in stream seconds.
+
+    Half a bar, less :data:`FOLLOW_READ_MARGIN_S`, so the first half of the bar now
+    playing has been heard when the next is planned and the band answers her a bar
+    sooner.  Never less than planning needs: :data:`PLAN_BUDGET_X` times its measured
+    cost, at the pace the stream runs (a fake device runs faster than real time), plus
+    the bar's early placement.  Never more than the whole bar it always had, which is
+    also the answer before anything has been measured.
+    """
+    bar_s = float(bar_s)
+    if plan_cost_s is None or pace is None:
+        return bar_s
+    need = PLAN_BUDGET_X * float(plan_cost_s) * float(pace) + float(comp_s)
+    return min(bar_s, max(0.5 * bar_s - FOLLOW_READ_MARGIN_S, need))
+
+
+def _median_s(costs_us) -> float | None:
+    """Median of the last planning costs, in seconds; None before there are any."""
+    recent = sorted(costs_us[-32:])
+    return recent[len(recent) // 2] * 1e-6 if recent else None
+
+
+class _StreamPace:
+    """Stream seconds per wall second, from the playhead: 1 on a real device.
+
+    The fastest it has been seen running, so a stream that speeds up (the fake device
+    starts at real time, then runs twelve times faster) is never taken for a slow one.
+    Nothing is said until ``settle_s`` of wall time has been watched."""
+
+    def __init__(self, *, window_s: float = 0.5, settle_s: float = 3.0, clock=None):
+        self._window, self._settle = float(window_s), float(settle_s)
+        self._clock = clock or time.monotonic
+        self._first: float | None = None
+        self._mark: tuple[float, float] | None = None
+        self._fastest = 0.0
+
+    def note(self, playhead_s: float) -> None:
+        now = self._clock()
+        if self._mark is None:
+            self._first = now
+            self._mark = (now, float(playhead_s))
+            return
+        dt = now - self._mark[0]
+        if dt >= self._window:
+            self._fastest = max(self._fastest, (float(playhead_s) - self._mark[1]) / dt)
+            self._mark = (now, float(playhead_s))
+
+    def rate(self) -> float | None:
+        if self._first is None or self._clock() - self._first < self._settle:
+            return None
+        return self._fastest or None
+
+
 def bar_features_dict(
     bar: int,
     events: list[tuple[float, float, bool]],
@@ -4253,6 +4344,9 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
             harm_state = shared["harmony"]
             evs = [e for e in shared["events"] if w_start <= e[0] < w_end]
             shared["events"] = [e for e in shared["events"] if e[0] >= w_end]
+            # The bar now playing, as far as it has been heard: BandFollow reads its
+            # first half early (see follow_parts).
+            later_evs = list(shared["events"]) if entry is not None else []
             onsets = [t for t in shared["onsets"] if w_start <= t < w_end]
             shared["onsets"] = [t for t in shared["onsets"] if t >= w_end]
             bar_chroma = [c for t, c in shared["chroma"] if w_start <= t < w_end]
@@ -4383,10 +4477,21 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
             if ending_now is None:
                 # What she plays is only her on an input that hears nothing else, so a
                 # room mic's bars are weighed by BandFollow with that in mind.
+                parts = None
+                if is_direct and bar >= first_heard_bar:
+                    # Her level by the half bar, the newest half as soon as it is
+                    # heard.  Only an input that hears nothing but her: off a room
+                    # mic a half bar is mostly the band.
+                    parts, state["follow_fed"] = follow_parts(
+                        evs, later_evs, w_start, w_end, t_bar,
+                        fed_until=state.get("follow_fed"),
+                        heard_until=(later_evs[-1][0] if later_evs else w_end),
+                        silence_rms_db=params.silence_rms_db, ref_db=state["ref_db"])
                 followed = follow.bar(None if human is None else human.rms_db,
                                       None if human is None else human.onset_density,
                                       playing=playing and human is not None,
-                                      band_in=entry.band_is_in)
+                                      band_in=entry.band_is_in, parts=parts,
+                                      bar_s=bar_len)
             if entered.stage == "drums":
                 section, density, resting = "intro", TAP_START_MIN_DENSITY, ()
             else:
@@ -4495,7 +4600,10 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
                              "gain_db": round(follow.gain_db, 3),
                              "density": round(follow.density, 4),
                              "moved": list(followed.moved) if followed is not None else [],
-                             "bars": follow.hold_bars}
+                             "bars": follow.hold_bars,
+                             # how far ahead this bar was planned: half a bar when
+                             # the band could hear half of the bar before it
+                             "ahead_s": round(float(state.get("ahead_s", bar_len)), 3)}
             if fade_done:
                 state["ended"] = True
                 shared["end_reason"] = END_SILENCE
@@ -4557,9 +4665,18 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
             state["sec_idx"], pos = mind.seek_form(sess, int(from_bar))
             state["sec_bar"] = pos - 1  # the first plan steps onto ``pos``
         bpm = composed_bpm
+        pace = _StreamPace()
         while not stop.is_set() and not ending.is_set():
-            # Stay one bar ahead of the playhead: render bar N while N-1 plays.
-            if clock.t_s - timeline.playhead / SR > clock.bar_len_s(bpm):
+            # Stay one bar ahead of the playhead: render bar N while N-1 plays.  A
+            # take whose band follows her plans later, half a bar ahead when planning
+            # is quick enough, so it has heard half of N-1 (see plan_lead_s).
+            ahead = clock.bar_len_s(bpm)
+            if entry is not None:
+                ahead = plan_lead_s(ahead, plan_cost_s=_median_s(plan_us),
+                                    pace=pace.rate(), comp_s=comp_samples[0] / SR)
+            state["ahead_s"] = ahead
+            if clock.t_s - timeline.playhead / SR > ahead:
+                pace.note(timeline.playhead / SR)
                 stop.wait(0.01)
                 continue
             t0_wall = time.perf_counter()

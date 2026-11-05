@@ -1,4 +1,4 @@
-"""Recorded one-shots behind the ``kit_*`` voices.
+"""Recorded one-shots behind the ``kit_*`` voices, the brush and the tuned voices.
 
 Quiet and hard hits on a real drum differ in tone as well as level, which is a
 large part of why a synthesized kit sounds stiff.  So velocity picks a recorded

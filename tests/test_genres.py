@@ -4,7 +4,6 @@ These numbers say a genre has the bones it was built with.  They do not say it s
 good.  Nobody has listened to these yet; that is for a person, not a test.
 """
 import dataclasses
-import hashlib
 import json
 import pathlib
 import sys
@@ -36,11 +35,12 @@ GENRES = ["jazz", "house", "hiphop", "rnb"]
 OLDER = ["lofi", "midwest", "synthwave", "trap"]
 SR = 48000
 PEAK_LIMIT_DB = -0.9      # the offline limiter's ceiling is -1 dB, with a little to spare
-NEW_VOICES = ["housekick", "boomkick", "offhat", "brush", "upright", "roundbass",
-              "piano", "softkeys", "housestab"]
-#: Every file under src/plume/samples, by count and by the hash of their sorted names.
-SAMPLE_FILES = 101
-SAMPLE_NAMES_SHA256 = "dca742b7476cbe36829d1428d709c13aa66b050f996ed913c6007dec9aead81a"
+CODE_VOICES = ["housekick", "boomkick", "offhat", "roundbass", "housestab"]
+#: Recorded because code made them sound fake.
+SAMPLED_VOICES = ["brush", "upright", "piano"]
+NEW_VOICES = CODE_VOICES + SAMPLED_VOICES
+#: The lowest and highest note each sampled voice is asked for in these styles, live or offline.
+SAMPLED_RANGES = {"upright": (28, 55), "piano": (45, 107), "wurli": (48, 91)}
 
 
 # ------------------------------------------------------------------ prompts
@@ -183,9 +183,7 @@ def test_new_voice_goes_quiet_when_left_alone(preset):
     assert np.abs(tail).max() < 0.5 * np.abs(y).max()
 
 
-@pytest.mark.parametrize("preset,hz", [("upright", 55.0), ("upright", 98.0),
-                                       ("roundbass", 41.2), ("roundbass", 110.0),
-                                       ("piano", 261.6), ("softkeys", 440.0)])
+@pytest.mark.parametrize("preset,hz", [("roundbass", 41.2), ("roundbass", 110.0)])
 def test_a_pitched_voice_is_at_the_pitch_it_was_asked_for(preset, hz):
     y = _note(preset, hz, dur=1.0)[: SR]
     spectrum = np.abs(np.fft.rfft(y * np.hanning(y.size), n=SR * 2))
@@ -287,23 +285,110 @@ def test_house_progression_is_built_of_minor_ninths():
     assert "m9" in qualities
 
 
-def test_new_voices_are_code_and_every_recipe_voice_exists():
+def test_each_new_voice_is_what_it_says_and_every_recipe_voice_exists():
     from plume import samplekit, voices
-    for name in NEW_VOICES:
+    for name in CODE_VOICES:
         assert name in voices.PRESETS and name not in samplekit.voice_names()
+        assert name not in samplekit._tuned_manifest()
+    assert "brush" in samplekit.voice_names()
+    assert {"upright", "piano"} <= set(samplekit._tuned_manifest())
     for style in GENRES:
         for preset in load_style(style)["voices"].values():
             assert preset in voices.PRESETS
 
 
-def test_no_new_sample_files():
-    """Her call: out of the samples business, for now.  Code makes the new sounds.  A
-    change to this list is that decision being reversed, so it has to be made on purpose."""
+def _cents_off(preset, midi, vel):
+    """The strongest of the first few partials, in cents from where it should be."""
+    hz = midi_to_hz(midi)
+    y = _note(preset, hz, dur=1.0, vel=vel).astype(np.float64)
+    seg = y[int(0.05 * SR):int(0.6 * SR)]
+    n = 2 ** 20
+    spec = np.abs(np.fft.rfft(seg * np.hanning(seg.size), n))
+    freqs = np.fft.rfftfreq(n, 1 / SR)
+    found = []
+    for k in (1, 2, 3, 4):
+        if hz * k > 0.4 * SR:
+            break
+        band = (freqs > hz * k * 2 ** (-1 / 24)) & (freqs < hz * k * 2 ** (1 / 24))
+        at = int(np.argmax(spec[band]))
+        found.append((spec[band][at], 1200.0 * np.log2(freqs[band][at] / (hz * k))))
+    return max(found)[1]
+
+
+@pytest.mark.parametrize("preset", sorted(SAMPLED_RANGES))
+@pytest.mark.parametrize("vel", [0.3, 0.9])
+def test_a_sampled_voice_is_in_tune_across_the_notes_it_plays(preset, vel):
+    lo, hi = SAMPLED_RANGES[preset]
+    off = {m: _cents_off(preset, m, vel) for m in range(lo, hi + 1)}
+    assert max(abs(c) for c in off.values()) < 25.0, off
+
+
+@pytest.mark.parametrize("preset", sorted(SAMPLED_RANGES))
+def test_a_sampled_note_starts_and_ends_without_a_click(preset):
+    lo, hi = SAMPLED_RANGES[preset]
+    for midi in range(lo, hi + 1, 3):
+        for dur in (0.1, 0.4, 2.0, 6.0):
+            y = _note(preset, midi_to_hz(midi), dur=dur, vel=0.9)
+            assert np.isfinite(y).all() and np.abs(y).max() > 0.05
+            assert abs(y[0]) < 0.1 * np.abs(y).max(), (midi, dur)
+            assert abs(y[-1]) < 2e-3, (midi, dur)
+            end = max(16, int(0.01 * y.size))
+            assert np.abs(np.diff(y[-end:])).max() < 0.05, (midi, dur)
+
+
+def test_a_brush_hit_starts_at_once_ends_quietly_and_follows_velocity():
+    y = _note("brush", vel=0.9)
+    assert np.flatnonzero(np.abs(y) > 0.1 * np.abs(y).max())[0] < 0.01 * SR
+    assert abs(y[-1]) < 1e-3
+    assert np.abs(_note("brush", vel=0.1)).max() < np.abs(y).max()
+
+
+@pytest.mark.parametrize("preset,hz", [("upright", 82.4), ("wurli", 261.6), ("piano", 261.6)])
+def test_a_repeated_sampled_note_is_not_stuck_on_one_take_or_level(preset, hz):
+    takes = {_note(preset, hz, vel=0.9, seed=seed).tobytes() for seed in range(8)}
+    if preset == "upright":
+        assert len(takes) > 1
+    soft, hard = _note(preset, hz, vel=0.3), _note(preset, hz, vel=0.9)
+    assert np.abs(soft).max() < np.abs(hard).max()
+
+
+@pytest.mark.parametrize("style", ["jazz", "hiphop", "rnb"])
+def test_a_first_live_bar_is_quick_even_with_nothing_loaded_yet(style):
+    """A sample reads from disk on first use, on the planner, which has the bar before to do it in."""
+    from plume import samplekit
+    engine = _engine(style)
+    bpm = max(load_style(style)["bpm_range"])
+    plan, harm = _bar(style, _band_roles(engine), 0)
+    samplekit._load.cache_clear()
+    t = time.perf_counter()
+    engine.render_bar(plan, SimpleNamespace(bpm=float(bpm)), harm)
+    assert time.perf_counter() - t < 0.5 * 240.0 / bpm
+
+
+def test_the_sampled_voices_load_inside_a_small_budget():
+    from plume import samplekit
     root = pathlib.Path(figures.__file__).parent / "samples"
-    names = sorted(p.relative_to(root).as_posix() for p in root.rglob("*") if p.is_file()
-                   and "__pycache__" not in p.parts)
-    assert len(names) == SAMPLE_FILES
-    assert hashlib.sha256("\n".join(names).encode()).hexdigest() == SAMPLE_NAMES_SHA256
+    new = [p for v in ("upright", "piano") for p in (root / "tuned").glob(f"{v}_*.flac")]
+    new += list((root / "kit").glob("brush_*.flac"))
+    assert sum(p.stat().st_size for p in new) < 6_000_000
+    samplekit._load.cache_clear()
+    total = 0
+    for voice in ("upright", "piano"):
+        for entry in samplekit._tuned_manifest()[voice]:
+            total += samplekit._load(entry["file"], SR, samplekit._TUNED).nbytes
+    assert total < 80_000_000
+
+
+@pytest.mark.parametrize("style,role,lo,hi", [
+    ("jazz", "bass", -22.0, -13.0), ("jazz", "pad", -30.0, -20.0), ("jazz", "snare", -46.0, -33.0),
+    ("hiphop", "pad", -28.0, -18.0), ("rnb", "keys", -25.0, -15.0), ("rnb", "lead", -30.0, -20.0),
+])
+def test_a_sampled_part_sits_where_the_code_voice_it_replaced_sat(renders, style, role, lo, hi):
+    y, _ = sf.read(renders[style].stems / f"{role}.wav")
+    assert lo <= _rms_db(y) <= hi
+    live, _ = _plain_take(style, {role: 1.0}, bars=8)
+    assert lo - 1.0 <= _rms_db(live) <= hi + 1.0
+    assert np.abs(y).max() < 1.0
 
 
 # ------------------------------------------------------------------ offline

@@ -1,6 +1,7 @@
 """The recorded kit: what the midwest style's drums are made of."""
 import numpy as np
 import pytest
+import soundfile as sf
 
 from plume import samplekit, voices
 from plume.duet import DuetEngine
@@ -51,6 +52,41 @@ def test_midwest_style_uses_only_recorded_drums_and_is_playable():
     for role in ("kick", "snare", "hat", "openhat"):
         assert style["voices"][role] in samplekit.voice_names(), role
     assert DuetEngine(style="midwest", seed=0, sr=48000) is not None
+
+
+def test_every_sample_file_is_listed_and_every_listed_file_is_there():
+    tuned = {e["file"] for entries in samplekit._tuned_manifest().values() for e in entries}
+    assert tuned == {p.name for p in samplekit._TUNED.glob("*.flac")}
+    kit = {name for layers in samplekit._manifest().values() for names in layers for name in names}
+    assert kit == {p.name for p in samplekit._KIT.glob("*.flac")}
+
+
+@pytest.mark.parametrize("voice", ["upright", "piano"])
+def test_a_new_tuned_voice_is_prepared_like_the_others(voice):
+    for entry in samplekit._tuned_manifest()[voice]:
+        info = sf.info(str(samplekit._TUNED / entry["file"]))
+        assert (info.channels, info.subtype, info.format) == (1, "PCM_16", "FLAC"), entry
+        assert info.duration <= 3.0, entry
+        y, _ = sf.read(str(samplekit._TUNED / entry["file"]))
+        assert 0.4 < np.abs(y).max() <= 0.951, entry
+        assert abs(y[0]) < 0.05 and abs(y[-1]) < 1e-3, entry
+
+
+def test_each_sampled_voice_names_its_source_and_licence():
+    readme = (samplekit._SAMPLES / "README.md").read_text()
+    for voice, source in (("fingerbass", "karoryfer.sneakybass"), ("vibes", "sgossner/VCSL"),
+                          ("wurli", "GregSullivan.E-Pianos"), ("upright", "dsmolken.double-bass"),
+                          ("piano", "sgossner/VCSL"), ("brush", "karoryfer.frankensnare")):
+        at = readme.index(f"{voice}_*")
+        entry = readme[at:readme.index("\n\n", at) if "\n\n" in readme[at:] else None]
+        assert source in entry and ("CC0-1.0" in entry or "CC-BY" in entry), voice
+
+
+def test_the_package_ships_the_sample_folders():
+    root = samplekit._SAMPLES.parents[2]
+    pyproject = (root / "pyproject.toml").read_text()
+    assert '"samples/kit/*"' in pyproject and '"samples/tuned/*"' in pyproject
+    assert '"samples/README.md"' in pyproject
 
 
 @pytest.mark.parametrize("voice,midi", [("fingerbass", 45), ("wurli", 60), ("vibes", 79)])

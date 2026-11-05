@@ -41,9 +41,10 @@ whole score; `plume get`/`set`/`unset` address any field by dotted path.
 Styles: `trap`, `lofi`, `midwest`, `synthwave`, `jazz`, `house`, `hiphop` and
 `rnb`, each a data file; a prompt can also say `boom bap`, `r&b` or `neo soul`.
 Voices: 808 kick/sub (key-tuned, glides), hats, clap, snare, supersaw pad, pluck,
-FM e-piano, lead, vinyl crackle, plus a house kick and stab, a boom bap kick, brush,
-upright and round bass, felt piano and a soft e-piano. All pure NumPy DSP at 48kHz,
-beside a small recorded kit and a few recorded pitched instruments.
+FM e-piano, lead, vinyl crackle, plus a house kick and stab, a boom bap kick and a
+round bass, all pure NumPy DSP at 48kHz. Beside them is a small recorded kit with a
+brush on a snare, and recorded double bass, grand piano, electric piano and vibraphone,
+all from open sample libraries (see `src/plume/samples/README.md`).
 
 ## Play with it
 

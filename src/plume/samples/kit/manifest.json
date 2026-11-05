@@ -128,5 +128,22 @@
   [
    "kit_ltom_12_0.flac"
   ]
+ ],
+ "brush": [
+  [
+   "brush_1_0.flac",
+   "brush_1_1.flac",
+   "brush_1_2.flac"
+  ],
+  [
+   "brush_3_0.flac",
+   "brush_3_1.flac",
+   "brush_3_2.flac"
+  ],
+  [
+   "brush_5_0.flac",
+   "brush_5_1.flac",
+   "brush_5_2.flac"
+  ]
  ]
 }

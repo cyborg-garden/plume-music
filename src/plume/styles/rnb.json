@@ -144,8 +144,8 @@
     "hat": "kit_hat",
     "bass": "roundbass",
     "pad": "airpad",
-    "keys": "softkeys",
-    "lead": "softkeys",
+    "keys": "wurli",
+    "lead": "wurli",
     "crash": "kit_crash"
   },
   "live_only_roles": [
@@ -286,8 +286,8 @@
     "hat": -8.0,
     "bass": -5.0,
     "pad": -14.0,
-    "keys": -8.0,
-    "lead": -9.0
+    "keys": -5.0,
+    "lead": -8.0
   },
   "role_gain_db": {
     "kick": 2.0,
@@ -295,8 +295,8 @@
     "hat": -6.0,
     "bass": -5.0,
     "pad": -14.0,
-    "keys": -9.0,
-    "lead": -9.0,
+    "keys": -6.0,
+    "lead": -5.0,
     "crash": -11.0
   }
 }

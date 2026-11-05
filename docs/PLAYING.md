@@ -73,8 +73,10 @@ count in any style, so a house take at 90 is slow house. Each style's usual rang
 The band you play with is drier than a `plume render` of the same style. `plume lead`, `plume
 jam` and `plume sim` use each part's filters and no reverb, delay or whole-mix drive or tape.
 So that the newest styles stay themselves, `house`'s bass and stabs still pump with the kick,
-`hiphop`'s kick, snare and bass are saturated, and `rnb`'s keys keep their chorus. `hiphop`'s
-tape wobble and every style's reverb are only in `plume render`.
+`hiphop`'s kick, snare and bass are saturated, and `rnb`'s keys keep their chorus, at the level
+they had without it. That chorus runs per note, where a render runs one over the whole part, so
+overlapping notes do not share it. `hiphop`'s tape wobble and every style's reverb are only in
+`plume render`.
 
 ## Talking to it
 

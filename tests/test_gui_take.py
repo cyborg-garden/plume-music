@@ -1472,6 +1472,7 @@ def test_the_whole_way_on_the_fake_device(tmp_path, monkeypatch, plume_registry)
         assert wait_until(lambda: state()["row"] is not None, timeout=20.0)
         row = state()["row"]
         assert row["input"] == "direct" and row["style_guess"] is True and row["bpm"] > 0
+        assert row["playing_trusted"] is True and isinstance(row["playing"], bool) and row["fade_db"] <= 0.0
         assert runner.cue({"cue": "busier"}) == {"ok": True, "cue": "busier"}
         folder = next(root.iterdir())
         assert runner.stop()["state"] == "stopping"
@@ -1900,3 +1901,15 @@ def test_closing_the_server_stops_the_take(rig, served):
 def test_the_existing_routes_still_need_a_take_in_the_body(page):
     assert page.post("/api/keep", {"kept": True})[0].status == 400
     assert page.post("/api/rename", {"name": "x"})[0].status == 400
+
+
+def test_the_words_about_the_ending_get_what_the_engine_decided(rig):
+    """Only named fields leave the bridge, so a page only knows she stopped if these are among them."""
+    runner = rig.runner(listener=StubListener)
+    runner.start({})
+    rig.open_stream()
+    rig.hit_first_bar()
+    StubListener.rows = [{"bar": 9, "bpm": 115.0, "playing": False, "playing_trusted": True, "fade_db": -3.0}]
+    runner.tick()
+    row = runner.live()["row"]
+    assert row["playing"] is False and row["playing_trusted"] is True and row["fade_db"] == -3.0

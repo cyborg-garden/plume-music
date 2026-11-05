@@ -470,6 +470,29 @@ def test_a_large_reported_delay_gets_the_same_line_with_its_number(rig, runner, 
     assert "180 ms" in line and "guess" not in line
 
 
+def test_a_late_line_leads_with_what_to_do(rig, runner, meter):
+    """The page makes its first sentence the big one."""
+    rig.devices = [LAPTOP_MIC, {"name": "Odd Output", "inputs": 0, "outputs": 2, "default_output": True, "output_ms": 180.4}]
+    good(meter, LAPTOP_MIC, -14.0)
+    runner.listen({})
+    doc = walk(runner, ("headphones", "no"))
+    assert doc["step"] == "latency" and doc["line"].startswith("Try wired headphones. ")
+
+
+def test_a_yes_or_no_does_not_wait_for_another_look_at_the_devices(rig, runner, meter):
+    """Each look is a child that can take a second, and she has only just been heard."""
+    good(meter)
+    runner.listen({})
+    looks = []
+    listed = runner._list
+    runner._list = lambda: (looks.append(1), listed())[1]
+    walk(runner, ("headphones", "yes"), ("hears_self", "no"), ("volume", "still"))
+    assert looks == []
+    rig.clock.t += guitake.LOOK_RECENT_S + 1.0
+    walk(runner, ("headphones", "no"))
+    assert looks == [1], "a look from a while ago is looked at again"
+
+
 def test_a_quick_wired_output_is_not_nagged(rig, runner, meter):
     rig.devices = [LAPTOP_MIC, {"name": "Plain Output", "inputs": 0, "outputs": 2, "default_output": True, "output_ms": 12.0}]
     good(meter, LAPTOP_MIC, -12.0)

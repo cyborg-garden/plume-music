@@ -90,10 +90,10 @@ HOT_ROOM = "A bit hot. Move back a little and play again."
 LOW_ROOM = "Barely hearing you. Move closer and play again."
 NOTHING_GAIN = "Nothing came in on {name}. Check the cable and the gain, then play again."
 NOTHING_ROOM = "Nothing came in on {name}. Check this computer lets plume use the microphone."
-LATE_GUESS = ("This output looks wireless (a guess). Wired headphones keep you in time, "
-              "because wireless ones can arrive late.")
-LATE_REPORTED = ("This output reports about {ms} ms. Wired headphones keep you in time, "
-                 "because wireless ones can arrive late.")
+LATE_GUESS = ("Try wired headphones. This output looks wireless (a guess), "
+              "and wireless ones can arrive late.")
+LATE_REPORTED = ("Try wired headphones. This output reports about {ms} ms, "
+                 "and wireless ones can arrive late.")
 COUNT_LINE = "Knock or clap 8 even beats."
 COUNT_PICKUP = "A knock may not reach a pickup, so chuck muted strings."
 
@@ -129,6 +129,10 @@ MAX_LISTEN_DEVICES = 4
 HOT_DB = -1.0
 LOW_DB = -33.0
 NOTHING_DB = -60.0
+#: A yes or no in setup can use a look at the devices this recent.  Each look is a child, and a
+#: second's wait after every answer is what would make this feel like a form.  Start always
+#: looks again, so a change is caught there.
+LOOK_RECENT_S = 20.0
 #: An output this late is hard to play to.  A guess too: wired ones report far less than this.
 LATE_MS = 80.0
 SETUP_VERSION = 1
@@ -147,7 +151,7 @@ _FIELDS = frozenset({"device", "channel", "key", "style", "hear_me", "headphones
 #: A row may carry more than a page needs.  Only these fields leave the bridge.
 _ROW_FIELDS = ("bar", "t_s", "bpm", "section", "stage", "key", "chord", "style", "style_guess",
                "key_guess", "you_db", "band_db", "you_busy", "you_notes", "you_source", "input",
-               "you_trusted")
+               "you_trusted", "playing", "playing_trusted", "fade_db")
 _STREAM_FIELDS = ("input_ms", "output_ms", "reported_ms", "block_ms", "calibrated_ms")
 
 #: Software that shows up as a many-channel device.  "zoomaudio", not "zoom": Zoom also
@@ -858,6 +862,7 @@ class TakeRunner:
         self._last_poll = clock()
         self._reported: dict[str | None, float] = {}
         self._stopping_others: set[int] = set()
+        self._last_look: tuple[float, tuple] | None = None
 
     # -- what a page reads
 
@@ -983,7 +988,17 @@ class TakeRunner:
         with self._list_lock:
             listed = self._list()
         rows = _rows(listed)
-        return describe_devices(listed), rows, device_list_mark(rows)
+        look = describe_devices(listed), rows, device_list_mark(rows)
+        with self._lock:
+            self._last_look = (self._clock(), look)
+        return look
+
+    def _look_recent(self) -> tuple[list[dict], list[dict], str]:
+        with self._lock:
+            last = self._last_look
+        if last is not None and self._clock() - last[0] < LOOK_RECENT_S:
+            return last[1]
+        return self._look()
 
     # -- setup
 
@@ -1020,7 +1035,7 @@ class TakeRunner:
         if not isinstance(step, str) or not isinstance(answer, str) or answer not in _ANSWERS.get(step, ()):
             raise Refused(400, "That is not an answer setup asked for.")
         try:
-            devices, rows, mark = self._look()
+            devices, rows, mark = self._look_recent()
         except TakeError as e:
             raise Refused(409, str(e)) from None
         device = self._named(body.get("device"), devices, mark)

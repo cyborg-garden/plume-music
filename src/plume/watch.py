@@ -283,6 +283,8 @@ class Listener:
             "band_db": round(band_db, 1), "mic_db": round(heard_db, 1),
             "you_busy": round(busy, 2), "you_notes": notes, "you_source": you_source,
             "input": source, "you_trusted": trusted, "you_why": why, "changes": changes,
+            "playing": last.get("playing"), "playing_trusted": last.get("playing_trusted"),
+            "fade_db": last.get("fade_db"),
         }
 
     def _changes(self, row: dict, you_db: float, busy: float) -> list[str]:

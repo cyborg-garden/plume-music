@@ -46,6 +46,16 @@ def test_it_says_when_the_player_stops_and_returns_despite_the_bleed(tmp_path):
     assert changes.index("you:stopped") < changes.index("you:back")
 
 
+def test_it_passes_on_what_the_engine_decided_about_the_player(tmp_path):
+    """The engine's word, not a second opinion: it is what fades the band."""
+    d = session(tmp_path, playing=lambda b: 0.2, bars=1)
+    row = json.loads((d / "decisions.ndjson").read_text().splitlines()[1])
+    row.update(playing=False, playing_trusted=True, fade_db=-3.0)
+    (d / "decisions.ndjson").write_text('{"kind": "manifest"}\n' + json.dumps(row) + "\n")
+    doc = Listener(d, every=1).poll()[0]
+    assert doc["playing"] is False and doc["playing_trusted"] is True and doc["fade_db"] == -3.0
+
+
 def test_it_says_when_the_section_changes(tmp_path):
     docs = Listener(session(tmp_path, playing=lambda b: 0.2), every=4).poll()
     assert any("section:lift" in d["changes"] for d in docs)

@@ -3,6 +3,8 @@
 These numbers say a genre has the bones it was built with.  They do not say it sounds
 good.  Nobody has listened to these yet; that is for a person, not a test.
 """
+import dataclasses
+import hashlib
 import json
 import pathlib
 import sys
@@ -34,6 +36,9 @@ SR = 48000
 PEAK_LIMIT_DB = -0.9      # the offline limiter's ceiling is -1 dB, with a little to spare
 NEW_VOICES = ["housekick", "boomkick", "offhat", "brush", "upright", "roundbass",
               "piano", "softkeys", "housestab"]
+#: Every file under src/plume/samples, by count and by the hash of their sorted names.
+SAMPLE_FILES = 101
+SAMPLE_NAMES_SHA256 = "dca742b7476cbe36829d1428d709c13aa66b050f996ed913c6007dec9aead81a"
 
 
 # ------------------------------------------------------------------ prompts
@@ -256,19 +261,28 @@ def test_rnb_harmony_reaches_ninths_and_elevenths_where_it_is_played_live():
     assert {"m11", "9", "maj9", "m9"} <= qualities
 
 
-def test_house_stabs_are_minor_sevenths_and_ninths_where_it_is_played_live():
+def test_house_progression_is_built_of_minor_ninths():
     qualities = {parse_chord(s).quality for s in progression_symbols("house", "A minor")}
     assert "m9" in qualities
 
 
-def test_no_new_sample_files():
-    """Her call: out of the samples business, for now.  Code makes the new sounds."""
-    from plume import voices
+def test_new_voices_are_code_and_every_recipe_voice_exists():
+    from plume import samplekit, voices
     for name in NEW_VOICES:
-        assert name in voices.PRESETS and not name.startswith("kit_")
+        assert name in voices.PRESETS and name not in samplekit.voice_names()
     for style in GENRES:
         for preset in load_style(style)["voices"].values():
             assert preset in voices.PRESETS
+
+
+def test_no_new_sample_files():
+    """Her call: out of the samples business, for now.  Code makes the new sounds.  A
+    change to this list is that decision being reversed, so it has to be made on purpose."""
+    root = pathlib.Path(figures.__file__).parent / "samples"
+    names = sorted(p.relative_to(root).as_posix() for p in root.rglob("*") if p.is_file()
+                   and "__pycache__" not in p.parts)
+    assert len(names) == SAMPLE_FILES
+    assert hashlib.sha256("\n".join(names).encode()).hexdigest() == SAMPLE_NAMES_SHA256
 
 
 # ------------------------------------------------------------------ offline
@@ -589,6 +603,40 @@ def test_live_house_holds_four_on_the_floor_at_every_density():
         assert [round(b) for b in kicks] == [0, 1, 2, 3]
         assert [round(b) for b in _beats_of(events[0], "snare", bpm)] == [1, 3]
         assert {round(b % 1.0, 1) for b in _beats_of(events[0], "hat", bpm)} == {0.5}
+
+
+def _ninth_and_shell(sym):
+    chord = parse_chord(sym)
+    third = next(iv for iv in chord.intervals if iv in (3, 4))
+    seventh = next(iv for iv in chord.intervals if iv in (10, 11))
+    return {(chord.root + iv) % 12 for iv in (third, seventh)}, (chord.root + 14) % 12
+
+
+def test_live_house_stabs_play_the_third_seventh_and_ninth_of_each_minor_ninth():
+    symbols = progression_symbols("house", "A minor")
+    engine = _engine("house")
+    for b, sym in enumerate(symbols):
+        plan, harm = _bar("house", _band_roles(engine), b)
+        harm = SimpleNamespace(key="A minor", chord=sym, chord_conf=1.0)
+        engine.render_bar(plan, SimpleNamespace(bpm=124.0), harm)
+        stab = {e["midi"] % 12 for e in engine.last_events if e["role"] == "pad"}
+        shell, ninth = _ninth_and_shell(sym)
+        assert shell <= stab, sym
+        if parse_chord(sym).quality == "m9":
+            assert ninth in stab, sym
+
+
+def test_offline_house_stabs_keep_the_ninth_too():
+    session = _session("house")
+    chords = session.movements[0].sections[0].chords
+    assert any(parse_chord(c).quality == "m9" for c in chords)
+    bar_s = 240.0 / session.bpm
+    for b, sym in enumerate(chords):
+        notes = {int(round(69 + 12 * np.log2(ev.freq_hz / 440.0))) % 12
+                 for ev in compile_events(session) if ev.track == "pad"
+                 and b * bar_s - 0.1 <= (ev.t_s % (len(chords) * bar_s)) < (b + 1) * bar_s - 0.1}
+        if notes and parse_chord(sym).quality == "m9":
+            assert _ninth_and_shell(sym)[1] in notes, sym
 
 
 def test_live_house_bass_stays_off_the_kick():

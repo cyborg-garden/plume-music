@@ -551,7 +551,7 @@ function drawHear() {
   $('hear-words').hidden = !allowed;
   $('hear-me').checked = allowed && hearOn();
   $('hear-short').hidden = !hearOn();
-  $('hear-delay').textContent = delayLine(S.home && S.home.hear_me.reported_ms);
+  $('hear-delay').textContent = delayLine(device && device.reported_ms);
 }
 function drawSummary() {
   if (S.home) $('home-summary').textContent = routeLine(chosenDevice(), S.form.channel, $('set-key').value.trim(), $('set-style').value.trim());

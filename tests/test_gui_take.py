@@ -739,6 +739,19 @@ def test_stream_latency_is_read_and_home_remembers_it(rig, runner):
     assert runner.home()["hear_me"]["reported_ms"] == 8.0
 
 
+def test_a_device_only_ever_shows_the_delay_it_reported_itself(rig, runner):
+    rig.devices = [LAPTOP_MIC, LAPTOP_OUT, SCARLETT]
+    mic = next(d for d in runner.home()["devices"] if d["name"] == LAPTOP_MIC["name"])
+    runner.start({"device": mic["id"], "hear_me": False})
+    (rig.folder / realtime.REC_STREAM).write_text(json.dumps({"reported_ms": 8.3}))
+    runner.tick()
+    home = runner.home()
+    by_name = {d["name"]: d.get("reported_ms") for d in home["devices"]}
+    assert by_name == {LAPTOP_MIC["name"]: 8.3, SCARLETT["name"]: None}
+    # The default here is the interface, which has reported nothing yet.
+    assert home["hear_me"]["reported_ms"] is None
+
+
 @pytest.mark.parametrize("junk", ['{"reported_ms": "lots"}', '{"reported_ms": true}', "[1]", "not json"])
 def test_a_strange_stream_file_is_no_reading(rig, runner, junk):
     runner.start({})

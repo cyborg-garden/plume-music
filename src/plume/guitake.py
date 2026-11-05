@@ -498,7 +498,7 @@ class TakeRunner:
         self._cancelled = False
         self._closing = False
         self._last_poll = clock()
-        self._last_stream: dict | None = None
+        self._reported: dict[str | None, float] = {}
         self._stopping_others: set[int] = set()
 
     # -- what a page reads
@@ -509,11 +509,12 @@ class TakeRunner:
             devices = self._devices()
         except TakeError as e:
             devices, problem = [], str(e)
+        with self._lock:
+            # Each device's own number.  One device's delay says nothing about another's.
+            devices = [{**d, "reported_ms": self._reported.get(d["name"])} for d in devices]
         chosen = default_device(devices)
         if problem is None and not devices:
             problem = NO_INPUT
-        with self._lock:
-            stream = self._last_stream
         return {
             "devices": devices,
             "device": None if chosen is None else chosen["id"],
@@ -521,7 +522,7 @@ class TakeRunner:
             "channel": 1,
             "hear_me": {"allowed": chosen is not None and chosen["hear_me"],
                         "default": chosen is not None and chosen["hear_me"],
-                        "reported_ms": None if stream is None else stream.get("reported_ms")},
+                        "reported_ms": None if chosen is None else chosen["reported_ms"]},
             "folder": pretty_path(self.root),
             "styles": list_styles(),
             "problem": problem,
@@ -797,7 +798,9 @@ class TakeRunner:
             if row is not None:
                 take.row = row
             if stream is not None:
-                take.stream = self._last_stream = stream
+                take.stream = stream
+                if stream["reported_ms"] is not None:
+                    self._reported[take.route.name] = stream["reported_ms"]
             if take.phase == "starting" and take.frames > 0:
                 take.phase, take.opened = "waiting", now
             if take.phase == "waiting" and played:

@@ -646,10 +646,22 @@ def test_turning_hear_me_off_is_sent_and_kept_across_a_visit_to_the_shelf(tmp_pa
 
 
 def test_the_delay_is_called_what_it_is(tmp_path, docs):
-    docs["home"]["hear_me"]["reported_ms"] = 12.4
+    for device in docs["home"]["devices"]:
+        if device["name"] == "Test Interface":
+            device["reported_ms"] = 12.4
     out = run_page(tmp_path, docs, f"return {HEAR};")
     assert out["delay"] == ("Use headphones. Plume adds about 12 ms, as your device reports it. "
                             "This is not a measured round trip.")
+
+
+def test_the_delay_shown_is_the_chosen_devices_own(tmp_path, docs):
+    mic = next(d for d in docs["home"]["devices"] if d["name"] == "Test Mic")
+    other = {"name": "Test Interface Two", "inputs": 2, "outputs": 2}
+    docs["home"]["devices"].append({**guitake.describe_devices([other])[0]})
+    mic["reported_ms"] = 8.3
+    docs["home"]["hear_me"]["reported_ms"] = 8.3     # not what a device says about another
+    out = run_page(tmp_path, docs, f"return {HEAR};")
+    assert out["delay"] == "Use headphones. Plume shows the delay your device reports once a take starts."
 
 
 def test_the_direct_button_line_is_there_once(tmp_path):

@@ -873,22 +873,24 @@ function followSetup(doc) {
   else drawSetup();
 }
 /* Nothing plays while this is asked: she is told where the band would go first. */
-function askAboutOutput(doc, force) {
-  const moved = movedOutput(S.setupShown, doc, S.home && S.home.outputs, force);
+function askAboutOutput(doc) {
+  const moved = movedOutput(S.setupShown, doc, S.home && S.home.outputs);
   if (!moved) return false;
-  S.setup = Object.assign(moved, { then: force ? Object.assign({}, doc, { done: true }) : doc });
+  S.setup = Object.assign(moved, { then: doc });
   drawSetup();
   return true;
 }
-/* What home said is settled now, one way or the other, for this input. */
+/* What home said is settled now, one way or the other, for this input. The next press of Start
+   reads what home knows, so it has to hear the answer too, or it would ask again after each take. */
 async function answerMoved(answer) {
   const asked = S.setup, then = asked.then, turn = S.setupTurn;
   S.setupShown = { device: then.device, output: answer === 'yes' ? asked.output : then.output || null };
-  if (answer !== 'yes') { followSetup(then); return; }
+  if (answer !== 'yes') { loadHome(); followSetup(then); return; }
   S.answering = true;
   Array.from($('setup-choices').children).forEach(setOff);
   let reply = null;
   try { reply = await send('setup/answer', { step: 'output', answer: asked.output, device: then.device }); } catch (err) { /* said below */ }
+  if (reply && reply.ok) loadHome();
   if (turn !== S.setupTurn) return;
   S.answering = false;
   if (reply && reply.ok) { followSetup(then.done || then.step === 'listen' ? then : reply.doc); return; }
@@ -939,7 +941,7 @@ function chooseSetup(answer) {
   if (S.answering || S.listening) return;
   if (S.setup.step === 'moved') answerMoved(answer);
   else if (answer === 'again') setupListen();
-  else if (answer === 'start') { if (!askAboutOutput(S.setup, true)) startTake(); }
+  else if (answer === 'start') startTake();
   else setupAnswer(S.setup.step, answer);
 }
 let slowTimer = 0;

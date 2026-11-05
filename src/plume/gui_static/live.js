@@ -166,15 +166,14 @@ function heardNote(doc) {
   return 'Heard you on ' + doc.device_name + (doc.mode === 'direct' ? ', channel ' + doc.channel : '') + '.';
 }
 
-/* Home said the band goes to one output, and setup has settled on an input that would send it
-   somewhere else. shown: the input and output home was showing at the press of Start. Null when
-   they agree, and until an input is settled, since a device that heard nothing has not moved. */
-export function movedOutput(shown, doc, outputs, force) {
+/* Home said the band goes to one output, and setup has just heard her on an input that would send
+   it somewhere else. shown: the input and output home was showing at the press of Start. Null
+   when they agree, and unless she was heard: a device that heard nothing has not moved anything. */
+export function movedOutput(shown, doc, outputs) {
   if (!shown || !shown.output || !doc.device || doc.device === shown.device) return null;
   const direct = doc.mode === 'direct';
   if (doc.output === shown.output || (direct && !doc.output && doc.device === shown.output)) return null;
-  const heard = doc.heard && ['ok', 'hot', 'low'].includes(doc.heard.result);
-  if (!force && !doc.done && !heard) return null;
+  if (!doc.heard || !['ok', 'hot', 'low'].includes(doc.heard.result)) return null;
   const nameOf = function (id) {
     const found = (outputs || []).find(function (o) { return o.id === id; });
     return found ? found.name : '';

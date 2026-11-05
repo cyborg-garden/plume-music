@@ -2595,7 +2595,7 @@ def _route_kwargs(args) -> dict:
     """The input route, only as far as it was asked for: a bare invocation must reach
     the transport with the signature it always had."""
     extra = {}
-    for name in ("input_device", "input_channel", "voice_channel"):
+    for name in ("input_device", "input_channel", "voice_channel", "output_device"):
         if getattr(args, name, None) is not None:
             extra[name] = getattr(args, name)
     if getattr(args, "direct", False):
@@ -3441,6 +3441,10 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--count-in", dest="count_in", action="store_true",
                    default=False, help=_COUNT_IN_HELP)
     _add_route_flags(p)
+    p.add_argument("--output-device", dest="output_device", default=None, metavar="NAME",
+                   help="send the sound here and leave the input alone (name substring; "
+                        "'plume inputs' lists them). Two devices have two clocks: this has "
+                        "not been tried on real gear")
     p.add_argument("--wind-down", dest="wind_down", type=float, default=None,
                    metavar="SECONDS",
                    help="with --tap-start: this long after the drums start, signal "

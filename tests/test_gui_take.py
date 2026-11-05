@@ -28,10 +28,10 @@ from plume import cli, gui, guitake, realtime
 from test_gui_bridge import Client
 
 SR = 48000
-SCARLETT = {"name": "Audio Interface 4x4", "inputs": 4, "outputs": 4}
+AUDIO_BOX = {"name": "Audio Interface 4x4", "inputs": 4, "outputs": 4}
 LAPTOP_MIC = {"name": "MacBook Pro Microphone", "inputs": 1, "outputs": 0}
 LAPTOP_OUT = {"name": "MacBook Pro Speakers", "inputs": 0, "outputs": 2}
-BLACKHOLE = {"name": "BlackHole 16ch", "inputs": 16, "outputs": 16}
+VIRTUAL_DEVICE = {"name": "Virtual Loop 16ch", "inputs": 16, "outputs": 16}
 
 
 class FakeClock:
@@ -57,7 +57,7 @@ class Rig:
     def __init__(self, root, state_dir):
         self.root = root
         self.state_dir = state_dir
-        self.devices = [LAPTOP_MIC, LAPTOP_OUT, SCARLETT]
+        self.devices = [LAPTOP_MIC, LAPTOP_OUT, AUDIO_BOX]
         self.clock = FakeClock()
         self.spawned = []
         self.stopped = []
@@ -222,20 +222,20 @@ def test_a_typed_key_is_the_key_the_band_commits_to(typed, want):
 def test_the_only_interface_is_chosen_on_channel_one_with_hear_me_off(rig, runner):
     home = runner.home()
     chosen = next(d for d in home["devices"] if d["id"] == home["device"])
-    assert chosen["name"] == SCARLETT["name"]
+    assert chosen["name"] == AUDIO_BOX["name"]
     assert (home["mode"], home["channel"]) == ("direct", 1)
     assert home["hear_me"]["allowed"] is False and home["hear_me"]["default"] is False
 
 
 def test_a_virtual_device_does_not_count_as_the_only_interface(rig, runner):
-    rig.devices = [LAPTOP_MIC, BLACKHOLE, SCARLETT]
+    rig.devices = [LAPTOP_MIC, VIRTUAL_DEVICE, AUDIO_BOX]
     home = runner.home()
-    assert next(d for d in home["devices"] if d["id"] == home["device"])["name"] == SCARLETT["name"]
+    assert next(d for d in home["devices"] if d["id"] == home["device"])["name"] == AUDIO_BOX["name"]
 
 
 @pytest.mark.parametrize("devices", [
-    [LAPTOP_MIC, LAPTOP_OUT, BLACKHOLE],
-    [LAPTOP_MIC, SCARLETT, {"name": "Other Interface 2x2", "inputs": 2, "outputs": 2}],
+    [LAPTOP_MIC, LAPTOP_OUT, VIRTUAL_DEVICE],
+    [LAPTOP_MIC, AUDIO_BOX, {"name": "Other Interface 2x2", "inputs": 2, "outputs": 2}],
 ])
 def test_otherwise_the_built_in_mic_in_room_mode_with_no_hear_me(rig, runner, devices):
     rig.devices = devices
@@ -246,7 +246,7 @@ def test_otherwise_the_built_in_mic_in_room_mode_with_no_hear_me(rig, runner, de
 
 
 def test_no_built_in_mic_falls_to_the_system_default(rig, runner):
-    rig.devices = [BLACKHOLE, {"name": "USB Mic", "inputs": 1, "outputs": 0}]
+    rig.devices = [VIRTUAL_DEVICE, {"name": "USB Mic", "inputs": 1, "outputs": 0}]
     home = runner.home()
     assert home["device"] is None and home["mode"] == "room"
     runner.start({})
@@ -290,7 +290,7 @@ def test_a_missing_audio_part_is_said_plainly(rig, runner):
 def test_a_device_plugged_in_later_shows_up(rig, runner):
     rig.devices = [LAPTOP_MIC]
     assert runner.home()["mode"] == "room"
-    rig.devices = [LAPTOP_MIC, SCARLETT]
+    rig.devices = [LAPTOP_MIC, AUDIO_BOX]
     assert runner.home()["mode"] == "direct"
 
 
@@ -306,7 +306,7 @@ def test_the_default_argv_exactly(rig, runner, monkeypatch):
     assert rig.spawned == [[
         sys.executable, "-P", "-m", "plume", "lead", "--tap-start", "--detect",
         f"--record={rig.root}/2031-02-03-040506/", "--seed=4242",
-        f"--device={SCARLETT['name']}", "--input-channel=1", "--direct"]]
+        f"--device={AUDIO_BOX['name']}", "--input-channel=1", "--direct"]]
 
 
 def test_hear_me_off_drops_the_monitor(rig, runner):
@@ -338,10 +338,10 @@ def test_hear_me_on_a_named_room_device_with_no_word_is_refused_too(rig, runner)
 
 
 def test_a_chosen_device_and_channel(rig, runner):
-    rig.devices = [LAPTOP_MIC, BLACKHOLE, SCARLETT]
+    rig.devices = [LAPTOP_MIC, VIRTUAL_DEVICE, AUDIO_BOX]
     box = next(d for d in runner.home()["devices"] if d["kind"] == "interface")
     runner.start({"device": box["id"], "channel": 3})
-    assert f"--device={SCARLETT['name']}" in rig.spawned[0] and "--input-channel=3" in rig.spawned[0]
+    assert f"--device={AUDIO_BOX['name']}" in rig.spawned[0] and "--input-channel=3" in rig.spawned[0]
 
 
 def test_a_room_device_on_another_channel(rig, runner):
@@ -364,7 +364,7 @@ def test_an_unknown_device_gets_the_plain_words(rig, runner):
     assert e.value.message == guitake.DEVICE_MISSING and rig.spawned == []
 
 
-@pytest.mark.parametrize("device", ["--direct", SCARLETT["name"], 7, ["x"]])
+@pytest.mark.parametrize("device", ["--direct", AUDIO_BOX["name"], 7, ["x"]])
 def test_a_device_is_an_id_never_a_name(rig, runner, device):
     with pytest.raises(guitake.Refused):
         runner.start({"device": device})
@@ -562,7 +562,7 @@ def test_concurrent_starts_spawn_once(rig):
     def slow_lister():
         entered.set()
         gate.wait(5)
-        return [SCARLETT]
+        return [AUDIO_BOX]
 
     runner = rig.runner(lister=slow_lister)
     outcomes = []
@@ -663,7 +663,7 @@ def test_the_live_doc_says_what_the_take_is(rig, runner):
     runner.answer({"step": "hear_me", "answer": "on"})
     runner.start({"key": "F major", "channel": 2})
     doc = runner.live()
-    assert doc["device"] == SCARLETT["name"]
+    assert doc["device"] == AUDIO_BOX["name"]
     assert (doc["mode"], doc["channel"], doc["hear_me"]) == ("direct", 2, True)
     assert (doc["key"], doc["style"]) == ("F major", None)
 
@@ -742,14 +742,14 @@ def test_stream_latency_is_read_and_home_remembers_it(rig, runner):
 
 
 def test_a_device_only_ever_shows_the_delay_it_reported_itself(rig, runner):
-    rig.devices = [LAPTOP_MIC, LAPTOP_OUT, SCARLETT]
+    rig.devices = [LAPTOP_MIC, LAPTOP_OUT, AUDIO_BOX]
     mic = next(d for d in runner.home()["devices"] if d["name"] == LAPTOP_MIC["name"])
     runner.start({"device": mic["id"], "hear_me": False})
     (rig.folder / realtime.REC_STREAM).write_text(json.dumps({"reported_ms": 8.3}))
     runner.tick()
     home = runner.home()
     by_name = {d["name"]: d.get("reported_ms") for d in home["devices"]}
-    assert by_name == {LAPTOP_MIC["name"]: 8.3, SCARLETT["name"]: None}
+    assert by_name == {LAPTOP_MIC["name"]: 8.3, AUDIO_BOX["name"]: None}
     # The default here is the interface, which has reported nothing yet.
     assert home["hear_me"]["reported_ms"] is None
 
@@ -804,7 +804,7 @@ def test_a_flat_channel_is_named(rig, runner):
 
 @pytest.mark.parametrize("devices", [
     [LAPTOP_MIC, LAPTOP_OUT],                                     # one channel, chosen for her
-    [BLACKHOLE, {"name": "USB Mic", "inputs": 1, "outputs": 0}],  # the system default
+    [VIRTUAL_DEVICE, {"name": "USB Mic", "inputs": 1, "outputs": 0}],  # the system default
 ])
 def test_a_flat_input_with_no_channel_to_change_says_what_could_help(rig, runner, devices):
     rig.devices = devices
@@ -1103,7 +1103,7 @@ def test_stop_while_the_devices_are_being_listed_starts_nothing(rig):
     def slow():
         entered.set()
         gate.wait(5)
-        return [SCARLETT]
+        return [AUDIO_BOX]
 
     runner = rig.runner(lister=slow)
     outcome = []
@@ -1581,12 +1581,12 @@ def test_the_lister_reads_the_json_and_never_asks_for_consent(monkeypatch):
 
     def run(argv, **kw):
         seen.update(kw, argv=argv)
-        return subprocess.CompletedProcess(argv, 0, stdout=json.dumps({"devices": [SCARLETT]}).encode())
+        return subprocess.CompletedProcess(argv, 0, stdout=json.dumps({"devices": [AUDIO_BOX]}).encode())
 
     monkeypatch.delenv(realtime.AUDIO_CONSENT_ENV, raising=False)
     monkeypatch.setattr(guitake, "_under_pytest", lambda: False)
     monkeypatch.setattr(guitake.subprocess, "run", run)
-    assert guitake.default_lister() == [SCARLETT]
+    assert guitake.default_lister() == [AUDIO_BOX]
     assert seen["argv"] == [sys.executable, "-P", "-m", "plume", "inputs", "--json"]
     assert seen["timeout"] == guitake.LIST_TIMEOUT_S
     assert "--meter" not in seen["argv"] and "env" not in seen
@@ -1818,7 +1818,7 @@ def test_start_over_http_and_reattach_from_another_session(rig, served, page):
     resp, out = page.post("/api/start", {"hear_me": False})
     assert resp.status == 200 and json.loads(out)["state"] == "starting"
     resp, out = Client(served).login().get("/api/live")
-    assert resp.status == 200 and json.loads(out)["device"] == SCARLETT["name"]
+    assert resp.status == 200 and json.loads(out)["device"] == AUDIO_BOX["name"]
     assert len(rig.spawned) == 1
 
 

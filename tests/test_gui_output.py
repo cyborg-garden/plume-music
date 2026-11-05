@@ -14,21 +14,21 @@ import pytest
 from conftest import fake_audio, patched_module, short_socket_path
 from plume import cli, guitake, realtime
 from test_gui_setup import FakeMeter, good
-from test_gui_take import BLACKHOLE, LAPTOP_MIC, LAPTOP_OUT, SCARLETT, Rig, _parsed
+from test_gui_take import AUDIO_BOX, LAPTOP_MIC, LAPTOP_OUT, VIRTUAL_DEVICE, Rig, _parsed
 
 SR = realtime.SR
 SPEAKERS = {"name": "Room Speakers", "inputs": 0, "outputs": 2}
 OTHER_SPEAKERS = {"name": "Other Speakers", "inputs": 0, "outputs": 2}
 SPEAKERS_ID = guitake.describe_outputs([SPEAKERS])[0]["id"]
 OTHER_ID = guitake.describe_outputs([OTHER_SPEAKERS])[0]["id"]
-BOX_ID = guitake.describe_devices([SCARLETT])[0]["id"]
+BOX_ID = guitake.describe_devices([AUDIO_BOX])[0]["id"]
 MIC_ID = guitake.describe_devices([LAPTOP_MIC])[0]["id"]
 
 
 @pytest.fixture
 def rig(tmp_path):
     made = Rig(tmp_path / "shelf", tmp_path / "state")
-    made.devices = [LAPTOP_MIC, LAPTOP_OUT, SCARLETT, SPEAKERS, OTHER_SPEAKERS]
+    made.devices = [LAPTOP_MIC, LAPTOP_OUT, AUDIO_BOX, SPEAKERS, OTHER_SPEAKERS]
     yield made
     if made.human is not None:
         made.human.close()
@@ -72,9 +72,9 @@ def headphones_yes(runner, device=BOX_ID):
 
 def test_only_real_outputs_are_offered():
     names = [o["name"] for o in guitake.describe_outputs(
-        [LAPTOP_MIC, LAPTOP_OUT, SCARLETT, BLACKHOLE, {"name": "default", "inputs": 2, "outputs": 2},
+        [LAPTOP_MIC, LAPTOP_OUT, AUDIO_BOX, VIRTUAL_DEVICE, {"name": "default", "inputs": 2, "outputs": 2},
          {"name": "dmix", "inputs": 0, "outputs": 2}])]
-    assert names == [LAPTOP_OUT["name"], SCARLETT["name"]]
+    assert names == [LAPTOP_OUT["name"], AUDIO_BOX["name"]]
 
 
 def test_a_name_inside_another_is_offered_because_the_child_takes_only_the_whole_name():
@@ -105,15 +105,15 @@ def test_argv_passes_the_output_only_when_a_different_one_was_chosen(tmp_path):
 
 
 def test_same_as_input_is_exactly_todays_argv(rig, runner):
-    rig.devices = [LAPTOP_MIC, LAPTOP_OUT, SCARLETT]
+    rig.devices = [LAPTOP_MIC, LAPTOP_OUT, AUDIO_BOX]
     runner.start({})
-    assert tail(rig) == [f"--device={SCARLETT['name']}", "--direct"]
+    assert tail(rig) == [f"--device={AUDIO_BOX['name']}", "--direct"]
 
 
 def test_a_saved_output_reaches_the_lead_command_for_that_input_only(rig, runner):
     choose(runner, SPEAKERS_ID)
     runner.start({"device": BOX_ID})
-    assert tail(rig) == [f"--device={SCARLETT['name']}", "--direct", f"--output-device={SPEAKERS['name']}"]
+    assert tail(rig) == [f"--device={AUDIO_BOX['name']}", "--direct", f"--output-device={SPEAKERS['name']}"]
     rig.die()
     runner.tick()
     runner.start({"device": MIC_ID})
@@ -183,9 +183,9 @@ def test_only_an_output_the_server_listed_can_be_chosen(runner, answer):
 
 
 def test_a_virtual_device_cannot_be_chosen_by_its_id(rig, runner):
-    rig.devices = [*rig.devices, BLACKHOLE]
+    rig.devices = [*rig.devices, VIRTUAL_DEVICE]
     with pytest.raises(guitake.Refused):
-        choose(runner, guitake.describe_devices([BLACKHOLE])[0]["id"])
+        choose(runner, guitake.describe_devices([VIRTUAL_DEVICE])[0]["id"])
 
 
 def test_a_refusal_to_open_the_pair_lands_as_plain_words_and_in_settings(rig, runner):
@@ -362,7 +362,7 @@ def test_it_is_saved_per_input_in_setup_json_with_no_names(rig, runner, setup_fi
     choose(runner, SPEAKERS_ID)
     opt_in(runner)
     text = setup_file.read_text()
-    assert SPEAKERS["name"] not in text and SCARLETT["name"] not in text
+    assert SPEAKERS["name"] not in text and AUDIO_BOX["name"] not in text
     saved = json.loads(text)["devices"]
     assert saved[BOX_ID]["output"] == SPEAKERS_ID and saved[BOX_ID]["send_output"] == SPEAKERS_ID
     assert MIC_ID not in saved
@@ -406,7 +406,7 @@ def test_setup_asks_about_headphones_only_of_her_own_output(runner, meter):
 
 
 def test_coming_back_still_asks_what_was_never_asked(rig, runner, meter):
-    rig.devices = [LAPTOP_MIC, LAPTOP_OUT, {**SCARLETT, "output_ms": 120.0}, SPEAKERS]
+    rig.devices = [LAPTOP_MIC, LAPTOP_OUT, {**AUDIO_BOX, "output_ms": 120.0}, SPEAKERS]
     good(meter)
     runner.listen({"device": BOX_ID})
     choose(runner, SPEAKERS_ID)
@@ -431,7 +431,7 @@ def test_other_speakers_numbers_are_not_kept_as_this_inputs_own(rig, runner):
 def test_what_the_page_needs_when_setup_moves_to_another_input(rig, runner, meter):
     """The page compares this with what home said.  A yes then reaches the lead command."""
     other = {"name": "Other Box", "inputs": 2, "outputs": 2}
-    rig.devices = [LAPTOP_MIC, LAPTOP_OUT, SCARLETT, other, SPEAKERS]
+    rig.devices = [LAPTOP_MIC, LAPTOP_OUT, AUDIO_BOX, other, SPEAKERS]
     home = runner.home()
     assert home["device"] == MIC_ID
     choose(runner, SPEAKERS_ID, device=MIC_ID)

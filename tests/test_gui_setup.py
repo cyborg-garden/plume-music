@@ -21,7 +21,7 @@ import soundfile as sf
 from conftest import fake_audio, patched_module, short_socket_path, wait_until
 from plume import cli, gui, guitake, realtime, roles as roles_mod
 from test_gui_bridge import Client
-from test_gui_take import BLACKHOLE, LAPTOP_MIC, LAPTOP_OUT, SCARLETT, Rig, _ask, _parsed
+from test_gui_take import AUDIO_BOX, LAPTOP_MIC, LAPTOP_OUT, VIRTUAL_DEVICE, Rig, _ask, _parsed
 
 OTHER_BOX = {"name": "Other Box 2x2", "inputs": 2, "outputs": 2}
 
@@ -76,7 +76,7 @@ def runner(rig, meter, setup_file):
     return rig.runner(meter=meter, setup_path=lambda: setup_file)
 
 
-def good(meter, device=SCARLETT, *peaks):
+def good(meter, device=AUDIO_BOX, *peaks):
     meter.by_name[device["name"]] = levels(*(peaks or (-90.0, -12.0, -90.0, -90.0)))
 
 
@@ -102,7 +102,7 @@ def test_it_picks_the_loudest_channel_with_no_questions(runner, meter):
     doc = runner.listen({})
     assert doc["heard"]["result"] == "ok" and doc["heard"]["channel"] == 2
     assert (doc["channel"], doc["step"], doc["line"]) == (2, "headphones", "Headphones on?")
-    assert meter.calls == [(SCARLETT["name"], guitake.LISTEN_S)]
+    assert meter.calls == [(AUDIO_BOX["name"], guitake.LISTEN_S)]
 
 
 @pytest.mark.parametrize("peak,result,words", [
@@ -110,7 +110,7 @@ def test_it_picks_the_loudest_channel_with_no_questions(runner, meter):
     (-45.0, "low", "Barely hearing you. Turn the gain up a little and play again."),
 ])
 def test_a_level_that_needs_a_hand_says_so_and_stays_on_the_step(runner, meter, peak, result, words):
-    good(meter, SCARLETT, peak, -90.0, -90.0, -90.0)
+    good(meter, AUDIO_BOX, peak, -90.0, -90.0, -90.0)
     doc = runner.listen({})
     assert (doc["heard"]["result"], doc["step"], doc["line"]) == (result, "listen", words)
     assert [c["answer"] for c in doc["choices"]] == ["again", "start"]
@@ -125,7 +125,7 @@ def test_a_mic_has_no_gain_to_turn(rig, runner, meter):
 
 
 def test_a_wrong_gain_still_found_the_channel(rig, runner, meter):
-    good(meter, SCARLETT, -90.0, -0.2, -90.0, -90.0)
+    good(meter, AUDIO_BOX, -90.0, -0.2, -90.0, -90.0)
     runner.listen({})
     runner.start({})
     assert "--input-channel=2" in rig.spawned[-1]
@@ -134,14 +134,14 @@ def test_a_wrong_gain_still_found_the_channel(rig, runner, meter):
 def test_nothing_arriving_names_the_device_and_offers_the_others(rig, runner, meter):
     doc = runner.listen({})
     assert doc["heard"]["result"] == "nothing"
-    assert SCARLETT["name"] in doc["line"] and "gain" in doc["line"]
+    assert AUDIO_BOX["name"] in doc["line"] and "gain" in doc["line"]
     assert [o["name"] for o in doc["others"]] == [LAPTOP_MIC["name"]]
     assert [c["answer"] for c in doc["choices"]] == ["again", "start"]
 
 
 def test_a_low_level_offers_the_others_because_it_may_be_gear_she_is_not_using(rig, runner, meter):
     """Hum on an idle interface, while she plays into the laptop."""
-    good(meter, SCARLETT, -50.0, -90.0, -90.0, -90.0)
+    good(meter, AUDIO_BOX, -50.0, -90.0, -90.0, -90.0)
     doc = runner.listen({})
     assert doc["heard"]["result"] == "low"
     assert [o["name"] for o in doc["others"]] == [LAPTOP_MIC["name"]]
@@ -151,7 +151,7 @@ def test_a_low_level_offers_the_others_because_it_may_be_gear_she_is_not_using(r
 
 
 def test_a_hot_level_has_found_her_so_it_offers_nothing_else(rig, runner, meter):
-    good(meter, SCARLETT, -0.2, -90.0, -90.0, -90.0)
+    good(meter, AUDIO_BOX, -0.2, -90.0, -90.0, -90.0)
     assert runner.listen({})["others"] == []
 
 
@@ -180,11 +180,11 @@ def test_a_built_in_mic_names_the_permission_not_a_cable(rig, runner, meter):
 
 
 def test_two_interfaces_listen_on_both_and_keep_the_one_that_heard_her(rig, runner, meter):
-    rig.devices = [LAPTOP_MIC, SCARLETT, OTHER_BOX]
+    rig.devices = [LAPTOP_MIC, AUDIO_BOX, OTHER_BOX]
     good(meter, OTHER_BOX, -90.0, -12.0)
     meter.barrier = threading.Barrier(2)     # both at once: she plays once, not twice
     doc = runner.listen({})
-    assert sorted(c[0] for c in meter.calls) == sorted([SCARLETT["name"], OTHER_BOX["name"]])
+    assert sorted(c[0] for c in meter.calls) == sorted([AUDIO_BOX["name"], OTHER_BOX["name"]])
     assert (doc["device_name"], doc["channel"]) == (OTHER_BOX["name"], 2)
     home = runner.home()
     assert next(d for d in home["devices"] if d["id"] == home["device"])["name"] == OTHER_BOX["name"]
@@ -199,7 +199,7 @@ def test_no_more_than_a_few_devices_open_at_once(rig, runner, meter):
 
 
 def test_never_a_virtual_device_unless_she_picks_it(rig, runner, meter):
-    rig.devices = [BLACKHOLE, LAPTOP_MIC, LAPTOP_OUT]
+    rig.devices = [VIRTUAL_DEVICE, LAPTOP_MIC, LAPTOP_OUT]
     runner.listen({})
     assert [c[0] for c in meter.calls] == [LAPTOP_MIC["name"]]
 
@@ -220,7 +220,7 @@ def test_a_lone_usb_mic_gets_heard_and_kept_rather_than_the_system_default(rig, 
     {"channels": [{"channel": 1, "peak_db": "loud"}]}, {"error": "boom"},
 ])
 def test_a_strange_reading_fails_the_step_and_does_not_trap_her(rig, runner, meter, junk):
-    meter.by_name[SCARLETT["name"]] = junk
+    meter.by_name[AUDIO_BOX["name"]] = junk
     doc = runner.listen({})
     assert doc["heard"]["result"] == "failed" and doc["line"] == guitake.NO_READING
     assert "start" in [c["answer"] for c in doc["choices"]]
@@ -549,7 +549,7 @@ def test_a_quick_wired_output_is_not_nagged(rig, runner, meter):
 
 
 def test_a_wireless_output_elsewhere_says_nothing_about_a_direct_device(rig, runner, meter):
-    rig.devices = [{**SCARLETT, "output_ms": 6.0}, {"name": "Wireless Buds", "inputs": 0, "outputs": 2, "default_output": True}]
+    rig.devices = [{**AUDIO_BOX, "output_ms": 6.0}, {"name": "Wireless Buds", "inputs": 0, "outputs": 2, "default_output": True}]
     good(meter)
     runner.listen({})
     assert walk(runner, ("headphones", "yes"), ("hears_self", "yes"))["step"] == "count"
@@ -588,7 +588,7 @@ def test_a_take_reporting_a_delay_does_not_undo_a_finished_setup(rig, runner, me
     assert walk(runner, ("headphones", "yes"), ("hears_self", "yes"))["done"] is True
     _take_reports(rig, runner, input_ms=3.0, output_ms=200.0, reported_ms=203.0)
     assert runner.setup()["step"] == "count"
-    assert next(d for d in runner.home()["devices"] if d["name"] == SCARLETT["name"])["setup_done"] is True
+    assert next(d for d in runner.home()["devices"] if d["name"] == AUDIO_BOX["name"])["setup_done"] is True
 
 
 def test_a_second_listen_on_a_finished_device_does_not_stop_at_the_delay_either(rig, runner, meter):
@@ -597,12 +597,12 @@ def test_a_second_listen_on_a_finished_device_does_not_stop_at_the_delay_either(
     walk(runner, ("headphones", "yes"), ("hears_self", "yes"))
     _take_reports(rig, runner, input_ms=3.0, output_ms=200.0, reported_ms=203.0)
     rig.devices = [*rig.devices, OTHER_BOX]
-    assert runner.listen({"device": next(d["id"] for d in runner.home()["devices"] if d["name"] == SCARLETT["name"])})["step"] == "count"
+    assert runner.listen({"device": next(d["id"] for d in runner.home()["devices"] if d["name"] == AUDIO_BOX["name"])})["step"] == "count"
 
 
 def test_the_round_trip_shown_in_settings_is_still_the_whole_of_it(rig, runner):
     _take_reports(rig, runner, input_ms=45.0, output_ms=40.0, reported_ms=85.0)
-    assert next(d for d in runner.home()["devices"] if d["name"] == SCARLETT["name"])["reported_ms"] == 85.0
+    assert next(d for d in runner.home()["devices"] if d["name"] == AUDIO_BOX["name"])["reported_ms"] == 85.0
 
 
 # ------------------------------------------------- something plugged in during the flow
@@ -663,11 +663,11 @@ def test_the_device_she_was_heard_on_going_away_never_says_done(rig, runner, met
 def test_a_second_interface_plugged_in_during_the_flow_does_not_move_the_take(rig, runner, meter):
     good(meter)
     doc = runner.listen({})
-    rig.devices = [LAPTOP_MIC, LAPTOP_OUT, SCARLETT, OTHER_BOX]
+    rig.devices = [LAPTOP_MIC, LAPTOP_OUT, AUDIO_BOX, OTHER_BOX]
     picked = {"device": doc["device"]}
     assert runner.answer({**picked, "step": "headphones", "answer": "no"})["done"] is True
     runner.start({})
-    assert f"--device={SCARLETT['name']}" in rig.spawned[-1]
+    assert f"--device={AUDIO_BOX['name']}" in rig.spawned[-1]
 
 
 def test_a_finished_flow_that_saw_the_same_devices_takes_one_more_look_and_no_more(rig, runner, meter):
@@ -696,7 +696,7 @@ def test_after_setup_start_goes_straight_to_the_count_with_what_it_learned(rig, 
     assert runner.setup()["done"] is True and runner.home()["setup"]["done"] is True
     runner.start({})
     argv = rig.spawned[-1]
-    assert f"--device={SCARLETT['name']}" in argv and "--input-channel=2" in argv and "--monitor" in argv
+    assert f"--device={AUDIO_BOX['name']}" in argv and "--input-channel=2" in argv and "--monitor" in argv
     assert len(meter.calls) == calls
 
 
@@ -710,7 +710,7 @@ def test_the_answers_survive_a_new_bridge_and_are_private(rig, runner, meter, se
 
 def test_no_device_name_is_written_down(runner, meter, setup_file):
     _finished(runner, meter)
-    assert SCARLETT["name"] not in setup_file.read_text()
+    assert AUDIO_BOX["name"] not in setup_file.read_text()
 
 
 def test_a_planted_symlink_is_not_followed_either_way(rig, tmp_path, meter, setup_file):
@@ -783,7 +783,7 @@ def test_a_changed_device_list_reruns_only_the_first_step_on_an_interface(rig, r
 
 def test_a_new_virtual_device_is_not_a_changed_list(rig, runner, meter):
     _finished(runner, meter)
-    rig.devices = [*rig.devices, BLACKHOLE]
+    rig.devices = [*rig.devices, VIRTUAL_DEVICE]
     assert runner.setup()["done"] is True
 
 
@@ -818,21 +818,21 @@ def test_plugging_in_an_interface_beats_the_mic_setup_knew(rig, runner, meter):
     good(meter, LAPTOP_MIC, -30.0)
     runner.listen({})
     assert runner.setup()["device_name"] == LAPTOP_MIC["name"]
-    rig.devices = [LAPTOP_MIC, LAPTOP_OUT, SCARLETT]
-    assert runner.setup()["device_name"] == SCARLETT["name"]
+    rig.devices = [LAPTOP_MIC, LAPTOP_OUT, AUDIO_BOX]
+    assert runner.setup()["device_name"] == AUDIO_BOX["name"]
     meter.calls.clear()
     good(meter, LAPTOP_MIC, -6.0)                    # an acoustic guitar is louder in the room
     good(meter)
     doc = runner.listen({})
-    assert sorted(c[0] for c in meter.calls) == sorted([LAPTOP_MIC["name"], SCARLETT["name"]])
-    assert doc["device_name"] == SCARLETT["name"]
+    assert sorted(c[0] for c in meter.calls) == sorted([LAPTOP_MIC["name"], AUDIO_BOX["name"]])
+    assert doc["device_name"] == AUDIO_BOX["name"]
 
 
 def test_a_mic_that_still_hears_her_is_kept_when_the_new_interface_is_silent(rig, runner, meter):
     rig.devices = [LAPTOP_MIC, LAPTOP_OUT]
     good(meter, LAPTOP_MIC, -12.0)
     runner.listen({})
-    rig.devices = [LAPTOP_MIC, LAPTOP_OUT, SCARLETT]
+    rig.devices = [LAPTOP_MIC, LAPTOP_OUT, AUDIO_BOX]
     assert runner.listen({})["device_name"] == LAPTOP_MIC["name"]
 
 
@@ -856,7 +856,7 @@ def test_a_device_gone_falls_back_safely(rig, runner, meter):
 # ------------------------------------------------------------------ the new Hear me rule
 
 def test_hear_me_starts_off_on_every_device_from_any_name(rig, runner):
-    for device in ([SCARLETT], [{"name": "Monitor Controller", "inputs": 2, "outputs": 2}], [LAPTOP_MIC, LAPTOP_OUT]):
+    for device in ([AUDIO_BOX], [{"name": "Monitor Controller", "inputs": 2, "outputs": 2}], [LAPTOP_MIC, LAPTOP_OUT]):
         rig.devices = device
         home = runner.home()
         assert home["hear_me"]["default"] is False and home["hear_me"]["allowed"] is False
@@ -985,7 +985,7 @@ def test_a_room_mic_may_hear_itself_with_headphones(rig, runner, devices, name):
 
 
 def test_the_system_default_may_hear_itself_with_headphones(rig, runner):
-    rig.devices = [LAPTOP_OUT, BLACKHOLE]
+    rig.devices = [LAPTOP_OUT, VIRTUAL_DEVICE]
     tick(runner)
     runner.start({})
     assert "--monitor" in rig.spawned[-1]
@@ -1117,8 +1117,8 @@ def test_hear_me_comes_from_no_device_name():
 
 
 def test_extra_fields_from_the_lister_are_read_only_when_they_make_sense(rig, runner):
-    rig.devices = [{**SCARLETT, "output_ms": "soon", "default_output": "yes"}]
-    assert runner.home()["devices"][0]["name"] == SCARLETT["name"]
+    rig.devices = [{**AUDIO_BOX, "output_ms": "soon", "default_output": "yes"}]
+    assert runner.home()["devices"][0]["name"] == AUDIO_BOX["name"]
 
 
 def test_the_lister_adds_what_a_real_library_reports(monkeypatch):

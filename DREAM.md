@@ -196,14 +196,13 @@ Nobody notices a new player entered. The music got wider.
   4/3 and 3/2 readings, so a loop's own length, which is a very strong tempo
   clue, should feed the tracker and not just take orders from it.
 - **Scoring to picture.** (Juniper, 2026-11-05.) The first time plume played
-  with a film instead of a person. A three-minute Super 8 short came with a
-  cue sheet in plain words: breathing at 0:04, a scene change at 0:58, a
-  moment of shame at 1:24 that turns to approval at 1:28, a touch, a poem that
-  has to stand out, then a wordless beach scene that wants a band and drums.
-  Plume rendered a cue-locked sketch. The notes came back in plain words
-  ("too jarring", "half a step higher than ours", "come in at 2:31, with a
-  pause before it"), and each one became an exact change in minutes. Stems
-  from the sketch ended up in the final cut.
+  with a film instead of a person. A three-minute short came with a cue sheet
+  in plain words: where the voices start, a scene change, a dark turn and the
+  moment it lifts, a line that has to stand out, then a wordless ending that
+  wants a band and drums. Plume rendered a cue-locked sketch. The notes came
+  back in plain words ("too jarring", "half a step higher than ours", "come
+  in a second earlier, with a pause before it"), and each one became an exact
+  change in minutes. Stems from the sketch ended up in the final cut.
 
   How it was done, with plume as it is:
   - **One session per scene, tempo solved from the clock.** Each scene's tempo
@@ -246,6 +245,27 @@ Nobody notices a new player entered. The music got wider.
   who owns the clock, and the notes in words are the cues. What plume
   listens to is cut points and spoken lines instead of a downbeat, and the
   first instinct is still to make room.
+- **The conductor.** (Juniper, 2026-11-06.) Scoring the film was the first
+  time the agent driving plume was asked for a whole chain of musical work in
+  one breath. The next step is to make that the normal way to play:
+
+  > Pull that sample, listen to this melody I play, loop it and fix my tempo
+  > mistakes, smooth the joins where you had to cut, then set the samples
+  > under it in a synthwave arrangement.
+
+  Each verb in that sentence is a plume command or close to one: fetch a
+  sample, `listen`, the smart looper's trim and align, a crossfade at the
+  cut, `make` in a style. The new part is an agent holding the whole
+  sentence, running it, and playing back what it heard and what it changed,
+  so the human can say "no, keep my rush in bar 3" and it does. Everything
+  it changes is logged with a reason, as the decision log already does.
+
+  Where this sits: much of AI music generates the finished track from a
+  prompt. Plume keeps the human making the music, on real instruments and
+  MIDI, and the machine does the handling around it: tidying, looping,
+  arranging, effects. The working phrase is **the analog effects wing of AI
+  music**. That frame has rules: sources must be ones the player has rights
+  to, and every sample's licence and credit travels with the take.
 - **v3 — The form.** (Juniper, 2026-08-14.) Right now plume hears *beat* and
   *chord*. It does not hear **the tune**. Teach it a form vocabulary — three-chord
   I-IV-V songs, 12-bar blues, AABA, rhythm changes, ii-V-I turnarounds, modal

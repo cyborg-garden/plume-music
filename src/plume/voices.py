@@ -130,6 +130,82 @@ PRESETS: dict[str, dict] = {
         "lp_hz": 7000.0,
         "level": 0.8,
     },
+    "housekick": {             # short, hard and clicky: it plays every beat
+        "sweep_mult": 5.0,
+        "tau_ms": 14.0,
+        "decay_ms": 95.0,
+        "attack_ms": 0.5,
+        "click_level": 0.55,
+        "drive": 3.0,
+        "default_hz": 50.0,
+    },
+    "boomkick": {              # rounder and longer, with room for the snare
+        "sweep_mult": 3.0,
+        "tau_ms": 22.0,
+        "decay_ms": 150.0,
+        "attack_ms": 1.0,
+        "click_level": 0.4,
+        "drive": 3.5,
+        "default_hz": 52.0,
+    },
+    "offhat": {                # an open hat short enough to clear the next kick
+        "decay_ms": 75.0,
+        "freq_scale": 1.0,
+        "level": 0.85,
+    },
+    "brush": {
+        "bp_hz": 3200.0,       # band-pass centre of the swish
+        "bp_q": 0.5,
+        "attack_ms": 5.0,
+        "noise_decay_ms": 110.0,
+        "tone_hz_1": 180.0,    # the drum head under the wires
+        "tone_decay_ms": 45.0,
+        "mix": 0.8,            # swish fraction
+    },
+    "upright": {
+        "attack_ms": 4.0,
+        "body_tau_ms": 650.0,  # how long the fundamental rings
+        "release_ms": 70.0,
+        "thump_level": 0.35,   # the finger on the string
+        "default_hz": 82.4,
+    },
+    "roundbass": {
+        "attack_ms": 6.0,
+        "decay_ms": 1400.0,
+        "release_ms": 45.0,
+        "h2_level": 0.4,       # second and third harmonics carry it on small speakers
+        "h3_level": 0.14,
+        "drive": 1.3,
+        "default_hz": 55.0,
+    },
+    "piano": {
+        "decay_ms": 900.0,     # time constant of the fundamental
+        "release_ms": 140.0,
+        "stretch": 0.0004,     # how far a string's upper partials run sharp
+        "hammer_level": 0.12,
+        "default_hz": 261.6,
+    },
+    "softkeys": {              # the e-piano, voiced rounder and longer
+        "index_start": 1.1,
+        "index_end": 0.15,
+        "index_ms": 260.0,
+        "tine_ratio": 14.0,
+        "tine_level": 0.2,
+        "tine_tau_ms": 40.0,
+        "decay_ms": 1800.0,
+        "release_ms": 180.0,
+        "default_hz": 440.0,
+    },
+    "housestab": {
+        "n_saws": 3,
+        "detune_cents": 9.0,
+        "cutoff_start_hz": 5200.0,
+        "cutoff_end_hz": 800.0,
+        "filter_ms": 110.0,
+        "decay_ms": 170.0,
+        "q": 1.1,
+        "default_hz": 220.0,
+    },
 }
 
 _DESCRIPTIONS = {
@@ -144,6 +220,15 @@ _DESCRIPTIONS = {
     "epiano": "DX-style e-piano: 2-op FM (1:1, index 2->0.3) + 14:1 tine ping; velocity -> brightness.",
     "lead": "Lead: 3-saw supersaw + square sub -1 oct at 0.3; portamento via glide_from_hz.",
     "crackle": "Vinyl crackle bed: sparse impulses (~90/s) low-passed at 7 kHz; loops per bar.",
+    "housekick": "House kick: short, hard pitch sweep and a loud click.",
+    "boomkick": "Boom bap kick: rounder sweep, longer body, heavily driven.",
+    "offhat": "Offbeat hat: the open hat's bank with a short decay.",
+    "brush": "Brush: soft-attack band-passed noise over a quiet drum tone.",
+    "upright": "Upright bass: decaying partials with a finger thump, no sustain to speak of.",
+    "roundbass": "Round bass: sine with second and third harmonics, gated, lightly driven.",
+    "piano": "Felt piano: stretched decaying partials with a soft hammer.",
+    "softkeys": "Soft e-piano: the FM e-piano with a lower index and a longer ring.",
+    "housestab": "House stab: detuned saws through a fast closing filter.",
 }
 
 _PARAM_RANGES = {
@@ -160,7 +245,9 @@ _PARAM_RANGES = {
     "filter_ms": [20.0, 500.0], "index_start": [0.0, 6.0], "index_end": [0.0, 2.0],
     "index_ms": [20.0, 1000.0], "tine_ratio": [1.0, 20.0], "tine_level": [0.0, 0.5],
     "tine_tau_ms": [10.0, 200.0], "sub_level": [0.0, 1.0], "rate_hz": [5.0, 500.0],
-    "lp_hz": [1000.0, 16000.0],
+    "lp_hz": [1000.0, 16000.0], "body_tau_ms": [100.0, 2000.0], "thump_level": [0.0, 1.0],
+    "h2_level": [0.0, 1.0], "h3_level": [0.0, 1.0], "stretch": [0.0, 0.002],
+    "hammer_level": [0.0, 0.5],
 }
 
 
@@ -455,6 +542,81 @@ def _v_crackle(sr, dur_s, freq_hz, velocity, rng, p, glide_from_hz):
     return y / peak * p["level"]
 
 
+def _v_brush(sr, dur_s, freq_hz, velocity, rng, p, glide_from_hz):
+    tau = (p["noise_decay_ms"] / 1000.0) * (0.6 + 0.4 * velocity)
+    n = _n_samples(sr, max(dur_s, 5.0 * tau))
+    t = _time(n, sr)
+    swish = _svf_bandpass(rng.standard_normal(n), sr, p["bp_hz"], p["bp_q"]).astype(np.float64)
+    swish *= _attack_env(t, p["attack_ms"] / 1000.0) * np.exp(-t / tau)
+    swish /= np.max(np.abs(swish)) or 1.0
+    tone = (np.sin(_phase_from_freq(p["tone_hz_1"], n, sr))
+            * np.exp(-t / (p["tone_decay_ms"] / 1000.0)))
+    return p["mix"] * swish + (1.0 - p["mix"]) * tone
+
+
+def _v_upright(sr, dur_s, freq_hz, velocity, rng, p, glide_from_hz):
+    f0 = float(freq_hz) if freq_hz else float(p["default_hz"])
+    rel_s = p["release_ms"] / 1000.0
+    n = _n_samples(sr, dur_s + 2.0 * rel_s)
+    t = _time(n, sr)
+    body_s = p["body_tau_ms"] / 1000.0
+    y = np.zeros(n)
+    # Upper partials die first, which is most of what separates a string from a synth.
+    for k, level in enumerate((1.0, 0.6, 0.36, 0.2, 0.12, 0.07), start=1):
+        if f0 * k >= 0.45 * sr:
+            break
+        y += level * np.sin(_phase_from_freq(f0 * k, n, sr)) * np.exp(-t * k / body_s)
+    thump = _svf(rng.standard_normal(n), sr, 700.0, 0.707, "lp").astype(np.float64)
+    y += p["thump_level"] * thump * np.exp(-t / 0.009)
+    return 0.6 * y * _attack_env(t, p["attack_ms"] / 1000.0) * _gate_release(t, dur_s, rel_s)
+
+
+def _v_roundbass(sr, dur_s, freq_hz, velocity, rng, p, glide_from_hz):
+    f0 = float(freq_hz) if freq_hz else float(p["default_hz"])
+    rel_s = p["release_ms"] / 1000.0
+    n = _n_samples(sr, dur_s + 2.0 * rel_s)
+    t = _time(n, sr)
+    y = (np.sin(_phase_from_freq(f0, n, sr))
+         + p["h2_level"] * np.sin(_phase_from_freq(2.0 * f0, n, sr))
+         + p["h3_level"] * np.sin(_phase_from_freq(3.0 * f0, n, sr)))
+    env = (_attack_env(t, p["attack_ms"] / 1000.0)
+           * np.exp(-t / (p["decay_ms"] / 1000.0))
+           * _gate_release(t, dur_s, rel_s))
+    d = p["drive"]
+    return np.tanh(y * env * d) / np.tanh(d * (1.0 + p["h2_level"] + p["h3_level"]))
+
+
+def _v_piano(sr, dur_s, freq_hz, velocity, rng, p, glide_from_hz):
+    f0 = float(freq_hz) if freq_hz else float(p["default_hz"])
+    rel_s = p["release_ms"] / 1000.0
+    n = _n_samples(sr, dur_s + 2.0 * rel_s)
+    t = _time(n, sr)
+    decay_s = p["decay_ms"] / 1000.0
+    # velocity -> brightness: a harder hammer wakes the upper partials
+    tilt = 1.6 - 0.8 * float(np.clip(velocity, 0.0, 1.0))
+    y = np.zeros(n)
+    for k in range(1, 9):
+        fk = f0 * k * np.sqrt(1.0 + p["stretch"] * k * k)
+        if fk >= 0.45 * sr:
+            break
+        y += (k ** -tilt) * np.sin(_phase_from_freq(fk, n, sr)) * np.exp(-t * (0.7 + 0.3 * k) / decay_s)
+    hammer = _svf_bandpass(rng.standard_normal(n), sr, 1800.0, 0.6).astype(np.float64)
+    y += p["hammer_level"] * hammer * np.exp(-t / 0.006)
+    return 0.55 * y * _attack_env(t, 0.001) * _gate_release(t, dur_s, rel_s)
+
+
+def _v_housestab(sr, dur_s, freq_hz, velocity, rng, p, glide_from_hz):
+    f0 = float(freq_hz) if freq_hz else float(p["default_hz"])
+    decay_tau = p["decay_ms"] / 1000.0
+    n = _n_samples(sr, max(dur_s, 3.0 * decay_tau))
+    t = _time(n, sr)
+    y = _supersaw(f0, n, sr, p["n_saws"], p["detune_cents"], rng)
+    ftau = (p["filter_ms"] / 1000.0) / 3.0
+    cutoff = p["cutoff_end_hz"] + (p["cutoff_start_hz"] - p["cutoff_end_hz"]) * np.exp(-t / ftau)
+    y = _swept_lowpass(y, sr, cutoff, float(p["q"]))
+    return 0.8 * y * _attack_env(t, 0.001) * np.exp(-t / decay_tau)
+
+
 def _v_kit(voice):
     def render(sr, dur_s, freq_hz, velocity, rng, p, glide_from_hz):  # noqa: ARG001
         return samplekit.hit(voice, velocity, rng, sr)
@@ -526,6 +688,15 @@ _RENDERERS = {
     "epiano": _v_epiano,
     "lead": _v_lead,
     "crackle": _v_crackle,
+    "housekick": _v_808kick,
+    "boomkick": _v_808kick,
+    "offhat": _v_openhat,
+    "brush": _v_brush,
+    "upright": _v_upright,
+    "roundbass": _v_roundbass,
+    "piano": _v_piano,
+    "softkeys": _v_epiano,
+    "housestab": _v_housestab,
 }
 
 

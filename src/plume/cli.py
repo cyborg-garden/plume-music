@@ -51,7 +51,8 @@ _SECTION_KEYS = {"name", "bars", "energy", "plays", "chords", "fill"}
 _EXTRA_PARAM_KEYS = {"voicing"}   # engine hints that are not voice params
 
 # Presets whose tracks default to kind="drum" when --kind is not given.
-_DRUM_PRESETS = {"808kick", "hat", "openhat", "clap", "snare", "crackle"}
+_DRUM_PRESETS = {"808kick", "hat", "openhat", "clap", "snare", "crackle",
+                 "housekick", "boomkick", "offhat", "brush"}
 
 
 class CliError(Exception):

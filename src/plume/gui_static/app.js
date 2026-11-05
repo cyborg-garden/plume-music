@@ -270,6 +270,7 @@ function refreshHead() {
   k.classList.toggle('undo', t.kept);
   k.textContent = t.kept ? 'Undo' : 'Keep';
   $('kept-status').hidden = !t.kept;
+  drawPlayAgain();
   const ended = endedNote(S.live, t.id);
   $('rec-note').hidden = !ended;
   $('rec-note').textContent = ended;
@@ -281,6 +282,11 @@ function refreshHead() {
     }
     $('keep-path').textContent = t.where;
   } else S.nameFor = null;
+}
+/* The next thing anyone wants after a take. Only on the one that just ended, so reading an old
+   one is not an offer to start. */
+function drawPlayAgain() {
+  $('rec-again').hidden = !(S.screen === 'record' && S.take && S.live.state === 'done' && S.live.take === S.take.id);
 }
 function stopAudio() {
   const p = $('player');
@@ -774,6 +780,8 @@ async function setupListen() {
   if (turn !== S.setupTurn) return;
   clearTimeout(slowTimer);
   S.listening = false;
+  /* It has just heard her, which knows better than a channel set before she played. */
+  if (answer && answer.ok && answer.doc && answer.doc.heard && answer.doc.heard.channel) S.form.channel = null;
   settleSetup(answer);
 }
 function setOff(b) { b.disabled = true; }
@@ -942,6 +950,7 @@ function reflectNav() {
   const nav = $('nav-live'), running = isRunning(S.live);
   nav.hidden = S.screen === 'live' || !(running || S.following);
   nav.textContent = running ? 'Playing' : 'Last take';
+  drawPlayAgain();
 }
 /* Asking is also what tells the bridge a page is still here, so this runs on every screen
    and never overlaps itself. */
@@ -1012,6 +1021,7 @@ async function init() {
   $('nav-takes').addEventListener('click', goShelf);
   $('nav-live').addEventListener('click', goLive);
   $('start').addEventListener('click', pressStart);
+  $('rec-again').addEventListener('click', function (ev) { if (!(ev && ev.detail > 1)) pressStart(); });
   $('setup-leave').addEventListener('click', goHome);
   $('set-again').addEventListener('click', resetSetup);
   $('live-stop').addEventListener('click', stopTake);

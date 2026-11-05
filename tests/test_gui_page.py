@@ -1147,6 +1147,49 @@ def test_a_take_that_ends_lands_on_its_record(tmp_path, docs, note):
     assert out["shown"] is bool(note) and out["note"] == (note or "")
 
 
+def test_the_take_that_just_ended_offers_to_play_again_and_that_click_is_the_consent(tmp_path, docs):
+    done = {"state": "done", "take": docs["ids"]["tap"], "note": None}
+    out = live_page(tmp_path, docs, PLAYING, f"""
+        page.live = {json.dumps(done)};
+        await page.poll();
+        const seen = {{ screen: page.screen(), shown: !$('rec-again').hidden,
+                        focus: page.activeElement.id, posts: {MUTATIONS} }};
+        $('rec-again').click(); await page.settle();
+        return {{ seen, now: page.screen(), starts: page.posts('start').length }};""")
+    assert out["seen"] == {"screen": "record", "shown": True, "focus": "record", "posts": []}
+    assert ">Play again</button>" in (STATIC / "index.html").read_text()
+    assert out["now"] == "live" and out["starts"] == 1
+
+
+def test_an_old_take_on_the_shelf_does_not_offer_to_play_again(tmp_path, docs):
+    out = run_page(tmp_path, docs, """
+        await page.open(ids.tap);
+        return { screen: page.screen(), shown: !$('rec-again').hidden };""")
+    assert out == {"screen": "record", "shown": False}
+
+
+def test_play_again_gives_way_to_a_take_running_from_a_terminal(tmp_path, docs):
+    done = {"state": "done", "take": docs["ids"]["tap"], "note": None}
+    out = live_page(tmp_path, docs, PLAYING, f"""
+        page.live = {json.dumps(done)};
+        await page.poll();
+        page.live = {json.dumps(ELSEWHERE)};
+        await page.poll();
+        return {{ screen: page.screen(), shown: !$('rec-again').hidden }};""")
+    assert out == {"screen": "record", "shown": False}
+
+
+def test_a_double_click_on_play_again_is_one_press(tmp_path, docs):
+    done = {"state": "done", "take": docs["ids"]["tap"], "note": None}
+    out = live_page(tmp_path, docs, PLAYING, f"""
+        page.live = {json.dumps(done)};
+        await page.poll();
+        $('rec-again').fire('click', {{ detail: 2 }});
+        await page.settle();
+        return {{ screen: page.screen(), posts: {MUTATIONS} }};""")
+    assert out == {"screen": "record", "posts": []}
+
+
 def test_the_ended_note_stays_with_its_own_take(tmp_path, docs):
     done = {"state": "done", "take": docs["ids"]["tap"], "note": guitake.STALLED}
     out = live_page(tmp_path, docs, PLAYING, f"""
@@ -1506,6 +1549,36 @@ def test_the_channel_setup_just_heard_is_not_overruled_by_a_page_that_knew_less(
         $('start').click(); await page.settle();
         return page.posts('start');""")
     assert out == [{"device": mic["id"]}]
+
+
+def test_a_channel_from_the_menu_gives_way_to_the_one_setup_just_heard(tmp_path, docs):
+    out = first_run(tmp_path, docs, f"""
+        $('set-channel').value = '3'; $('set-channel').fire('change');
+        page.replies['setup/listen'] = [200, {json.dumps({**COUNT, "channel": 2, "heard": HEARD, "others": []})}];
+        $('start').click(); await page.settle();
+        return page.posts('start');""")
+    assert out == [{"device": COUNT["device"]}]
+
+
+def test_a_channel_from_the_menu_stands_when_there_was_nothing_to_listen_to(tmp_path, docs):
+    interface = next(d for d in docs["home"]["devices"] if d["name"] == "Test Interface")
+    out = first_run(tmp_path, docs, """
+        $('set-channel').value = '3'; $('set-channel').fire('change');
+        $('start').click(); await page.settle();
+        return page.posts('start');""", setup={**COUNT, "device": interface["id"]})
+    assert out == [{"device": interface["id"], "channel": 3}]
+
+
+def test_a_channel_she_chose_survives_a_listen_that_heard_nothing(tmp_path, docs):
+    nothing = {**setup_doc("listen", "Nothing came in.", "again", "start"),
+               "heard": {"result": "nothing", "channel": None, "peak_db": None}, "others": []}
+    out = first_run(tmp_path, docs, f"""
+        $('set-channel').value = '3'; $('set-channel').fire('change');
+        page.replies['setup/listen'] = [200, {json.dumps(nothing)}];
+        $('start').click(); await page.settle();
+        $('setup-start').click(); await page.settle();
+        return page.posts('start')[0].channel;""")
+    assert out == 3
 
 
 def test_a_device_picked_in_the_menu_is_the_one_listened_to(tmp_path, docs):

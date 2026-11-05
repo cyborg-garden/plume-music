@@ -199,10 +199,10 @@ Nobody notices a new player entered. The music got wider.
   with a film instead of a person. A three-minute short came with a cue sheet
   in plain words: where the voices start, a scene change, a dark turn and the
   moment it lifts, a line that has to stand out, then a wordless ending that
-  wants a band and drums. Plume rendered a cue-locked sketch. The notes came
-  back in plain words ("too jarring", "half a step higher than ours", "come
-  in a second earlier, with a pause before it"), and each one became an exact
-  change in minutes. Stems from the sketch ended up in the final cut.
+  wants a band and drums. Plume rendered a cue-locked sketch. Notes on it came
+  back in plain words, about a harsh transition, the key, and an entry that
+  should land a second earlier after a pause, and each one became an exact
+  change in minutes. The stems were good enough to use.
 
   How it was done, with plume as it is:
   - **One session per scene, tempo solved from the clock.** Each scene's tempo

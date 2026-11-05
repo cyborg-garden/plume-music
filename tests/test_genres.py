@@ -62,6 +62,17 @@ SAMPLED_RANGES = {"upright": (28, 55), "piano": (45, 107), "wurli": (48, 91)}
     ("house for coding", "house"), ("good house music", "house"), ("my house music", "house"),
     ("house in a minor", "house"), ("a house in C minor", "house"), ("chill house", "house"),
     ("house catchy and fast", "house"), ("house online", "house"),
+    # a prompt about the music keeps the genre, whatever words come after the name
+    ("deep house in the key of F minor", "house"), ("house key of C minor", "house"),
+    ("deep house key of F minor", "house"), ("house in the key of C minor", "house"),
+    ("a house in the key of C minor", "house"), ("house in the style of chicago", "house"),
+    ("deep house at night", "house"), ("tech house on the radio", "house"),
+    ("deep  house on", "house"), ("deep-house party", "house"), ("acid house band", "house"),
+    ("play house next", "house"), ("play house at night", "house"),
+    ("play some house on repeat", "house"), ("some house in the morning", "house"),
+    ("an old house beat", "house"), ("play some old house music", "house"), ("old house", "house"),
+    ("about a deep house beat", "house"), ("a song about a deep house", "house"),
+    ("in the house music style", "house"), ("empty house music", "house"),
 ])
 def test_aliases_reach_their_style(text, style):
     assert parse_prompt(text).styles == [style]
@@ -75,6 +86,13 @@ def test_aliases_reach_their_style(text, style):
     "a house band", "house band", "the  house", "a house", "the house",
     "a house in the woods", "house in the woods", "house at night", "my house", "our house",
     "house in a tree", "house-party", "the house, please", "powerhouse", "housewife",
+    # a building still reads as one with a word in front of it
+    "sad song about an old house", "sad song about an empty house", "an old house",
+    "the new house", "my old house, please", "empty house", "an abandoned house",
+    "a song about a beautiful house", "in the house tonight", "in the house",
+    "walking around the house", "house next door", "the house next to the river",
+    "a house key", "house key", "my house keys", "house on the hill", "the house is dark",
+    "some coffee house", "play a haunted house",
 ])
 def test_house_the_building_is_not_house_the_genre(text):
     assert parse_prompt(text).styles == []
@@ -341,6 +359,21 @@ def test_a_brush_hit_starts_at_once_ends_quietly_and_follows_velocity():
     assert np.flatnonzero(np.abs(y) > 0.1 * np.abs(y).max())[0] < 0.01 * SR
     assert abs(y[-1]) < 1e-3
     assert np.abs(_note("brush", vel=0.1)).max() < np.abs(y).max()
+
+
+# The top of the piano really does thin out, so its neighbours are held below that.
+@pytest.mark.parametrize("preset,lo,hi", [("upright", 28, 55), ("piano", 45, 89), ("wurli", 48, 91)])
+@pytest.mark.parametrize("vel", [0.3, 0.9])
+def test_a_line_does_not_jump_in_level_from_one_note_to_the_next(preset, lo, hi, vel):
+    def body(midi, seed):
+        y = _note(preset, midi_to_hz(midi), dur=0.5, vel=vel, seed=seed)
+        return _rms_db(y[:int(0.3 * SR)])
+    level = {m: [body(m, seed) for seed in range(8)] for m in range(lo, hi + 1)}
+    means = {m: float(np.mean(v)) for m, v in level.items()}
+    steps = {m: abs(means[m + 1] - means[m]) for m in range(lo, hi)}
+    assert max(steps.values()) < 2.0, steps
+    takes = {m: float(np.max(v) - np.min(v)) for m, v in level.items()}
+    assert max(takes.values()) < 3.0, takes
 
 
 @pytest.mark.parametrize("preset,hz", [("upright", 82.4), ("wurli", 261.6), ("piano", 261.6)])

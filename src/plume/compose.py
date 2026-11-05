@@ -38,20 +38,34 @@ _MOOD_WORDS = ("chill", "dark", "eerie", "hopeful", "aggressive", "ambient",
                "dreamy", "mellow", "sad", "moody", "warm", "spooky")
 # "house" is the genre unless the prompt plainly means a building or a saying.  So rather
 # than list the ways to ask for it, this lists the ways not to: a phrase here is blanked
-# out before the style patterns look at the prompt.
+# out before the style patterns look at the prompt, unless _style_text keeps it.
 _MUSIC_WORDS = r"music|beat|track|groove|song|tune|jam|loop|vibes?|style"
+_NOT_MUSIC_NEXT = rf"(?![\s\-]+(?:{_MUSIC_WORDS})\b)"
+_HOUSE_KINDS = (r"deep|tech|acid|chicago|detroit|funky|soulful|progressive|tropical|disco"
+                r"|electro|afro|french|classic|piano")
 _NOT_HOUSE_RE = re.compile(
-    rf"\b(?:my|our|your|his|her|their|\w+['\u2019]s)[\s\-]+house\b(?![\s\-]+(?:{_MUSIC_WORDS})\b)"
+    rf"\b(?:my|our|your|his|her|their|\w+['\u2019]s)[\s\-]+house\b{_NOT_MUSIC_NEXT}"
     r"|\b(?:white|opera|coffee|haunted|full|open|tree|farm|green|ware|dog|doll|guest|beach"
     r"|lake|cozy|cosy)[\s\-]+house\b"
-    r"|\bhouse[\s\-]+(?:(?:party|parties|arrest|sitting|sitter|band|plants?|cat|dog|keys?|call"
-    r"|fire|rules|hold|of|on|is|was|down|next|at\s+night|in\s+(?:the|my|our))\b"
-    r"|in\s+a\s+(?!maj|min|dor|phr|har))"
+    rf"|\b(?:empty|abandoned)[\s\-]+house\b{_NOT_MUSIC_NEXT}"
+    r"|\b(?:a|an|the|this|that|my|our|your|his|her|their)\s+(?:old|new|big|small|little|tiny"
+    rf"|quiet|wooden|burning|broken|ruined|childhood)\s+house\b{_NOT_MUSIC_NEXT}"
+    rf"|\babout\s+(?:a|an|the|this|that|my|our)\s+(?:(?!(?:{_HOUSE_KINDS})\b)\w+\s+){{0,2}}"
+    rf"house\b{_NOT_MUSIC_NEXT}"
+    rf"|\b(?:in|at|to|from|around|inside|outside|behind|near)\s+the\s+house\b{_NOT_MUSIC_NEXT}"
+    r"|\bhouse[\s\-]+(?:(?:party|parties|arrest|sitting|sitter|band|plants?|cat|dog"
+    r"|keys?(?!\s+of\b)|call|fire|rules|hold|of|down|next\s+(?:door|to))\b)"
+    r"|(?P<where>\bhouse[\s\-]+(?:(?:on|is|was|at\s+night"
+    r"|in\s+(?:the(?!\s+(?:key|style)\b)|my|our))\b"
+    r"|in\s+a\s+(?!maj|min|dor|phr|har)))"
     r"|\b(?:a|an|the|this|that)\s+house\s*(?=$|[,.;:!?])", re.I)
+# A named kind is the genre whatever comes after it.  Asked for outright, house can go
+# on to say where or when ("play house at night") without turning into a building.
+_KIND_BEFORE_RE = re.compile(rf"\b(?:{_HOUSE_KINDS})[\s\-]+$", re.I)
+_ASKED_BEFORE_RE = re.compile(r"\b(?:play|some|more)\s+$", re.I)
 # Kept in the match so a report can say they were understood; a mood word or another genre
 # is not, since it is read in its own right.
-_HOUSE_RE = (r"\b(?:(?:deep|tech|acid|chicago|detroit|funky|soulful|progressive|tropical|disco"
-             rf"|electro|afro|french|classic|piano)[\s\-]+)?house(?:[\s\-]+(?:{_MUSIC_WORDS}))?\b")
+_HOUSE_RE = rf"\b(?:(?:{_HOUSE_KINDS})[\s\-]+)?house(?:[\s\-]+(?:{_MUSIC_WORDS}))?\b"
 _STYLE_PATTERNS = [
     (re.compile(r"\b(?:midwest|emo)\b", re.I), "midwest"),
     (re.compile(r"\btrap\b", re.I), "trap"),
@@ -105,7 +119,14 @@ _NAME_STOPWORDS = {
 
 def _style_text(text: str) -> str:
     """``text`` with its building-and-saying uses of "house" blanked, same length."""
-    return _NOT_HOUSE_RE.sub(lambda m: " " * len(m.group(0)), text)
+    def blank(m: re.Match) -> str:
+        before = text[:m.start()]
+        if m.group(0)[:5].lower() == "house" and (
+                _KIND_BEFORE_RE.search(before)
+                or (m.group("where") and _ASKED_BEFORE_RE.search(before))):
+            return m.group(0)
+        return " " * len(m.group(0))
+    return _NOT_HOUSE_RE.sub(blank, text)
 
 
 def _one_new_genre(text: str, hits: dict[str, re.Match]) -> str:

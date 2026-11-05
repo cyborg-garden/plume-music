@@ -14,6 +14,7 @@ const S = { csrf: '', take: null, selected: null, roastOn: true, screen: 'loadin
   shelfKey: null, shelfDone: false, shelfTakes: [], lastTake: null, shelfScroll: 0, cameByLink: false,
   nameFor: null, nameSent: '', keepTurn: {}, nameTurn: {}, moving: false, failed: null, newNames: {},
   live: { state: 'idle' }, liveTurn: 0, following: false, starting: false, stopSent: false, stopPending: false,
+  trackButtons: {}, track: null, audioOn: false, seekTo: null,
   home: null, homeTurn: 0, homeNote: '', form: { device: null, channel: null },
   setup: null, setupTurn: 0, listening: false, listenSlow: false, answering: false, ending: NO_ENDING };
 
@@ -293,27 +294,56 @@ function stopAudio() {
   p.pause();
   p.removeAttribute('src');
   p.load();
-  p.hidden = true;
+  S.audioOn = false; S.seekTo = null;
+  $('listen-seek').value = '0';
+  $('listen-time').textContent = '';
+  $('listen-play').textContent = 'Play';
 }
 /* Sound starts only from this click. Nothing else in the page sets a source. */
+function trackUrl(track) {
+  /* An audio element cannot set a header, so the page key goes in the query. */
+  return '/api/take/' + encodeURIComponent(S.take.id) + '/audio/' + track + '?k=' + S.csrf;
+}
+function fmtClock(s) {
+  const n = Math.max(0, Math.floor(s || 0));
+  return Math.floor(n / 60) + ':' + String(n % 60).padStart(2, '0');
+}
+function drawPlayer() {
+  const p = $('player'), known = isFinite(p.duration) && p.duration > 0;
+  $('listen-play').textContent = S.audioOn ? 'Pause' : 'Play';
+  if (known) $('listen-seek').value = String(Math.round(1000 * p.currentTime / p.duration));
+  $('listen-time').textContent = known ? fmtClock(p.currentTime) + ' / ' + fmtClock(p.duration) : '';
+  Object.keys(S.trackButtons).forEach(function (track) {
+    S.trackButtons[track].setAttribute('aria-pressed', track === S.track ? 'true' : 'false');
+  });
+}
+/* Changing what you hear keeps your place, so the three can be compared at one moment. */
+function playTrack(track) {
+  const p = $('player'), at = p.getAttribute('src') ? p.currentTime : 0;
+  S.track = track;
+  S.seekTo = at || null;
+  p.src = trackUrl(track);
+  S.audioOn = true;
+  p.play().catch(function () { S.audioOn = false; drawPlayer(); });
+  drawPlayer();
+}
 function drawListen() {
   const t = S.take, wrap = $('listen-buttons');
   stopAudio();
   wrap.textContent = '';
-  $('listen').hidden = !t.audio.length;
-  const names = { human: t.recorded_from === 'input' ? 'Your input' : 'Your mic', machine: 'The band' };
-  t.audio.forEach(function (track) {
+  const tracks = (t.together ? ['together'] : []).concat(t.audio);
+  $('listen').hidden = !tracks.length;
+  const names = { together: 'Together', human: t.recorded_from === 'input' ? 'Your input' : 'Your mic', machine: 'The band' };
+  S.track = tracks[0] || null;
+  S.trackButtons = {};
+  tracks.forEach(function (track) {
     const b = document.createElement('button');
-    b.type = 'button'; b.className = 'quiet'; b.id = 'listen-' + track; b.textContent = names[track];
-    b.addEventListener('click', function () {
-      const p = $('player');
-      /* An audio element cannot set a header, so the page key goes in the query. */
-      p.src = '/api/take/' + encodeURIComponent(t.id) + '/audio/' + track + '?k=' + S.csrf;
-      p.hidden = false;
-      p.play().catch(function () { /* the controls are there */ });
-    });
+    b.type = 'button'; b.id = 'listen-' + track; b.textContent = names[track];
+    S.trackButtons[track] = b;
+    b.addEventListener('click', function () { playTrack(track); });
     wrap.appendChild(b);
   });
+  drawPlayer();
 }
 function paintPortrait() {
   /* Clearing the queue leaves any unfinished shelf stones blank, so remember that. */
@@ -1026,7 +1056,30 @@ function setTheme(name) {
 async function init() {
   S.roastOn = load('plume-roast') !== 'off';
   $('wordmark').addEventListener('click', goHome);
-  $('nav-takes').addEventListener('click', goShelf);
+  $('listen-play').addEventListener('click', function () {
+  const p = $('player');
+  if (!S.track) return;
+  if (S.audioOn) { p.pause(); S.audioOn = false; drawPlayer(); return; }
+  if (!p.getAttribute('src')) { playTrack(S.track); return; }
+  S.audioOn = true;
+  p.play().catch(function () { S.audioOn = false; drawPlayer(); });
+  drawPlayer();
+});
+$('listen-seek').addEventListener('input', function () {
+  const p = $('player'), to = Number($('listen-seek').value) / 1000;
+  if (isFinite(p.duration) && p.duration > 0) p.currentTime = to * p.duration;
+});
+$('player').addEventListener('loadedmetadata', function () {
+  const p = $('player');
+  if (S.seekTo !== null) { p.currentTime = S.seekTo; S.seekTo = null; }
+  drawPlayer();
+});
+$('player').addEventListener('timeupdate', drawPlayer);
+$('player').addEventListener('ended', function () {
+  const p = $('player');
+  S.audioOn = false; p.currentTime = 0; drawPlayer();
+});
+$('nav-takes').addEventListener('click', goShelf);
   $('nav-live').addEventListener('click', goLive);
   $('start').addEventListener('click', pressStart);
   $('rec-again').addEventListener('click', function (ev) { if (!(ev && ev.detail > 1)) pressStart(); });

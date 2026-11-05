@@ -177,7 +177,9 @@ header { display: flex; align-items: center; gap: 16px; padding-top: 14px; min-h
 #hear-line { position: absolute; height: 0; border-top: 1px solid var(--text); pointer-events: none; }
 #hear-tick { position: absolute; width: 0; height: 9px; border-left: 1px solid var(--text); pointer-events: none; }
 .hear-lab { position: absolute; font-size: 11px; line-height: 14px; color: var(--text); padding: 0 3px; pointer-events: none; white-space: nowrap; }
-#ev-more { margin-top: 8px; font-size: 14px; color: var(--secondary); }
+#rec-details { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 0 28px; margin-top: 8px; font-size: 14px; color: var(--secondary); }
+#rec-details > details[open] { flex: 1 1 20rem; min-width: 0; }
+#ev-more { font-size: 14px; color: var(--secondary); }
 #ev-more summary { cursor: pointer; padding: 4px 0; }
 #ev-list { color: var(--text); list-style: none; margin: 8px 0 0; padding: 0; max-height: 15rem; overflow-y: auto; border-top: 1px solid var(--hairline); }
 #ev-list button { display: block; width: 100%; min-height: 44px; background: none; border: 0; border-bottom: 1px solid var(--hairline); text-align: left; padding: 8px 2px; font-size: 15px; }
@@ -188,14 +190,15 @@ header { display: flex; align-items: center; gap: 16px; padding-top: 14px; min-h
 #portrait { display: block; width: 100%; height: auto; }
 #ev-sentence { font-size: clamp(19px, 2vw, 24px); line-height: 1.25; margin: 0; min-height: 2.5em; }
 #ev-note { font: 400 12.5px/1.5 var(--mono); color: var(--secondary); margin: 8px 0 0; overflow-wrap: anywhere; min-height: 1.5em; }
-#raw { margin-top: 8px; font-size: 14px; color: var(--secondary); }
+#raw { font-size: 14px; color: var(--secondary); }
 #raw summary { cursor: pointer; padding: 4px 0; }
 #raw-row { font: 400 12px/1.5 var(--mono); margin: 6px 0 0; max-height: 15em; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text); }
-#listen { margin-top: 16px; }
-#listen h2, #roast-head h2 { font-size: 14px; font-weight: 400; color: var(--secondary); margin: 0; }
-#listen-buttons { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; }
-#listen-buttons button { padding: 8px 14px; font-weight: 400; font-size: 14px; }
-#player { display: block; width: 100%; margin-top: 8px; }
+#listen { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 18px; margin-top: 14px; }
+#listen[hidden] { display: none; }
+#listen-play { min-width: 96px; height: 44px; padding: 0 22px; font-size: 16px; }
+#listen-seek { flex: 1 1 200px; min-width: 0; margin: 0; accent-color: var(--text); }
+#listen-time { font: 400 13px var(--mono); color: var(--secondary); white-space: nowrap; }
+#roast-head h2 { font-size: 14px; font-weight: 400; color: var(--secondary); margin: 0; }
 #roast-head { display: flex; align-items: baseline; gap: 12px; }
 #roast-toggle { background: none; border: 0; padding: 4px 0; font-size: 13px; color: var(--secondary); text-decoration: underline; text-underline-offset: 3px; }
 #roast { list-style: none; margin: 6px 0 0; padding: 0; }

@@ -17,6 +17,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from plume import gui, realtime, record
@@ -1085,3 +1086,100 @@ def test_every_answer_has_a_status_line_and_headers(client, request_bytes):
     assert out.startswith(b"HTTP/1."), out[:60]
     assert b"Content-Security-Policy:" in out and b"nosniff" in out
     assert b'"takes"' not in out
+
+
+# ---------------------------------------------------------- together: both as one
+
+def _together_take(folder, *, human, machine, rate=48000, stream=None, source="direct"):
+    import soundfile as sf
+    folder.mkdir(parents=True)
+    sf.write(folder / "human.wav", human, rate, subtype="PCM_24")
+    sf.write(folder / "machine.wav", machine, rate, subtype="PCM_24")
+    (folder / "session.json").write_text(json.dumps({"seed": 1, "input": {"source": source}}))
+    (folder / "decisions.ndjson").write_text("")
+    if stream is not None:
+        (folder / "stream.json").write_text(json.dumps(stream))
+    return folder
+
+
+def _mix(tmp_path, source="direct", stream={"reported_ms": 10.0}):
+    from plume import gui
+    human = np.zeros(4800); human[480 + 100] = 0.5          # she played at 100, heard 10 ms late
+    machine = np.zeros(4800); machine[100] = 0.25
+    folder = _together_take(tmp_path / "takes" / "t1", human=human, machine=machine, stream=stream, source=source)
+    return gui, human, machine, folder
+
+
+def test_together_lines_the_player_up_and_leaves_room_for_both(tmp_path):
+    import soundfile as sf
+    from plume import gui, record
+    gui_mod, _, _, folder = _mix(tmp_path)
+    assert record.playing_delay_frames(folder, 48000) == 480
+    with sf.SoundFile(folder / "human.wav") as h, sf.SoundFile(folder / "machine.wav") as m:
+        pcm = np.frombuffer(gui._mixed_pcm(h, m, 480, 0, 200), dtype="<i2") / 32767.0
+    assert pcm[100] == pytest.approx((0.5 + 0.25) * 0.7, abs=1e-3)
+    assert abs(pcm[:100]).max() == 0
+
+
+@pytest.mark.parametrize("stream, want", [
+    ({"calibrated_ms": 20.0, "reported_ms": 10.0}, 960), ({"calibrated_ms": None, "reported_ms": 10.0}, 480),
+    ({"reported_ms": "lots"}, 0), ({"reported_ms": True}, 0), ({"reported_ms": -5}, 0), ({"reported_ms": 90000}, 0), (None, 0)])
+def test_the_delay_is_the_measured_one_then_the_reported_one_then_none(tmp_path, stream, want):
+    from plume import record
+    folder = tmp_path / "t"; folder.mkdir()
+    if stream is not None:
+        (folder / "stream.json").write_text(json.dumps(stream))
+    assert record.playing_delay_frames(folder, 48000) == want
+
+
+def test_a_mix_past_the_end_of_a_file_is_silence_not_a_short_read(tmp_path):
+    import soundfile as sf
+    from plume import gui
+    _, _, _, folder = _mix(tmp_path)
+    with sf.SoundFile(folder / "human.wav") as h, sf.SoundFile(folder / "machine.wav") as m:
+        assert len(gui._mixed_pcm(h, m, 480, 4700, 300)) == 600
+
+
+def test_the_mix_header_says_what_follows():
+    import io, wave
+    from plume import gui
+    with wave.open(io.BytesIO(gui._wav_header(10, 48000) + b"\0" * 20)) as w:
+        assert (w.getnframes(), w.getframerate(), w.getnchannels(), w.getsampwidth()) == (10, 48000, 1, 2)
+
+
+def _two_track_take(takes, name, source):
+    human = np.zeros(4800); human[580] = 0.5
+    machine = np.zeros(4800); machine[100] = 0.25
+    return _together_take(takes / name, human=human, machine=machine,
+                          stream={"reported_ms": 10.0}, source=source)
+
+
+def test_together_is_served_whole_and_by_range(takes, client):
+    _two_track_take(takes, "direct-take", "direct")
+    tid = take_id(client, "direct-take")
+    assert json.loads(client.get(f"/api/take/{tid}")[1])["together"] is True
+    resp, whole = client.get(f"/api/take/{tid}/audio/together")
+    assert resp.status == 200 and resp.getheader("Content-Type") == "audio/wav"
+    assert int(resp.getheader("Content-Length")) == len(whole) == 44 + 4800 * 2
+    pcm = np.frombuffer(whole[44:], dtype="<i2")
+    assert int(np.argmax(abs(pcm))) == 100
+    assert pcm[100] / 32767 == pytest.approx(0.75 * 0.7, abs=1e-3)
+    # Odd byte edges and the header boundary come back byte for byte.
+    for first, last in ((0, 43), (10, 60), (45, 244), (100, 100), (len(whole) - 3, len(whole) - 1)):
+        part, got = client.get(f"/api/take/{tid}/audio/together", headers={"Range": f"bytes={first}-{last}"})
+        assert part.status == 206 and got == whole[first:last + 1]
+    assert client.get(f"/api/take/{tid}/audio/together",
+                      headers={"Range": f"bytes={len(whole)}-"})[0].status == 416
+
+
+def test_a_room_mic_take_has_no_together_since_it_may_hold_the_band_already(takes, client):
+    _two_track_take(takes, "room-take", "room")
+    tid = take_id(client, "room-take")
+    assert json.loads(client.get(f"/api/take/{tid}")[1])["together"] is False
+    assert client.get(f"/api/take/{tid}/audio/together")[0].status == 404
+
+
+def test_together_needs_the_page_key(takes, anon, client):
+    _two_track_take(takes, "direct-take", "direct")
+    tid = take_id(client, "direct-take")
+    assert anon.get(f"/api/take/{tid}/audio/together")[0].status in (401, 403)

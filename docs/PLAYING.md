@@ -408,7 +408,7 @@ two files to work with:
 - `human.wav` is the mic. On speakers, this is already a recording of the room with
   everything in it, and for the example above the player preferred it to every mix.
 - `machine.wav` is the band alone. The two are not aligned: to line them up, drop the first
-  part of `human.wav` by your measured delay. There is no mix command yet.
+  part of `human.wav` by your measured delay. A take from a direct input has Together under its picture on the page, which lines them up by the delay the device reported and mixes them as it plays.
 
 To swap audio into a phone video, line it up on your count, since knocks are easy to see
 in a waveform. On headphones, turn phone Bluetooth off so the AirPods stay with the Mac.
@@ -423,7 +423,7 @@ With no typing, it picks the device setup heard you on, or else the only audio i
 
 After setup the page says to knock or clap 8 even beats, or on an interface to play them on muted strings, since a clap can't reach a pickup. Once the band is in, the first view is what plume settled on, a small sign that it hears you, and Stop. Everything else is in one Details menu: the bar, the tempo, the stage, the notes it hears from you and your level, the delay, and the Busier and Sparser cues. A field plume can't trust over the band is hidden rather than guessed at, which on a room mic is most of them once the band is in. The sign then says it hears the room, which is all it knows: it makes no claim about you.
 
-When you have played and then go quiet for more than a bar on a direct input or MIDI, one line says "Stop playing and the band will finish on its own." During the fade the big line says the band is finishing, and that playing brings it back. A room mic may never hear you stop, so nothing promises that there. Instead, for a few bars once the band is in, one line says to press Stop when you are done, and Details keeps saying it. When the take ends, by fading, by Stop or by a crash, the page lands on its Record, with a Play again button, or says in plain words what went wrong.
+When you have played and then go quiet for more than a bar on a direct input or MIDI, one line says "Stop playing and the band will finish on its own." During the fade the big line says the band is finishing, and that playing brings it back. A room mic may never hear you stop, so nothing promises that there. Instead, for a few bars once the band is in, one line says to press Stop when you are done, and Details keeps saying it. When the take ends, by fading, by Stop or by a crash, the page lands on its Record, with a New take button, or says in plain words what went wrong.
 
 Hear me plays your input back to you. It lives in the menu and is off until you say otherwise, on any input, including a built-in mic. Plume cannot tell headphones from speakers across gear, so it asks, and the bridge refuses Hear me without a yes about headphones saved for that device. Ticking the box is that yes, saved when you tick it. Start itself never carries one, so a page left open cannot bring it back: on a room mic a change in what is plugged in takes the answer away. Through speakers it would feed back. It stays out of `human.wav` and `machine.wav` on every input. Details shows the delay your device reports, which can be less than the real one, since nobody has measured it. A Direct or monitor button on your interface has no delay, and using both doubles the sound.
 

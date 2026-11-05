@@ -104,7 +104,7 @@ def test_opening_a_record_plays_nothing_and_asks_for_no_audio(tmp_path, docs):
         await page.open(ids.tap);
         return {{ screen: document.body.getAttribute('data-screen'), buttons: !!$('listen-human'), ...{SOUND} }};""")
     assert out["screen"] == "record" and out["buttons"], "the check needs a take that has audio"
-    assert out["plays"] == 0 and out["src"] == "" and out["hidden"] is True and out["audio"] == 0
+    assert out["plays"] == 0 and out["src"] == "" and out["audio"] == 0
 
 
 def test_only_the_listen_button_sets_a_source(tmp_path, docs):
@@ -113,7 +113,7 @@ def test_only_the_listen_button_sets_a_source(tmp_path, docs):
         $('listen-machine').click();
         await page.settle();
         return {SOUND};""")
-    assert out["plays"] == 1 and out["hidden"] is False
+    assert out["plays"] == 1
     assert out["src"].endswith(f"/audio/machine?k={KEY}")
 
 
@@ -127,7 +127,7 @@ def test_leaving_the_record_stops_the_sound(tmp_path, docs, leave):
         {leave}
         return {{ screen: document.body.getAttribute('data-screen'), before, ...{SOUND} }};""")
     assert out["screen"] == "shelf"
-    assert out["pauses"] > out["before"] and out["src"] == "" and out["hidden"] is True
+    assert out["pauses"] > out["before"] and out["src"] == ""
 
 
 def test_moving_to_another_record_stops_the_sound(tmp_path, docs):
@@ -139,7 +139,38 @@ def test_moving_to_another_record_stops_the_sound(tmp_path, docs):
         page.history.go(-2);
         await page.settle();
         return {{ title: $('rec-title').textContent, ...{SOUND} }};""")
-    assert out["title"] == "tap name" and out["src"] == "" and out["hidden"] is True
+    assert out["title"] == "tap name" and out["src"] == ""
+
+
+def test_a_direct_take_starts_on_together_and_play_is_what_starts_it(tmp_path, docs):
+    docs["docs"][docs["ids"]["tap"]].update(together=True, recorded_from="input")
+    out = run_page(tmp_path, docs, f"""
+        await page.open(ids.tap);
+        const before = {{ ...{SOUND}, label: $('listen-play').textContent,
+                          chosen: $('listen-together').getAttribute('aria-pressed') }};
+        $('listen-play').click(); await page.settle();
+        const on = {{ ...{SOUND}, label: $('listen-play').textContent }};
+        $('listen-play').click(); await page.settle();
+        return {{ before, on, off: {SOUND}, label: $('listen-play').textContent }};""")
+    assert out["before"]["plays"] == 0 and out["before"]["src"] == "" and out["before"]["label"] == "Play"
+    assert out["before"]["chosen"] == "true"
+    assert out["on"]["plays"] == 1 and out["on"]["src"].endswith(f"/audio/together?k={KEY}") and out["on"]["label"] == "Pause"
+    assert out["off"]["pauses"] > out["on"]["pauses"] and out["label"] == "Play"
+
+
+def test_a_take_with_no_together_offers_only_what_it_has(tmp_path, docs):
+    out = run_page(tmp_path, docs, """
+        await page.open(ids.tap);
+        return { together: !!$('listen-together'), human: !!$('listen-human'),
+                 chosen: $('listen-human').getAttribute('aria-pressed') };""")
+    assert out == {"together": False, "human": True, "chosen": "true"}
+
+
+def test_all_moments_and_the_log_row_sit_together_under_the_player():
+    html = (STATIC / "index.html").read_text()
+    assert html.index('id="sheet"') < html.index('id="listen"') < html.index('id="rec-details"')
+    box = html[html.index('id="rec-details"'):html.index('id="rec-lower"')]
+    assert 'id="ev-more"' in box and 'id="raw"' in box
 
 
 # ------------------------------------------------------------------ hearing words
@@ -1164,7 +1195,7 @@ def test_the_take_that_just_ended_offers_to_play_again_and_that_click_is_the_con
         $('rec-again').click(); await page.settle();
         return {{ seen, now: page.screen(), starts: page.posts('start').length }};""")
     assert out["seen"] == {"screen": "record", "shown": True, "focus": "record", "posts": []}
-    assert ">Play again</button>" in (STATIC / "index.html").read_text()
+    assert ">New take</button>" in (STATIC / "index.html").read_text()
     assert out["now"] == "live" and out["starts"] == 1
 
 

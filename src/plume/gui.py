@@ -51,6 +51,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
+import numpy as np
+import soundfile as sf
+
 from . import guitake, record
 from .realtime import REC_HUMAN, REC_MACHINE, list_sessions
 
@@ -77,6 +80,11 @@ STATIC_FILES = {
     "fonts/dm-mono-latin-400-normal.woff2": "font/woff2",
 }
 _TRACKS = {"human": REC_HUMAN, "machine": REC_MACHINE}
+TOGETHER = "together"
+# What leaves room for both when they peak at once, and is only clipped if they really do.
+_TOGETHER_GAIN = 0.7
+_TOGETHER_FRAMES = 65536
+_WAV_HEADER = 44
 
 _CSP = ("default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; font-src 'self'; "
         "connect-src 'self'; media-src 'self'; base-uri 'none'; form-action 'none'; "
@@ -705,7 +713,59 @@ class _Handler(BaseHTTPRequestHandler):
             raise _Refused(404, "not found") from None
         self._send(200, body, STATIC_FILES[name])
 
+    def _together(self, take_id: str) -> None:
+        """Both recordings as one, lined up and mixed as it is sent, so a listen writes nothing."""
+        folder = self.gui.library.path_of(take_id)
+        doc = self.gui.library.take(take_id) if folder is not None else None
+        if doc is None or not doc.get("together"):
+            raise _Refused(404, "no such recording")
+        try:
+            human_file = sf.SoundFile(_open_track(folder, REC_HUMAN))
+            machine_file = sf.SoundFile(_open_track(folder, REC_MACHINE))
+        except (OSError, RuntimeError, ValueError):
+            raise _Refused(404, "no such recording") from None
+        with human_file as human, machine_file as machine:
+            if human.samplerate != machine.samplerate:
+                raise _Refused(404, "no such recording")
+            shift = record.playing_delay_frames(folder, human.samplerate)
+            frames = max(human.frames - shift, machine.frames)
+            if frames <= 0:
+                raise _Refused(404, "no such recording")
+            size = _WAV_HEADER + frames * 2
+            start, end, status = 0, size - 1, 200
+            headers = {"Accept-Ranges": "bytes"}
+            wanted = self.headers.get("Range")
+            if wanted is not None:
+                bounds = _parse_range(wanted, size)
+                if bounds is None:
+                    self._send(416, headers={"Content-Range": f"bytes */{size}"})
+                    return
+                start, end = bounds
+                status = 206
+                headers["Content-Range"] = f"bytes {start}-{end}/{size}"
+            self.send_response(status)
+            self._security_headers()
+            self.send_header("Content-Type", "audio/wav")
+            self.send_header("Content-Length", str(end - start + 1))
+            for name, value in headers.items():
+                self.send_header(name, value)
+            self.end_headers()
+            if start < _WAV_HEADER:
+                self.wfile.write(_wav_header(frames, human.samplerate)[start:end + 1])
+            at = max(start, _WAV_HEADER)
+            while at <= end:
+                frame = (at - _WAV_HEADER) // 2
+                count = min(_TOGETHER_FRAMES, frames - frame)
+                pcm = _mixed_pcm(human, machine, shift, frame, count)[(at - _WAV_HEADER) % 2:]
+                pcm = pcm[:end + 1 - at]
+                self.wfile.write(pcm)
+                at += len(pcm)
+            self._log(status)
+
     def _audio(self, take_id: str, track: str) -> None:
+        if track == TOGETHER:
+            self._together(take_id)
+            return
         if track not in _TRACKS:
             raise _Refused(404, "no such recording")
         folder = self.gui.library.path_of(take_id)
@@ -758,6 +818,44 @@ class _Handler(BaseHTTPRequestHandler):
                 self.wfile.write(chunk)
                 left -= len(chunk)
             self._log(status)
+
+
+def _open_track(folder: Path, name: str):
+    """A recording opened by handle, refusing a symlink, a FIFO or anything but a file."""
+    where = _open_folder(folder)
+    try:
+        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=where)
+    finally:
+        os.close(where)
+    f = os.fdopen(fd, "rb")
+    if not stat.S_ISREG(os.fstat(f.fileno()).st_mode):
+        f.close()
+        raise OSError("not a file")
+    return f
+
+
+def _wav_header(frames: int, rate: int) -> bytes:
+    data = frames * 2
+    return (b"RIFF" + (36 + data).to_bytes(4, "little") + b"WAVEfmt " + (16).to_bytes(4, "little")
+            + (1).to_bytes(2, "little") + (1).to_bytes(2, "little") + rate.to_bytes(4, "little")
+            + (rate * 2).to_bytes(4, "little") + (2).to_bytes(2, "little") + (16).to_bytes(2, "little")
+            + b"data" + data.to_bytes(4, "little"))
+
+
+def _read_mono(track, start: int, count: int) -> np.ndarray:
+    """``count`` samples from ``start``, silence past either end of the file."""
+    out = np.zeros(count, dtype=np.float32)
+    if start >= track.frames:
+        return out
+    track.seek(start)
+    got = track.read(count, dtype="float32", always_2d=True).mean(axis=1)
+    out[:len(got)] = got
+    return out
+
+
+def _mixed_pcm(human, machine, shift: int, frame: int, count: int) -> bytes:
+    mixed = (_read_mono(human, frame + shift, count) + _read_mono(machine, frame, count)) * _TOGETHER_GAIN
+    return (np.clip(mixed, -1.0, 1.0) * 32767.0).astype("<i2").tobytes()
 
 
 def _parse_range(header: str, size: int) -> tuple[int, int] | None:

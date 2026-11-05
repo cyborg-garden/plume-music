@@ -121,7 +121,7 @@
       <div id="rec-actions">
         <span id="kept-status" hidden>Kept</span>
         <button id="keep" class="quiet" type="button">Keep</button>
-        <button id="rec-again" class="solid" type="button" hidden>Play again</button>
+        <button id="rec-again" class="solid" type="button" hidden>New take</button>
       </div>
     </div>
     <p id="rec-note" class="note" role="status" hidden></p>
@@ -138,7 +138,17 @@
       <div id="events" role="group" aria-label="What happened in this take. Arrow keys move between moments."></div>
       <p id="sheet-empty" hidden>Nothing played in this take.</p>
     </div>
-    <details id="ev-more"><summary>All moments</summary><ul id="ev-list" aria-label="Moments in this take"></ul></details>
+    <div id="listen" hidden>
+      <button id="listen-play" class="solid" type="button">Play</button>
+      <span id="listen-buttons" class="seg" role="group" aria-label="What to hear"></span>
+      <input id="listen-seek" type="range" min="0" max="1000" value="0" step="1" aria-label="Where in the take">
+      <span id="listen-time"></span>
+      <audio id="player" preload="none" hidden></audio>
+    </div>
+    <div id="rec-details">
+      <details id="ev-more"><summary>All moments</summary><ul id="ev-list" aria-label="Moments in this take"></ul></details>
+      <details id="raw"><summary id="raw-toggle">Log row, what plume did</summary><pre id="raw-row"></pre></details>
+    </div>
     <div id="rec-lower">
       <section id="rec-stone" aria-label="This take's stone">
         <canvas id="portrait" width="480" height="540" role="img" aria-label="A carved stone made from this take's facts"></canvas>
@@ -146,13 +156,6 @@
       <section aria-label="Selected moment">
         <p id="ev-sentence" aria-live="polite"></p>
         <p id="ev-note"></p>
-        <details id="raw"><summary id="raw-toggle">Log row, what plume did</summary><pre id="raw-row"></pre></details>
-        <div id="listen" hidden>
-          <h2>Listen</h2>
-          <div id="listen-buttons"></div>
-          <audio id="player" controls preload="none" hidden></audio>
-          <p class="note">These recordings are not lined up with the log yet, so a moment above does not move them.</p>
-        </div>
       </section>
       <section aria-label="Plume on this take">
         <div id="roast-head"><h2>Plume on this take</h2><button id="roast-toggle" type="button"></button></div>

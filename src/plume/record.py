@@ -1142,6 +1142,17 @@ def _audio_size(path: Path) -> int | None:
     return info.st_size if stat.S_ISREG(info.st_mode) else None
 
 
+def playing_delay_frames(take_dir, rate: int) -> int:
+    """How far ``human.wav`` runs behind ``machine.wav``: the band's way out plus the player's
+    way back.  The measured figure if there is one, else what the device reported, else none."""
+    stream = _read_json(Path(take_dir) / "stream.json") or {}
+    for name in ("calibrated_ms", "reported_ms"):
+        ms = stream.get(name)
+        if isinstance(ms, (int, float)) and not isinstance(ms, bool) and 0 <= ms <= 1000:
+            return round(ms * rate / 1000)
+    return 0
+
+
 def read_take(take_dir, *, fallback_seed: int = 0, live: bool = False) -> dict:
     """Everything The Record shows about one folder.  Never raises on bad contents.
 
@@ -1214,6 +1225,9 @@ def _take_doc(rows, cue_log, take_dir, ending, manifest, seed, sizes, keep, live
         "unread": unread,
         "route": route,
         "recorded_from": recorded_from(manifest),
+        # Only a direct input is the player alone. A mic may have heard the band in the room too.
+        "together": (recorded_from(manifest) == "input" and not live
+                     and sizes.get("human") is not None and sizes.get("machine") is not None),
         "band_t_s": None if band is None else float(band["t_s"]),
         "start_t_s": float(rows[0]["t_s"]) if rows else None,
         "end_t_s": float(rows[-1]["t_s"]) if rows else None,

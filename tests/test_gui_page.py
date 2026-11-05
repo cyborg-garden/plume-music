@@ -1542,6 +1542,28 @@ def test_leaving_while_it_listens_lets_go_of_the_device_and_keeps_nothing_runnin
     assert out["posts"] == ["setup/listen", "setup/cancel"]
 
 
+def test_a_reload_or_a_closed_tab_calls_off_a_listen_in_progress(tmp_path, docs):
+    out = first_run(tmp_path, docs, """
+        page.hold('setup/listen');
+        $('start').click(); await page.settle();
+        page.fireWindow('pagehide');
+        await page.settle();
+        const sent = page.calls.filter((c) => c.path === '/api/setup/cancel');
+        return { sent: sent.length, outlives: sent[0] && sent[0].keepalive, key: sent[0] && sent[0].key, body: sent[0] && sent[0].body };""")
+    assert out == {"sent": 1, "outlives": True, "key": KEY, "body": {}}
+
+
+@pytest.mark.parametrize("setup", ["HEADPHONES", "COUNT"])
+def test_a_tab_going_away_with_nothing_listening_sends_nothing(tmp_path, docs, setup):
+    doc = {"HEADPHONES": HEADPHONES, "COUNT": COUNT}[setup]
+    out = first_run(tmp_path, docs, """
+        $('start').click(); await page.settle();
+        page.fireWindow('pagehide');
+        await page.settle();
+        return page.posts('setup/cancel').length;""", setup=doc)
+    assert out == 0
+
+
 def test_leaving_at_a_question_sends_nothing_it_does_not_need_to(tmp_path, docs):
     out = first_run(tmp_path, docs, f"""
         $('start').click(); await page.settle();

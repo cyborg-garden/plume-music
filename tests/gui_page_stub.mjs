@@ -103,7 +103,7 @@ export async function start(html, { takes, docs, home = null, live = null, addre
   const reply = (status, doc) => ({ ok: status < 400, status, json: async () => doc });
   async function bridge(path, opts = {}) {
     const method = opts.method || 'GET', body = opts.body ? JSON.parse(opts.body) : null;
-    const call = { method, path, body, key: opts.headers && opts.headers['X-Plume-Token'] };
+    const call = { method, path, body, key: opts.headers && opts.headers['X-Plume-Token'], keepalive: !!opts.keepalive };
     page.calls.push(call);
     const op = path.replace('/api/', '').split('?')[0];
     const liveWhenAsked = page.live;   // a held answer still says what was true when it was asked
@@ -177,6 +177,8 @@ export async function start(html, { takes, docs, home = null, live = null, addre
   page.shelf = async () => { page.$('nav-takes').click(); await page.settle(); };
   /* Typing leaves the box focused and edited, with no change event yet. */
   page.type = (text) => { const box = page.$('take-name'); box.focus(); box._value = text; box.edited = true; };
+  /* The tab going away: a reload, a closed tab, or the browser leaving this page. */
+  page.fireWindow = (type) => (windowListeners[type] || []).forEach((fn) => fn({}));
   page.posts = (op) => page.calls.filter((c) => c.path === '/api/' + op).map((c) => c.body);
   await import('./app.mjs');
   await page.settle();

@@ -39,9 +39,9 @@ async function api(path) {
   return r.json();
 }
 /* The answer as well as the status: a refused Start says why, and what is running instead. */
-async function send(op, body) {
+async function send(op, body, more) {
   const r = await fetch('/api/' + op, {
-    method: 'POST', credentials: 'same-origin',
+    ...more, method: 'POST', credentials: 'same-origin',
     headers: { 'Content-Type': 'application/json', 'X-Plume-Token': S.csrf },
     body: JSON.stringify(body)
   });
@@ -1030,6 +1030,11 @@ async function init() {
   /* A device plugged in since the page opened shows up here. */
   $('home-menu').addEventListener('toggle', function () { if ($('home-menu').open && S.screen === 'home') loadHome(); });
   window.addEventListener('popstate', showRoute);
+  /* A reload or a closed tab leaves no screen behind to come through leaveSetup. keepalive lets
+     this outlast the page. If it never arrives the child still ends by itself within seconds. */
+  window.addEventListener('pagehide', function () {
+    if (S.listening) send('setup/cancel', {}, { keepalive: true }).catch(function () { /* see above */ });
+  });
   $('events').addEventListener('keydown', function (ev) {
     const list = S.take ? S.take.events : [];
     const at = list.findIndex(function (e) { return e.id === S.selected; });

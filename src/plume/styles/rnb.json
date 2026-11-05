@@ -170,6 +170,11 @@
       "delay": 0.2
     }
   },
+  "live_fx": {
+    "keys": {
+      "chorus": 0.4
+    }
+  },
   "fades": {
     "fade_in_bars": 2.0,
     "fade_out_bars": 2.0,

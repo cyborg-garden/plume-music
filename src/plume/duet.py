@@ -228,6 +228,15 @@ _ROLE_GAIN_DB = {
 }
 _ROLE_PAN = {"hat": 0.25, "openhat": 0.2, "clap": -0.1, "lead": -0.15,
              "arp": 0.2, "tom": -0.2, "crash": -0.3}
+
+
+def _saturate(y: np.ndarray, amount: float) -> np.ndarray:
+    """fx.drive with its level boost taken back out: the peaks round off and nothing gets
+    louder.  This drives one note at a time, where an offline render drives the whole mix."""
+    a = 1.0 + 3.0 * float(amount)
+    return _fx.drive(y, amount).astype(np.float64) * (np.tanh(a) / a)
+
+
 # roles Mind may name that a style spells differently
 _ROLE_ALIASES = {"keys": "pad"}
 
@@ -891,6 +900,7 @@ class DuetEngine:
         roles: dict[str, float] = dict(getattr(plan, "roles", {}) or {})
         voices: dict = self._style["voices"]
         fx_defaults: dict = self._style.get("fx_defaults", {})
+        live_fx: dict = self._style.get("live_fx", {})
 
         chord = getattr(harmony, "chord", None)
         chord_conf = float(getattr(harmony, "chord_conf", 0.0) or 0.0)
@@ -940,6 +950,7 @@ class DuetEngine:
         # ---- render + place
         self.last_events = []
         placed: list[tuple[int, np.ndarray]] = []
+        ducked: list[tuple[int, float]] = []
         end_max = n
         for role, preset, onset_beats, dur_s, freq, base_vel in events:
             level = float(roles.get(role, 0.0))
@@ -954,15 +965,22 @@ class DuetEngine:
                 y = _fx.svf_highpass(y, sr, float(fxd["hpf_hz"])).astype(np.float64)
             if float(fxd.get("lpf_hz", 0.0)) > 0.0:
                 y = _fx.svf_lowpass(y, sr, float(fxd["lpf_hz"])).astype(np.float64)
+            lfx = live_fx.get(role, {})
+            if float(lfx.get("drive", 0.0)) > 0.0:
+                y = _saturate(y, float(lfx["drive"]))
             role_db = self._style.get("role_gain_db", {}).get(
                 role, _ROLE_GAIN_DB.get(role, -6.0))
             gain = 10.0 ** ((role_db + gain_db) / 20.0)
             y *= gain * level
             pan = float(np.clip(_ROLE_PAN.get(role, 0.0), -1.0, 1.0))
             theta = (pan + 1.0) * (np.pi / 4.0)
-            st = y[:, None] * np.array([np.cos(theta), np.sin(theta)])[None, :]
+            spread = (_fx.chorus(y.astype(np.float32), sr, float(lfx["chorus"])).astype(np.float64)
+                      if float(lfx.get("chorus", 0.0)) > 0.0 else y[:, None])
+            st = spread * np.array([np.cos(theta), np.sin(theta)])[None, :]
             i0 = int(round(onset_s * sr))
             placed.append((i0, st))
+            if float(lfx.get("duck", 0.0)) > 0.0:
+                ducked.append((len(placed) - 1, float(lfx["duck"])))
             end_max = max(end_max, i0 + st.shape[0])
             midi = (None if freq is None
                     else int(round(69.0 + 12.0 * np.log2(freq / 440.0))))
@@ -971,6 +989,14 @@ class DuetEngine:
                 "dur_s": dur_s, "freq_hz": freq, "midi": midi,
                 "velocity": vel, "level": level, "tier": tier,
             })
+
+        # ---- pump: the same dip the offline ducker gives, from this bar's kicks
+        kicks = [e["onset_s"] for e in self.last_events if e["role"] == "kick"]
+        if ducked and kicks:
+            for k, depth in ducked:
+                i0, st = placed[k]
+                dip = _fx.ducker(np.ones(i0 + st.shape[0]), sr, kicks, depth)[i0:]
+                placed[k] = (i0, st * dip[:, None])
 
         # ---- reciprocal cue: announce the change in the bar BEFORE it
         # An entry cue is only meaningful on an otherwise tacet bar (if the

@@ -8,6 +8,7 @@
   "swing": 0.66,
   "timing_bias_ms": {
     "snare": 6,
+    "kick": -4,
     "kit_kick": -4
   },
   "progressions": {

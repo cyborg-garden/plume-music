@@ -166,6 +166,14 @@
       "delay": 0.25
     }
   },
+  "live_fx": {
+    "bass": {
+      "duck": 0.5
+    },
+    "pad": {
+      "duck": 0.45
+    }
+  },
   "fades": {
     "fade_in_bars": 1.0,
     "fade_out_bars": 1.0,

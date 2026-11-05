@@ -535,6 +535,101 @@ def _beats_of(events, role, bpm):
     return [e["onset_s"] * bpm / 60.0 for e in events if e["role"] == role]
 
 
+def _plain_take(style, roles, *, bars=2, bpm=None, **style_changes):
+    """A render with no timing or velocity jitter, so two renders can be compared."""
+    engine = _engine(style)
+    engine._style = {**engine._style, **style_changes}
+    engine._groove = dataclasses.replace(engine._groove, humanize_ms=0.0, humanize_vel=0.0)
+    bpm = bpm or sum(load_style(style)["bpm_range"]) / 2.0
+    audio = []
+    for b in range(bars):
+        plan, harm = _bar(style, roles, b)
+        audio.append(engine.render_bar(plan, SimpleNamespace(bpm=bpm), harm))
+    return np.concatenate(audio).astype(np.float64), bpm
+
+
+def test_live_house_bass_pumps_with_the_kick():
+    roles = {"kick": 1.0, "bass": 1.0}
+    pumped, bpm = _plain_take("house", roles)
+    flat, _ = _plain_take("house", roles, live_fx={})
+    alone, _ = _plain_take("house", {"bass": 1.0}, live_fx={})
+    assert np.abs(alone).max() > 0.0
+    spb = int(SR * 60.0 / bpm)
+    taken = np.abs(flat - pumped).mean(axis=1)
+    bass = np.abs(alone).mean(axis=1)
+    # how much of the bass is gone just after a kick, and just before the next one
+    def lost(a, b):
+        return taken[a:b].mean() / max(bass[a:b].mean(), 1e-9)
+    beats = range(1, 7)
+    early = np.median([lost(b * spb + spb // 2, b * spb + spb // 2 + spb // 8) for b in beats])
+    late = np.median([lost(b * spb + 7 * spb // 8, (b + 1) * spb) for b in beats])
+    assert early > 1.5 * late > 0.0
+    assert early > 0.07      # half a beat after a kick the dip has mostly recovered
+
+
+def test_live_house_stabs_pump_as_well():
+    roles = {"kick": 1.0, "pad": 1.0}
+    pumped, _ = _plain_take("house", roles)
+    flat, _ = _plain_take("house", roles, live_fx={})
+    assert _rms_db(pumped) < _rms_db(flat)
+
+
+def test_live_rnb_keys_are_chorused_into_stereo():
+    wide, _ = _plain_take("rnb", {"keys": 1.0})
+    mono, _ = _plain_take("rnb", {"keys": 1.0}, live_fx={})
+    assert np.abs(mono[:, 0] - mono[:, 1]).max() < 1e-6
+    assert np.sqrt(np.mean((wide[:, 0] - wide[:, 1]) ** 2)) > 0.1 * np.sqrt(np.mean(wide ** 2))
+    assert abs(_rms_db(wide) - _rms_db(mono)) < 3.0
+
+
+def _crest_db(y):
+    return 20.0 * np.log10(np.abs(y).max() / np.sqrt(np.mean(y ** 2)))
+
+
+@pytest.mark.parametrize("role", ["kick", "snare", "bass"])
+def test_live_hip_hop_is_saturated_without_getting_louder(role):
+    dusty, _ = _plain_take("hiphop", {role: 1.0})
+    clean, _ = _plain_take("hiphop", {role: 1.0}, live_fx={})
+    assert np.abs(dusty).max() < 0.98 * np.abs(clean).max()
+    assert _crest_db(dusty) < _crest_db(clean)
+    assert _rms_db(dusty) <= _rms_db(clean) + 0.1
+
+
+def test_older_styles_keep_their_live_sound():
+    """They have never had these effects live and nobody has asked for them to change."""
+    for style in OLDER:
+        assert "live_fx" not in load_style(style)
+
+
+@pytest.mark.parametrize("style", GENRES)
+def test_live_fx_only_asks_for_what_the_band_can_do(style):
+    doc = load_style(style)
+    for role, fx in doc.get("live_fx", {}).items():
+        assert role in doc["voices"] and set(fx) <= {"duck", "chorus", "drive"}
+
+
+@pytest.mark.parametrize("style", GENRES)
+def test_the_live_band_never_reads_the_master_chain(style):
+    """PLAYING.md says so: reverb, delay and the master chain are only in plume render."""
+    roles = {"kick": 1.0, "bass": 1.0, "pad": 1.0}
+    a, _ = _plain_take(style, roles)
+    b, _ = _plain_take(style, roles, master={"reverb": 1.0, "drive": 1.0, "lofi": 1.0})
+    assert np.array_equal(a, b)
+
+
+def test_live_jazz_kick_leans_ahead_as_it_does_offline():
+    doc = load_style("jazz")
+    assert doc["timing_bias_ms"]["kick"] == doc["timing_bias_ms"]["kit_kick"] < 0
+    engine = _engine("jazz")
+    engine._groove = dataclasses.replace(engine._groove, humanize_ms=0.0)
+    bpm = 120.0
+    plan, harm = _bar("jazz", _band_roles(engine), 1)
+    engine.render_bar(plan, SimpleNamespace(bpm=bpm), harm)
+    kicks = [e["onset_s"] for e in engine.last_events if e["role"] == "kick"]
+    late = [1000.0 * (t - round(t * 2.0) / 2.0) for t in kicks if t > 0.1]
+    assert late and all(ms == pytest.approx(-4.0, abs=0.1) for ms in late)
+
+
 def test_the_live_band_voices_the_new_roles():
     assert "foot" in DuetEngine(style="jazz", seed=0).roles
     assert "tick" in DuetEngine(style="house", seed=0).roles

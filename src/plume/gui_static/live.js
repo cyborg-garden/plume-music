@@ -11,7 +11,7 @@ export function isRunning(doc) { return !!doc && RUNNING.includes(doc.state); }
 /* Where a take that is over sends a page that was following it. */
 export function landing(doc) {
   if (doc.state === 'done') return { take: doc.take };
-  return { home: true, message: doc.state === 'failed' ? doc.message : '' };
+  return { home: true, message: doc.state === 'elsewhere' ? '' : doc.message || '', menu: !!doc.menu };
 }
 
 /* The note a Record shows for the take that just ended, and only for that one. */

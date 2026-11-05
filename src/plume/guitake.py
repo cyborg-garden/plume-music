@@ -63,6 +63,12 @@ STALLED = "The audio device stopped answering."
 ENDED_EARLY = "The take ended early."
 NO_PAGE = "No page was open, so plume stopped this take."
 WEDGED = "Still stopping. Run plume stop in a terminal."
+FLAT_CHANNEL = "Nothing on channel {channel}. Press Stop, then try another channel in the menu."
+FLAT_CHANNEL_HOME = "Nothing came in on channel {channel}. Try another channel."
+FLAT_MIC = ("Plume hears nothing. Check this computer lets it use the microphone, "
+            "or press Stop and pick another device.")
+FLAT_MIC_HOME = "Plume heard nothing. Check this computer lets it use the microphone, or pick another device."
+KEPT_NOTHING = "The band had not come in yet, so plume kept nothing."
 BAD_KEY = "Plume did not understand that key. Try F major or A minor."
 ONLY_MAJOR_MINOR = "Plume plays major and minor keys. Try F major or A minor."
 NO_HEAR_ME = "Hear me needs an audio interface. On a built-in mic it would feed back."
@@ -75,6 +81,9 @@ STALL_S = 10.0
 WEDGED_S = 60.0
 NO_COUNT_S = 60.0
 FLAT_AFTER_S = 15.0
+#: Stopped before the band came in, this much recording with real sound in it is still hers.
+#: Anything less is a false start, and leaves nothing on the shelf.
+KEEP_UNCOUNTED_S = 60.0
 OPENING_AFTER_S = 15.0
 #: Quieter than this all along means nothing is plugged into that channel.  A guess: no
 #: real interface has been measured against it.
@@ -246,6 +255,7 @@ class Route:
     mode: str               # "direct" | "room"
     channel: int
     hear_me: bool
+    channels: int = 1       # how many this device has, so what the page can offer her
 
 
 def _route(body: dict, devices: list[dict]) -> Route:
@@ -270,7 +280,7 @@ def _route(body: dict, devices: list[dict]) -> Route:
         raise Refused(400, "hear_me must be true or false")
     if hear_me and mode != "direct":
         raise Refused(400, NO_HEAR_ME)
-    return Route(None if device is None else device["name"], mode, channel, hear_me)
+    return Route(None if device is None else device["name"], mode, channel, hear_me, most)
 
 
 # ------------------------------------------------------------- free text, made canonical
@@ -377,6 +387,16 @@ def _frames(path: Path) -> int:
         return 0
 
 
+def _seconds(path: Path) -> float:
+    import soundfile as sf  # noqa: PLC0415
+
+    try:
+        with sf.SoundFile(str(path)) as f:
+            return f.frames / f.samplerate
+    except (OSError, RuntimeError, ValueError, ZeroDivisionError):
+        return 0.0
+
+
 def _tail_level(path: Path) -> tuple[int, float | None]:
     """(frames so far, level of the last moment in dB).  Reads only what is on disk."""
     import soundfile as sf  # noqa: PLC0415
@@ -397,15 +417,16 @@ def _tail_level(path: Path) -> tuple[int, float | None]:
     return frames, round(max(_FLOOR_DB, 10.0 * math.log10(power)) if power > 1e-12 else _FLOOR_DB, 1)
 
 
-def _clear_fresh_folder(folder: Path) -> None:
-    """A take that made no sound leaves no folder on the shelf.
+def _clear_fresh_folder(folder: Path, *, false_start: bool = False) -> None:
+    """A take that never started, or a false start, leaves no folder on the shelf.
 
     Only names a take writes, in a folder this run made, and only if they hold nothing:
-    anything else stops the rmdir, which is the point.
+    anything else stops the rmdir, which is the point.  ``false_start`` lets audio go too:
+    the child has gone, and it stopped before there was a band to record with her.
     """
-    wavs = (REC_HUMAN, REC_MACHINE, REC_VOICE)
+    wavs = () if false_start else (REC_HUMAN, REC_MACHINE, REC_VOICE)
     logs = (REC_DECISIONS, REC_CUES, REC_MIDI)
-    for name in (*wavs, *logs, REC_MANIFEST, REC_ENDING, REC_STREAM):
+    for name in (REC_HUMAN, REC_MACHINE, REC_VOICE, *logs, REC_MANIFEST, REC_ENDING, REC_STREAM):
         path = folder / name
         try:
             if path.is_symlink() or not path.is_file():
@@ -823,7 +844,8 @@ class TakeRunner:
             return None
         waited = now - take.opened
         if not take.loud and waited >= FLAT_AFTER_S:
-            return f"Nothing on channel {take.route.channel}. Try another channel in the menu."
+            return (FLAT_CHANNEL.format(channel=take.route.channel) if take.route.channels > 1
+                    else FLAT_MIC)
         return NO_COUNT if waited >= NO_COUNT_S else None
 
     @staticmethod
@@ -877,11 +899,14 @@ class TakeRunner:
                 for name in _STREAM_FIELDS}
 
     def _land(self, take: _Take, code: int) -> None:
-        """It has gone.  Say where that left things, once."""
+        """It has gone.  Say where that left things, once.
+
+        It is a take once the band has played a bar.  Before that it is a false start, unless
+        she played for a good while and the count just never caught: that recording is hers.
+        """
         folder = take.folder
-        made_sound = _frames(folder / REC_HUMAN) > 0 or _frames(folder / REC_MACHINE) > 0
         result = None
-        if made_sound:
+        if self._has_rows(take) or (take.loud and _seconds(folder / REC_HUMAN) >= KEEP_UNCOUNTED_S):
             try:
                 take_id = self._id_of(folder)
             except Exception:  # noqa: BLE001 - it has ended, and the page must hear that
@@ -892,12 +917,23 @@ class TakeRunner:
                     note = ENDED_EARLY
                 result = {"state": "done", "take": take_id, "note": note}
         if result is None:
-            _clear_fresh_folder(folder)
+            _clear_fresh_folder(folder, false_start=True)
             if take.stop_asked:
-                result = {"state": "idle"}
+                result = self._false_start(take)
             else:
                 result = {"state": "failed", "message": classify_failure(Path(self._log_path()))}
         with self._lock:
             if self._take is take:
                 self._take = None
                 self._result = result
+
+    def _false_start(self, take: _Take) -> dict:
+        """Back on home, in words that say what to try, if anything needs saying."""
+        flat = (not take.loud and take.phase == "waiting"
+                and self._clock() - take.opened >= FLAT_AFTER_S)
+        if flat and take.note is None:
+            message = (FLAT_CHANNEL_HOME.format(channel=take.route.channel)
+                       if take.route.channels > 1 else FLAT_MIC_HOME)
+            return {"state": "idle", "message": message, "menu": True}
+        message = take.note or (KEPT_NOTHING if take.loud else None)
+        return {"state": "idle", "message": message} if message else {"state": "idle"}

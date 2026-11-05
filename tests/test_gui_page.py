@@ -872,6 +872,16 @@ def test_a_failed_take_lands_on_home_in_plain_words(tmp_path, docs, message):
     assert "Traceback" not in message
 
 
+def test_a_false_start_lands_on_home_with_the_menu_open_and_says_why(tmp_path, docs):
+    out = live_page(tmp_path, docs, WAITING, """
+        page.live = { state: 'idle', menu: true, message: 'Nothing came in on channel 1. Try another channel.' };
+        await page.poll();
+        return { screen: document.body.getAttribute('data-screen'), note: $('home-note').textContent,
+                 shown: !$('home-note').hidden, menu: $('home-menu').open, start: !$('start').hidden };""")
+    assert out == {"screen": "home", "note": "Nothing came in on channel 1. Try another channel.",
+                   "shown": True, "menu": True, "start": True}
+
+
 def test_a_start_answered_with_failure_lands_on_home_too(tmp_path, docs):
     out = run_page(tmp_path, docs, f"""
         page.replies.start = [200, {{ state: 'failed', message: {json.dumps(guitake.DEVICE_MISSING)} }}];

@@ -423,6 +423,8 @@ After Start the page says to knock or clap 8 even beats, then shows the bar, the
 
 Hear me plays your input back to you, and is on by default for an interface. It is never offered on a built-in mic, where it would feed back through the speakers, so it needs headphones. Plume only treats a device as an interface if it knows the name, because a laptop's own mic and speakers can look like one. A device it does not recognise plays as a room mic with no Hear me; from a terminal, `plume lead --device NAME --direct --monitor` still reaches it. The page shows the delay your device reports, which is not a measured round trip. A Direct button on your interface has no latency, and using both doubles the sound.
 
+Stop before the band has come in and no take is kept, so trying a wrong channel leaves nothing on the shelf, and the page goes back to Start with the menu open if it heard nothing. If you played for more than a minute and the count never caught, the recording is kept.
+
 Only one take runs at a time, including one started from a terminal, which the page offers to stop instead of offering Start. Reloading finds the running take again. Closing the page doesn't stop a take that fades by itself. A take that is still waiting for a count, or on a room mic that can't hear you stop, ends about 3 minutes after the last page stopped looking at it. `plume stop` works as usual, and Ctrl-C on `plume gui` stops the take it started.
 
 All of this has only run on fake devices and a fake process, in tests and in headless Chromium with the sound muted. It has never started a real take, so follow [the direct input test](DIRECT-INPUT-TEST.md#7-the-start-button-5-minutes) the first time.

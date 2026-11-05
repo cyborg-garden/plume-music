@@ -174,9 +174,10 @@ def test_the_meter_stays_on_its_scale(tmp_path, db, want):
 
 @pytest.mark.parametrize("doc,want", [
     ({"state": "done", "take": "t1"}, {"take": "t1"}),
-    ({"state": "failed", "message": "words"}, {"home": True, "message": "words"}),
-    ({"state": "idle"}, {"home": True, "message": ""}),
-    ({"state": "elsewhere", "message": "not a failure"}, {"home": True, "message": ""}),
+    ({"state": "failed", "message": "words"}, {"home": True, "message": "words", "menu": False}),
+    ({"state": "idle"}, {"home": True, "message": "", "menu": False}),
+    ({"state": "idle", "message": "try another", "menu": True}, {"home": True, "message": "try another", "menu": True}),
+    ({"state": "elsewhere", "message": "not a failure"}, {"home": True, "message": "", "menu": False}),
 ])
 def test_where_a_take_lands(tmp_path, doc, want):
     assert live_js(tmp_path, f"live.landing({json.dumps(doc)})") == want

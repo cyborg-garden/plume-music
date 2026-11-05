@@ -598,6 +598,7 @@ def test_a_refused_start_leaves_the_last_take_where_it_was(rig, runner):
     runner.start({})
     rig.open_stream()
     runner.tick()
+    rig.hit_first_bar()
     rig.die(0)
     runner.tick()
     with pytest.raises(guitake.Refused):
@@ -610,6 +611,7 @@ def test_a_new_start_after_a_finished_one_is_a_new_folder(rig, runner):
     rig.open_stream()
     runner.tick()
     first = rig.folder
+    rig.hit_first_bar()
     rig.die(0)
     runner.tick()
     assert runner.start({})["state"] == "starting"
@@ -784,7 +786,123 @@ def test_a_flat_channel_is_named(rig, runner):
         rig.clock.t += 5.0
         rig.more_audio(level=0.0)
         runner.tick()
-    assert runner.live()["hint"] == "Nothing on channel 2. Try another channel in the menu."
+    assert runner.live()["hint"] == "Nothing on channel 2. Press Stop, then try another channel in the menu."
+
+
+@pytest.mark.parametrize("devices", [
+    [LAPTOP_MIC, LAPTOP_OUT],                                     # one channel, chosen for her
+    [BLACKHOLE, {"name": "USB Mic", "inputs": 1, "outputs": 0}],  # the system default
+])
+def test_a_flat_input_with_no_channel_to_change_says_what_could_help(rig, runner, devices):
+    rig.devices = devices
+    runner.start({})
+    rig.open_stream(level=0.0)
+    runner.tick()
+    for _ in range(4):
+        rig.clock.t += 5.0
+        rig.more_audio(level=0.0)
+        runner.tick()
+    hint = runner.live()["hint"]
+    assert hint == guitake.FLAT_MIC and "channel" not in hint and "microphone" in hint
+
+
+def _wait_flat(rig, runner, seconds=20.0, level=0.0):
+    rig.open_stream(level=level)
+    runner.tick()
+    for _ in range(int(seconds / 5.0)):
+        rig.clock.t += 5.0
+        rig.more_audio(level=level)
+        runner.tick()
+
+
+def _stop_and_land(rig, runner):
+    runner.stop()
+    assert wait_until(lambda: rig.proc.code is not None, timeout=5.0)
+    rig.die(rig.proc.code)
+    runner.tick()
+
+
+def test_stopping_before_the_band_on_a_flat_channel_leaves_no_take_and_says_why(rig, runner):
+    runner.start({"channel": 2})
+    _wait_flat(rig, runner)
+    folder = rig.folder
+    _stop_and_land(rig, runner)
+    assert runner.live() == {"state": "idle", "menu": True,
+                             "message": "Nothing came in on channel 2. Try another channel."}
+    assert not folder.exists()
+
+
+def test_stopping_before_the_band_after_a_little_playing_leaves_no_take(rig, runner):
+    runner.start({})
+    _wait_flat(rig, runner, seconds=10.0, level=0.2)
+    folder = rig.folder
+    _stop_and_land(rig, runner)
+    assert runner.live() == {"state": "idle", "message": guitake.KEPT_NOTHING}
+    assert not folder.exists()
+
+
+def test_stopping_at_once_says_nothing_at_all(rig, runner):
+    runner.start({})
+    rig.open_stream(level=0.0)
+    runner.tick()
+    folder = rig.folder
+    _stop_and_land(rig, runner)
+    assert runner.live() == {"state": "idle"}
+    assert not folder.exists()
+
+
+def test_a_long_wait_with_real_playing_keeps_her_recording(rig, runner):
+    runner.start({})
+    rig.open_stream(level=0.2, seconds=guitake.KEEP_UNCOUNTED_S)
+    runner.tick()
+    folder = rig.folder
+    _stop_and_land(rig, runner)
+    assert runner.live() == {"state": "done", "take": f"id-of-{folder.name}", "note": None}
+    assert (folder / "human.wav").exists()
+
+
+def test_a_long_silence_is_still_no_take(rig, runner):
+    runner.start({})
+    rig.open_stream(level=0.0, seconds=guitake.KEEP_UNCOUNTED_S)
+    runner.tick()
+    folder = rig.folder
+    _stop_and_land(rig, runner)
+    assert not folder.exists() and runner.live()["state"] == "idle"
+
+
+def test_a_crash_before_the_band_says_so_and_leaves_no_take(rig, runner):
+    runner.start({})
+    rig.open_stream(level=0.2)
+    runner.tick()
+    folder = rig.folder
+    rig.die(1, "Traceback: PortAudio error opening stream")
+    runner.tick()
+    assert runner.live() == {"state": "failed", "message": guitake.OPEN_FAILED}
+    assert not folder.exists()
+
+
+def test_a_device_that_stalls_before_the_band_says_so_on_home(rig, runner):
+    runner.start({})
+    rig.open_stream(level=0.2)
+    runner.tick()
+    folder = rig.folder
+    rig.clock.t += guitake.STALL_S
+    runner.tick()
+    assert wait_until(lambda: rig.proc.code is not None, timeout=5.0)
+    rig.die(0)
+    runner.tick()
+    assert runner.live() == {"state": "idle", "message": guitake.STALLED}
+    assert not folder.exists()
+
+
+def test_only_a_takes_own_files_are_cleared_with_a_false_start(rig, runner):
+    runner.start({})
+    rig.open_stream(level=0.0)
+    runner.tick()
+    folder = rig.folder
+    (folder / "mine.txt").write_text("not plume's")
+    _stop_and_land(rig, runner)
+    assert (folder / "mine.txt").exists() and runner.live()["state"] == "idle"
 
 
 def test_one_sound_clears_the_flat_channel_hint(rig, runner):
@@ -816,6 +934,7 @@ def test_a_natural_end_lands_on_the_record(rig, runner):
     rig.open_stream()
     runner.tick()
     folder = rig.folder
+    rig.hit_first_bar()
     rig.die(0)
     runner.tick()
     assert runner.live() == {"state": "done", "take": f"id-of-{folder.name}", "note": None}
@@ -826,6 +945,7 @@ def test_a_crash_with_audio_still_lands_on_the_record(rig, runner):
     runner.start({})
     rig.open_stream()
     runner.tick()
+    rig.hit_first_bar()
     rig.die(1, "Traceback (most recent call last):\n  File \"/secret/path\"\nboom")
     runner.tick()
     doc = runner.live()
@@ -922,6 +1042,7 @@ def test_stop_uses_the_session_record_and_lands_on_the_record(rig, runner):
     runner.start({})
     rig.open_stream()
     runner.tick()
+    rig.hit_first_bar()
     rig.human.close()
     rig.human = None
     assert runner.stop()["state"] in ("stopping", "done")
@@ -1034,6 +1155,7 @@ def test_a_stalled_device_is_stopped_and_named_on_the_record(rig, runner):
     rig.clock.t += 0.5
     runner.tick()
     assert wait_until(lambda: rig.stopped)
+    rig.hit_first_bar()
     rig.die(0)
     runner.tick()
     doc = runner.live()
@@ -1083,7 +1205,7 @@ def test_no_page_while_waiting_stops_the_take(rig, runner):
     assert wait_until(lambda: rig.stopped)
     rig.die(0)
     runner.tick()
-    assert runner.live()["note"] == guitake.NO_PAGE
+    assert runner.live()["message"] == guitake.NO_PAGE
 
 
 def test_a_page_polling_keeps_a_waiting_take_alive(rig, runner):
@@ -1711,6 +1833,7 @@ def test_a_new_take_lands_on_the_shelf_and_its_record(rig, served, page):
     (rig.folder / "session.json").write_text(json.dumps({"kind": "lead", "started_at": 1800000000.0}))
     served.takes.tick()
     assert json.loads(page.get("/api/live")[1])["state"] == "waiting"
+    rig.hit_first_bar()
     rig.die(0)
     served.takes.tick()
     doc = json.loads(page.get("/api/live")[1])

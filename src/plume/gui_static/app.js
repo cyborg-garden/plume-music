@@ -652,7 +652,7 @@ function land(doc) {
   if (to.take) {
     history.replaceState(null, '', '#/take/' + to.take);
     openRecord(to.take);
-  } else backHome(to.message);
+  } else backHome(to.message, to.menu);
 }
 function liveWords(doc, row) {
   if (doc.state === 'starting') return 'Opening the device.';
@@ -723,7 +723,7 @@ function applyLive(doc) {
   if (isRunning(doc)) S.following = true;
   else {
     S.stopSent = false;
-    /* Stopped before it made a sound: there is no take to go back to. */
+    /* Stopped before the band came in: there is no take to go back to. */
     if (doc.state === 'idle' && S.screen !== 'live') S.following = false;
   }
   reflectNav();

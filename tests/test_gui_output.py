@@ -77,10 +77,13 @@ def test_only_real_outputs_are_offered():
     assert names == [LAPTOP_OUT["name"], SCARLETT["name"]]
 
 
-def test_a_name_that_would_land_on_another_output_is_not_offered():
-    """plume lead finds a name by substring, so this one would open the longer one first."""
-    rows = [{"name": "Speakers Two", "inputs": 0, "outputs": 2}, {"name": "Speakers", "inputs": 0, "outputs": 2}]
-    assert [o["name"] for o in guitake.describe_outputs(rows)] == ["Speakers Two"]
+def test_a_name_inside_another_is_offered_because_the_child_takes_only_the_whole_name():
+    rows = [{"name": "Speakers Two", "inputs": 0, "outputs": 2}, {"name": "Speakers", "inputs": 0, "outputs": 2},
+            {"name": "speakers", "inputs": 0, "outputs": 2}]
+    assert [o["name"] for o in guitake.describe_outputs(rows)] == ["Speakers Two", "Speakers"]
+    table = [{"name": "Mic", "max_input_channels": 1, "max_output_channels": 0},
+             *({"name": r["name"], "max_input_channels": 0, "max_output_channels": 2} for r in rows[:2])]
+    assert realtime.resolve_input(fake_audio(None, devices=table), input_device="Mic", output_device="Speakers").device == (0, 2)
 
 
 def test_home_lists_them_and_says_same_as_input_by_default(runner):
@@ -423,6 +426,21 @@ def test_other_speakers_numbers_are_not_kept_as_this_inputs_own(rig, runner):
     assert runner.live()["stream"]["output_ms"] == 200.0
     box = next(d for d in runner.home()["devices"] if d["id"] == BOX_ID)
     assert box["reported_ms"] is None
+
+
+def test_what_the_page_needs_when_setup_moves_to_another_input(rig, runner, meter):
+    """The page compares this with what home said.  A yes then reaches the lead command."""
+    other = {"name": "Other Box", "inputs": 2, "outputs": 2}
+    rig.devices = [LAPTOP_MIC, LAPTOP_OUT, SCARLETT, other, SPEAKERS]
+    home = runner.home()
+    assert home["device"] == MIC_ID
+    choose(runner, SPEAKERS_ID, device=MIC_ID)
+    good(meter)
+    doc = runner.listen({})
+    assert doc["device"] == BOX_ID and doc["output"] is None and doc["heard"]["result"] == "ok"
+    assert choose(runner, SPEAKERS_ID)["done"] is True
+    runner.start({"device": BOX_ID})
+    assert f"--output-device={SPEAKERS['name']}" in rig.spawned[-1]
 
 
 # -------------------------------------------------------------------------- the transport

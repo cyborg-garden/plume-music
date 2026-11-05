@@ -3442,8 +3442,8 @@ def _build_parser() -> argparse.ArgumentParser:
                    default=False, help=_COUNT_IN_HELP)
     _add_route_flags(p)
     p.add_argument("--output-device", dest="output_device", default=None, metavar="NAME",
-                   help="send the sound here and leave the input alone (name substring; "
-                        "'plume inputs' lists them). Two devices have two clocks: this has "
+                   help="send the sound here and leave the input alone (its whole name, as "
+                        "'plume inputs' lists it). Two devices have two clocks: this has "
                         "not been tried on real gear")
     p.add_argument("--wind-down", dest="wind_down", type=float, default=None,
                    metavar="SECONDS",

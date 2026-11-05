@@ -1126,8 +1126,9 @@ def resolve_input(sd, device: str | None = None, *, input_device: str | None = N
     Channels are counted from 1, the way an interface labels its sockets.  With nothing
     asked for, this is exactly the old mono read of the system default input.
 
-    ``output_device`` names where the sound goes, whatever the input's own outs are.  A name
-    that finds no output is refused here, never swapped for another.
+    ``output_device`` names where the sound goes, whatever the input's own outs are.  It takes
+    the whole name, unlike ``device``: part of one could land on a neighbour when the named
+    output has gone.  A name that finds no output is refused here, never swapped for another.
     """
     dev = _resolve_device(sd, device)
     devices = list(sd.query_devices())
@@ -1145,7 +1146,7 @@ def resolve_input(sd, device: str | None = None, *, input_device: str | None = N
     output_name = None
     if output_device is not None:
         want = output_device.lower()
-        hits = [i for i, d in enumerate(devices) if want in str(d.get("name", "")).lower()]
+        hits = [i for i, d in enumerate(devices) if want == str(d.get("name", "")).lower()]
         if not hits:
             names = ", ".join(str(d.get("name", "?")) for d in devices) or "(none)"
             raise RealtimeError(
@@ -4537,6 +4538,17 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
             timeline.write_at(int(round(clock.t_s * SR)) - comp_samples[0],
                               looper.mix_bar(clock.bar, DECLICK_SAMPLES, stop=True))
 
+    def refuse_pair(e: Exception):
+        # Two devices have two clocks, and some pairs will not open together.  Nothing has
+        # played yet, so this is a sentence and not a traceback.
+        if midi_in is not None:
+            midi_in.close()
+        cues.close()
+        if recorder is not None:
+            recorder.close()
+        unregister_session()
+        raise RealtimeError(f"{OPEN_TOGETHER_FAILED}: {e}") from None
+
     try:
         stream = sd.Stream(
             samplerate=SR, blocksize=BLOCK, device=dev, channels=(route.channels, 2),
@@ -4545,13 +4557,7 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
     except Exception as e:  # noqa: BLE001 - PortAudio's error, or sounddevice's own
         if output_device is None:
             raise
-        # Two devices have two clocks, and some pairs will not open together.  Nothing has
-        # played yet, so this is a sentence and not a traceback.
-        cues.close()
-        if recorder is not None:
-            recorder.close()
-        unregister_session()
-        raise RealtimeError(f"{OPEN_TOGETHER_FAILED}: {e}") from None
+        refuse_pair(e)
     # v1.6 — see jam(): masking is aligned to the bus->speaker->mic round trip,
     # and it matters more here because the machine plays continuously.
     masker.set_latency_hops(stream_latency_hops(stream))
@@ -4578,6 +4584,17 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
     looper.roundtrip_samples = stream_latency_hops(stream) * HOP
     if tap_start:
         looper.roundtrip_samples = comp_samples[0]
+    if output_device is not None:
+        # A pair can open and then refuse to run.  Starting it here says so in the same words;
+        # entering the stream below starts it again, which does nothing to one already running.
+        try:
+            stream.start()
+        except Exception as e:  # noqa: BLE001 - PortAudio's error, or sounddevice's own
+            try:
+                stream.close()
+            except Exception:  # noqa: BLE001 - it never ran, and the refusal is what matters
+                pass
+            refuse_pair(e)
     analysis = threading.Thread(target=analysis_loop, name="plume-analysis",
                                 daemon=True)
     planner = threading.Thread(target=planner_loop, name="plume-planner",

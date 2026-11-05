@@ -86,7 +86,7 @@ KEPT_NOTHING = "The band had not come in yet, so plume kept nothing."
 BAD_KEY = "Plume did not understand that key. Try F major or A minor."
 ONLY_MAJOR_MINOR = "Plume plays major and minor keys. Try F major or A minor."
 NO_HEAR_ME = "Hear me needs headphones on. Through speakers it would feed back."
-OUTPUT_MISSING = "Plume could not find that output. Plug it back in, or choose another in Settings."
+OUTPUT_MISSING = "Plume could not find that output. Plug it back in, or choose another."
 OUTPUT_REFUSED = "Plume could not open that input and output together. Try another output."
 NO_SEND = "Only an instrument plugged in can go to another output. A mic would howl."
 NO_HEAR_ELSEWHERE = "Hear me only follows the input's own output. Choose it first."
@@ -393,8 +393,8 @@ def _device_id(name: str) -> str:
 def describe_outputs(listed) -> list[dict]:
     """The outputs a person can pick: real ones, each with an ID that is not a name.
 
-    ``plume lead`` finds these by substring too, so the same rule as :func:`describe_devices`
-    holds: a name that would land on an earlier output cannot be offered.
+    ``plume lead`` takes an output by its whole name, ignoring case, so only a second row of
+    the same name could not be reached.
     """
     rows = [r for r in _rows(listed) if r["outputs"] > 0]
     out = []
@@ -402,7 +402,7 @@ def describe_outputs(listed) -> list[dict]:
         low = row["name"].lower()
         if low in _SYSTEM_NAMES or _kind(row["name"], row["inputs"], row["outputs"]) == "virtual":
             continue
-        if next(r for r in rows if low in r["name"].lower()) is row:
+        if next(r for r in rows if low == r["name"].lower()) is row:
             out.append({"id": _device_id(row["name"]), "name": row["name"]})
     return out
 

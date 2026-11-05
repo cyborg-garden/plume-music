@@ -1432,3 +1432,48 @@ def test_a_log_too_big_to_read_does_not_claim_before_the_first_bar():
             "loop": {"op": "record", "ok": True}}]
     events = record.translate([], ending_doc(), log, unread=True)
     assert [e["tier"] for e in events] == ["end"]
+
+
+# ------------------------------------------------------- when the band followed
+
+def _song_with_follow(moved, *, bar=30, bars=3):
+    rows = song(40)
+    for r in rows:
+        if r.get("entry") != "drums":
+            r["follow"] = {"mode": "follow", "trusted": True, "gain_db": 0.0, "density": 1.0,
+                           "moved": [], "bars": bars}
+    rows[bar]["follow"]["moved"] = moved
+    return rows
+
+
+@pytest.mark.parametrize("route", ["direct", "midi"])
+def test_a_move_the_band_made_to_follow_is_a_moment(route):
+    events = record.translate(_song_with_follow(["softer"]), ending_doc(), route=route)
+    event = by_label(events, "band followed")
+    assert event["bar"] == 30 and event["tier"] == "plan"
+    assert "softer" in event["sentence"] and "3 bars" in event["sentence"]
+    assert "came down" in event["sentence"]
+
+
+def test_on_a_room_mic_it_only_says_what_the_mic_heard():
+    events = record.translate(_song_with_follow(["louder"], bars=4), ending_doc(), route="room")
+    sentence = by_label(events, "band followed")["sentence"]
+    assert "mic" in sentence and "4 bars" in sentence and "you" not in sentence.lower().split()
+
+
+def test_each_way_it_followed_gets_its_own_plain_sentence():
+    events = record.translate(_song_with_follow(["softer", "sparser"]), ending_doc(), route="direct")
+    said = [e["sentence"] for e in events if e["label"] == "band followed"]
+    assert len(said) == 2 and len(set(said)) == 2
+
+
+def test_a_moved_word_it_does_not_know_never_reaches_the_page():
+    events = record.translate(_song_with_follow(["human sounds tired"], bars=99), ending_doc(),
+                              route="direct")
+    assert not [e for e in events if e["label"] == "band followed"]
+    assert_clean(words(events))
+
+
+def test_steady_following_says_nothing():
+    events = record.translate(_song_with_follow([]), ending_doc(), route="direct")
+    assert not [e for e in events if e["label"] == "band followed"]

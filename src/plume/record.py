@@ -629,6 +629,31 @@ def recorded_from(manifest) -> str:
     return "input" if isinstance(audio, dict) and audio.get("source") == "direct" else "mic"
 
 
+#: What the band did when it followed, by the word the row logs.  The row's word is only
+#: ever used to pick one of these, so nothing in it reaches the page.  An input that hears
+#: only the player can say what it heard her do; a room mic hears the band as well, so its
+#: sentences are about the mic.  It never counts notes, so it has no busier or sparser.
+_FOLLOWED = {
+    "softer": ("I heard you get softer for {n}, so the band came down to find you.",
+               "The mic got quieter for {n}, so the band came down."),
+    "louder": ("I heard you get louder for {n}, so the band came up with you.",
+               "The mic got louder for {n}, so the band came up."),
+    "busier": ("I heard you get busier for {n}, so the band filled in.", None),
+    "sparser": ("I heard you leave more space for {n}, so the band thinned out.", None),
+}
+
+
+def _follow_moves(row: dict) -> tuple[list[str], int | None]:
+    """(known words for what the band followed this bar, bars it waited, if sane)."""
+    follow = row.get("follow")
+    if not isinstance(follow, dict) or not isinstance(follow.get("moved"), list):
+        return [], None
+    moved = [m for m in follow["moved"][:4] if isinstance(m, str) and m in _FOLLOWED]
+    bars = follow.get("bars")
+    sane = isinstance(bars, int) and not isinstance(bars, bool) and 1 <= bars <= 16
+    return moved, bars if sane else None
+
+
 def _hears_player(route: str) -> bool:
     """The band's own sound does not reach these, so silence there really is the player."""
     return route in ("direct", "midi")
@@ -744,6 +769,14 @@ def translate(rows: list[dict], ending: dict | None = None,
                     if entry == "drums" or _hears_player(route) else
                     "The mic stopped being silent, so the band came straight back.")
             fading = silent
+            moved, waited = _follow_moves(row)
+            for word in moved:
+                near, room = _FOLLOWED[word]
+                said = near if _hears_player(route) else room
+                if said is None:
+                    continue
+                n = f"{waited} bars" if waited is not None else "a few bars"
+                add(row, "plan", "band followed", said.format(n=n))
         form = _form(row)
         next_row = rows[i + 1] if i + 1 < len(rows) else None
         all_texts = _cue_texts(form.get("applied_cue"))
@@ -1007,8 +1040,8 @@ def roast(rows: list[dict], ending: dict | None = None, cue_log: list[dict] | No
 def band_line(rows: list[dict]) -> list[dict]:
     """How much band plume planned, per bar: the one quiet line on the sheet.
 
-    Roles are always 1.0 and density comes from a fixed arc plus cues, so this is
-    mostly the same shape in every take.  It is a timeline, not a fingerprint.
+    Roles are always 1.0 and density comes from a fixed arc, bent by following and
+    cues, so this is mostly the same shape in every take.  It is a timeline, not a fingerprint.
     """
     out = []
     for row in rows:

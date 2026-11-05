@@ -1,0 +1,317 @@
+{
+  "name": "jazz",
+  "bpm_range": [
+    70,
+    220
+  ],
+  "default_mode": "major",
+  "swing": 0.66,
+  "timing_bias_ms": {
+    "snare": 6,
+    "kit_kick": -4
+  },
+  "progressions": {
+    "major": [
+      {
+        "numerals": [
+          "ii7",
+          "V7",
+          "Imaj7",
+          "VI7"
+        ],
+        "weight": 4
+      },
+      {
+        "numerals": [
+          "Imaj7",
+          "VI7",
+          "ii7",
+          "V7"
+        ],
+        "weight": 2
+      },
+      {
+        "numerals": [
+          "iii7",
+          "VI7",
+          "ii7",
+          "V7"
+        ],
+        "weight": 2
+      },
+      {
+        "numerals": [
+          "IVmaj7",
+          "iv7",
+          "iii7",
+          "VI7"
+        ],
+        "weight": 1
+      }
+    ],
+    "minor": [
+      {
+        "numerals": [
+          "ii7b5",
+          "V7",
+          "i7",
+          "VImaj7"
+        ],
+        "weight": 4
+      },
+      {
+        "numerals": [
+          "i7",
+          "VImaj7",
+          "ii7b5",
+          "V7"
+        ],
+        "weight": 2
+      },
+      {
+        "numerals": [
+          "i7",
+          "iv7",
+          "ii7b5",
+          "V7"
+        ],
+        "weight": 2
+      }
+    ]
+  },
+  "drum_patterns": {
+    "kick": [
+      "bd:v0.3 bd:v0.26 bd:v0.3 bd:v0.26"
+    ],
+    "snare": [
+      "[~ ~ ~] sn:v0.32 [~ ~ ~] sn:v0.32",
+      "[~ ~ ~] [sn:v0.32 ~ sn:v0.16] [~ ~ ~] sn:v0.32",
+      "[~ ~ sn:v0.16] [sn:v0.32 ~ ~] [~ ~ sn:v0.2] [sn:v0.32 ~ sn:v0.16]"
+    ],
+    "hat": [
+      "rd:v0.72 [rd:v0.68 ~ rd:v0.42] rd:v0.72 [rd:v0.68 ~ rd:v0.42]",
+      "rd:v0.72 [rd:v0.68 ~ rd:v0.42] [rd:v0.72 ~ rd:v0.34] [rd:v0.68 ~ rd:v0.42]"
+    ],
+    "foot": [
+      "~ hf:v0.5 ~ hf:v0.5"
+    ],
+    "crash": [
+      "cr:v0.8 ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~"
+    ]
+  },
+  "fills": {
+    "snare": [
+      "[~ ~ sn:v0.25] [sn:v0.35 ~ sn:v0.25] [sn:v0.4 ~ sn:v0.3] [sn:v0.5 ~ sn:v0.4]"
+    ]
+  },
+  "bass_style": "walking",
+  "pad_style": "shell_comp",
+  "keys_style": "none",
+  "melody": {
+    "density": 0.28,
+    "octave": 5,
+    "rhythm_grid": "12",
+    "register": [
+      67,
+      84
+    ],
+    "echo": false,
+    "motifs": [
+      [
+        [
+          0,
+          0.667,
+          1.667
+        ],
+        [
+          1,
+          1.667,
+          2.667
+        ],
+        [
+          0.667,
+          2,
+          2.667
+        ]
+      ],
+      [
+        [
+          0,
+          1.667,
+          3
+        ],
+        [
+          0.667,
+          2.667
+        ]
+      ],
+      [
+        [
+          0.667,
+          1.667,
+          2
+        ],
+        [
+          0,
+          2.667,
+          3.667
+        ],
+        [
+          1,
+          2
+        ]
+      ]
+    ]
+  },
+  "voices": {
+    "kick": "kit_kick",
+    "snare": "brush",
+    "hat": "kit_ride",
+    "foot": "kit_hat",
+    "bass": "upright",
+    "pad": "piano",
+    "lead": "vibes",
+    "crash": "kit_crash"
+  },
+  "live_only_roles": [
+    "crash"
+  ],
+  "fx_defaults": {
+    "pad": {
+      "lpf_hz": 5000,
+      "reverb": 0.2
+    },
+    "bass": {
+      "lpf_hz": 2800
+    },
+    "lead": {
+      "reverb": 0.25
+    },
+    "hat": {
+      "hpf_hz": 300
+    }
+  },
+  "fades": {
+    "fade_in_bars": 2.0,
+    "fade_out_bars": 2.0,
+    "texture_xfade_beats": 2.0,
+    "announce_gain_db": -18.0,
+    "announce_beats": 2.0
+  },
+  "master": {
+    "reverb": 0.14,
+    "drive": 0.05,
+    "lofi": 0.0
+  },
+  "arrangement_templates": {
+    "1": [
+      {
+        "name": "arc",
+        "energy_curve": [
+          0.35,
+          0.65,
+          0.8,
+          0.4
+        ],
+        "bars": 32
+      }
+    ],
+    "2": [
+      {
+        "name": "settle",
+        "energy_curve": [
+          0.35,
+          0.65
+        ],
+        "bars": 32
+      },
+      {
+        "name": "drift",
+        "energy_curve": [
+          0.8,
+          0.4
+        ],
+        "bars": 32
+      }
+    ],
+    "3": [
+      {
+        "name": "settle",
+        "energy_curve": [
+          0.35,
+          0.65
+        ],
+        "bars": 32
+      },
+      {
+        "name": "drift",
+        "energy_curve": [
+          0.65,
+          0.8
+        ],
+        "bars": 32
+      },
+      {
+        "name": "dusk",
+        "energy_curve": [
+          0.65,
+          0.2
+        ],
+        "bars": 32
+      }
+    ],
+    "4": [
+      {
+        "name": "settle",
+        "energy_curve": [
+          0.35,
+          0.65
+        ],
+        "bars": 32
+      },
+      {
+        "name": "lift",
+        "energy_curve": [
+          0.65,
+          0.8
+        ],
+        "bars": 16
+      },
+      {
+        "name": "drift",
+        "energy_curve": [
+          0.8,
+          0.65
+        ],
+        "bars": 32
+      },
+      {
+        "name": "dusk",
+        "energy_curve": [
+          0.65,
+          0.2
+        ],
+        "bars": 32
+      }
+    ]
+  },
+  "gain_db": {
+    "kick": -5.0,
+    "snare": -4.0,
+    "hat": -4.0,
+    "foot": -10.0,
+    "bass": -1.5,
+    "pad": -6.5,
+    "lead": -6.0
+  },
+  "role_gain_db": {
+    "kick": -7.0,
+    "snare": -4.0,
+    "hat": -3.0,
+    "foot": -10.0,
+    "bass": -3.0,
+    "pad": -8.0,
+    "lead": -7.0,
+    "crash": -12.0
+  }
+}

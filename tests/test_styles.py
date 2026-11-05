@@ -11,9 +11,10 @@ from plume.styles_lib import list_styles, load_style  # noqa: E402
 from plume.theory import parse_key, roman_to_chord  # noqa: E402
 from plume.voices import PRESETS  # noqa: E402
 
-STYLE_NAMES = ["lofi", "synthwave", "trap"]
-BASS_STYLES = {"roots_eighths", "sub_hits", "pump_eighths"}
-PAD_STYLES = {"held", "stabs", "arp16"}
+STYLE_NAMES = ["lofi", "synthwave", "trap", "jazz", "house", "hiphop", "rnb"]
+BASS_STYLES = {"roots_eighths", "sub_hits", "pump_eighths", "walking", "house_off",
+               "boom_hits", "melodic"}
+PAD_STYLES = {"held", "stabs", "arp16", "shell_comp", "house_stabs"}
 
 
 def test_list_styles_contains_the_three():
@@ -43,7 +44,7 @@ def test_style_schema(name):
     assert s["pad_style"] in PAD_STYLES
     m = s["melody"]
     assert 0.0 < m["density"] <= 1.0
-    assert str(m["rhythm_grid"]) in ("8", "16")
+    assert str(m["rhythm_grid"]) in ("8", "12", "16")
     assert set(s["master"]) <= {"reverb", "drive", "lofi", "limit_db"}
 
 

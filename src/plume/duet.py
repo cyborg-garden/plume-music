@@ -118,7 +118,9 @@ import dataclasses
 
 import numpy as np
 
+from plume import figures
 from plume import fx as _fx
+from plume.governor import progression_symbols
 from plume.groove import GrooveParams, apply_groove
 from plume.styles_lib import load_style
 from plume.theory import (
@@ -391,6 +393,7 @@ class DuetEngine:
             for role, variants in self._style.get("slow_drum_patterns", {}).items()}
         # introspection: events chosen for the most recent render_bar
         self.last_events: list[dict] = []
+        self._progressions: dict[str, list[str]] = {}
 
         # ---- gentle entrances/exits (v1.4) --------------------------------
         # Style data first, constructor override second (tests and the live
@@ -914,7 +917,10 @@ class DuetEngine:
                 events += self._drum_events(role, preset, density, bar_s,
                                             tonic_pc, plan)
             elif role == "bass":
-                events += self._bass_events(preset, density, spb, root_pc)
+                events += self._bass_events(
+                    preset, density, spb, root_pc,
+                    chord=chord if tier == "triad" else None, key=key,
+                    bar=int(getattr(plan, "bar", 0)))
             elif role == "lead":
                 if self._style.get("melody", {}).get("motifs"):
                     events += self._motif_events(
@@ -926,7 +932,10 @@ class DuetEngine:
             elif preset == "crackle" or role == "crackle":
                 events.append((role, preset, 0.0, bar_s, None, 0.7))
             else:  # pad / keys / unknown tonal role: chordal figure
-                events += self._pad_events(role, preset, density, spb, voicing)
+                events += self._pad_events(
+                    role, preset, density, spb, voicing,
+                    chord=chord if tier == "triad" else None, ceiling=ceiling,
+                    bar=int(getattr(plan, "bar", 0)))
 
         # ---- render + place
         self.last_events = []
@@ -1021,9 +1030,43 @@ class DuetEngine:
                         kick_hz, vel))
         return out
 
+    def _next_root(self, chord: str | None, key: str | None, root_pc: int) -> int:
+        """The root of the chord after this one, where the style's progression says.
+
+        A chord the progression does not hold, as when following a tracker, is taken to
+        stay where it is: the line then leans back into its own root.
+        """
+        if chord is None or key is None:
+            return root_pc
+        symbols = self._progressions.get(key)
+        if symbols is None:
+            try:
+                symbols = progression_symbols(str(self._style["name"]), key)
+            except (ValueError, KeyError, OSError):
+                symbols = []
+            self._progressions[key] = symbols
+        if chord not in symbols:
+            return root_pc
+        return parse_chord(symbols[(symbols.index(chord) + 1) % len(symbols)]).root
+
     def _bass_events(self, preset: str, density: float, spb: float,
-                     root_pc: int) -> list[tuple]:
+                     root_pc: int, *, chord: str | None = None,
+                     key: str | None = None, bar: int = 0) -> list[tuple]:
         hz = _low_octave_hz(root_pc) * 2.0 ** int(self._style.get("bass_octave", 0))
+        line_style = str(self._style.get("bass_style", ""))
+        if line_style in figures.FIGURE_BASS_STYLES and density >= _BASS_WHOLE:
+            # No chord belief means no third to lean on: root and fifth only.
+            intervals = parse_chord(chord).intervals if chord is not None else (0, 7)
+            if line_style == figures.WALKING:
+                rng = np.random.default_rng((self._seed, 73, bar))
+                line = figures.walking_line(root_pc, intervals,
+                                            self._next_root(chord, key, root_pc), rng)
+                return [("bass", preset, float(k), 0.95 * spb, midi_to_hz(m),
+                         0.85 if k % 2 == 0 else 0.76)
+                        for k, m in enumerate(line)]
+            return [("bass", preset, ob, d * spb,
+                     hz * 2.0 ** (figures.degree_semitones(intervals, deg) / 12.0), v)
+                    for ob, d, v, deg in figures.BASS_FIGURES[line_style]]
         if density < _BASS_WHOLE:
             figure = [(0.0, 3.6, 0.85)]
         elif density < _BASS_HALVES:
@@ -1043,11 +1086,34 @@ class DuetEngine:
                           for k in range(8)]
         return [("bass", preset, ob, d * spb, hz, v) for ob, d, v in figure]
 
+    def _comp_events(self, role: str, preset: str, pad_style: str, density: float,
+                     spb: float, voicing: list[int], chord: str | None,
+                     ceiling: float | None, bar: int) -> list[tuple]:
+        """A chord figure in the genre's own voicing, its rhythm changing by the bar."""
+        notes = list(voicing)
+        if pad_style == "house_stabs":
+            notes = [m + 12 for m in voicing]
+        elif chord is not None:
+            notes = figures.rootless_voicing(parse_chord(chord),
+                                             shell=pad_style == "shell_comp")
+        notes = _apply_ceiling(notes, ceiling)
+        comps = figures.COMP_FIGURES[pad_style]
+        pick = int(np.random.default_rng((self._seed, 97, bar)).integers(len(comps)))
+        figure = comps[pick][:1] if density < _BASS_WHOLE else comps[pick]
+        return [(role, preset, ob, d * spb, midi_to_hz(m), v)
+                for ob, d, v in figure for m in notes]
+
     def _pad_events(self, role: str, preset: str, density: float, spb: float,
-                    voicing: list[int]) -> list[tuple]:
+                    voicing: list[int], *, chord: str | None = None,
+                    ceiling: float | None = None, bar: int = 0) -> list[tuple]:
         pad_style = str(self._style.get(f"{role}_style")
                         or self._style.get("pad_style", "held"))
         out: list[tuple] = []
+        if pad_style == "none":
+            return out
+        if pad_style in figures.COMP_FIGURES:
+            return self._comp_events(role, preset, pad_style, density, spb, voicing,
+                                     chord, ceiling, bar)
         if pad_style == "high":
             # The top of the chord an octave up: air over a lift.
             return [(role, preset, 0.0, 3.92 * spb, midi_to_hz(m + 12), 0.42)
@@ -1126,6 +1192,8 @@ class DuetEngine:
             vel = 0.62 if float(beat) % 2.0 == 0.0 else 0.48
             hz = midi_to_hz(pitch)
             out.append(("lead", preset, float(beat), 1.8 * spb, hz, vel))
+            if not cfg.get("echo", True):
+                continue
             # A dotted-eighth echo, built from notes: the bar loop runs no delay.
             out.append(("lead", preset, float(beat) + 0.75, 1.2 * spb, hz, vel * 0.42))
             if lifted:

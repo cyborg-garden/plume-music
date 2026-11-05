@@ -402,7 +402,8 @@ def test_a_key_that_is_not_one_is_refused(text):
 
 @pytest.mark.parametrize("text,canon", [
     ("midwest", "midwest"), ("Emo", "midwest"), ("lo-fi", "lofi"), ("Synth Wave", "synthwave"),
-    ("TRAP", "trap"), ("", None), ("detect", None),
+    ("TRAP", "trap"), ("", None), ("detect", None), ("hip hop", "hiphop"), ("R&B", "rnb"),
+    ("house", "house"), ("jazz", "jazz"),
 ])
 def test_a_style_comes_out_canonical(text, canon):
     assert guitake.canonical_style(text) == canon
@@ -1850,7 +1851,7 @@ def test_home_over_http_has_what_the_page_needs(page, rig):
     doc = json.loads(out)
     assert resp.status == 200
     assert {"devices", "device", "mode", "channel", "hear_me", "folder", "styles", "problem"} <= set(doc)
-    assert doc["styles"] == ["lofi", "midwest", "synthwave", "trap"]
+    assert doc["styles"] == ["hiphop", "house", "jazz", "lofi", "midwest", "rnb", "synthwave", "trap"]
     assert doc["folder"] == str(rig.root)
 
 

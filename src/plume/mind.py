@@ -438,12 +438,14 @@ _GENERIC_SECTION_ROLES: dict[str, str] = {
 }
 
 _STYLE_NAMES = {
-    "trap": "trap", "lofi": "lofi", "lo fi": "lofi", "boom bap": "boom bap",
+    "trap": "trap", "lofi": "lofi", "lo fi": "lofi", "boom bap": "hiphop",
+    "hip hop": "hiphop", "hiphop": "hiphop",
     "synthwave": "synthwave", "house": "house", "techno": "techno",
     "jazz": "jazz", "jazzy": "jazz", "funk": "funk", "funky": "funk",
     "rock": "rock", "ambient": "ambient", "bossa": "bossa",
     "reggae": "reggae", "disco": "disco", "dnb": "dnb",
-    "drum and bass": "dnb", "soul": "soul", "gospel": "gospel",
+    "drum and bass": "dnb", "neo soul": "rnb", "rnb": "rnb", "r b": "rnb",
+    "soul": "soul", "gospel": "gospel",
 }
 
 _END_PHRASES = ("take it out", "take us out", "take it home", "bring it home",

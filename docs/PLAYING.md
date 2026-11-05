@@ -452,7 +452,7 @@ So on a direct input Settings offers one more tick, off by default: Send my inst
 
 Wireless speakers arrive late, which makes playing along hard. Plume cannot tell wireless from a name, so it says this for any other output.
 
-The choice belongs to one input, and with more than one interface plugged in setup can hear you on a different input from the one Settings was showing. It then asks whether to send the band to that output from the new input too, before anything plays. Say no and that input keeps its own.
+The choice belongs to one input, and with more than one interface plugged in setup can hear you on a different input from the one Settings was showing. It then asks whether to send the band to that output from the new input too, before anything plays. Say no and that input keeps its own. If Settings showed no output and the new input has one saved from before, it asks about that one the same way, and a no clears it. If an answer does not save, the question stays until one does.
 
 **Not yet tried on real gear.** All of this has only run against a fake device. Three things only real gear can answer:
 

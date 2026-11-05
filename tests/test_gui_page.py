@@ -2369,6 +2369,135 @@ def test_a_yes_that_failed_reads_nothing_again(tmp_path, docs):
     assert out == {"reads": 0, "starts": 0}
 
 
+def test_a_yes_that_failed_keeps_the_question_so_nothing_starts_without_her_answer(tmp_path, docs):
+    """Start anyway on a trouble screen would start on the box she was heard on, out of the box."""
+    _on_the_mic(docs)
+    out = first_run(tmp_path, docs, f"""{_press(_heard_on_box())}
+        page.replies['setup/answer'] = [409, {{ error: 'Plume could not list the devices.' }}];
+        $('setup-yes').click(); await page.settle();
+        const failed = {SEEN};
+        page.replies['setup/answer'] = [200, {json.dumps({**COUNT, "device": BOX, "output": SPEAKERS_ID})}];
+        const before = page.posts('start').length;
+        $('setup-yes').click(); await page.settle();
+        return {{ failed, before, saved: page.posts('setup/answer'), starts: page.posts('start') }};""")
+    assert out["failed"]["choices"] == ["Yes", "No"] and out["failed"]["note"] == "Plume could not list the devices."
+    assert out["failed"]["more"].startswith("Send the band to Room Speakers?")
+    assert out["before"] == 0
+    assert out["saved"] == [{"step": "output", "answer": SPEAKERS_ID, "device": BOX}] * 2
+    assert out["starts"] == [{"device": BOX}]
+
+
+def test_a_yes_that_never_arrived_can_still_be_a_no(tmp_path, docs):
+    _on_the_mic(docs)
+    out = first_run(tmp_path, docs, f"""{_press(_heard_on_box())}
+        page.down = true;
+        $('setup-yes').click(); await page.settle();
+        const note = $('setup-note').textContent;
+        page.down = false;
+        $('setup-no').click(); await page.settle();
+        return {{ note, saved: page.posts('setup/answer').length, starts: page.posts('start') }};""")
+    assert out["note"] == "That did not reach plume gui. Try again."
+    assert out["starts"] == [{"device": BOX}]
+
+
+def _saved_on_box(docs):
+    """Two interfaces, so home shows the mic with no output, and Room Speakers is saved on the box."""
+    _with_output(docs, saved=SPEAKERS_ID, devices=TWO_BOXES)
+    assert docs["home"]["device"] == MIC and docs["home"]["output"] is None
+
+
+def _heard_with_speakers(**more):
+    return {**_heard_on_box(), "output": SPEAKERS_ID, **more}
+
+
+def test_an_output_saved_on_the_input_it_moved_to_is_said_before_any_band_plays(tmp_path, docs):
+    """Home named no output, so the band going to the box's saved one would be news."""
+    _saved_on_box(docs)
+    out = first_run(tmp_path, docs, f"""{_press(_heard_with_speakers())}
+        return {{ ...{SEEN}, starts: page.posts('start').length }};""")
+    assert out["starts"] == 0
+    assert out["say"] == "Plume heard you on Test Interface."
+    assert out["more"] == "Send the band to Room Speakers? If not, it comes out of Test Interface."
+    assert out["choices"] == ["Yes", "No"]
+
+
+def test_a_yes_to_an_output_already_saved_saves_nothing_and_starts(tmp_path, docs):
+    _saved_on_box(docs)
+    out = first_run(tmp_path, docs, f"""{_press(_heard_with_speakers())}
+        $('setup-yes').click(); await page.settle();
+        return {{ saved: page.posts('setup/answer'), starts: page.posts('start') }};""")
+    assert out == {"saved": [], "starts": [{"device": BOX}]}
+
+
+def test_a_no_to_an_output_already_saved_clears_it_and_asks_what_her_own_output_needs(tmp_path, docs):
+    """Off the saved output the next questions are about her own, so the bridge's answer is followed."""
+    _saved_on_box(docs)
+    reply = _heard_on_box("headphones")
+    out = first_run(tmp_path, docs, f"""{_press(_heard_with_speakers())}
+        page.replies['setup/answer'] = [200, {json.dumps(reply)}];
+        $('setup-no').click(); await page.settle();
+        return {{ ...{SEEN}, saved: page.posts('setup/answer'), starts: page.posts('start') }};""")
+    assert out["saved"] == [{"step": "output", "answer": "same", "device": BOX}]
+    assert out["starts"] == [] and out["say"] == "Headphones on?"
+
+
+def test_a_no_that_cleared_the_output_is_not_asked_again_on_a_low_level(tmp_path, docs):
+    _saved_on_box(docs)
+    low = _heard_with_speakers(step="listen", line=guitake.LOW_GAIN, done=False, choices=steps("again", "start"),
+                               heard={**HEARD, "result": "low"})
+    cleared = {**low, "output": None}
+    out = first_run(tmp_path, docs, f"""{_press(low)}
+        page.replies['setup/answer'] = [200, {json.dumps(_heard_on_box("headphones"))}];
+        $('setup-no').click(); await page.settle();
+        const say = $('setup-say').textContent;
+        page.replies['setup/listen'] = [200, {json.dumps(cleared)}];
+        $('setup-again').click(); await page.settle();
+        return {{ say, asked: !!$('setup-yes'), saved: page.posts('setup/answer').length }};""")
+    assert out["say"] in guitake.LOW_GAIN and out["asked"] is False and out["saved"] == 1
+
+
+def test_a_no_that_failed_to_clear_keeps_the_question(tmp_path, docs):
+    _saved_on_box(docs)
+    out = first_run(tmp_path, docs, f"""{_press(_heard_with_speakers())}
+        page.failNext['setup/answer'] = 1;
+        $('setup-no').click(); await page.settle();
+        return {{ asked: !!$('setup-yes'), starts: page.posts('start').length }};""")
+    assert out == {"asked": True, "starts": 0}
+
+
+def test_an_answer_on_a_saved_output_is_not_asked_again_on_new_take(tmp_path, docs):
+    _saved_on_box(docs)
+    done = {"state": "done", "take": docs["ids"]["tap"], "note": None}
+    out = first_run(tmp_path, docs, f"""{_press(_heard_with_speakers())}
+        page.home = {{ ...page.home, device: {json.dumps(BOX)}, output: {json.dumps(SPEAKERS_ID)} }};
+        $('setup-yes').click(); await page.settle();
+        page.live = {json.dumps(done)};
+        await page.poll();
+        page.replies['setup/listen'] = [200, {json.dumps(_heard_with_speakers())}];
+        $('rec-again').click(); await page.settle();
+        return {{ asked: !!$('setup-yes'), starts: page.posts('start') }};""")
+    assert out == {"asked": False, "starts": [{"device": BOX}] * 2}
+
+
+def test_no_question_when_the_saved_output_is_where_the_input_home_showed_plays(tmp_path, docs):
+    """Home's interface plays out of itself, and the box's saved output is that same interface."""
+    other = {"name": "Other Box", "inputs": 2, "outputs": 2}
+    other_out = guitake.describe_outputs([other])[0]["id"]
+    other_in = guitake.describe_devices([other])[0]["id"]
+    _with_output(docs, saved=other_out, devices=TWO_BOXES)
+    docs["home"]["device"] = other_in
+    out = first_run(tmp_path, docs, f"{_press(_heard_with_speakers(output=other_out))} return page.posts('start');")
+    assert out == [{"device": BOX}]
+
+
+def test_nothing_heard_on_an_input_with_its_own_output_still_starts_what_home_showed(tmp_path, docs):
+    _saved_on_box(docs)
+    out = first_run(tmp_path, docs, f"""{_press(_nothing(output=SPEAKERS_ID))}
+        $('setup-start').click(); await page.settle();
+        return {{ asked: !!$('setup-yes'), starts: page.posts('start') }};""")
+    assert out == {"asked": False, "starts": [{}]}
+
+
 def test_no_question_when_the_band_goes_where_home_said(tmp_path, docs):
     _on_the_mic(docs)
     agrees = {**_heard_on_box(), "output": SPEAKERS_ID}

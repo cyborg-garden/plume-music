@@ -848,7 +848,7 @@ async function pressStart() {
   S.setup = null;
   S.listening = S.answering = false;
   const seen = chosenDevice();
-  S.setupShown = S.home ? { device: seen ? seen.id : null, output: outputSaved() } : null;
+  S.setupShown = S.home ? { device: seen ? seen.id : null, output: outputSaved(), direct: !!seen && seen.mode === 'direct' } : null;
   if (location.hash !== '#/setup') history.pushState(null, '', '#/setup');
   arriveAt('setup');
   drawSetup();
@@ -880,22 +880,27 @@ function askAboutOutput(doc) {
   drawSetup();
   return true;
 }
-/* What home said is settled now, one way or the other, for this input. The next press of Start
-   reads what home knows, so it has to hear the answer too, or it would ask again after each take. */
+/* What home said is settled once the answer is saved, for this input, and not before. The next
+   press of Start reads what home knows, so it has to hear the answer too, or it would ask again
+   after each take. An answer that did not save keeps the question, because Start anyway would
+   start on the input she was heard on and leave out what she just said. */
 async function answerMoved(answer) {
   const asked = S.setup, then = asked.then, turn = S.setupTurn;
-  S.setupShown = { device: then.device, output: answer === 'yes' ? asked.output : then.output || null };
-  if (answer !== 'yes') { loadHome(); followSetup(then); return; }
+  const wanted = answer === 'yes' ? asked.output : asked.otherwise;
+  const settled = { device: then.device, output: wanted, direct: then.mode === 'direct' };
+  if (wanted === (then.output || null)) { S.setupShown = settled; loadHome(); followSetup(then); return; }
   S.answering = true;
   Array.from($('setup-choices').children).forEach(setOff);
   let reply = null;
-  try { reply = await send('setup/answer', { step: 'output', answer: asked.output, device: then.device }); } catch (err) { /* said below */ }
+  try { reply = await send('setup/answer', { step: 'output', answer: wanted || 'same', device: then.device }); } catch (err) { /* said below */ }
   if (reply && reply.ok) loadHome();
   if (turn !== S.setupTurn) return;
   S.answering = false;
-  if (reply && reply.ok) { followSetup(then.done || then.step === 'listen' ? then : reply.doc); return; }
+  if (reply && reply.ok) { S.setupShown = settled; followSetup(then.step === 'listen' ? then : reply.doc); return; }
   if (reply && reply.status === 400 && reply.doc && reply.doc.error) { backHome(reply.doc.error, true); return; }
-  settleSetup(reply);
+  if (reply && (reply.status === 401 || (reply.status === 409 && reply.doc && reply.doc.live))) { settleSetup(reply); return; }
+  S.setup = Object.assign({}, asked, { note: (reply && reply.doc && reply.doc.error) || 'That did not reach plume gui. Try again.' });
+  drawSetup();
 }
 function pickedName() {
   const device = S.form.device && chosenDevice();

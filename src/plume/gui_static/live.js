@@ -166,22 +166,29 @@ function heardNote(doc) {
   return 'Heard you on ' + doc.device_name + (doc.mode === 'direct' ? ', channel ' + doc.channel : '') + '.';
 }
 
-/* Home said the band goes to one output, and setup has just heard her on an input that would send
-   it somewhere else. shown: the input and output home was showing at the press of Start. Null
-   when they agree, and unless she was heard: a device that heard nothing has not moved anything. */
+/* Home showed one place for the band, and setup has just heard her on an input that would send it
+   somewhere else. Home may have named an output, or named none while the new input has its own
+   saved. shown: the input and output home was showing at the press of Start. Null when they
+   agree, and unless she was heard: a device that heard nothing has not moved anything.
+   output is what a Yes leaves saved on the new input, and otherwise what a No leaves. */
 export function movedOutput(shown, doc, outputs) {
-  if (!shown || !shown.output || !doc.device || doc.device === shown.device) return null;
-  const direct = doc.mode === 'direct';
-  if (doc.output === shown.output || (direct && !doc.output && doc.device === shown.output)) return null;
+  if (!shown || !doc.device || doc.device === shown.device) return null;
   if (!doc.heard || !['ok', 'hot', 'low'].includes(doc.heard.result)) return null;
+  const direct = doc.mode === 'direct', saved = doc.output || null;
+  const output = shown.output || saved;
+  if (!output) return null;
+  if (shown.output
+    ? saved === shown.output || (direct && !saved && doc.device === shown.output)
+    : shown.direct && saved === shown.device) return null;
+  const otherwise = shown.output ? saved : null;
   const nameOf = function (id) {
     const found = (outputs || []).find(function (o) { return o.id === id; });
     return found ? found.name : '';
   };
-  const instead = doc.output ? nameOf(doc.output) || 'the output saved for it' : direct ? doc.device_name : 'the system output';
+  const instead = otherwise ? nameOf(otherwise) || 'the output saved for it' : direct ? doc.device_name : 'the system output';
   return {
-    step: 'moved', done: false, note: null, others: [], output: shown.output,
-    line: 'Plume heard you on ' + doc.device_name + '. Send the band to ' + (nameOf(shown.output) || 'the output you chose')
+    step: 'moved', done: false, note: null, others: [], output: output, otherwise: otherwise,
+    line: 'Plume heard you on ' + doc.device_name + '. Send the band to ' + (nameOf(output) || 'the output you chose')
       + '? If not, it comes out of ' + instead + '.',
     choices: [{ answer: 'yes', label: 'Yes' }, { answer: 'no', label: 'No' }]
   };

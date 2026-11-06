@@ -32,6 +32,7 @@ import json
 import math
 import os
 import queue
+import signal as _signal_module
 import socket
 import stat
 import sys
@@ -43,6 +44,7 @@ from pathlib import Path
 import numpy as np
 
 from . import fx as _fx
+from . import oscompat
 from .listen.features import HOP, RMS_FLOOR_DB, Frame  # noqa: F401 (Frame: typing)
 # Bar-silence level tolerance relative to the human's running level; imported
 # from sim so the two silence rules cannot drift apart again (v1.2: they had,
@@ -1139,22 +1141,59 @@ def _import_sounddevice():
     return sd
 
 
+def one_host_api(devices: list, default_hostapi) -> list[tuple[int, dict]]:
+    """Each device once, with its index into the full list.
+
+    PortAudio lists a Windows device once per host API (MME, DirectSound, WASAPI,
+    WDM-KS), so one microphone shows up as three or four rows, some with names cut
+    short.  A duplex stream also has to keep both ends in one host API.  So where
+    devices say which host API they belong to, only the default one is kept: it is
+    the one ``device=None`` opens, so a named device and the defaults always pair.
+    Elsewhere (macOS, Linux, and any listing without host APIs) nothing is dropped.
+    """
+    rows = list(enumerate(devices))
+    if default_hostapi is None:
+        return rows
+    try:
+        want = int(default_hostapi)
+    except (TypeError, ValueError):
+        return rows
+    kept = [(i, d) for i, d in rows if d.get("hostapi") == want]
+    return kept if kept else rows
+
+
+def _default_hostapi(sd):
+    """The default host API's index on Windows, else None (keep every device)."""
+    if not oscompat.IS_WINDOWS:
+        return None
+    try:
+        return int(sd.default.hostapi)
+    except Exception:  # noqa: BLE001 - a listing without host APIs keeps every device
+        return None
+
+
+def _device_table(sd) -> list[tuple[int, dict]]:
+    """``sd.query_devices()`` as (index, device), each device listed once."""
+    try:
+        devices = list(sd.query_devices())
+    except Exception as e:  # noqa: BLE001
+        raise RealtimeError(f"audio device query failed: {e}") from None
+    return one_host_api(devices, _default_hostapi(sd))
+
+
 def _resolve_device(sd, device: str | None):
     """Pick a duplex-capable device; raise a clean error when there is none.
 
     Returns a value suitable for ``sounddevice.Stream(device=...)``:
     ``None`` (defaults) or an ``(input, output)`` index pair.
     """
-    try:
-        devices = sd.query_devices()
-    except Exception as e:  # noqa: BLE001
-        raise RealtimeError(f"audio device query failed: {e}") from None
-    devices = list(devices)
-    ins = [i for i, d in enumerate(devices) if d.get("max_input_channels", 0) > 0]
-    outs = [i for i, d in enumerate(devices) if d.get("max_output_channels", 0) > 0]
+    table = _device_table(sd)
+    devices = [d for _, d in table]
+    ins = [i for i, d in table if d.get("max_input_channels", 0) > 0]
+    outs = [i for i, d in table if d.get("max_output_channels", 0) > 0]
     if device is not None:
         want = device.lower()
-        hits = [i for i, d in enumerate(devices) if want in str(d.get("name", "")).lower()]
+        hits = [i for i, d in table if want in str(d.get("name", "")).lower()]
         if not hits:
             names = ", ".join(str(d.get("name", "?")) for d in devices) or "(none)"
             raise RealtimeError(f"no audio device matching {device!r} (devices: {names})")
@@ -1223,12 +1262,13 @@ def resolve_input(sd, device: str | None = None, *, input_device: str | None = N
     output has gone.  A name that finds no output is refused here, never swapped for another.
     """
     dev = _resolve_device(sd, device)
-    devices = list(sd.query_devices())
+    table = _device_table(sd)
+    devices = dict(table)
     if input_device is not None:
         want = input_device.lower()
-        hits = [i for i, d in enumerate(devices) if want in str(d.get("name", "")).lower()]
+        hits = [i for i, d in table if want in str(d.get("name", "")).lower()]
         if not hits:
-            names = ", ".join(str(d.get("name", "?")) for d in devices) or "(none)"
+            names = ", ".join(str(d.get("name", "?")) for _, d in table) or "(none)"
             raise RealtimeError(
                 f"no audio device matching {input_device!r} (devices: {names})")
         din = next((i for i in hits if devices[i].get("max_input_channels", 0) > 0), None)
@@ -1238,9 +1278,9 @@ def resolve_input(sd, device: str | None = None, *, input_device: str | None = N
     output_name = None
     if output_device is not None:
         want = output_device.lower()
-        hits = [i for i, d in enumerate(devices) if want == str(d.get("name", "")).lower()]
+        hits = [i for i, d in table if want == str(d.get("name", "")).lower()]
         if not hits:
-            names = ", ".join(str(d.get("name", "?")) for d in devices) or "(none)"
+            names = ", ".join(str(d.get("name", "?")) for _, d in table) or "(none)"
             raise RealtimeError(
                 f"no audio output matching {output_device!r} (devices: {names})")
         dout = next((i for i in hits if devices[i].get("max_output_channels", 0) > 0), None)
@@ -1278,10 +1318,7 @@ def input_devices(sd) -> list[dict]:
     And, where the library says, how late it reports its output would be, and which one the
     system sends its sound to.
     """
-    try:
-        devices = list(sd.query_devices())
-    except Exception as e:  # noqa: BLE001
-        raise RealtimeError(f"audio device query failed: {e}") from None
+    devices = [d for _, d in _device_table(sd)]
     try:
         system_output = str(sd.query_devices(kind="output")["name"])
     except Exception:  # noqa: BLE001 - nothing depends on it, and a stream would still say
@@ -2787,16 +2824,125 @@ def default_socket_path() -> str:
     return str(Path(tempfile.gettempdir()) / "plume-live.sock")
 
 
-def _check_socket_path(path: str) -> str:
+#: Env var choosing the cue transport: ``unix`` or ``tcp``.  Unset means AF_UNIX
+#: where the platform has it and loopback TCP where it does not (Windows).
+TRANSPORT_ENV = "PLUME_CUE_TRANSPORT"
+TRANSPORTS = ("unix", "tcp")
+
+#: A TCP endpoint file is a few dozen bytes; anything bigger is not one.
+_ENDPOINT_MAX_BYTES = 1024
+
+
+def default_transport() -> str:
+    """``unix`` where AF_UNIX exists, else ``tcp``.  ``$PLUME_CUE_TRANSPORT`` wins."""
+    env = os.environ.get(TRANSPORT_ENV, "").strip().lower()
+    if env:
+        if env not in TRANSPORTS:
+            raise RealtimeError(
+                f"{TRANSPORT_ENV} must be one of {', '.join(TRANSPORTS)}, got {env!r}")
+        if env == "unix" and not hasattr(socket, "AF_UNIX"):
+            raise RealtimeError(
+                f"{TRANSPORT_ENV}=unix, but this platform has no unix sockets")
+        return env
+    return "unix" if hasattr(socket, "AF_UNIX") else "tcp"
+
+
+def _check_socket_path(path: str, transport: str = "unix") -> str:
     p = str(path)
-    if not hasattr(socket, "AF_UNIX"):      # pragma: no cover - not macOS/Linux
-        raise RealtimeError(
-            "cue sockets need AF_UNIX, which this platform does not have")
-    if len(p.encode("utf-8")) > _SOCKET_PATH_MAX:
+    # Only a unix socket's path goes to the kernel; a TCP endpoint is a plain file.
+    if transport == "unix" and len(p.encode("utf-8")) > _SOCKET_PATH_MAX:
         raise RealtimeError(
             f"socket path is too long ({len(p)} bytes; the kernel limit is "
             f"about {_SOCKET_PATH_MAX}): {p}")
     return p
+
+
+# -- the TCP transport -------------------------------------------------
+#
+# Where there are no unix sockets, the socket path holds a small file instead:
+# ``{"port": 50123, "token": "<64 hex>", "pid": 4212}``.  The session listens on
+# 127.0.0.1 only, on a port the kernel picks, and answers a request only if it
+# carries that token (compared in constant time).  The file is created 0600 and
+# exclusively, in the same place the unix socket would be: a unix socket's
+# protection is its file mode, and this keeps exactly that property, since only
+# someone who can read the file can talk to the session.  On Windows the file's
+# privacy comes from the folder (the user's own temp folder), not its mode.
+
+def _read_endpoint(path: str) -> tuple[int, str] | None:
+    """The port and token in a TCP endpoint file, or None if it is not one."""
+    from .oscompat import open_private, read_flags  # noqa: PLC0415
+
+    try:
+        fd = open_private(path, read_flags())
+    except OSError:
+        return None
+    try:
+        with os.fdopen(fd, "rb") as f:
+            if not stat.S_ISREG(os.fstat(f.fileno()).st_mode):
+                return None
+            doc = json.loads(f.read(_ENDPOINT_MAX_BYTES + 1)[:_ENDPOINT_MAX_BYTES])
+        port, token = int(doc["port"]), str(doc["token"])
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return None
+    if not 0 < port < 65536 or not token:
+        return None
+    return port, token
+
+
+def _is_endpoint_file(path: str) -> bool:
+    """True when ``path`` is a regular file, which a unix socket never is."""
+    try:
+        return stat.S_ISREG(os.lstat(path).st_mode)
+    except OSError:
+        return False
+
+
+def _connect(path: str, timeout: float) -> tuple[socket.socket, str | None]:
+    """A connected socket to the session at ``path``, and the token it wants.
+
+    Which transport is read off the path itself: a regular file is a TCP
+    endpoint, anything else is a unix socket.  So ``plume cue`` needs no flag to
+    reach a session started with either.  Raises ``FileNotFoundError`` or
+    ``ConnectionRefusedError`` when nothing is there, like a unix connect.
+    """
+    if _is_endpoint_file(path) or not hasattr(socket, "AF_UNIX"):
+        endpoint = _read_endpoint(path)
+        if endpoint is None:
+            if not os.path.lexists(path):
+                raise FileNotFoundError(path)
+            raise ConnectionRefusedError(f"{path} is not a plume session endpoint")
+        port, token = endpoint
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(float(timeout))
+        try:
+            s.connect(("127.0.0.1", port))
+        except BaseException:
+            s.close()
+            raise
+        return s, token
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.settimeout(float(timeout))
+    try:
+        s.connect(path)
+    except BaseException:
+        s.close()
+        raise
+    return s, None
+
+
+def _publish_exclusive(tmp: str, path: str) -> None:
+    """Move a finished file into place, failing if ``path`` already exists.
+
+    ``os.link`` refuses an existing target on POSIX; ``os.rename`` refuses one on
+    Windows.  Either way a reader never sees a half-written endpoint, and two
+    sessions starting at once cannot both win.  The caller removes ``tmp``.
+    """
+    from .oscompat import IS_WINDOWS  # noqa: PLC0415
+
+    if IS_WINDOWS:
+        os.rename(tmp, path)
+    else:
+        os.link(tmp, path)
 
 
 #: Who may be named as a cue's sender.  Anything else reads as "unknown".
@@ -2804,7 +2950,7 @@ CUE_SOURCES = ("gui", "cli", "voice")
 
 
 class CueServer:
-    """AF_UNIX server that queues cues for a running session (SPEC-V2 §3).
+    """Local server that queues cues for a running session (SPEC-V2 §3).
 
     Protocol: one JSON object per connection, newline-terminated, in and out.
 
@@ -2838,8 +2984,15 @@ class CueServer:
     """
 
     def __init__(self, path: str | None = None, *, kind: str = "lead",
-                 accepts_cues: bool = True):
-        self.path = _check_socket_path(path or default_socket_path())
+                 accepts_cues: bool = True, transport: str | None = None):
+        #: ``unix`` (an AF_UNIX socket at ``path``) or ``tcp`` (127.0.0.1, with
+        #: the port and a secret in a private file at ``path``).  See
+        #: :func:`default_transport`; the wire format is the same either way.
+        self.transport = default_transport() if transport is None else str(transport)
+        if self.transport not in TRANSPORTS:
+            raise RealtimeError(f"unknown cue transport {self.transport!r}")
+        self.path = _check_socket_path(path or default_socket_path(), self.transport)
+        self._token: str | None = None
         self.kind = str(kind)
         self.accepts_cues = bool(accepts_cues)
         self._sock: socket.socket | None = None
@@ -2873,6 +3026,71 @@ class CueServer:
         after proving nobody is listening on it: an unconditional unlink would
         let a second session silently hijack the first one's cues.
         """
+        if self.transport == "tcp":
+            s = self._bind_tcp()
+        else:
+            s = self._bind_unix()
+        s.listen(8)
+        s.settimeout(0.2)
+        self._sock = s
+        self._thread = threading.Thread(target=self._serve, name="plume-cues",
+                                        daemon=True)
+        self._thread.start()
+        return self
+
+    def _bind_tcp(self) -> socket.socket:
+        """Listen on loopback and publish the port and a fresh secret at the path."""
+        import secrets  # noqa: PLC0415
+
+        from .oscompat import fchmod_private, open_private  # noqa: PLC0415
+
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        tmp = None
+        try:
+            s.bind(("127.0.0.1", 0))
+            token = secrets.token_hex(32)
+            parent = os.path.dirname(os.path.abspath(self.path))
+            # A name nobody could have planted, and O_EXCL in case they guess it.
+            tmp = os.path.join(parent, f".{os.path.basename(self.path)}."
+                                       f"{secrets.token_hex(8)}.tmp")
+            fd = open_private(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            try:
+                fchmod_private(fd)
+                os.write(fd, json.dumps({"port": s.getsockname()[1], "token": token,
+                                         "pid": os.getpid()}, sort_keys=True).encode())
+            finally:
+                os.close(fd)
+            try:
+                _publish_exclusive(tmp, self.path)
+            except FileExistsError:
+                if _socket_is_live(self.path):
+                    raise RealtimeError(
+                        f"another plume session is already listening at "
+                        f"{self.path} — end it, or set {SOCKET_ENV} to a "
+                        f"different path") from None
+                # A crashed session's file: nobody answers it, so it can go.
+                try:
+                    os.unlink(self.path)
+                except OSError:
+                    pass
+                _publish_exclusive(tmp, self.path)
+        except RealtimeError:
+            s.close()
+            raise
+        except OSError as e:
+            s.close()
+            raise RealtimeError(
+                f"cannot open the cue endpoint at {self.path}: {e}") from None
+        finally:
+            if tmp is not None:
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
+        self._token = token
+        return s
+
+    def _bind_unix(self) -> socket.socket:
         s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         try:
             s.bind(self.path)
@@ -2900,13 +3118,7 @@ class CueServer:
             s.close()
             raise RealtimeError(
                 f"cannot lock down the cue socket at {self.path}: {e}") from None
-        s.listen(8)
-        s.settimeout(0.2)
-        self._sock = s
-        self._thread = threading.Thread(target=self._serve, name="plume-cues",
-                                        daemon=True)
-        self._thread.start()
-        return self
+        return s
 
     def close(self) -> None:
         self._stop.set()
@@ -2918,6 +3130,11 @@ class CueServer:
                 self._sock.close()
             finally:
                 self._sock = None
+        if self.transport == "tcp":
+            # Only our own endpoint: another session's file is not ours to remove.
+            endpoint = _read_endpoint(self.path)
+            if self._token is None or endpoint is None or endpoint[1] != self._token:
+                return
         try:
             os.unlink(self.path)
         except OSError:
@@ -3027,13 +3244,31 @@ class CueServer:
             with conn:
                 conn.settimeout(1.0)
                 try:
-                    resp = self.handle(_read_json_line(conn))
+                    resp = self._answer(_read_json_line(conn))
                 except Exception as e:      # noqa: BLE001 — never take the band down
                     resp = {"ok": False, "error": f"{type(e).__name__}: {e}"}
                 try:
                     conn.sendall((json.dumps(resp, sort_keys=True) + "\n").encode())
                 except OSError:
                     pass
+
+
+    def _answer(self, req: dict) -> dict:
+        """:meth:`handle`, behind the token when the transport is TCP.
+
+        A unix socket's caller already got past the file mode.  A loopback port
+        can be reached by anything on this machine, so there the request must
+        carry the secret from the endpoint file, or it is answered with a refusal
+        and nothing else: no verb, no cue, no log line.
+        """
+        import hmac  # noqa: PLC0415
+
+        auth = req.pop("auth", None)
+        if self.transport == "tcp":
+            if (self._token is None or not isinstance(auth, str)
+                    or not hmac.compare_digest(auth.encode(), self._token.encode())):
+                return {"ok": False, "error": "not authorised for this session"}
+        return self.handle(req)
 
 
 def _read_json_line(conn: socket.socket) -> dict:
@@ -3051,8 +3286,25 @@ def _read_json_line(conn: socket.socket) -> dict:
     return doc
 
 
+def _client_path(path: str) -> str:
+    """Check a path a client was given, for whichever transport is behind it."""
+    p = str(path)
+    tcp = _is_endpoint_file(p) or not hasattr(socket, "AF_UNIX")
+    return _check_socket_path(p, "tcp" if tcp else "unix")
+
+
 def _socket_is_live(path: str) -> bool:
-    """True when something is accepting connections on ``path``."""
+    """True when a session is answering on ``path``.
+
+    For a unix socket, anything accepting a connection counts.  For a TCP
+    endpoint it must also answer a status request with the file's token: after a
+    crash the port can belong to some other program by now.
+    """
+    if _is_endpoint_file(path) or not hasattr(socket, "AF_UNIX"):
+        try:
+            return _round_trip(path, {"op": "status"}, timeout=0.25).get("ok") is True
+        except (OSError, ValueError):
+            return False
     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     s.settimeout(0.25)
     try:
@@ -3064,25 +3316,38 @@ def _socket_is_live(path: str) -> bool:
     return True
 
 
+def _round_trip(path: str, req: dict, *, timeout: float) -> dict:
+    """Send one request and read one reply.  Raises OSError or ValueError."""
+    s, token = _connect(path, timeout)
+    try:
+        if token is not None:
+            req = {**req, "auth": token}
+        s.sendall((json.dumps(req, sort_keys=True) + "\n").encode("utf-8"))
+        return _read_json_line(s)
+    finally:
+        s.close()
+
+
 def _socket_request(path: str, req: dict, *, timeout: float,
                     absent_msg: str) -> dict:
     """One request/reply round trip on a session socket.
 
     Shared by :func:`send_cue` and the control verbs so there is exactly one
     place that knows the wire format, the timeouts, and what "nothing is
-    listening" looks like.
+    listening" looks like.  Either transport: :func:`_connect` reads which one
+    off the path.
     """
-    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    s.settimeout(float(timeout))
     try:
+        s, token = _connect(path, timeout)
+    except (FileNotFoundError, ConnectionRefusedError):
+        raise RealtimeError(absent_msg) from None
+    except OSError as e:
+        raise RealtimeError(f"cannot reach {path}: {e}") from None
+    try:
+        if token is not None:
+            req = {**req, "auth": token}
         try:
-            s.connect(path)
-        except (FileNotFoundError, ConnectionRefusedError):
-            raise RealtimeError(absent_msg) from None
-        except OSError as e:
-            raise RealtimeError(f"cannot reach {path}: {e}") from None
-        s.sendall((json.dumps(req, sort_keys=True) + "\n").encode("utf-8"))
-        try:
+            s.sendall((json.dumps(req, sort_keys=True) + "\n").encode("utf-8"))
             return _read_json_line(s)
         except (OSError, ValueError, json.JSONDecodeError) as e:
             raise RealtimeError(
@@ -3102,7 +3367,7 @@ def send_cue(text: str, *, at: str = "next-phrase", ttl_bars: int = 16,
     Raises :class:`RealtimeError` with a message a player can act on when
     nothing is listening — the common case, which must not look like a crash.
     """
-    path = _check_socket_path(socket_path or default_socket_path())
+    path = _client_path(socket_path or default_socket_path())
     req = {"text": str(text), "at": str(at), "ttl_bars": int(ttl_bars)}
     if source is not None:
         req["source"] = str(source)
@@ -3123,7 +3388,7 @@ def send_stop(*, socket_path: str, timeout: float = 2.0) -> dict:
     The session finishes the bar it is playing, flushes the tail and writes
     its records — the Ctrl-C path, reached from another terminal.
     """
-    path = _check_socket_path(socket_path)
+    path = _client_path(socket_path)
     resp = _socket_request(
         path, {"op": "stop"}, timeout=timeout,
         absent_msg=f"nothing is listening at {path}")
@@ -3134,7 +3399,7 @@ def send_stop(*, socket_path: str, timeout: float = 2.0) -> dict:
 
 def send_status(*, socket_path: str, timeout: float = 1.0) -> dict:
     """Read-only liveness probe: proves a registry entry is really plume."""
-    path = _check_socket_path(socket_path)
+    path = _client_path(socket_path)
     resp = _socket_request(
         path, {"op": "status"}, timeout=timeout,
         absent_msg=f"nothing is listening at {path}")
@@ -3160,6 +3425,47 @@ SESSION_DIR_ENV = "PLUME_SESSION_DIR"
 #: Signals, in escalation order, once the socket has not worked.
 _STOP_SIGNALS = ("SIGINT", "SIGTERM")
 
+#: The same ladder on Windows, where it is shorter for a reason.  There
+#: ``os.kill`` with anything but a console event is ``TerminateProcess``: no
+#: handler runs, no tail plays, no records are written.  So the only graceful
+#: signal is ``CTRL_BREAK_EVENT`` (which plume's sessions catch as SIGBREAK and
+#: end on like Ctrl-C), and termination waits for ``--force``, like SIGKILL.
+_STOP_SIGNALS_WINDOWS = ("CTRL_BREAK_EVENT",)
+
+#: Signals that ask for plume's own graceful ending, as opposed to ending it.
+_GRACEFUL_SIGNALS = ("SIGINT", "CTRL_BREAK_EVENT")
+
+#: Console event numbers, for a ladder exercised on a platform that lacks them.
+_WINDOWS_EVENTS = {"CTRL_C_EVENT": 0, "CTRL_BREAK_EVENT": 1}
+
+
+def _on_windows() -> bool:
+    from . import oscompat  # noqa: PLC0415
+
+    return oscompat.IS_WINDOWS
+
+
+def _stop_ladder() -> tuple[tuple[str, ...], str, int | None]:
+    """(graceful-then-fallback signal names, the forced rung's name, its number)."""
+    import signal as _signal  # noqa: PLC0415
+
+    if _on_windows():
+        return _STOP_SIGNALS_WINDOWS, "TerminateProcess", int(_signal.SIGTERM)
+    kill = getattr(_signal, "SIGKILL", None)
+    return _STOP_SIGNALS, "SIGKILL", None if kill is None else int(kill)
+
+
+def _signal_number(name: str) -> int | None:
+    import signal as _signal  # noqa: PLC0415
+
+    if name == "TerminateProcess":
+        # What os.kill does on Windows with anything but a console event.
+        return int(_signal.SIGTERM)
+    sig = getattr(_signal, name, None)
+    if sig is None and _on_windows():
+        sig = _WINDOWS_EVENTS.get(name)
+    return None if sig is None else int(sig)
+
 
 def session_dir() -> Path:
     """Directory holding one ``<pid>.json`` per live session."""
@@ -3183,16 +3489,17 @@ def control_socket_path(pid: int | None = None) -> str:
 
 
 def _pid_alive(pid: int) -> bool:
-    """True when a process with this pid exists and we may signal it."""
+    """True when a process with this pid exists.
+
+    Never ``os.kill(pid, 0)`` directly: on Windows that is a Ctrl-C to the
+    session it was meant to look at.  See :func:`plume.oscompat.pid_alive`.
+    """
+    from .oscompat import pid_alive  # noqa: PLC0415
+
     try:
-        os.kill(int(pid), 0)
-    except ProcessLookupError:
+        return pid_alive(int(pid))
+    except (ValueError, TypeError, OverflowError):
         return False
-    except PermissionError:      # exists, owned by someone else
-        return True
-    except (OSError, ValueError, TypeError):
-        return False
-    return True
 
 
 @dataclasses.dataclass(frozen=True)
@@ -3310,11 +3617,11 @@ def register_session(*, kind: str, style: str = "", role: str = "",
     try:
         d = session_dir()
         d.mkdir(mode=0o700, parents=True, exist_ok=True)
-        os.chmod(d, 0o700)
+        oscompat.chmod_private(d, 0o700)
         tmp = d / f"{rec.pid}.json.tmp"
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+        fd = oscompat.open_private(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as f:
-            os.fchmod(f.fileno(), 0o600)
+            oscompat.fchmod_private(f.fileno(), 0o600)
             json.dump(rec.to_dict(), f, sort_keys=True)
         os.replace(tmp, rec.path)      # atomic: a lister never sees a half file
     except OSError:
@@ -3349,7 +3656,7 @@ def list_sessions(*, prune: bool = True) -> list[LiveSession]:
         rec = None
         try:
             # O_NONBLOCK: a FIFO here must not hang whoever is asking what is playing.
-            fd = os.open(f, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            fd = oscompat.open_private(f, oscompat.read_flags())
             with os.fdopen(fd, "r", encoding="utf-8") as fh:
                 if stat.S_ISREG(os.fstat(fh.fileno()).st_mode):
                     rec = LiveSession.from_dict(json.load(fh))
@@ -3499,7 +3806,7 @@ def stop_session(rec: LiveSession, *, timeout: float = DEFAULT_STOP_TIMEOUT,
                            f"did not answer — end it from another terminal, or "
                            f"with Ctrl-C")}
 
-    import signal as _signal  # noqa: PLC0415 — POSIX-only, imported on use
+    ladder, kill_name, kill_sig = _stop_ladder()
 
     # SIGINT shares the graceful budget with the socket rung rather than
     # getting some fraction of it.  It IS the graceful path — the session
@@ -3516,9 +3823,13 @@ def stop_session(rec: LiveSession, *, timeout: float = DEFAULT_STOP_TIMEOUT,
     if not finishing:
         deadline = time.monotonic() + grace
     waited = timeout if finishing else grace
-    for name in _STOP_SIGNALS:
-        sig = getattr(_signal, name, None)
-        if sig is None:                       # pragma: no cover - non-POSIX
+    if not finishing and _on_windows():
+        # Nothing to finish and nothing to lose: on Windows the only way to silence
+        # one that did not hear Ctrl-Break is to end it, so that is the next rung.
+        ladder = (*ladder, "TerminateProcess")
+    for name in ladder:
+        sig = _signal_number(name)
+        if sig is None:                       # pragma: no cover - defensive
             continue
         try:
             os.kill(rec.pid, sig)
@@ -3530,7 +3841,7 @@ def stop_session(rec: LiveSession, *, timeout: float = DEFAULT_STOP_TIMEOUT,
             tried.append(f"{name}-failed: {e}")
             continue
         tried.append(name)
-        until = (deadline if name == "SIGINT"
+        until = (deadline if name in _GRACEFUL_SIGNALS
                  else time.monotonic() + grace)
         if _wait(max(until, time.monotonic() + grace)):
             unregister_session(rec.pid)
@@ -3539,7 +3850,7 @@ def stop_session(rec: LiveSession, *, timeout: float = DEFAULT_STOP_TIMEOUT,
                     "detail": (f"sent {name} (the same graceful ending as "
                                f"Ctrl-C)" + (": it finished the bar and wrote its "
                                              "records" if rec.record_dir else "")
-                               if name == "SIGINT" else
+                               if name in _GRACEFUL_SIGNALS else
                                f"sent {name} after the graceful ending did not "
                                f"finish in {waited:g}s — "
                                + ("the tail and the records for this take are "
@@ -3547,31 +3858,31 @@ def stop_session(rec: LiveSession, *, timeout: float = DEFAULT_STOP_TIMEOUT,
                                   "this session keeps no records, so none are lost"))}
 
     if force:
-        sig = getattr(_signal, "SIGKILL", None)
+        sig = kill_sig
         if sig is not None:
             try:
                 os.kill(rec.pid, sig)
-                tried.append("SIGKILL")
+                tried.append(kill_name)
             except ProcessLookupError:
                 unregister_session(rec.pid)
                 return {**info, "stopped": True, "how": "already-gone",
                         "tried": tried, "forced": True,
                         "detail": "the process exited on its own"}
             except (OSError, PermissionError) as e:
-                tried.append(f"SIGKILL-failed: {e}")
+                tried.append(f"{kill_name}-failed: {e}")
             else:
                 if _wait(time.monotonic() + grace):
                     unregister_session(rec.pid)
-                    return {**info, "stopped": True, "how": "signal:SIGKILL",
+                    return {**info, "stopped": True, "how": f"signal:{kill_name}",
                             "tried": tried, "forced": True,
-                            "detail": ((f"forced with SIGKILL after the graceful "
+                            "detail": ((f"forced with {kill_name} after the graceful "
                                         f"ending did not finish. Since v1.3 the "
                                         f"take is written as it happens, so the "
                                         f"recording holds everything up to the "
                                         f"last flush — but the tail did not play "
                                         f"and ending.json was not written.")
                                        if rec.record_dir else
-                                       "forced with SIGKILL after the graceful "
+                                       f"forced with {kill_name} after the graceful "
                                        "ending did not finish, so the tail did "
                                        "not play. This session keeps no records, "
                                        "so none are lost.")}
@@ -3580,12 +3891,12 @@ def stop_session(rec: LiveSession, *, timeout: float = DEFAULT_STOP_TIMEOUT,
             "forced": bool(force),
             "detail": (f"pid {rec.pid} is still running after "
                        f"{', '.join(tried) or 'no attempt'} — it is wedged. "
-                       + (f"Even SIGKILL did not clear it, which means the "
+                       + (f"Even {kill_name} did not clear it, which means the "
                           f"process is stuck in the kernel (uninterruptible "
                           f"I/O); only a reboot or the device coming back will "
                           f"free it." if force else
                           f"'plume stop --pid {rec.pid} --force' escalates to "
-                          f"SIGKILL."
+                          f"{kill_name}."
                           + (" Since v1.3 the take is streamed to disk as "
                              "it happens, so forcing costs the tail, not the "
                              "recording." if rec.record_dir else "")))}
@@ -3653,7 +3964,11 @@ class GracefulSignals:
 
     #: Handled here.  SIGHUP is deliberately left alone — its default already
     #: ends a session when the terminal closes, which is the safe direction.
-    SIGNALS = ("SIGINT", "SIGTERM")
+    #: SIGBREAK is Windows only: Ctrl-Break, and what ``plume stop`` and the gui
+    #: send there instead of SIGINT (see ``_STOP_SIGNALS_WINDOWS``).  Missing
+    #: names are skipped, so on POSIX this is SIGINT and SIGTERM as before.
+    SIGNALS = tuple(name for name in ("SIGINT", "SIGTERM", "SIGBREAK")
+                    if hasattr(_signal_module, name))
 
     def __init__(self, on_repeat=None):
         self.event = threading.Event()
@@ -3690,7 +4005,8 @@ class GracefulSignals:
                 except Exception:            # noqa: BLE001 - never re-raise
                     pass                     # pragma: no cover
             return
-        self.reason = (END_INTERRUPT if signum == getattr(_signal, "SIGINT", None)
+        self.reason = (END_INTERRUPT if signum in (getattr(_signal, "SIGINT", None),
+                                                   getattr(_signal, "SIGBREAK", None))
                        else END_TERMINATED)
         self.event.set()
 

@@ -4177,6 +4177,10 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
         return old.flush_tail()
     from .sim import _LeadCues  # noqa: PLC0415
     lead_cues = _LeadCues()
+    # What the tone cues ("darker", "brighter", "warmer", "dry", "wet") do to the
+    # band bus.  It used to be simlead's alone: live set the value, logged it as
+    # changed, and played on exactly as before.
+    lead_tone = _fx.BusTone(SR)
     flat = flatten_sections(sess)
 
     in_ring = RingBuffer(SR * 8)
@@ -4407,7 +4411,8 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
         # consequences; tempo and texture are the renderer's and were reported
         # as "applied" while doing nothing at all (SPEC-V2 section 3, C2).
         # Live gets the tempo half — it is the machine's own clock, which this
-        # loop already owns — and reports the rest honestly.
+        # loop already owns — the density half, and the tone half (``lead_tone``,
+        # the same bus stage simlead runs), and reports the rest honestly.
         cue_notes = lead_cues.apply(getattr(form, "applied_cue", None))
         if held_bpm is not None and any("(tempo:" in n for n in cue_notes):
             cue_notes.append(f"tempo cue NOT applied yet: a loop is holding "
@@ -4528,7 +4533,8 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
                          + (PLAIN_INTRO_GAIN_DB if plain_intro[0] else 0.0)),
                 reason=f"{entered.reason}; {plan.reason}"
                        + (f"; {followed.reason}" if followed is not None else ""))
-        audio = duet.render_bar(plan, mbeat, mh)
+        audio = lead_tone.process(duet.render_bar(plan, mbeat, mh),
+                                  tilt=lead_cues.tilt, wet=lead_cues.wet)
         if entry is not None:
             audio = _fx.limiter(audio, TAP_START_CEILING_DB)
         timeline.write_at(int(round(t_bar * SR)) - comp_samples[0], audio)
@@ -4697,6 +4703,14 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
             if state["ended"]:
                 ending.set()
         tail = duet.flush_tail()
+        if tail.shape[0]:
+            tail = lead_tone.process(tail, tilt=lead_cues.tilt, wet=lead_cues.wet)
+        ring = lead_tone.flush()
+        if ring.shape[0]:
+            both = np.zeros((tail.shape[0] + ring.shape[0], 2), dtype=np.float32)
+            both[:tail.shape[0]] += tail
+            both[tail.shape[0]:] += ring
+            tail = both
         if tail.shape[0]:
             timeline.write_at(timeline.end, tail)
         if looper.active:

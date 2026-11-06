@@ -621,3 +621,65 @@ def test_a_new_section_moves_the_density_at_once():
     assert hold.value(0, "verse", 0.5) == 0.5
     assert hold.value(1, "outro", 0.3) == 0.3, "an ending can begin on any bar"
     assert hold.value(2, "outro", 0.4) == 0.3
+
+
+# ------------------------------------------- audit, 2026-11-06
+
+@pytest.mark.parametrize("pattern", [(1, 1), (1, 2), (2, 1), (1, 1, 1, 0)])
+def test_a_player_who_rests_every_other_bar_still_gets_the_band(pattern):
+    """One bar on, one off (or a room mic missing every other bar) used to restart
+    her phrase count every two bars, so the band never came in."""
+    cycle = []
+    for i, n in enumerate(pattern):
+        cycle += [i % 2 == 0] * n
+    played = {b for b in range(200) if cycle[b % len(cycle)]}
+    e = BandEntry("lofi", key_bars=2, after_first_heard_bars=6, phrase_bars=4)
+    assert _entry_bar(e, played, bars=200) is not None
+
+
+def test_once_ready_the_band_waits_at_most_one_phrase():
+    """However her phrase count moves, a ready band is in within phrase_bars bars."""
+    e = BandEntry("lofi", key_bars=2, min_drum_bars=4, after_first_heard_bars=4,
+                  phrase_bars=4)
+    entered = None
+    for bar in range(40):
+        if e.phrase_start is not None:
+            e.phrase_start = bar - 1          # never on the top of her phrase
+        if e.update(bar, h("D minor"), True).stage != DRUMS:
+            entered = bar
+            break
+    assert entered is not None and entered <= 4 + 4
+
+
+def test_a_one_bar_flash_does_not_set_her_phrase():
+    """The 18:37 take: one bar heard, a one-bar rest, then she began properly."""
+    e = BandEntry("lofi", key_bars=4, after_first_heard_bars=6, phrase_bars=4)
+    assert _entry_bar(e, {0} | set(range(2, 30))) == 10
+    assert e.phrase_start == 2
+
+
+def test_the_entry_key_needs_two_bars_of_the_tracker():
+    e = BandEntry("midwest", after_first_heard_bars=6)
+    keys = ["G# minor"] * 7 + ["F# major"]
+    states = [e.update(1 + i, h(k), True) for i, k in enumerate(keys)]
+    assert states[-1].stage == BAND and states[-1].key == "G# minor", \
+        "one bar of the tracker is not enough to move the key"
+
+
+def test_resting_on_the_entry_bar_still_takes_the_key_she_was_in():
+    e = BandEntry("midwest", after_first_heard_bars=6)
+    keys = ["G# minor"] * 5 + ["F# major"] * 2
+    for i, k in enumerate(keys):
+        e.update(1 + i, h(k), True)
+    state = e.update(8, h("F# major"), False)
+    assert state.stage == BAND and state.key == "F# major"
+
+
+def test_the_sub_808_waits_for_her_key():
+    """Over drums alone nobody knows her key, so a pitched 808 there is a guess (and a
+    room mic hears it)."""
+    e = BandEntry("midwest", min_drum_bars=4, after_first_heard_bars=4)
+    states = run(e, ["D minor"] * 6)
+    assert states[0].stage == DRUMS and "sub" in states[0].held_back
+    assert states[4].stage == BAND and "sub" not in states[4].held_back
+

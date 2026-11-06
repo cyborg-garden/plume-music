@@ -3849,6 +3849,12 @@ def transpose_key(key: str | None, semitones: int) -> str | None:
     return f"{spell(nk.tonic, nk)} {nk.mode.replace('_', ' ')}"
 
 
+def window_lag_bars(t_bar: float, w_start: float, bar_len: float) -> int:
+    """How many bars behind the planned bar the reading of her playing is.  The loop
+    plans a bar ahead and reads the last bar that has finished: two bars."""
+    return int(round((t_bar - w_start) / bar_len))
+
+
 def machine_harmony_state(t_s: float, key: str | None, chord: str | None, *,
                           transpose: int = 0):
     """The harmony the MACHINE is playing this bar (its composed key/chord,
@@ -3954,12 +3960,13 @@ def _named_key(prompt: str | None) -> str | None:
     if not prompt:
         return None
     from .compose import parse_prompt  # noqa: PLC0415
-    from .theory import parse_key  # noqa: PLC0415
+    from .theory import Key, key_name, parse_key  # noqa: PLC0415
     named = parse_prompt(prompt).key
     if not named:
         return None
     key = parse_key(str(named))
-    return f"{str(named).split()[0]} {'major' if key.mode == 'major' else 'minor'}"
+    return key_name(Key(tonic=key.tonic, mode="major" if key.mode == "major" else "minor",
+                        flats=key.flats))
 
 
 def _wants_lead(role, lead_in, session) -> bool:
@@ -4106,7 +4113,10 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
     if tap_start:
         from .bandentry import (DETECT_KEY_FALLBACK_BARS, END_AFTER_S,  # noqa: PLC0415
                                 FOLLOW, PLAIN_INTRO_GAIN_DB, BandEntry, BandFollow,
-                                GuitarEar, SilenceEnding, StylePick, outro, song_section)
+                                GuitarEar, PhraseHold, SilenceEnding, StylePick,
+                                EntryRamp, follow_band_settled, outro, song_section)
+        density_hold = PhraseHold(int(params.entry_boundary_bars))
+        entry_ramp = EntryRamp(under_db=params.enter_under_db, ramp_bars=params.ramp_bars)
         guitar_ear = GuitarEar()
         # The band follows how she plays.  FOLLOW is the only mode so far: the seam a
         # "plume leads" mode would come in by.  A room mic hears the band too, so it
@@ -4118,7 +4128,9 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
         named_key = _named_key(prompt)
         entry = BandEntry(style, known_key=named_key,
                           **({"after_first_heard_bars": 6} if is_direct else {}),
-                          **({"key_fallback_bars": DETECT_KEY_FALLBACK_BARS} if detect else {}))
+                          **({"key_fallback_bars": DETECT_KEY_FALLBACK_BARS} if detect else {}),
+                          # on her four-bar groups, not plume's own count
+                          phrase_bars=int(params.entry_boundary_bars))
         if detect:
             from .compose import parse_prompt  # noqa: PLC0415
             if not parse_prompt(prompt or "").styles:
@@ -4456,7 +4468,13 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
                 playing = human is not None and not human.silent
             else:
                 playing = bar >= first_heard_bar and guitar_ear.bar(bar_chroma)
-            entered = entry.update(bar, harm_state, playing)
+            # ``playing`` is about the bar the window read, two bars back; the ear
+            # confirms on her second tonal bar, so her playing may have begun on the first.
+            lag = window_lag_bars(t_bar, w_start, bar_len)
+            heard_bar = bar - lag
+            if playing and not is_direct and not entry.band_is_in:
+                heard_bar -= guitar_ear.began_bars_ago
+            entered = entry.update(bar, harm_state, playing, heard_bar=heard_bar)
             if style_pick is not None and not style_pick.settled:
                 if playing:
                     style_pick.heard_bar(len(onsets))
@@ -4481,6 +4499,11 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
                                    and guitar_ear.last_bar_tonal), bar_len)
             if entered.key is not None:
                 mh = machine_harmony_state(t_bar, entered.key, entered.chord)
+            elif entered.stage == "drums":
+                # Over the drums alone the band knows only a key she named.  The
+                # composed one is a placeholder nobody has heard, and an 808 kick
+                # would be pitched to it.
+                mh = machine_harmony_state(t_bar, named_key, None)
             # A busier or sparser cue is her own word, and beats following.
             for text in str(getattr(form, "applied_cue", None) or "").split("; "):
                 said = parse_cue(text) if text else {}
@@ -4504,7 +4527,11 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
                 followed = follow.bar(None if human is None else human.rms_db,
                                       None if human is None else human.onset_density,
                                       playing=playing and human is not None,
-                                      band_in=entry.band_is_in, parts=parts,
+                                      band_in=entry.band_is_in,
+                                      settled=follow_band_settled(
+                                          entry.bars_in - lag, trusted=follow.trusted,
+                                          ramp_bars=params.ramp_bars),
+                                      parts=parts,
                                       bar_s=bar_len)
             if entered.stage == "drums":
                 section, density, resting = "intro", TAP_START_MIN_DENSITY, ()
@@ -4520,13 +4547,24 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
                 if out_done:
                     state["ended"] = True
                     shared["end_reason"] = END_SONG
+            if entered.stage != "drums":
+                density = density_hold.value(entry.bars_in, section, density)
             if not crash:
                 resting = (*resting, "crash")
             loop_db = fade_db
+            roles = [r for r in duet.roles
+                     if r not in entered.held_back and r not in resting]
+            if entered.stage == "drums":
+                state["intro_roles"] = set(roles)
+            # The session's own entry ramp: each part that was not playing over the
+            # intro swells in from its own first bar, under what was.  A detected
+            # take's click gives way to a whole new kit, so all of it does.
+            levels = ({r: 1.0 for r in roles} if entered.stage == "drums"
+                      else entry_ramp.levels(entry.bars_in, roles,
+                                             intro=state.get("intro_roles", ())))
             plan = dataclasses.replace(
                 plan,
-                roles={r: 1.0 for r in duet.roles
-                       if r not in entered.held_back and r not in resting},
+                roles=levels,
                 # a live "busier" or "sparser" cue scales the song's own shape
                 density=float(min(1.0, max(0.05, density * lead_cues.density_scale))),
                 gain_db=(plan.gain_db + TAP_START_GAIN_DB + follow.gain_db + fade_db
@@ -4614,6 +4652,7 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
             doc["playing"] = playing
             doc["playing_trusted"] = playing_trusted
             doc["fade_db"] = round(fade_db, 2)
+            doc["entry_ramp"] = {r: round(v, 3) for r, v in levels.items() if v < 1.0}
             doc["follow"] = {"mode": follow.mode, "trusted": follow.trusted,
                              "gain_db": round(follow.gain_db, 3),
                              "density": round(follow.density, 4),

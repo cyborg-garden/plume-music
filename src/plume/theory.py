@@ -5,7 +5,7 @@ SPEC.md section 1. Pure python, no numpy needed here.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 NOTE_NAMES: list[str] = ["c", "cs", "d", "ds", "e", "f", "fs", "g", "gs", "a", "as", "b"]
 
@@ -18,9 +18,10 @@ _FLAT_PC_NAMES = ["C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab", "A", "Bb", "B
 # Per-key preferred accidental (standard practice). Sharp-side key signatures
 # spell chromatic pitch classes with sharps; flat-side keys use flats. C major
 # and A minor default to flats: their chromatic chord roots come from borrowed
-# flat degrees (bIII, bVI, bVII). Pitch class 6 is Gb/F# — we follow the SPEC
-# table: Gb major flats, F# minor sharps.
-_SHARP_MAJOR_TONICS = frozenset({2, 4, 7, 9, 11})   # D, E, G, A, B majors
+# flat degrees (bIII, bVI, bVII). Pitch class 6 is F# in both modes: a heard
+# key has only its pitch class, and guitarists call it F# major, not Gb.  A key
+# typed with a flat ("Gb major") keeps its flats (``Key.flats``).
+_SHARP_MAJOR_TONICS = frozenset({2, 4, 6, 7, 9, 11})   # D, E, F#, G, A, B majors
 _SHARP_MINOR_TONICS = frozenset({1, 4, 6, 8, 11})   # c#, e, f#, g#, b minors
 
 _NOTE_RE = re.compile(r"^([a-gA-G])([#sb]?)(-?\d+)$")
@@ -71,6 +72,10 @@ _MODE_ALIASES = {
 class Key:
     tonic: int  # pitch class 0-11
     mode: str   # "major","minor","harmonic_minor","dorian","phrygian"
+    #: How the tonic was written, when it was: True for "Gb", False for "F#", None
+    #: for a natural or a key that was only heard.  Spelling only: Gb major and F#
+    #: major are the same key, and compare equal.
+    flats: bool | None = field(default=None, compare=False)
 
     def scale(self) -> list[int]:
         """Pitch classes, ascending from tonic."""
@@ -106,17 +111,72 @@ def parse_key(s: str) -> Key:
     tonic = (_LETTER_PC[letter.lower()] + _ACC[acc]) % 12
     if mode_txt not in _MODE_ALIASES:
         raise ValueError(f"unknown mode: {mode_txt!r} in {s!r} — {_KEY_FORMAT_HINT}")
-    return Key(tonic=tonic, mode=_MODE_ALIASES[mode_txt])
+    flats = {"b": True, "#": False, "s": False}.get(acc)
+    return Key(tonic=tonic, mode=_MODE_ALIASES[mode_txt], flats=flats)
+
+
+_LETTERS = "CDEFGAB"
+_ACC_NAME = {0: "", 1: "#", 11: "b"}
+
+
+def _letter_name(letter: str, pc: int) -> str | None:
+    """``pc`` written on ``letter`` with one accidental at most, or None."""
+    acc = _ACC_NAME.get((pc - _LETTER_PC[letter.lower()]) % 12)
+    return None if acc is None else letter + acc
+
+
+def _default_tonic(key: Key) -> str:
+    """How a key known only by its pitch class is written."""
+    if key.mode == "major":
+        sharp = key.tonic in _SHARP_MAJOR_TONICS
+    else:
+        sharp = key.tonic in _SHARP_MINOR_TONICS
+    return (_PC_NAMES if sharp else _FLAT_PC_NAMES)[key.tonic]
+
+
+def _spells_cleanly(tonic: str, key: Key) -> bool:
+    """Does the scale on ``tonic`` take each letter once with one accidental at most?
+    Harmonic minor is judged by its natural minor: its raised seventh is an
+    accidental in any key."""
+    mode = "minor" if key.mode == "harmonic_minor" else key.mode
+    scale = Key(tonic=key.tonic, mode=mode).scale()
+    start = _LETTERS.index(tonic[0])
+    return all(_letter_name(_LETTERS[(start + i) % 7], pc) is not None
+               for i, pc in enumerate(scale))
+
+
+def tonic_name(key: Key) -> str:
+    """The key's tonic as written: as typed when that is a key people write (Gb, F#,
+    Cb, D# minor), else the usual name of its pitch class.  A# major would need F##
+    and G##, so it is written Bb major."""
+    if key.flats is not None:
+        letter = _LETTERS[[_LETTER_PC[c.lower()] for c in _LETTERS].index(
+            (key.tonic + (1 if key.flats else -1)) % 12)]
+        typed = letter + ("b" if key.flats else "#")
+        if _spells_cleanly(typed, key):
+            return typed
+    return _default_tonic(key)
+
+
+def key_name(key: Key) -> str:
+    """'Gb major', 'F# minor': the one name a key goes by on the page and in the logs."""
+    return f"{tonic_name(key)} {key.mode.replace('_', ' ')}"
 
 
 def key_prefers_flats(key: Key) -> bool:
     """True when chord/note spelling in this key should use flats.
 
     Major keys: F, Bb, Eb, Ab, Db, Gb (and C, whose chromatic chord roots are
-    borrowed flat degrees) prefer flats; G, D, A, E, B prefer sharps.
+    borrowed flat degrees) prefer flats; G, D, A, E, B, F# prefer sharps.
     Minor-family modes (minor, harmonic_minor, dorian, phrygian): d, g, c, f,
-    bb, eb (and a) prefer flats; e, b, f#, c#, g# prefer sharps.
+    bb, eb (and a) prefer flats; e, b, f#, c#, g# prefer sharps.  A key whose
+    tonic is written with an accidental (see :func:`tonic_name`) follows it.
     """
+    tonic = tonic_name(key)
+    if tonic.endswith("b"):
+        return True
+    if tonic.endswith("#"):
+        return False
     if key.mode == "major":
         return key.tonic not in _SHARP_MAJOR_TONICS
     return key.tonic not in _SHARP_MINOR_TONICS
@@ -124,11 +184,25 @@ def key_prefers_flats(key: Key) -> bool:
 
 def spell(pc: int, key: Key | None = None) -> str:
     """Spell pitch class ``pc`` (0-11) for the given key: 'Bb' in F minor,
-    'A#' in B major. Without a key, sharps (the historical default)."""
+    'A#' in B major. Without a key, sharps (the historical default).
+
+    A note of the key's own scale takes its scale degree's letter, so each
+    letter appears once: E# (not F) in F# major, Cb (not B) in Gb major.
+    Notes outside the scale, and a degree that would need a double accidental,
+    use the key's preferred accidental.
+    """
     pc %= 12
-    if key is not None and key_prefers_flats(key):
-        return _FLAT_PC_NAMES[pc]
-    return _PC_NAMES[pc]
+    names = (_FLAT_PC_NAMES if key is not None and key_prefers_flats(key)
+             else _PC_NAMES)
+    if key is not None:
+        scale = key.scale()
+        if pc in scale:
+            letter = _LETTERS[(_LETTERS.index(tonic_name(key)[0])
+                               + scale.index(pc)) % 7]
+            name = _letter_name(letter, pc)
+            if name is not None:
+                return name
+    return names[pc]
 
 
 # quality suffix -> (canonical name, intervals)

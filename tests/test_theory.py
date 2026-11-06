@@ -271,6 +271,7 @@ def test_chord_dataclass_frozen():
     ("Ab major", True), ("Db major", True), ("Gb major", True),
     # sharp majors
     ("G", False), ("D", False), ("A", False), ("E", False), ("B", False),
+    ("F# major", False),
     # flat minors + a
     ("a minor", True), ("d minor", True), ("g minor", True), ("c minor", True),
     ("Fm", True), ("Bbm", True), ("Ebmin", True),
@@ -303,8 +304,79 @@ def test_roman_to_chord_spells_flats_in_flat_keys():
     assert roman_to_chord("ii7", parse_key("E major")).sym == "F#m7"
 
 
+def test_pitch_class_six_major_is_f_sharp_major_unless_typed_as_gb():
+    """Guitarists call it F# major; a heard key has only its pitch class."""
+    from plume.listen.harmony import _key_name
+    from plume.roles import _key_name as roles_key_name
+    assert _key_name(6) == "F# major"
+    assert roles_key_name(6, "major") == "F# major"
+    assert spell(6, Key(tonic=6, mode="major")) == "F#"
+    assert spell(6, parse_key("Gb major")) == "Gb"   # typed flats are kept
+    assert parse_key("Gb major") == parse_key("F# major")
+
+
+@pytest.mark.parametrize("key_str,numerals,want", [
+    ("F# major", "I ii iii IV V vi viidim bVII", "F# G#m A#m B C# D#m E#dim E"),
+    ("Gb major", "I ii IV V", "Gb Abm Cb Db"),
+    ("Eb minor", "i iv v VI VII", "Ebm Abm Bbm Cb Db"),
+    ("G# minor", "i ii7b5 III iv v V VI", "G#m A#m7b5 B C#m D#m D# E"),
+    ("C# minor", "i III VI VII", "C#m E A B"),
+    ("Bb major", "I IV V vi bVII", "Bb Eb F Gm Ab"),
+    ("A harmonic minor", "i iv V viidim", "Am Dm E G#dim"),
+])
+def test_chords_are_spelled_from_the_keys_own_letters(key_str, numerals, want):
+    key = parse_key(key_str)
+    got = " ".join(roman_to_chord(n, key).sym for n in numerals.split())
+    assert got == want
+    for sym in got.split():                 # every spelling still parses
+        assert parse_chord(sym).root == roman_to_chord(
+            numerals.split()[got.split().index(sym)], key).root
+
+
 def test_chord_parsing_accepts_both_spellings():
     # internal token parsing stays spelling-agnostic
     assert parse_chord("Bbm7").root == parse_chord("A#m7").root == 10
     assert parse_chord("Eb7").root == parse_chord("D#7").root == 3
     assert note_to_midi("ab2") == note_to_midi("g#2")
+
+
+# Keys typed with sharps (audit, 2026-11-06): "A# major" spelled A# B# D D# E# G A,
+# two D's and two G's.  A conventional key uses each letter once; a theoretical one
+# (it would need double sharps or flats) is spelled as the key everyone writes.
+
+def _scale(key_str):
+    key = parse_key(key_str)
+    return " ".join(spell(p, key) for p in key.scale())
+
+
+@pytest.mark.parametrize("key_str,want", [
+    ("Cb major", "Cb Db Eb Fb Gb Ab Bb"),
+    ("C# major", "C# D# E# F# G# A# B#"),
+    ("Gb major", "Gb Ab Bb Cb Db Eb F"),
+    ("F# major", "F# G# A# B C# D# E#"),
+    ("D# minor", "D# E# F# G# A# B C#"),
+    ("A# minor", "A# B# C# D# E# F# G#"),
+    ("Ab minor", "Ab Bb Cb Db Eb Fb Gb"),
+    ("A# major", "Bb C D Eb F G A"),
+    ("G# major", "Ab Bb C Db Eb F G"),
+    ("D# major", "Eb F G Ab Bb C D"),
+    ("Fb major", "E F# G# A B C# D#"),
+    ("Gb minor", "F# G# A B C# D E"),
+])
+def test_each_letter_once_where_the_key_is_conventional(key_str, want):
+    got = _scale(key_str)
+    assert got == want
+    assert len({n[0] for n in got.split()}) == 7
+
+
+@pytest.mark.parametrize("typed,shown", [
+    ("Gb major", "Gb major"), ("F# major", "F# major"), ("Cb major", "Cb major"),
+    ("A# major", "Bb major"), ("Gb minor", "F# minor"), ("A# minor", "A# minor"),
+])
+def test_a_typed_key_has_one_name_everywhere(typed, shown):
+    from plume.guitake import canonical_key
+    from plume.realtime import _named_key
+    from plume.theory import key_name
+    assert key_name(parse_key(typed)) == shown
+    assert canonical_key(typed) == shown, "the page"
+    assert _named_key(f"midwest in {typed}") == shown, "the logs"

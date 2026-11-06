@@ -5,6 +5,7 @@ import pytest
 from plume.bandentry import (BAND, DRUMS, FULL, SONG_ARC, BandEntry, SilenceEnding,
                              count_start, first_bar_time, song_section, tap_tempo)
 from plume.listen.harmony import HarmonyState
+from plume.theory import parse_key
 
 
 def h(key):
@@ -120,11 +121,14 @@ def test_the_ear_tells_a_guitar_from_drums_alone():
     assert ear.bar([played] * 40) is False, "one bar could be a ringing drum"
     assert ear.bar([flat] * 40) is False
     assert ear.bar([played] * 40) is True, "two within three bars is someone playing"
+    assert ear.began_bars_ago == 0, "across a gap she starts on the confirming bar"
     assert ear.notes(3) == (f, c, g)
     assert ear.bar([]) is False and ear.last_bar_tonal is False
     for _ in range(4):
         ear.bar([flat] * 40)
     assert ear.bar([played] * 40) is False, "the confirmation expires"
+    assert ear.bar([played] * 40) is True and ear.began_bars_ago == 1, \
+        "two in a row: she began on the first"
     assert ear.last_bar_tonal is True, "but a fade can still hear this one bar"
 
 
@@ -182,6 +186,77 @@ def test_a_bar_the_tracker_cannot_name_does_not_reset_a_key_change():
         last = e.update(bar, h("G major"), True)
         bar += 1
     assert last.key == "G major"
+
+
+# A real take (2026-11-06): she opened on the ii chord, so the tracker's first four
+# bars said G# minor and the governor committed to it while the drums were still
+# alone.  By the time the band came in the tracker had moved to her real key, F#
+# major, but the commitment nobody had heard yet held for eight more bars.
+def test_the_band_enters_in_the_key_heard_when_it_enters():
+    e = BandEntry("midwest", after_first_heard_bars=6)
+    keys = ["G# minor"] * 5 + ["F# major"] * 5
+    states = [e.update(1 + i, h(k), True) for i, k in enumerate(keys)]
+    entered = next(s for s in states if s.stage != DRUMS)
+    assert entered.key == "F# major"
+    assert {s.key for s in states if s.stage != DRUMS} == {"F# major"}
+
+
+def test_a_take_that_opens_on_the_ii_gets_the_band_in_its_home_key():
+    """The same take end to end, on synthetic chroma: two bars of the ii chord
+    (G# minor), then a I-IV-V-I loop in F# major, through the real tracker."""
+    from types import SimpleNamespace
+
+    from plume.listen.harmony import HarmonyTracker
+
+    hop, bar_s = 512 / 48000, 2.5
+    per_bar = int(round(bar_s / hop))
+
+    def chroma(pcs):
+        c = np.zeros(12)
+        c[list(pcs)] = 1.0
+        return c / c.sum()
+
+    ii = [(8, 11, 3)]
+    home = [(6, 10, 1), (11, 3, 6), (1, 5, 8), (6, 10, 1)]
+    frames = []
+    for b in range(10):
+        loop = ii if b < 2 else home
+        for k in range(per_bar):
+            frames.append(SimpleNamespace(
+                t_s=(len(frames) + 1) * hop, rms_db=-20.0, centroid_hz=880.0,
+                chroma=chroma(loop[k * len(loop) // per_bar])))
+    tracker, e = HarmonyTracker(), BandEntry("midwest", after_first_heard_bars=6)
+    states, i = [], 0
+    for bar in range(10):
+        batch = []
+        while i < len(frames) and frames[i].t_s < bar * bar_s:
+            batch.append(frames[i])
+            i += 1
+        states.append(e.update(bar, tracker.process(batch), bar >= 1))
+    entered = next(s for s in states if s.stage != DRUMS)
+    assert entered.key is not None and parse_key(entered.key) == parse_key("F# major")
+
+
+def test_hearing_the_key_late_does_not_delay_the_band():
+    e = BandEntry("midwest", after_first_heard_bars=6)
+    keys = ["G# minor"] * 6 + ["F# major"] * 2
+    states = [e.update(1 + i, h(k), True) for i, k in enumerate(keys)]
+    assert [s.stage for s in states] == [DRUMS] * 7 + [BAND]
+    assert states[-1].key == "F# major"
+
+
+def test_a_bar_the_tracker_cannot_name_at_entry_keeps_the_settled_key():
+    e = BandEntry("midwest", after_first_heard_bars=6)
+    keys = ["G# minor"] * 6 + [None, None]
+    states = [e.update(1 + i, h(k), True) for i, k in enumerate(keys)]
+    assert states[-1].stage == BAND and states[-1].key == "G# minor"
+
+
+def test_once_the_band_is_in_its_key_still_needs_the_release_bars():
+    e = BandEntry("midwest", after_first_heard_bars=6, release_bars=8)
+    run(e, ["F# major"] * 8, start=1)
+    later = run(e, ["G# minor"] * 7, start=9)
+    assert {s.key for s in later} == {"F# major"}
 
 
 def test_one_bar_back_home_still_holds_the_key():
@@ -266,9 +341,10 @@ def test_waiting_for_knocks_needs_no_quiet_start_and_forgives_a_stray_hit():
 
 # ------------------------------------------------- the real transport, no device
 
-def _take(sr=48000, bpm=75.0, seconds=45.0, room_s=0.0):
+def _take(sr=48000, bpm=75.0, seconds=45.0, room_s=0.0, strum_beats=12, rest=()):
     """Quiet, four knocks, a beat of nothing, a steady C major strum, then
-    ``room_s`` of an empty room (the fake device loops whatever it is given)."""
+    ``room_s`` of an empty room (the fake device loops whatever it is given).
+    ``rest``: beats (from the first knock) between which she stops strumming."""
     import numpy as np
     rng = np.random.default_rng(1)
     x = np.zeros(int((seconds + room_s) * sr), dtype=np.float32)
@@ -284,10 +360,11 @@ def _take(sr=48000, bpm=75.0, seconds=45.0, room_s=0.0):
                 for j, f in enumerate((130.81, 164.81, 196.0, 261.63, 329.63,
                                        392.0, 523.25)))
     chord = (chord * env * 0.08).astype(np.float32)
-    at = 2.0 + 4 * period + 8 * period   # drums alone for two bars first
+    at = 2.0 + strum_beats * period   # by default drums alone for two bars first
     while at + 2 < seconds:
         i = int(at * sr)
-        x[i:i + chord.shape[0]] += chord
+        if not (rest and 2.0 + rest[0] * period <= at < 2.0 + rest[1] * period):
+            x[i:i + chord.shape[0]] += chord
         at += 2 * period
     return x
 
@@ -321,6 +398,23 @@ def test_tap_start_end_to_end_over_the_fake_device(tmp_path, monkeypatch,
     entered = [r for r in rows if r["entry"] != DRUMS]
     assert entered, f"the band never came in: {[r['entry_reason'] for r in rows][-3:]}"
     assert entered[0]["bar"] >= 8 and "bass" in entered[0]["roles"]
+    # drums and bass first, swelling in under the drums she was already hearing
+    first = entered[0]["roles"]
+    assert first["kick"] == 1.0 and first["bass"] < 0.5
+    assert "pad" not in first and "keys" not in first
+    assert entered[1]["roles"]["bass"] > first["bass"]
+    assert entered[3]["roles"]["bass"] == 1.0 and "pad" in entered[3]["roles"]
+    assert entered[2]["roles"]["pad"] < 0.5, "the chords swell in from their own first bar"
+    # a room mic: the follow listens until the last part of the entry is at full, in
+    # bars it HEARD, two behind the bars planned
+    from plume.bandentry import MELODY_DELAY_BARS
+    from plume.mind import MindParams
+    gated = [i for i, r in enumerate(entered) if "while the band comes in" in r["reason"]]
+    assert gated == list(range(MELODY_DELAY_BARS + MindParams().ramp_bars + 2))
+    # on the top of one of her four-bar groups, counted from her first strum
+    bar_s = rows[1]["t_s"] - rows[0]["t_s"]
+    her_first = round((2.0 + 12 * 0.8 - rows[0]["t_s"]) / bar_s)
+    assert (entered[0]["bar"] - her_first) % 4 == 0, (her_first, entered[0]["bar"])
     # the same notes can honestly read as their relative minor
     assert entered[0]["key"] in ("C major", "A minor")
     # no harmony claimed before she has played
@@ -330,6 +424,44 @@ def test_tap_start_end_to_end_over_the_fake_device(tmp_path, monkeypatch,
     assert ending["reason"] == realtime.END_SILENCE
     assert rows[-1]["fade_db"] < 0.0
     assert 110.0 < rows[-1]["t_s"] < 150.0
+
+
+def test_after_a_restart_the_band_enters_on_her_group_end_to_end(tmp_path, monkeypatch,
+                                                                plume_registry):
+    """A take where she rested: she strums in early, stops for two bars, starts again on
+    plume's bar 3.  The band used to come in on bar 8, the middle of her group."""
+    import json
+    from conftest import fake_audio, patched_module, short_socket_path
+    from plume import realtime
+    from plume import roles as roles_mod
+
+    from plume.duet import DuetEngine
+
+    monkeypatch.setenv("PLUME_CALIBRATION_FILE", str(tmp_path / "none.json"))
+    monkeypatch.setenv(realtime.AUDIO_CONSENT_ENV, "1")
+    heard_keys = []
+    render = DuetEngine.render_bar
+
+    def spy(self, plan, beat, harmony, **kw):
+        heard_keys.append(("bass" in plan.roles, harmony.key))
+        return render(self, plan, beat, harmony, **kw)
+    monkeypatch.setattr(DuetEngine, "render_bar", spy)
+    human = _take(seconds=90.0, room_s=120.0, strum_beats=4, rest=(12, 20))
+    with patched_module("sounddevice", fake_audio(human, rate_x=12.0)):
+        realtime.lead(prompt="lofi", seed=0, tap_start=True,
+                      role=roles_mod.RoleParams(role="lead"),
+                      record_dir=str(tmp_path / "rec"), socket_path=short_socket_path("rs"),
+                      status=False, max_minutes=0.5)
+    rows = [json.loads(line) for line in
+            (tmp_path / "rec" / "decisions.ndjson").read_text().splitlines()]
+    rows = [r for r in rows if isinstance(r.get("bar"), int)]
+    bar_s = rows[1]["t_s"] - rows[0]["t_s"]
+    restart = round((2.0 + 20 * 0.8 - rows[0]["t_s"]) / bar_s)
+    entered = next(r["bar"] for r in rows if r["entry"] != DRUMS)
+    assert restart == 3 and entered == restart + 8
+    # over the drums alone the engine is told no key, so nothing pitched guesses one
+    before = heard_keys[:[b for b, _ in heard_keys].index(True)]
+    assert before and {k for _, k in before} == {None}
 
 
 def test_at_real_speed_it_can_tell_she_is_playing(tmp_path, monkeypatch,
@@ -413,3 +545,232 @@ def test_named_key_is_read_from_the_prompt():
     assert _named_key("midwest emo in A minor") == "A minor"
     assert _named_key("lofi midwest emo") is None
     assert _named_key(None) is None
+
+
+# ------------------------------------------- entering on her phrase, not plume's count
+#
+# Juniper, 2026-11-06: "the chords came in not at what felt like the end of a group of
+# measures".  The band entered whenever the key settled, which was bar 8 of plume's
+# count and bar 6 of hers.  Her readings arrive two bars late in the live loop, so each
+# one says which bar it heard.
+
+def _entry_bar(entry, readings, *, lag=2, key="D minor", bars=24):
+    """The bar the band comes in, given which plume bars she played in."""
+    for bar in range(bars):
+        heard = bar - lag
+        state = entry.update(bar, h(key), heard in readings, heard_bar=heard)
+        if state.stage != DRUMS:
+            return bar
+    return None
+
+
+def test_the_band_enters_on_her_four_bar_group_after_a_restart():
+    """A take where she rested a bar: played into bar 0, silent in bar 1, restarted on 2."""
+    e = BandEntry("lofi", key_bars=4, after_first_heard_bars=6, phrase_bars=4)
+    played = {0} | set(range(2, 30))
+    assert _entry_bar(e, played) == 10, "her bar 9, the top of her third group"
+
+
+def test_a_late_first_note_sets_the_grid():
+    """First heard in plume bar 2 after two quiet bars: ready on 9, her group turns on 10."""
+    e = BandEntry("lofi", key_bars=4, after_first_heard_bars=5, phrase_bars=4)
+    assert _entry_bar(e, set(range(2, 30))) == 10
+
+
+def test_a_named_key_enters_on_her_phrase_too():
+    e = BandEntry("lofi", known_key="F major", after_first_heard_bars=5, phrase_bars=4)
+    assert _entry_bar(e, set(range(1, 30)), key=None) == 9
+
+
+def test_once_in_the_band_ignores_later_restarts():
+    e = BandEntry("lofi", key_bars=4, after_first_heard_bars=4, phrase_bars=4)
+    played = set(range(0, 30)) - {10}
+    assert _entry_bar(e, played) == 8
+    assert e.update(13, h("D minor"), True, heard_bar=11).stage != DRUMS
+
+
+def test_without_a_phrase_length_it_enters_when_ready():
+    e = BandEntry("lofi", key_bars=4, after_first_heard_bars=6)
+    assert _entry_bar(e, {0} | set(range(2, 30))) == 8
+
+
+# ------------------------------------------- the band comes in over a few bars
+#
+# Juniper, 2026-11-06: it "didnt come in smooth".  The whole band arrived on one bar,
+# about 27 dB over the click, with the session's ramp_bars never applied.
+
+def test_drums_and_bass_first_then_the_chords_then_the_melody():
+    e = BandEntry("lofi", min_drum_bars=4, key_bars=4, melody_delay_bars=4,
+                  after_first_heard_bars=4)
+    states = run(e, ["D minor"] * 10)
+    first, second, third = states[4], states[5], states[6]
+    assert first.stage == BAND and "bass" not in first.held_back
+    assert {"pad", "keys", "lead"} <= set(first.held_back)
+    assert set(second.held_back) == set(first.held_back)
+    assert "pad" not in third.held_back and "keys" not in third.held_back
+    assert "lead" in third.held_back
+    assert states[8].stage == FULL and states[8].held_back == ()
+
+
+def test_the_entry_ramps_up_from_under_her():
+    from plume.bandentry import entry_ramp_db
+    ramp = [entry_ramp_db(b, under_db=-8.0, ramp_bars=3) for b in range(6)]
+    assert ramp[0] == -8.0 and ramp[3:] == [0.0, 0.0, 0.0]
+    assert ramp[0] < ramp[1] < ramp[2] < ramp[3]
+    assert entry_ramp_db(0, under_db=-8.0, ramp_bars=0) == 0.0
+
+
+# ------------------------------------------- the groove changes on phrases, not bars
+#
+# A take of hers on 2026-11-06: following her nudged the density over the hats' and bass's
+# thresholds for single bars, so the hats doubled to sixteenths for one bar and the
+# bass swapped figures, mid-phrase.  She heard it as the band changing tempo.
+
+def test_density_holds_through_a_phrase():
+    from plume.bandentry import PhraseHold
+    hold = PhraseHold(4)
+    got = [hold.value(b, "verse", d) for b, d in
+           enumerate([0.56, 0.62, 0.68, 0.62, 0.73, 0.56, 0.68, 0.62])]
+    assert got[:4] == [0.56] * 4 and len(set(got[4:])) == 1
+    assert got[4] == pytest.approx(0.62), "the median of the previous phrase's own bars"
+
+
+def test_a_new_section_moves_the_density_at_once():
+    from plume.bandentry import PhraseHold
+    hold = PhraseHold(4)
+    assert hold.value(0, "verse", 0.5) == 0.5
+    assert hold.value(1, "outro", 0.3) == 0.3, "an ending can begin on any bar"
+    assert hold.value(2, "outro", 0.4) == 0.3
+
+
+# ------------------------------------------- audit, 2026-11-06
+
+#: Bars on (1) and off (0), repeated.
+REST_PATTERNS = ["10", "100", "110", "1110", "1100"]
+
+
+@pytest.mark.parametrize("pattern", REST_PATTERNS)
+def test_a_player_who_rests_every_other_bar_still_gets_the_band(pattern):
+    """One bar on, one off (or a room mic missing every other bar) used to restart
+    her phrase count every two bars, so the band never came in.  Once ready it is in
+    within a phrase."""
+    played = {b for b in range(200) if pattern[b % len(pattern)] == "1"}
+    e = BandEntry("lofi", known_key="D minor", after_first_heard_bars=6, phrase_bars=4)
+    entered = _entry_bar(e, played, bars=200)
+    ready = max(8, min(played) + 2 + 6)      # first heard two bars late, then six
+    assert entered is not None and entered <= ready + 4
+
+
+@pytest.mark.parametrize("pattern", [p for p in REST_PATTERNS if "00" not in p])
+def test_rest_patterns_through_the_real_ear(pattern):
+    """The same, the way a room mic reads her: GuitarEar on chroma, and the bar its
+    reading describes moved back as the live loop moves it."""
+    from plume.bandentry import GuitarEar
+    flat = np.full(12, 1 / 12)
+    played = np.full(12, 0.02)
+    played[[2, 5, 9]] = [0.3, 0.25, 0.2]
+    ear = GuitarEar()
+    e = BandEntry("lofi", known_key="D minor", after_first_heard_bars=5, phrase_bars=4)
+    first, entered = None, None
+    for bar in range(2, 200):
+        heard = bar - 2
+        on = ear.bar([played if pattern[heard % len(pattern)] == "1" else flat] * 40)
+        if on and first is None:
+            first = bar
+        state = e.update(bar, h("D minor"), on,
+                         heard_bar=heard - (ear.began_bars_ago if on else 0))
+        if state.stage != DRUMS:
+            entered = bar
+            break
+    assert first is not None, "two tonal bars in three is a player"
+    assert entered is not None and entered <= max(8, first + 5) + 4
+
+
+def test_once_ready_the_band_waits_at_most_one_phrase():
+    """However her phrase count moves, a ready band is in within phrase_bars bars."""
+    e = BandEntry("lofi", key_bars=2, min_drum_bars=4, after_first_heard_bars=4,
+                  phrase_bars=4)
+    entered = None
+    for bar in range(40):
+        if e.phrase_start is not None:
+            e.phrase_start = bar - 1          # never on the top of her phrase
+        if e.update(bar, h("D minor"), True).stage != DRUMS:
+            entered = bar
+            break
+    assert entered is not None and entered <= 4 + 4
+
+
+def test_a_one_bar_flash_does_not_set_her_phrase():
+    """A take where she rested a bar: one bar heard, a rest, then she began properly."""
+    e = BandEntry("lofi", key_bars=4, after_first_heard_bars=6, phrase_bars=4)
+    assert _entry_bar(e, {0} | set(range(2, 30))) == 10
+    assert e.phrase_start == 2
+
+
+def test_the_entry_key_needs_two_bars_of_the_tracker():
+    e = BandEntry("midwest", after_first_heard_bars=6)
+    keys = ["G# minor"] * 7 + ["F# major"]
+    states = [e.update(1 + i, h(k), True) for i, k in enumerate(keys)]
+    assert states[-1].stage == BAND and states[-1].key == "G# minor", \
+        "one bar of the tracker is not enough to move the key"
+
+
+def test_resting_on_the_entry_bar_still_takes_the_key_she_was_in():
+    e = BandEntry("midwest", after_first_heard_bars=6)
+    keys = ["G# minor"] * 5 + ["F# major"] * 2
+    for i, k in enumerate(keys):
+        e.update(1 + i, h(k), True)
+    state = e.update(8, h("F# major"), False)
+    assert state.stage == BAND and state.key == "F# major"
+
+
+def test_the_sub_808_waits_for_her_key():
+    """Over drums alone nobody knows her key, so a pitched 808 there is a guess (and a
+    room mic hears it)."""
+    e = BandEntry("midwest", min_drum_bars=4, after_first_heard_bars=4)
+    states = run(e, ["D minor"] * 6)
+    assert states[0].stage == DRUMS and "sub" in states[0].held_back
+    assert states[4].stage == BAND and "sub" not in states[4].held_back
+
+
+def test_each_part_swells_in_from_its_own_first_bar():
+    """The ramp used to count from the band's entry, so the chords joined nearly at
+    full and the melody at full."""
+    from plume.bandentry import EntryRamp
+    ramp = EntryRamp(under_db=-8.0, ramp_bars=3)
+    drums, chords, melody = ["kick", "bass"], ["kick", "bass", "pad"], ["kick", "bass", "pad", "lead"]
+    got = [ramp.levels(b, roles, intro=("kick",)) for b, roles in
+           enumerate([drums, drums, chords, chords, melody, melody, melody, melody])]
+    assert all(g["kick"] == 1.0 for g in got), "what played over the intro stays put"
+    assert got[0]["bass"] == got[2]["pad"] == got[4]["lead"] < 0.5
+    assert got[3]["bass"] == got[5]["pad"] == got[7]["lead"] == 1.0
+    assert got[2]["pad"] < got[3]["pad"] < got[4]["pad"] < got[5]["pad"]
+
+
+def test_a_part_first_heard_after_the_entry_comes_in_at_full():
+    """The outro's crash, or a lift's high pad: not part of the entry, so no swell."""
+    from plume.bandentry import EntryRamp
+    ramp = EntryRamp(under_db=-8.0, ramp_bars=3)
+    for b in range(40):
+        got = ramp.levels(b, ["kick", "bass"])
+    assert ramp.levels(40, ["kick", "bass", "crash"])["crash"] == 1.0
+    assert ramp.levels(41, ["kick", "bass", "shimmer"])["shimmer"] == 1.0
+    assert got["bass"] == 1.0
+
+
+def test_a_room_mic_learns_her_level_only_once_the_band_is_all_in():
+    from plume.bandentry import MELODY_DELAY_BARS, follow_band_settled
+    settle = MELODY_DELAY_BARS + 3
+    assert follow_band_settled(0, trusted=True, ramp_bars=3)
+    assert not follow_band_settled(settle - 1, trusted=False, ramp_bars=3)
+    assert follow_band_settled(settle, trusted=False, ramp_bars=3)
+
+
+def test_the_phrase_density_is_the_phrase_s_own():
+    """One odd bar at the top of a phrase must not set the whole next phrase."""
+    from plume.bandentry import PhraseHold
+    hold = PhraseHold(4)
+    readings = [0.5, 0.5, 0.5, 0.5, 0.9, 0.9, 0.9, 0.9, 0.3]
+    got = [hold.value(b, "verse", d) for b, d in enumerate(readings)]
+    assert got[4] == 0.5, "the top bar belongs to the phrase it starts"
+    assert got[8] == 0.9

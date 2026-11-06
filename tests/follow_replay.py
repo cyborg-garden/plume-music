@@ -98,7 +98,9 @@ def replay(take):
 
 
 def main(argv):
-    take = os.path.expanduser(argv[1] if len(argv) > 1 else "~/Music/Plume/2026-11-06-114908")
+    if len(argv) < 2:
+        sys.exit("usage: follow_replay.py <take dir>")
+    take = os.path.expanduser(argv[1])
     out, bar_s = replay(take)
     print(f"take {take}  bar {bar_s:.2f} s ({240.0 / bar_s:.1f} bpm)")
     print(f"{'bar':>3} {'t_s':>7} {'her dB':>7} {'logged':>7} {'replay':>7}  moved")

@@ -56,7 +56,7 @@ from .realtime import (AUDIO_CONSENT_ENV, AUDIO_CONSENT_OFF, OPEN_TOGETHER_FAILE
                        REC_DECISIONS, REC_ENDING, REC_HUMAN, REC_MACHINE, REC_MANIFEST, REC_MIDI, REC_STREAM, REC_VOICE,
                        LiveSession, RealtimeError, list_sessions, send_cue, stop_session)
 from .styles_lib import list_styles
-from .theory import parse_key
+from .theory import key_name, parse_key
 
 # The page's words.  Nothing else about a failure ever reaches it.
 DEVICE_MISSING = "Plume could not find that device. Check it is plugged in."
@@ -703,7 +703,8 @@ def _is_detect(text: str) -> bool:
 def canonical_key(text: str) -> str | None:
     """"F major" from whatever was typed, None for detect.  Only this ever reaches argv.
 
-    What the band will really commit to, spelled the way it was typed.  It plays major and
+    What the band will really commit to, spelled the way it was typed where that is a
+    key people write.  It plays major and
     minor, so another mode is turned down here rather than quietly swapped for one of them.
     """
     if _is_detect(text):
@@ -717,8 +718,11 @@ def canonical_key(text: str) -> str | None:
         raise Refused(400, BAD_KEY) from None
     if key.mode not in ("major", "minor"):
         raise Refused(400, ONLY_MAJOR_MINOR)
-    tonic = _TYPED_TONIC.match(named or text).group(0)
-    named = f"{tonic[0].upper()}{tonic[1:].replace('s', '#')} {key.mode}"
+    if not _TYPED_TONIC.match(named or text):
+        raise Refused(400, BAD_KEY)
+    # The same name the band's logs will carry (theory.key_name): as typed, unless it is
+    # a key nobody writes (A# major is written Bb major).
+    named = key_name(key)
     if parse_prompt(f"in {named}").key != named:
         raise Refused(400, BAD_KEY)
     return named

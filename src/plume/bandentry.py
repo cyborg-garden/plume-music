@@ -23,6 +23,21 @@ from .theory import parse_key
 
 HARMONY_ROLES = ("bass", "pad", "keys", "shimmer")
 MELODY_ROLES = ("lead", "arp")
+#: The chords: they wait for the drums and bass to have stated the groove.
+CHORD_ROLES = ("pad", "keys", "shimmer")
+#: Bars the drums and bass play before the chords join them.
+CHORDS_DELAY_BARS = 2
+#: Bars after the band before the melody joins: the last part of the entry.
+MELODY_DELAY_BARS = 4
+#: Pitched drums, which play a note of the key: held back until there is one.
+PITCHED_DRUM_ROLES = ("sub",)
+#: Bars of rest after which her playing again starts a new phrase.  One bar is a
+#: breath, or a room mic missing a bar, and restarting on it every other bar meant a
+#: player who rests every other bar never got the band.
+PHRASE_REST_BARS = 2
+#: Bars on the tracker's key before the band will come in on it rather than on the
+#: key it settled earlier.
+ENTRY_KEY_BARS = 2
 
 DRUMS, BAND, FULL = "drums", "band", "full"
 
@@ -183,6 +198,10 @@ class GuitarEar:
         #: This bar alone sounded played, confirmed or not.  A fade needs this: a
         #: player coming back must not wait a bar for confirmation.
         self.last_bar_tonal = False
+        #: 1 when this bar confirmed her on the tonal bar just before it, so her
+        #: playing began a bar earlier; 0 otherwise.  Across a gap the earlier bar is
+        #: as likely a ringing tail, and this bar is where she (re)started.
+        self.began_bars_ago = 0
 
     def bar(self, chromas) -> bool:
         """Is someone playing?  One tonal bar could be a drum ringing near the
@@ -196,6 +215,7 @@ class GuitarEar:
             self._since_tonal += 1
             return False
         confirmed = self._since_tonal <= 2
+        self.began_bars_ago = 1 if self._since_tonal == 1 else 0
         self._since_tonal = 1
         self._heard += mean
         return confirmed
@@ -210,15 +230,21 @@ class GuitarEar:
 
 class BandEntry:
     def __init__(self, style: str, *, min_drum_bars: int = 8, key_bars: int = 4,
-                 melody_delay_bars: int = 4, release_bars: int = 8,
+                 melody_delay_bars: int = MELODY_DELAY_BARS, release_bars: int = 8,
                  known_key: str | None = None, after_first_heard_bars: int = 5,
-                 key_fallback_bars: int | None = None):
+                 key_fallback_bars: int | None = None, phrase_bars: int = 1):
         """``after_first_heard_bars`` counts from when she is confirmed, which is
         about three bars after her first note, so she gets about eight bars.
 
         ``key_fallback_bars``: the governor wants several bars running on one key, and
         a player who moves around may never give it that.  After this many heard bars,
         commit to the tracker's latest key instead.  None waits for as long as it takes.
+
+        ``phrase_bars``: the band comes in only on the top of one of her groups of this
+        many bars, counted from the bar she last started playing in after a rest.  Juniper,
+        2026-11-06: "the chords came in not at what felt like the end of a group of
+        measures".  It used to come in on whatever bar the key settled, which was bar 8
+        of plume's count and bar 6 of hers.  1 enters as soon as it is ready.
         """
         self._min_drum_bars = int(min_drum_bars)
         self._melody_delay = int(melody_delay_bars)
@@ -232,6 +258,16 @@ class BandEntry:
         self._first_heard: int | None = None
         self._key_fallback_bars = key_fallback_bars
         self._latest_key: str | None = None
+        self._phrase_bars = max(1, int(phrase_bars))
+        #: The bar she last (re)started playing in: where her groups are counted from.
+        #: A phrase is two bars running, so a one-bar flash sets nothing.
+        self.phrase_start: int | None = None
+        self._run_start: int | None = None
+        self._run = 0
+        self._rest = PHRASE_REST_BARS
+        self._rest_before_run = PHRASE_REST_BARS
+        self._ready_since: int | None = None
+        self._latest_key_bars = 0
         self.bars_in = 0
 
     @property
@@ -247,18 +283,51 @@ class BandEntry:
         return self._gov.govern(bar, harmony if harmony is not None else _NOTHING_HEARD,
                                 resting=True).chord
 
-    def update(self, bar: int, harmony, playing: bool) -> EntryState:
+    def _on_her_phrase(self, bar: int) -> bool:
+        return (self._phrase_bars <= 1 or self.phrase_start is None
+                or (bar - self.phrase_start) % self._phrase_bars == 0)
+
+    def _phrase_reading(self, heard: int, playing: bool) -> None:
+        """Count her phrases from the start of her last run of two or more bars that
+        followed a rest of PHRASE_REST_BARS or more (or her first run)."""
+        if self._band_bar is not None:
+            return
+        if not playing:
+            self._run = 0
+            self._rest += 1
+            return
+        if self._run == 0:
+            self._run_start, self._rest_before_run = heard, self._rest
+        self._run += 1
+        self._rest = 0
+        if self._run == 2 and (self.phrase_start is None
+                               or self._rest_before_run >= PHRASE_REST_BARS):
+            self.phrase_start = self._run_start
+
+    def update(self, bar: int, harmony, playing: bool, *,
+               heard_bar: int | None = None) -> EntryState:
+        """``heard_bar``: the bar ``playing`` describes.  The live loop plans a bar
+        ahead and reads the last bar that has finished, so it is two bars behind
+        ``bar``; None means ``bar`` itself."""
+        self._phrase_reading(bar if heard_bar is None else int(heard_bar), playing)
         if playing:
             self._heard += 1
             if self._first_heard is None:
                 self._first_heard = bar
         ready = (self._first_heard is not None and bar >= max(
             self._min_drum_bars, self._first_heard + self._after_heard))
+        if ready and self._ready_since is None:
+            self._ready_since = bar
+        # On the top of her phrase, but never more than a phrase late: however her
+        # count moves, a ready band is in within phrase_bars bars.
+        ready = ready and (self._on_her_phrase(bar)
+                           or bar - self._ready_since >= self._phrase_bars)
         if self._known_key is not None:
             # She told us the key, so nothing heard can change it.  The band still
             # waits for her to start: drums alone are for playing over.
             if not ready and self._band_bar is None:
-                return EntryState(DRUMS, HARMONY_ROLES + MELODY_ROLES, None, None,
+                return EntryState(DRUMS, HARMONY_ROLES + MELODY_ROLES + PITCHED_DRUM_ROLES,
+                                  None, None,
                                   f"drums: waiting to bring in {self._known_key}")
             if self._gov.committed_key is None:
                 self._gov.commit(self._known_key, bar)
@@ -278,6 +347,8 @@ class BandEntry:
         else:
             governed = None
         if playing and harmony is not None and harmony.key is not None:
+            self._latest_key_bars = (self._latest_key_bars + 1
+                                     if harmony.key == self._latest_key else 1)
             self._latest_key = harmony.key
         if (self._key_fallback_bars is not None and self._gov.committed_key is None
                 and self._heard >= self._key_fallback_bars
@@ -285,14 +356,40 @@ class BandEntry:
             self._gov.commit(self._latest_key, bar)
             governed = self._gov.govern(bar, harmony if harmony is not None else _NOTHING_HEARD,
                                         resting=True)
+        if (ready and self._band_bar is None and self._known_key is None
+                and self._latest_key is not None
+                and self._latest_key_bars >= ENTRY_KEY_BARS
+                and self._gov.committed_key not in (None, self._latest_key)):
+            # Until the band is in, a commitment is one nobody has heard, so it is
+            # only a first guess.  The guess is the first run of bars that agreed,
+            # and a player who opens on another chord than her home one (a real
+            # take opened on the ii, G# minor, of F# major) makes that run the wrong
+            # key.  The tracker's present belief has heard every bar since, and its
+            # own hysteresis keeps a passing phrase from moving it, so the band comes
+            # in on that, once it has held for ENTRY_KEY_BARS of her bars: one bar of
+            # it is a passing chord.  Its latest word, so a rest on the entry bar
+            # (likely, now the band waits for her phrase) still counts.  From here on
+            # only the release rule can change the key.
+            self._gov.commit(self._latest_key, bar)
+            governed = self._gov.govern(
+                bar, harmony if harmony is not None else _NOTHING_HEARD, resting=True)
         key = self._gov.committed_key
         if key is None or (not ready and self._band_bar is None):
-            return EntryState(DRUMS, HARMONY_ROLES + MELODY_ROLES, None, None,
-                              f"drums: heard {self._heard} bars, no settled key")
+            why = (f"drums: {key} settled, in at the top of her next "
+                   f"{self._phrase_bars} bars"
+                   if key is not None and not self._on_her_phrase(bar)
+                   else f"drums: heard {self._heard} bars, no settled key")
+            return EntryState(DRUMS, HARMONY_ROLES + MELODY_ROLES + PITCHED_DRUM_ROLES,
+                              None, None, why)
         if self._band_bar is None:
             self._band_bar = bar
         self.bars_in = bar - self._band_bar
         chord = None if governed is None else governed.chord
+        # Drums and bass first, then the chords, then the melody: one bar bringing all
+        # of it in at once over the click was heard as not coming in smooth.
+        if bar - self._band_bar < min(CHORDS_DELAY_BARS, self._melody_delay):
+            return EntryState(BAND, CHORD_ROLES + MELODY_ROLES, key, chord,
+                              f"band: drums and bass in {key}")
         if bar - self._band_bar < self._melody_delay:
             return EntryState(BAND, MELODY_ROLES, key, chord,
                               f"band: bass and chords in {key}")
@@ -309,6 +406,82 @@ SONG_ARC = (("verse", 16, 0.45), ("lift", 16, 0.85), ("verse", 8, 0.5),
 #: coming back reads as an event; the high pad is saved for the lifts.
 _SECTION_RESTS = {"verse": ("shimmer",), "break": ("kick", "snare", "shimmer", "lead"),
                   "lift": ()}
+
+
+def entry_ramp_db(bars_in: int, *, under_db: float, ramp_bars: int) -> float:
+    """A part's level ``bars_in`` bars after it came in: ``under_db`` on its first
+    bar, rising in a straight line to 0 dB after ``ramp_bars`` bars.  It steps at the
+    bar lines: a few dB a bar, under the rest of the band."""
+    if ramp_bars <= 0 or bars_in >= ramp_bars:
+        return 0.0
+    return float(under_db) * (1.0 - max(0, int(bars_in)) / float(ramp_bars))
+
+
+class EntryRamp:
+    """Each part's level as the band comes in, counted from that part's own first bar:
+    the drums and bass, then the chords, then the melody, each swell in.  What was
+    already playing over the intro stays where it was."""
+
+    def __init__(self, *, under_db: float, ramp_bars: int,
+                 last_join_bars: int = MELODY_DELAY_BARS):
+        self._under, self._bars = float(under_db), int(ramp_bars)
+        self._last_join = int(last_join_bars)
+        self._joined: dict[str, int] = {}
+
+    def levels(self, bars_in: int, roles, *, intro=()) -> dict[str, float]:
+        """Only the entry swells.  A part first heard after the last one the entry
+        brings in (the outro's crash, a lift's high pad) is not entering the band, so
+        it plays at full."""
+        out = {}
+        for r in roles:
+            if r in intro:
+                out[r] = 1.0
+                continue
+            first = self._joined.setdefault(r, int(bars_in))
+            if first > self._last_join:
+                out[r] = 1.0
+                continue
+            db = entry_ramp_db(int(bars_in) - first, under_db=self._under,
+                               ramp_bars=self._bars)
+            out[r] = 10.0 ** (db / 20.0)
+        return out
+
+
+def follow_band_settled(bars_heard_in: int, *, trusted: bool, ramp_bars: int,
+                        last_join_bars: int = MELODY_DELAY_BARS) -> bool:
+    """May the follow learn her level from a bar heard ``bars_heard_in`` bars after the
+    band came in?  A room mic hears the band as well as her, and while the band is
+    still swelling in it would learn a quiet normal, then read her as louder once the
+    whole band lands and push the band up.  So it waits for every part of the entry,
+    the melody last, to reach full."""
+    return trusted or int(bars_heard_in) >= int(last_join_bars) + int(ramp_bars)
+
+
+class PhraseHold:
+    """The band's density, changed only at the top of a phrase or a new section.
+
+    Density picks the hat grid and the bass figure.  Following her moves it a little
+    every bar, and over a threshold that rewrote the groove for one bar mid-phrase,
+    which she heard as the band changing tempo."""
+
+    def __init__(self, bars: int = 4):
+        self._bars = max(1, int(bars))
+        self._held: float | None = None
+        self._section: str | None = None
+        self._recent: list[float] = []
+
+    def value(self, bars_in: int, section: str, density: float) -> float:
+        """At the top of a phrase, the median of the phrase just played (its own
+        ``bars`` readings), so one odd bar does not set the next phrase.  A new section
+        takes its own density at once."""
+        if section != self._section:
+            self._recent = []
+        if self._held is None or section != self._section:
+            self._held, self._section = float(density), section
+        elif int(bars_in) % self._bars == 0 and self._recent:
+            self._held = float(np.median(self._recent))
+        self._recent = [*self._recent, float(density)][-self._bars:]
+        return self._held
 
 
 def song_section(bars_in: int) -> tuple[str, float, tuple[str, ...]]:
@@ -584,8 +757,10 @@ class BandFollow:
 
     def bar(self, rms_db: float | None, onsets_per_beat: float | None, *,
             playing: bool, band_in: bool = True, parts=None,
-            bar_s: float | None = None) -> FollowState:
-        """This bar's lean.  ``band_in`` False: drums alone, so only listen."""
+            bar_s: float | None = None, settled: bool = True) -> FollowState:
+        """This bar's lean.  ``band_in`` False: drums alone, so only listen.
+        ``settled`` False: the band is in but still swelling in (see
+        follow_band_settled), so it listens without learning or moving."""
         busy = None if onsets_per_beat is None or not self.trusted else float(onsets_per_beat)
         if bar_s is not None:
             self._level.quick = follow_hold_bars(bar_s, trusted=self.trusted)
@@ -595,6 +770,13 @@ class BandFollow:
             if self.trusted and playing and rms_db is not None:
                 self._learn(float(rms_db), busy)
             return FollowState(0.0, 1.0, (), "follow: listening until the band is in")
+        if not settled:
+            # The same as drums alone for a room mic: it hears a mix that is still
+            # changing.  A trusted input still learns her.
+            if self.trusted and playing and rms_db is not None:
+                self._learn(float(rms_db), busy)
+            return FollowState(0.0, 1.0, (),
+                               "follow: listening while the band comes in")
         moved: list[str] = []
         gain_was, dens_was = self._targets()
         known = self._learned >= FOLLOW_LEARN_BARS

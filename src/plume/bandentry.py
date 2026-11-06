@@ -359,6 +359,25 @@ def entry_ramp_db(bars_in: int, *, under_db: float, ramp_bars: int) -> float:
     return float(under_db) * (1.0 - max(0, int(bars_in)) / float(ramp_bars))
 
 
+class PhraseHold:
+    """The band's density, changed only at the top of a phrase or a new section.
+
+    Density picks the hat grid and the bass figure.  Following her moves it a little
+    every bar, and over a threshold that rewrote the groove for one bar mid-phrase,
+    which she heard as the band changing tempo."""
+
+    def __init__(self, bars: int = 4):
+        self._bars = max(1, int(bars))
+        self._held: float | None = None
+        self._section: str | None = None
+
+    def value(self, bars_in: int, section: str, density: float) -> float:
+        if (self._held is None or section != self._section
+                or int(bars_in) % self._bars == 0):
+            self._held, self._section = float(density), section
+        return self._held
+
+
 def song_section(bars_in: int) -> tuple[str, float, tuple[str, ...]]:
     """(section name, density, roles resting) ``bars_in`` bars after the band came
     in.  The arc repeats, so a long take keeps moving."""

@@ -528,3 +528,24 @@ def test_the_entry_ramps_up_from_under_her():
     assert ramp[0] < ramp[1] < ramp[2] < ramp[3]
     assert entry_ramp_db(0, under_db=-8.0, ramp_bars=0) == 0.0
 
+
+# ------------------------------------------- the groove changes on phrases, not bars
+#
+# Her 18:25 take: following her nudged the density over the hats' and bass's
+# thresholds for single bars, so the hats doubled to sixteenths for one bar and the
+# bass swapped figures, mid-phrase.  She heard it as the band changing tempo.
+
+def test_density_holds_through_a_phrase():
+    from plume.bandentry import PhraseHold
+    hold = PhraseHold(4)
+    got = [hold.value(b, "verse", d) for b, d in
+           enumerate([0.56, 0.62, 0.68, 0.62, 0.73, 0.56, 0.68, 0.62])]
+    assert got == [0.56] * 4 + [0.73] * 4
+
+
+def test_a_new_section_moves_the_density_at_once():
+    from plume.bandentry import PhraseHold
+    hold = PhraseHold(4)
+    assert hold.value(0, "verse", 0.5) == 0.5
+    assert hold.value(1, "outro", 0.3) == 0.3, "an ending can begin on any bar"
+    assert hold.value(2, "outro", 0.4) == 0.3

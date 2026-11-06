@@ -4106,8 +4106,9 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
     if tap_start:
         from .bandentry import (DETECT_KEY_FALLBACK_BARS, END_AFTER_S,  # noqa: PLC0415
                                 FOLLOW, PLAIN_INTRO_GAIN_DB, BandEntry, BandFollow,
-                                GuitarEar, SilenceEnding, StylePick, entry_ramp_db,
-                                outro, song_section)
+                                GuitarEar, PhraseHold, SilenceEnding, StylePick,
+                                entry_ramp_db, outro, song_section)
+        density_hold = PhraseHold(int(params.entry_boundary_bars))
         guitar_ear = GuitarEar()
         # The band follows how she plays.  FOLLOW is the only mode so far: the seam a
         # "plume leads" mode would come in by.  A room mic hears the band too, so it
@@ -4532,6 +4533,8 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
                 if out_done:
                     state["ended"] = True
                     shared["end_reason"] = END_SONG
+            if entered.stage != "drums":
+                density = density_hold.value(entry.bars_in, section, density)
             if not crash:
                 resting = (*resting, "crash")
             loop_db = fade_db

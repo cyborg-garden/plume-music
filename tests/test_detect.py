@@ -409,7 +409,8 @@ def test_a_fast_count_gets_its_style_before_the_first_bar(tmp_path, consent):
     rec = _detect_take(tmp_path, _strummed_take(140.0, seconds=8.0), max_minutes=0.1)
     rows = _rows(rec)
     assert rows and rows[0]["style"] == "trap"
-    assert "kick" in rows[0]["roles"] and "keys" not in rows[0]["roles"]
+    # the drums stage's plain click (test_plain_intro), with the band held back
+    assert "click" in rows[0]["roles"] and "keys" not in rows[0]["roles"]
 
 
 def test_the_old_engine_rings_out_under_the_new_one(tmp_path, consent, monkeypatch):

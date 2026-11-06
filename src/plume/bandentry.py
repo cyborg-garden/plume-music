@@ -316,6 +316,18 @@ class BandEntry:
             self._gov.commit(self._latest_key, bar)
             governed = self._gov.govern(bar, harmony if harmony is not None else _NOTHING_HEARD,
                                         resting=True)
+        if (ready and self._band_bar is None and self._known_key is None and playing
+                and harmony is not None and harmony.key is not None
+                and self._gov.committed_key not in (None, harmony.key)):
+            # Until the band is in, a commitment is one nobody has heard, so it is
+            # only a first guess.  The guess is the first run of bars that agreed,
+            # and a player who opens on another chord than her home one (a real
+            # take opened on the ii, G# minor, of F# major) makes that run the wrong
+            # key.  The tracker's present belief has heard every bar since, and its
+            # own hysteresis keeps a passing phrase from moving it, so the band comes
+            # in on that.  From here on only the release rule can change the key.
+            self._gov.commit(harmony.key, bar)
+            governed = self._gov.govern(bar, harmony, resting=True)
         key = self._gov.committed_key
         if key is None or (not ready and self._band_bar is None):
             why = (f"drums: {key} settled, in at the top of her next "

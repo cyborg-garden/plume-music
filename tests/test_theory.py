@@ -271,6 +271,7 @@ def test_chord_dataclass_frozen():
     ("Ab major", True), ("Db major", True), ("Gb major", True),
     # sharp majors
     ("G", False), ("D", False), ("A", False), ("E", False), ("B", False),
+    ("F# major", False),
     # flat minors + a
     ("a minor", True), ("d minor", True), ("g minor", True), ("c minor", True),
     ("Fm", True), ("Bbm", True), ("Ebmin", True),
@@ -301,6 +302,35 @@ def test_roman_to_chord_spells_flats_in_flat_keys():
     assert roman_to_chord("bVII", parse_key("C")).sym == "Bb"
     # sharp keys keep sharps
     assert roman_to_chord("ii7", parse_key("E major")).sym == "F#m7"
+
+
+def test_pitch_class_six_major_is_f_sharp_major_unless_typed_as_gb():
+    """Guitarists call it F# major; a heard key has only its pitch class."""
+    from plume.listen.harmony import _key_name
+    from plume.roles import _key_name as roles_key_name
+    assert _key_name(6) == "F# major"
+    assert roles_key_name(6, "major") == "F# major"
+    assert spell(6, Key(tonic=6, mode="major")) == "F#"
+    assert spell(6, parse_key("Gb major")) == "Gb"   # typed flats are kept
+    assert parse_key("Gb major") == parse_key("F# major")
+
+
+@pytest.mark.parametrize("key_str,numerals,want", [
+    ("F# major", "I ii iii IV V vi viidim bVII", "F# G#m A#m B C# D#m E#dim E"),
+    ("Gb major", "I ii IV V", "Gb Abm Cb Db"),
+    ("Eb minor", "i iv v VI VII", "Ebm Abm Bbm Cb Db"),
+    ("G# minor", "i ii7b5 III iv v V VI", "G#m A#m7b5 B C#m D#m D# E"),
+    ("C# minor", "i III VI VII", "C#m E A B"),
+    ("Bb major", "I IV V vi bVII", "Bb Eb F Gm Ab"),
+    ("A harmonic minor", "i iv V viidim", "Am Dm E G#dim"),
+])
+def test_chords_are_spelled_from_the_keys_own_letters(key_str, numerals, want):
+    key = parse_key(key_str)
+    got = " ".join(roman_to_chord(n, key).sym for n in numerals.split())
+    assert got == want
+    for sym in got.split():                 # every spelling still parses
+        assert parse_chord(sym).root == roman_to_chord(
+            numerals.split()[got.split().index(sym)], key).root
 
 
 def test_chord_parsing_accepts_both_spellings():

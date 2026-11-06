@@ -4499,6 +4499,11 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
                                    and guitar_ear.last_bar_tonal), bar_len)
             if entered.key is not None:
                 mh = machine_harmony_state(t_bar, entered.key, entered.chord)
+            elif entered.stage == "drums":
+                # Over the drums alone the band knows only a key she named.  The
+                # composed one is a placeholder nobody has heard, and an 808 kick
+                # would be pitched to it.
+                mh = machine_harmony_state(t_bar, named_key, None)
             # A busier or sparser cue is her own word, and beats following.
             for text in str(getattr(form, "applied_cue", None) or "").split("; "):
                 said = parse_cue(text) if text else {}

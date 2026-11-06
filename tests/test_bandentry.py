@@ -435,8 +435,17 @@ def test_after_a_restart_the_band_enters_on_her_group_end_to_end(tmp_path, monke
     from plume import realtime
     from plume import roles as roles_mod
 
+    from plume.duet import DuetEngine
+
     monkeypatch.setenv("PLUME_CALIBRATION_FILE", str(tmp_path / "none.json"))
     monkeypatch.setenv(realtime.AUDIO_CONSENT_ENV, "1")
+    heard_keys = []
+    render = DuetEngine.render_bar
+
+    def spy(self, plan, beat, harmony, **kw):
+        heard_keys.append(("bass" in plan.roles, harmony.key))
+        return render(self, plan, beat, harmony, **kw)
+    monkeypatch.setattr(DuetEngine, "render_bar", spy)
     human = _take(seconds=90.0, room_s=120.0, strum_beats=4, rest=(12, 20))
     with patched_module("sounddevice", fake_audio(human, rate_x=12.0)):
         realtime.lead(prompt="lofi", seed=0, tap_start=True,
@@ -450,6 +459,9 @@ def test_after_a_restart_the_band_enters_on_her_group_end_to_end(tmp_path, monke
     restart = round((2.0 + 20 * 0.8 - rows[0]["t_s"]) / bar_s)
     entered = next(r["bar"] for r in rows if r["entry"] != DRUMS)
     assert restart == 3 and entered == restart + 8
+    # over the drums alone the engine is told no key, so nothing pitched guesses one
+    before = heard_keys[:[b for b, _ in heard_keys].index(True)]
+    assert before and {k for _, k in before} == {None}
 
 
 def test_at_real_speed_it_can_tell_she_is_playing(tmp_path, monkeypatch,

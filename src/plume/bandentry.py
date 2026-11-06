@@ -23,6 +23,10 @@ from .theory import parse_key
 
 HARMONY_ROLES = ("bass", "pad", "keys", "shimmer")
 MELODY_ROLES = ("lead", "arp")
+#: The chords: they wait for the drums and bass to have stated the groove.
+CHORD_ROLES = ("pad", "keys", "shimmer")
+#: Bars the drums and bass play before the chords join them.
+CHORDS_DELAY_BARS = 2
 
 DRUMS, BAND, FULL = "drums", "band", "full"
 
@@ -323,6 +327,11 @@ class BandEntry:
             self._band_bar = bar
         self.bars_in = bar - self._band_bar
         chord = None if governed is None else governed.chord
+        # Drums and bass first, then the chords, then the melody: one bar bringing all
+        # of it in at once over the click was heard as not coming in smooth.
+        if bar - self._band_bar < min(CHORDS_DELAY_BARS, self._melody_delay):
+            return EntryState(BAND, CHORD_ROLES + MELODY_ROLES, key, chord,
+                              f"band: drums and bass in {key}")
         if bar - self._band_bar < self._melody_delay:
             return EntryState(BAND, MELODY_ROLES, key, chord,
                               f"band: bass and chords in {key}")
@@ -339,6 +348,15 @@ SONG_ARC = (("verse", 16, 0.45), ("lift", 16, 0.85), ("verse", 8, 0.5),
 #: coming back reads as an event; the high pad is saved for the lifts.
 _SECTION_RESTS = {"verse": ("shimmer",), "break": ("kick", "snare", "shimmer", "lead"),
                   "lift": ()}
+
+
+def entry_ramp_db(bars_in: int, *, under_db: float, ramp_bars: int) -> float:
+    """The band's level ``bars_in`` bars after it came in: ``under_db`` on its first
+    bar, rising in a straight line to 0 dB after ``ramp_bars`` bars.  The engine glides
+    each bar's step, so it is heard as a swell rather than steps."""
+    if ramp_bars <= 0 or bars_in >= ramp_bars:
+        return 0.0
+    return float(under_db) * (1.0 - max(0, int(bars_in)) / float(ramp_bars))
 
 
 def song_section(bars_in: int) -> tuple[str, float, tuple[str, ...]]:

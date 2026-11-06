@@ -4106,7 +4106,8 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
     if tap_start:
         from .bandentry import (DETECT_KEY_FALLBACK_BARS, END_AFTER_S,  # noqa: PLC0415
                                 FOLLOW, PLAIN_INTRO_GAIN_DB, BandEntry, BandFollow,
-                                GuitarEar, SilenceEnding, StylePick, outro, song_section)
+                                GuitarEar, SilenceEnding, StylePick, entry_ramp_db,
+                                outro, song_section)
         guitar_ear = GuitarEar()
         # The band follows how she plays.  FOLLOW is the only mode so far: the seam a
         # "plume leads" mode would come in by.  A room mic hears the band too, so it
@@ -4513,11 +4514,15 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
                                       playing=playing and human is not None,
                                       band_in=entry.band_is_in, parts=parts,
                                       bar_s=bar_len)
+            ramp_db = 0.0
             if entered.stage == "drums":
                 section, density, resting = "intro", TAP_START_MIN_DENSITY, ()
             else:
                 section, density, resting = song_section(entry.bars_in)
                 density = follow.shape(density) * follow.density
+                # The session's own entry ramp: under her, up to full over a few bars.
+                ramp_db = entry_ramp_db(entry.bars_in, under_db=params.enter_under_db,
+                                        ramp_bars=params.ramp_bars)
             crash = False
             if ending_now is not None:
                 out_bar, out_db, out_done = ending_now
@@ -4530,10 +4535,17 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
             if not crash:
                 resting = (*resting, "crash")
             loop_db = fade_db
+            roles = [r for r in duet.roles
+                     if r not in entered.held_back and r not in resting]
+            if entered.stage == "drums":
+                state["intro_roles"] = set(roles)
+            # What was not playing over the intro swells in under what was.  A
+            # detected take's click gives way to a whole new kit, so all of it does.
+            ramp_lin = 10.0 ** (ramp_db / 20.0)
             plan = dataclasses.replace(
                 plan,
-                roles={r: 1.0 for r in duet.roles
-                       if r not in entered.held_back and r not in resting},
+                roles={r: (1.0 if r in state.get("intro_roles", ()) else ramp_lin)
+                       for r in roles},
                 # a live "busier" or "sparser" cue scales the song's own shape
                 density=float(min(1.0, max(0.05, density * lead_cues.density_scale))),
                 gain_db=(plan.gain_db + TAP_START_GAIN_DB + follow.gain_db + fade_db
@@ -4621,6 +4633,7 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
             doc["playing"] = playing
             doc["playing_trusted"] = playing_trusted
             doc["fade_db"] = round(fade_db, 2)
+            doc["entry_ramp_db"] = round(ramp_db, 2)
             doc["follow"] = {"mode": follow.mode, "trusted": follow.trusted,
                              "gain_db": round(follow.gain_db, 3),
                              "density": round(follow.density, 4),

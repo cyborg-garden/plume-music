@@ -326,6 +326,12 @@ def test_tap_start_end_to_end_over_the_fake_device(tmp_path, monkeypatch,
     entered = [r for r in rows if r["entry"] != DRUMS]
     assert entered, f"the band never came in: {[r['entry_reason'] for r in rows][-3:]}"
     assert entered[0]["bar"] >= 8 and "bass" in entered[0]["roles"]
+    # drums and bass first, swelling in under the drums she was already hearing
+    first = entered[0]["roles"]
+    assert first["kick"] == 1.0 and first["bass"] < 0.5
+    assert "pad" not in first and "keys" not in first
+    assert entered[1]["roles"]["bass"] > first["bass"]
+    assert entered[3]["roles"]["bass"] == 1.0 and "pad" in entered[3]["roles"]
     # on the top of one of her four-bar groups, counted from her first strum
     bar_s = rows[1]["t_s"] - rows[0]["t_s"]
     her_first = round((2.0 + 12 * 0.8 - rows[0]["t_s"]) / bar_s)
@@ -495,4 +501,30 @@ def test_once_in_the_band_ignores_later_restarts():
 def test_without_a_phrase_length_it_enters_when_ready():
     e = BandEntry("lofi", key_bars=4, after_first_heard_bars=6)
     assert _entry_bar(e, {0} | set(range(2, 30))) == 8
+
+
+# ------------------------------------------- the band comes in over a few bars
+#
+# Juniper, 2026-11-06: it "didnt come in smooth".  The whole band arrived on one bar,
+# about 27 dB over the click, with the session's ramp_bars never applied.
+
+def test_drums_and_bass_first_then_the_chords_then_the_melody():
+    e = BandEntry("lofi", min_drum_bars=4, key_bars=4, melody_delay_bars=4,
+                  after_first_heard_bars=4)
+    states = run(e, ["D minor"] * 10)
+    first, second, third = states[4], states[5], states[6]
+    assert first.stage == BAND and "bass" not in first.held_back
+    assert {"pad", "keys", "lead"} <= set(first.held_back)
+    assert set(second.held_back) == set(first.held_back)
+    assert "pad" not in third.held_back and "keys" not in third.held_back
+    assert "lead" in third.held_back
+    assert states[8].stage == FULL and states[8].held_back == ()
+
+
+def test_the_entry_ramps_up_from_under_her():
+    from plume.bandentry import entry_ramp_db
+    ramp = [entry_ramp_db(b, under_db=-8.0, ramp_bars=3) for b in range(6)]
+    assert ramp[0] == -8.0 and ramp[3:] == [0.0, 0.0, 0.0]
+    assert ramp[0] < ramp[1] < ramp[2] < ramp[3]
+    assert entry_ramp_db(0, under_db=-8.0, ramp_bars=0) == 0.0
 

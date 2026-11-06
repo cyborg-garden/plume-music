@@ -14,7 +14,7 @@ from plume.theory import Chord
 #: resolved against the chord playing, so a line never argues with its own harmony.
 BASS_FIGURES: dict[str, tuple[tuple[float, float, float, int], ...]] = {
     # Off the kick: the eighth between each pair of beats, with a late octave push.
-    "house_off": ((0.5, 0.4, 0.85, 1), (1.5, 0.4, 0.8, 1), (1.75, 0.2, 0.62, 8),
+    "house_off": ((0.5, 0.4, 0.85, 1), (1.5, 0.25, 0.8, 1), (1.75, 0.2, 0.62, 8),
                   (2.5, 0.4, 0.85, 1), (3.5, 0.22, 0.72, 1), (3.75, 0.2, 0.66, 8)),
     # Locks to the boom bap kick on 1, the last sixteenth of 2 and the and of 3.
     "boom_hits": ((0.0, 1.5, 0.9, 1), (1.75, 0.7, 0.76, 1), (2.5, 1.3, 0.84, 1)),

@@ -1235,6 +1235,11 @@ class DuetEngine:
         tones = [m for m in scale if m % 12 in chord_pcs] or scale
         centre = (low + high) // 2
         current = min(tones, key=lambda m: abs(m - centre))
+        # The walk may step past the register; what sounds is the nearest note of
+        # the same pool inside it.  Clamping the number itself lands on whatever the
+        # register edge is (72 is a C), which in most keys is not in the key at all.
+        in_scale = [m for m in scale if low <= m <= high] or scale
+        in_tones = [m for m in tones if low <= m <= high] or in_scale
         out = []
         for i, beat in enumerate(motif[phrase_bar % len(motif)]):
             idx = scale.index(min(scale, key=lambda m: abs(m - current)))
@@ -1243,7 +1248,9 @@ class DuetEngine:
             current = scale[idx]
             if float(beat) == 0.0:
                 current = min(tones, key=lambda m: abs(m - current))
-            pitch = int(np.clip(current, low, high))
+            pool = in_tones if float(beat) == 0.0 else in_scale
+            pitch = current if low <= current <= high else min(
+                pool, key=lambda m: abs(m - current))
             pitch = _apply_ceiling([pitch], ceiling)[-1]
             vel = 0.62 if float(beat) % 2.0 == 0.0 else 0.48
             hz = midi_to_hz(pitch)

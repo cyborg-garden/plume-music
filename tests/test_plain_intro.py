@@ -1,10 +1,12 @@
-"""A plain beat until plume knows her style and key (Juniper, 2026-11-06).
+"""A plain click until plume knows her style and key (Juniper, 2026-11-06).
 
 "the lofi intro drum beat felt weird and clunky ... it should give a simple beat until
 it both key and genre deduces".  A detected take used to start on the count's pick,
-a guess from the tempo alone, with all that style's swing and character.  Now the
-drums stage plays a plain kick, snare and hat, and the style's own drums come in
-with the band, on that bar line.  A style she named is hers from the first bar.
+a guess from the tempo alone, with all that style's swing and character.  A plain
+kick, snare and hat was still "too opinionated -- it should almost just be like a
+metronome or a wood block".  So the drums stage plays only a quiet rim click on each
+beat, the one a little stronger, and the style's own drums come in with the band, on
+that bar line.  A style she named is hers from the first bar.
 """
 import numpy as np
 import pytest
@@ -31,7 +33,7 @@ def test_the_plain_beat_keeps_nothing_of_the_style_s_drums(name):
     assert load_style(name)["drum_patterns"] != s["drum_patterns"]   # not changed in place
 
 
-def test_the_plain_beat_is_kick_on_one_and_three_snare_on_two_and_four():
+def test_the_plain_beat_is_a_click_on_every_beat_and_nothing_else():
     duet = DuetEngine(style=plain_intro_style("lofi"), seed=0)
     plan = BarPlan(bar=0, state="playing", roles={r: 1.0 for r in PLAIN_INTRO_VOICES},
                    gain_db=0.0, density=0.3, register_ceiling_midi=None, reason="test")
@@ -41,9 +43,49 @@ def test_the_plain_beat_is_kick_on_one_and_three_snare_on_two_and_four():
     hits = {}
     for e in duet.last_events:
         hits.setdefault(e["role"], []).append(round(e["onset_s"] / (bar_s / 4), 1))
-    assert sorted(hits) == ["hat", "kick", "snare"]
-    assert hits["kick"] == [0.0, 2.0] and hits["snare"] == [1.0, 3.0]
-    assert len(hits["hat"]) == 8
+    assert sorted(hits) == ["click"]                  # no kick, snare or hat
+    assert hits["click"] == [0.0, 1.0, 2.0, 3.0]
+    assert PLAIN_INTRO_VOICES == {"click": "kit_rim"}  # a recorded cross-stick
+    vel = [e["velocity"] for e in duet.last_events]
+    assert vel[0] > max(vel[1:])                       # the one, a little stronger
+
+
+@pytest.mark.parametrize("name", list_styles())
+def test_the_drums_stage_sounds_only_the_click_in_every_style(name):
+    """As live plays it: every role the engine has, less the held-back band."""
+    duet = DuetEngine(style=plain_intro_style(name), seed=1)
+    roles = {r: 1.0 for r in duet.roles if r not in HARMONY_ROLES + MELODY_ROLES}
+    for bar in range(4):
+        plan = BarPlan(bar=bar, state="playing", roles=roles, gain_db=0.0, density=0.3,
+                       register_ceiling_midi=None, reason="test")
+        duet.render_bar(plan, realtime.machine_beat_state(bar, bar * 3.0, 80.0),
+                        realtime.machine_harmony_state(bar * 3.0, "D major", None))
+        assert {e["role"] for e in duet.last_events} == {"click"}
+        assert {e["preset"] for e in duet.last_events} == {"kit_rim"}
+    # and the style itself, once the band is in, still has its own drums
+    assert "kick" in load_style(name)["drum_patterns"]
+
+
+def _four_bars(style, roles_of, gain_db):
+    duet = DuetEngine(style=style, seed=0)
+    roles = {r: 1.0 for r in roles_of(duet)}
+    return np.concatenate([duet.render_bar(
+        BarPlan(bar=b, state="playing", roles=roles, gain_db=gain_db, density=0.5,
+                register_ceiling_midi=None, reason="test"),
+        realtime.machine_beat_state(b, b * 3.0, 80.0),
+        realtime.machine_harmony_state(b * 3.0, "D major", "D")) for b in range(4)])
+
+
+@pytest.mark.parametrize("name", list_styles())
+def test_the_click_is_heard_but_well_under_the_band(name):
+    click = _four_bars(plain_intro_style(name),
+                       lambda d: [r for r in d.roles
+                                  if r not in HARMONY_ROLES + MELODY_ROLES],
+                       PLAIN_INTRO_GAIN_DB)
+    band = _four_bars(name, lambda d: d.roles, 0.0)
+    peak_db = 20 * np.log10(float(np.abs(click).max()))
+    assert peak_db > -20.0                                   # there to keep time by
+    assert peak_db < 20 * np.log10(float(np.abs(band).max())) - 9.0
 
 
 # ------------------------------------------------------------------ live, on the fake device

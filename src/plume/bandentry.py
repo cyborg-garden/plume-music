@@ -84,16 +84,15 @@ def _mode_of(key: str | None) -> str | None:
 #: 2026-11-06: "the lofi intro drum beat felt weird and clunky ... it should give a
 #: simple beat until it both key and genre deduces".  The count's pick was a guess from
 #: the tempo alone, so its swing, its pushed and dragged hits and its 808 were a style
-#: she had not chosen yet.  Kick on one and three, snare on two and four, soft eighth
-#: hats on a recorded kit, straight, a little under the style's level.
+#: she had not chosen yet.  A plain kick, snare and hat was still "too opinionated --
+#: it should almost just be like a metronome or a wood block".  So: one recorded
+#: cross-stick click on each beat, the one a little stronger, straight, well under the
+#: band.  No groove, nothing of any genre; the style's own drums come in with the band.
 PLAIN_INTRO_PATTERNS = {
-    "kick": ("bd ~ ~ ~ ~ ~ ~ ~ bd ~ ~ ~ ~ ~ ~ ~",),
-    "snare": ("~ ~ ~ ~ sd ~ ~ ~ ~ ~ ~ ~ sd ~ ~ ~",),
-    "hat": ("hh:v0.6 ~ hh:v0.45 ~ hh:v0.6 ~ hh:v0.45 ~ "
-            "hh:v0.6 ~ hh:v0.45 ~ hh:v0.6 ~ hh:v0.45 ~",),
+    "click": ("rs:v1.0 ~ ~ ~ rs:v0.6 ~ ~ ~ rs:v0.6 ~ ~ ~ rs:v0.6 ~ ~ ~",),
 }
-PLAIN_INTRO_VOICES = {"kick": "kit_kick", "snare": "kit_snare", "hat": "kit_hat"}
-PLAIN_INTRO_GAIN_DB = -3.0
+PLAIN_INTRO_VOICES = {"click": "kit_rim"}
+PLAIN_INTRO_GAIN_DB = -2.0
 
 
 def plain_intro_style(name: str) -> dict:
@@ -597,6 +596,7 @@ class BandFollow:
                 self._learn(float(rms_db), busy)
             return FollowState(0.0, 1.0, (), "follow: listening until the band is in")
         moved: list[str] = []
+        gain_was, dens_was = self._targets()
         known = self._learned >= FOLLOW_LEARN_BARS
         # Off a room mic, take back what the band's own lean put into it.
         own = 0.0 if self.trusted else self.gain_db
@@ -620,6 +620,14 @@ class BandFollow:
                     moved.append("busier" if step > 0 else "sparser")
             self._learn(float(rms_db) - own, busy)
         gain_t, dens_t = self._targets()
+        # A move is reported only when the band's own target went that way: at a limit,
+        # or thinned by the torrent cap on a "busier" bar, the log and the after-take
+        # recap would otherwise claim a change nobody heard.  Her level drives density
+        # too, so a softer bar at the gain cap still counts when the band thins.
+        up = {"louder": gain_t > gain_was or dens_t > dens_was,
+              "softer": gain_t < gain_was or dens_t < dens_was,
+              "busier": dens_t > dens_was, "sparser": dens_t < dens_was}
+        moved = [m for m in moved if up[m]]
         back = abs(gain_t) < abs(self.gain_db)
         self.gain_db = _toward(self.gain_db, gain_t, FOLLOW_GAIN_RETURN_STEP_DB if back
                                else FOLLOW_GAIN_STEP_DB)

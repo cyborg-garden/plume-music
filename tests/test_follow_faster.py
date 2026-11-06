@@ -284,3 +284,21 @@ def test_a_take_at_real_pace_plans_half_a_bar_ahead(tmp_path, monkeypatch, plume
     bar = 240.0 / bpm
     assert ahead[0] == pytest.approx(bar, abs=0.01)       # nothing measured yet: a bar
     assert ahead[-1] == pytest.approx(bar / 2 - 0.1, abs=0.01)
+
+
+# ------------------------------------------------------------ honest about moves
+
+def test_a_softer_turn_still_above_the_cap_is_not_reported_as_a_move():
+    """Her 2026-11-06 take: loud from bar 9, the band sat at its +3 dB cap, and at bar
+    37 she got a little softer but stayed far above normal.  The gain could not move,
+    so the log and the recap must not say the band came down."""
+    f = learned()
+    loud = NORMAL_DB + 20
+    for _ in range(8):
+        halves(f, 80, [(loud, loud)])
+    assert f.gain_db == pytest.approx(f._targets()[0])
+    at_cap = f.gain_db
+    states = halves(f, 80, [(loud - 5, loud - 5)] * 4)
+    assert all(s.gain_db == at_cap for s in states)
+    assert not any("softer" in s.moved for s in states)
+

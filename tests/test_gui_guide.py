@@ -158,11 +158,9 @@ LIVE_CUES = {
     "quieter": ("energy", "down"), "calmer": ("energy", "down"), "bring it down": ("energy", "down"),
     "take it out": ("end", "out"), "wrap it up": ("end", "out"), "last chorus": ("end", "out"),
     "stop": ("end", "out"),
+    "darker": ("texture", "darker"), "brighter": ("texture", "brighter"),
+    "warmer": ("texture", "warmer"), "dry": ("texture", "dry"), "wet": ("texture", "wet"),
 }
-#: Understood, and said plainly to leave a live take as it is.
-UNCHANGED_CUES = {"darker": "texture", "brighter": "texture", "warmer": "texture",
-                  "dry": "texture", "wet": "texture"}
-
 
 @pytest.mark.parametrize("cue", sorted(LIVE_CUES))
 def test_each_cue_the_guide_names_means_what_it_says(cue):
@@ -171,18 +169,12 @@ def test_each_cue_the_guide_names_means_what_it_says(cue):
     assert (parsed["kind"], parsed["value"]) == LIVE_CUES[cue]
 
 
-@pytest.mark.parametrize("cue", sorted(UNCHANGED_CUES))
-def test_the_cues_it_says_leave_a_live_take_alone_are_understood(cue):
-    assert f"`{cue}`" in PAGES["terminal"]
-    assert parse_cue(cue)["kind"] == UNCHANGED_CUES[cue]
-
-
 def test_the_live_take_really_changes_only_what_the_guide_says():
-    """Live lead hands cues to the same accumulator ``simlead`` uses, and reads back only its
-    density and its tempo.  Tone tilt is applied in the offline render alone."""
+    """Live lead hands cues to the same accumulator ``simlead`` uses, and reads back its
+    density, its tempo and its tone, which the band's tone stage applies."""
     source = (Path(gui.__file__).with_name("realtime.py")).read_text()
     assert "lead_cues.density_scale" in source and "lead_cues.bar_ratio()" in source
-    assert "lead_cues.tilt" not in source
+    assert "lead_cues.tilt" in source and "BusTone" in source
 
 
 def test_the_page_offers_the_same_two_cues_the_guide_describes():

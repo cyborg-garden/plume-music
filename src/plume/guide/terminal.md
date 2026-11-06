@@ -28,10 +28,12 @@ These change a live take:
   `go to the chorus`. A name plume can't place in the song is logged and ignored.
 - **Energy:** `louder`, `bigger` or `lift it` jumps to a hotter section, and `quieter`,
   `calmer` or `bring it down` to a calmer one, when the song has one.
+- **Tone:** `darker`, `brighter` and `warmer` (half a darker) tilt the band's top end, and
+  `wet` and `dry` add or take away reverb. Each glides in over a second.
 - **Ending:** `take it out`, `wrap it up`, `last chorus` or `stop` ends the tune.
 
-Plume understands these but does not change a live take with them: a style name (the
-style is chosen when the take starts), `darker`, `brighter`, `warmer`, `dry` and `wet`.
+Plume understands a style name but does not change a live take with it: the style is
+chosen when the take starts.
 Anything else is logged as not understood, and nothing changes. Add `--json` to see how
 plume read a cue.
 

@@ -1,7 +1,7 @@
 """Talk to a running take: "plume, stop", "plume, restart", "plume, busier".
 
 It reads the session's own recording, so it shares the mic without opening it, and
-transcribes on this machine; no audio leaves the Mac.  Commands need the wake word,
+transcribes on this machine; no audio leaves the computer.  Commands need the wake word,
 because a speech model fed a band hallucinates sentences, and because sung lyrics
 must never end a take.
 
@@ -16,6 +16,7 @@ import importlib.util
 import json
 import math
 import os
+import platform
 import re
 import signal
 import subprocess
@@ -29,9 +30,17 @@ import numpy as np
 import soundfile as sf
 from scipy.signal import resample_poly
 
+from . import oscompat
 from .looper import _LOOP_WORD
 
-MODEL = "mlx-community/whisper-large-v3-turbo"
+#: The same model, whisper-large-v3-turbo, packaged for each backend.  mlx-whisper
+#: runs it on Apple Silicon's GPU; faster-whisper (CTranslate2) runs it everywhere
+#: else, on a CUDA GPU if there is one and on the CPU if not.
+MODELS = {"mlx": "mlx-community/whisper-large-v3-turbo", "faster": "large-v3-turbo"}
+#: The packages behind each backend, by import name and by pip name.
+_BACKEND_MODULES = {"mlx": "mlx_whisper", "faster": "faster_whisper"}
+_BACKEND_PACKAGES = {"mlx": "mlx-whisper", "faster": "faster-whisper"}
+MODEL = MODELS["mlx"]
 WINDOW_S = 4.0
 HOP_S = 2.0
 COOLDOWN_S = 6.0          # a window hears one spoken command more than once
@@ -141,17 +150,73 @@ def next_take_dir(base) -> Path:
     return base / f"takes{max(used, default=0) + 1}"
 
 
-def _require_whisper() -> None:
-    """Fail before any band starts, not after."""
-    if importlib.util.find_spec("mlx_whisper") is None:
-        raise RuntimeError("plume voice needs mlx-whisper: pip install -e '.[voice]'")
+def _apple_silicon(system: str | None = None, machine: str | None = None) -> bool:
+    system = sys.platform if system is None else system
+    machine = platform.machine() if machine is None else machine
+    return system == "darwin" and machine.lower() in ("arm64", "aarch64")
+
+
+def backends_for(system: str | None = None, machine: str | None = None) -> tuple[str, ...]:
+    """The speech backends that can run here, best first.
+
+    mlx only runs on Apple Silicon, where it is the faster of the two.
+    """
+    return ("mlx", "faster") if _apple_silicon(system, machine) else ("faster",)
+
+
+def choose_backend(system: str | None = None, machine: str | None = None,
+                   find_spec=None) -> str:
+    """The first installed backend that can run here.  Raises if there is none.
+
+    Fails before any band starts, not after.
+    """
+    find_spec = importlib.util.find_spec if find_spec is None else find_spec
+    wanted = backends_for(system, machine)
+    for name in wanted:
+        if find_spec(_BACKEND_MODULES[name]) is not None:
+            return name
+    raise RuntimeError(f"plume voice needs {_BACKEND_PACKAGES[wanted[0]]}: "
+                       "pip install -e '.[voice]'")
+
+
+def _require_whisper() -> str:
+    """Fail before any band starts, not after.  Returns the backend to use."""
+    return choose_backend()
+
+
+def _whisper_mlx(audio: np.ndarray) -> str:
+    import mlx_whisper  # noqa: PLC0415 — optional, heavy, and only needed here
+    return str(mlx_whisper.transcribe(
+        audio, path_or_hf_repo=MODELS["mlx"], language="en",
+        condition_on_previous_text=False, no_speech_threshold=0.5)["text"])
+
+
+_FASTER_MODEL = None
+
+
+def _whisper_faster(audio: np.ndarray) -> str:
+    global _FASTER_MODEL
+    if _FASTER_MODEL is None:
+        from faster_whisper import WhisperModel  # noqa: PLC0415 — optional and heavy
+        _FASTER_MODEL = WhisperModel(MODELS["faster"], device="auto", compute_type="default")
+    segments, _info = _FASTER_MODEL.transcribe(
+        audio, language="en", condition_on_previous_text=False, no_speech_threshold=0.5,
+        beam_size=1)
+    return "".join(seg.text for seg in segments)
+
+
+_TRANSCRIBERS = {"mlx": _whisper_mlx, "faster": _whisper_faster}
+
+
+_CHOSEN: str | None = None
 
 
 def _whisper(audio: np.ndarray) -> str:
-    import mlx_whisper  # noqa: PLC0415 — optional, heavy, and only needed here
-    return str(mlx_whisper.transcribe(
-        audio, path_or_hf_repo=MODEL, language="en",
-        condition_on_previous_text=False, no_speech_threshold=0.5)["text"])
+    """Transcribe with whichever backend runs here, chosen once."""
+    global _CHOSEN
+    if _CHOSEN is None:
+        _CHOSEN = choose_backend()
+    return _TRANSCRIBERS[_CHOSEN](audio)
 
 
 def _to_stt(y: np.ndarray, sr: int) -> np.ndarray:
@@ -293,7 +358,7 @@ class Band:
                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=log, env=env,
                 # Its own process group: a terminal's Ctrl-C must reach only us, or the
                 # band gets two interrupts, and a second one cuts its ending short.
-                start_new_session=True)
+                **oscompat.detached_kwargs())
         self._write(json.dumps({"take": str(self.dir)}))
         return self.dir
 
@@ -303,7 +368,10 @@ class Band:
     def stop(self) -> None:
         if not self.alive():
             return
-        self._proc.send_signal(signal.SIGINT)     # its graceful ending: finish the bar
+        try:
+            oscompat.interrupt(self._proc)        # its graceful ending: finish the bar
+        except OSError:
+            pass                                  # no console to send it through: wait, then end it
         try:
             self._proc.wait(timeout=STOP_GRACE_S)
         except subprocess.TimeoutExpired:
@@ -319,10 +387,10 @@ def run(*, prompt: str, base=".", extra_args=(), poll_s: float = 0.25, write=pri
     ending, or any failure here, leaves no band playing with nobody in control.
     """
     if transcribe is None:
-        _require_whisper()
+        backend = _require_whisper()
         # The first call downloads and loads the model, which can take minutes.  Inside
         # the take, that is minutes of band with nobody listening.
-        write(json.dumps({"loading": MODEL}))
+        write(json.dumps({"loading": MODELS[backend]}))
         _whisper(np.zeros(_STT_SR, dtype=np.float32))
         transcribe = _whisper
     band = Band(prompt=prompt, base=base, extra_args=extra_args, write=write, popen=popen)
@@ -341,8 +409,9 @@ def run(*, prompt: str, base=".", extra_args=(), poll_s: float = 0.25, write=pri
             if sent.returncode != 0:
                 write(json.dumps({"cue_failed": name}))
 
-    ends = (signal.SIGTERM, signal.SIGHUP)   # SIGHUP: the terminal closed; the band,
-                                             # in its own session, won't get one
+    # SIGHUP: the terminal closed; the band, in its own session, won't get one.
+    # SIGBREAK is Windows' Ctrl-Break and closing console.  Each where it exists.
+    ends = tuple(getattr(signal, name) for name in oscompat.closing_signals())
 
     def terminated(signum, _frame):
         for sig in ends:           # a second one must not interrupt stopping the band

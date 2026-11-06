@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+from plume import figures
 from plume.score import Movement, SectionSpec, Session, Track
 from plume.styles_lib import load_style
 from plume.theory import NOTE_NAMES, Chord, Key, parse_key, roman_to_chord, voice_chord
@@ -33,6 +34,27 @@ class PromptSpec:
     name: str = "untitled"
 
 
+_MOOD_WORDS = ("chill", "dark", "eerie", "hopeful", "aggressive", "ambient",
+               "dreamy", "mellow", "sad", "moody", "warm", "spooky")
+# "house" is the genre, in nearly any sentence.  Only a short list of plain non-music uses is
+# blanked before the style patterns look.  This stays short on purpose: every longer version
+# broke real requests such as "house on repeat".  So a song about a building can come out as
+# house, which costs less than a request for house coming out as something else.
+_MUSIC_WORDS = r"music|beat|track|groove|song|tune|jam|loop|vibes?|style"
+_NOT_MUSIC_NEXT = rf"(?![\s\-]+(?:{_MUSIC_WORDS})\b)"
+_HOUSE_KINDS = (r"deep|tech|acid|chicago|detroit|funky|soulful|progressive|tropical|disco"
+                r"|electro|afro|french|classic|piano")
+_NOT_HOUSE_RE = re.compile(
+    rf"\b(?:my|our|your|his|her|their|\w+['\u2019]s)[\s\-]+house\b{_NOT_MUSIC_NEXT}"
+    r"|\b(?:white|opera|coffee|haunted|full|open|tree|farm|green|ware|dog|doll|guest|beach"
+    r"|lake)[\s\-]+house\b"
+    r"|\bhouse[\s\-]+(?:party|parties|arrest|sitting|sitter|plants?|keys|of|down)\b"
+    r"|\b(?:a|an|the)\s+house\s*(?=$|[,.;:!?])", re.I)
+# A named kind is the genre whatever comes after it.
+_KIND_BEFORE_RE = re.compile(rf"\b(?:{_HOUSE_KINDS})[\s\-]+$", re.I)
+# Kept in the match so a report can say they were understood; a mood word or another genre
+# is not, since it is read in its own right.
+_HOUSE_RE = rf"\b(?:(?:{_HOUSE_KINDS})[\s\-]+)?house(?:[\s\-]+(?:{_MUSIC_WORDS}))?\b"
 _STYLE_PATTERNS = [
     (re.compile(r"\b(?:midwest|emo)\b", re.I), "midwest"),
     (re.compile(r"\btrap\b", re.I), "trap"),
@@ -40,9 +62,16 @@ _STYLE_PATTERNS = [
     (re.compile(r"\bsynth[\s\-]?wave\b", re.I), "synthwave"),
     (re.compile(r"\bretrowave\b", re.I), "synthwave"),
     (re.compile(r"\boutrun\b", re.I), "synthwave"),
+    (re.compile(r"\bjazz(?:y)?\b", re.I), "jazz"),
+    (re.compile(r"\bhip[\s\-]?hop\b", re.I), "hiphop"),
+    (re.compile(r"\bboom[\s\-]?bap\b", re.I), "hiphop"),
+    (re.compile(_HOUSE_RE, re.I), "house"),
+    (re.compile(r"\br\s*&\s*b\b|\brnb\b", re.I), "rnb"),
+    (re.compile(r"\bneo[\s\-]?soul\b", re.I), "rnb"),
 ]
-_MOOD_WORDS = ("chill", "dark", "eerie", "hopeful", "aggressive", "ambient",
-               "dreamy", "mellow", "sad", "moody", "warm", "spooky")
+#: The styles a prompt could always name.  A prompt naming one of them keeps the meaning
+#: it always had, whatever else it says: "lofi hip hop" is still lofi, at lofi's tempo.
+_ORIGINAL_STYLES = frozenset({"midwest", "trap", "lofi", "synthwave"})
 _BPM_RE = re.compile(r"\b(\d{2,3}(?:\.\d+)?)\s*bpm\b", re.I)
 # v2.1 AMENDMENT.  THE DEFECT: a tempo was silently dropped unless the literal
 # token "bpm" followed the number — and BOTH lead-mode help texts documented
@@ -77,17 +106,50 @@ _NAME_STOPWORDS = {
 }
 
 
+def _style_text(text: str) -> str:
+    """``text`` with its building-and-saying uses of "house" blanked, same length."""
+    def blank(m: re.Match) -> str:
+        before = text[:m.start()]
+        if m.group(0)[:5].lower() == "house" and _KIND_BEFORE_RE.search(before):
+            return m.group(0)
+        return " " * len(m.group(0))
+    return _NOT_HOUSE_RE.sub(blank, text)
+
+
+def _one_new_genre(text: str, hits: dict[str, re.Match]) -> str:
+    """The one recipe a prompt naming several new genres plays.
+
+    compose has no blend for these styles, so a second name could only pull the tempo out
+    of the recipe's range.  The last of a run of adjacent names is the noun and the rest
+    colour it ("jazz house" is house), an adjective never leads ("jazzy" gives way to any
+    other genre), and with words between them the first one named is what was asked for.
+    """
+    order = sorted(hits, key=lambda c: (hits[c].end(), hits[c].start()))
+    nouns = [c for c in order if hits[c].group(0).lower() != "jazzy"] or order
+    head = nouns[0]
+    for canon in nouns[1:]:
+        if text[hits[head].end():hits[canon].start()].strip(" \t\r\n-"):
+            break
+        head = canon
+    return head
+
+
 def parse_prompt(text: str) -> PromptSpec:
     """Rule-based prompt parser. Unknowns -> None/defaults; never raises."""
     spec = PromptSpec()
     t = text or ""
 
-    found: dict[str, int] = {}
+    found: dict[str, re.Match] = {}
+    style_text = _style_text(t)
     for rx, canon in _STYLE_PATTERNS:
-        m = rx.search(t)
-        if m and (canon not in found or m.start() < found[canon]):
-            found[canon] = m.start()
-    spec.styles = [c for c, _ in sorted(found.items(), key=lambda kv: kv[1])]
+        m = rx.search(style_text)
+        if m and (canon not in found or m.start() < found[canon].start()):
+            found[canon] = m
+    spec.styles = [c for c, _ in sorted(found.items(), key=lambda kv: kv[1].start())]
+    if _ORIGINAL_STYLES & set(spec.styles):
+        spec.styles = [c for c in spec.styles if c in _ORIGINAL_STYLES]
+    elif len(spec.styles) > 1:
+        spec.styles = [_one_new_genre(style_text, found)]
     # "lofi midwest emo" describes midwest emo with a lofi colour, not lofi.
     if "midwest" in spec.styles:
         spec.styles.remove("midwest")
@@ -154,8 +216,11 @@ def describe_prompt(text: str) -> dict:
         understood["mood"] = list(spec.mood)
 
     claimed = set(_MOOD_WORDS)
-    for rx, _canon in _STYLE_PATTERNS:
-        for m in rx.finditer(raw):
+    style_text = _style_text(raw)
+    for rx, canon in _STYLE_PATTERNS:
+        if canon not in spec.styles:
+            continue
+        for m in rx.finditer(style_text):
             claimed.update(re.findall(r"[a-z0-9#]+", m.group(0).lower()))
     for rx in (_BPM_RE, _TEMPO_AT_RE, _KEY_RE, _MOV_RE):
         for m in rx.finditer(raw):
@@ -172,7 +237,8 @@ def describe_prompt(text: str) -> dict:
 
 _DRUM_PRESETS = {"808kick", "hat", "openhat", "clap", "snare", "crackle",
                  "kit_kick", "kit_snare", "kit_rim", "kit_hat", "kit_halfhat",
-                 "kit_openhat", "kit_ride", "kit_crash", "kit_htom", "kit_ltom"}
+                 "kit_openhat", "kit_ride", "kit_crash", "kit_htom", "kit_ltom",
+                 "housekick", "boomkick", "offhat", "brush"}
 _SAD_TONICS = (("F", 3.0), ("A", 3.0), ("C", 2.0), ("D", 2.0), ("G", 1.0), ("E", 1.0))
 _GAIN_DB = {"kick": 0.0, "snare": -2.0, "clap": -4.0, "hat": -8.0, "openhat": -9.0,
             "bass": -1.0, "pad": -7.0, "lead": -6.0, "arp": -9.0, "crackle": -18.0,
@@ -341,8 +407,78 @@ def _drum_pattern_set(role: str, style: dict, rng: np.random.Generator) -> dict[
     return {"main": main, "alt": alt, "sparse": sparse, "fill": fill}
 
 
-def _bass_pattern_set(bass_style: str, chords: list[Chord],
+def _walking_pattern_set(chords: list[Chord],
+                         rng: np.random.Generator) -> dict[str, str]:
+    """One line per chord, each leaning into the chord after it, in quarter notes."""
+    def line() -> str:
+        bars = [figures.walking_line(ch.root, ch.intervals,
+                                     chords[(i + 1) % len(chords)].root, rng)
+                for i, ch in enumerate(chords)]
+        return " ".join(_alt([_note_name(b[k]) for b in bars]) for k in range(4))
+
+    main = line()
+    roots = [_note_name(33 + ((ch.root - 33) % 12)) for ch in chords]
+    fifths = [_note_name(33 + ((ch.root - 33) % 12)
+                         + figures.degree_semitones(ch.intervals, 5))
+              for ch in chords]
+    sparse = f"{_alt(roots)} ~ {_alt(fifths)} ~"       # a two feel
+    return {"main": main, "alt": line(), "sparse": sparse, "fill": main}
+
+
+def _figure_bass_pattern_set(bass_style: str, chords: list[Chord],
+                             octave: int) -> dict[str, str]:
+    """A bass figure on the 16th grid, with its notes following the chords."""
+    low = 24 + 12 * int(octave)
+    events = []
+    for beat, length, vel, degree in figures.BASS_FIGURES[bass_style]:
+        notes = [_note_name(low + ch.root + figures.degree_semitones(ch.intervals, degree))
+                 + f":v{vel}" for ch in chords]
+        events.append((round(beat * 4), max(1, round(length * 4)), _alt(notes)))
+    main = _grid(events)
+    sparse = _grid([(0, 4, _alt([_note_name(low + ch.root) for ch in chords]))])
+    return {"main": main, "alt": main, "sparse": sparse, "fill": main}
+
+
+def _comp_layers(figure, voicings: list[list[int]], slots: int) -> str:
+    """A chord figure as one layer per voice, since a pattern's note token is one note.
+
+    A chord with fewer voices doubles its top one, rather than the layers disagreeing
+    about how many notes there are.
+    """
+    per_beat = slots // 4
+    layers = []
+    for v in range(max(len(notes) for notes in voicings)):
+        events = []
+        for beat, length, vel in figure:
+            toks = [_note_name(notes[min(v, len(notes) - 1)]) + f":v{vel}" for notes in voicings]
+            events.append((round(beat * per_beat), max(1, round(length * per_beat)), _alt(toks)))
+        layers.append(_grid(events, slots))
+    return " , ".join(layers)
+
+
+def _comp_pattern_set(pad_style: str, chords: list[Chord],
                       rng: np.random.Generator) -> dict[str, str]:
+    """Jazz shells, neo soul stacks and house stabs.  Jazz sits on a triplet grid."""
+    comps = figures.COMP_FIGURES[pad_style]
+    slots = 12 if pad_style == "shell_comp" else 16
+    if pad_style == "house_stabs":
+        voicings = [[m + 12 for m in voice_chord(ch, low_midi=48)] for ch in chords]
+    else:
+        voicings = [figures.rootless_voicing(ch, shell=pad_style == "shell_comp")
+                    for ch in chords]
+    i = int(rng.integers(0, len(comps)))
+    main = _comp_layers(comps[i], voicings, slots)
+    alt = _comp_layers(comps[(i + 1) % len(comps)], voicings, slots)
+    sparse = _comp_layers(comps[i][:1], voicings, slots)
+    return {"main": main, "alt": alt, "sparse": sparse, "fill": main}
+
+
+def _bass_pattern_set(bass_style: str, chords: list[Chord],
+                      rng: np.random.Generator, *, octave: int = 0) -> dict[str, str]:
+    if bass_style == figures.WALKING:
+        return _walking_pattern_set(chords, rng)
+    if bass_style in figures.BASS_FIGURES:
+        return _figure_bass_pattern_set(bass_style, chords, octave)
     roots = [_note_name(24 + ch.root) for ch in chords]           # octave 1
     slides = [_note_name(24 + ch.root + 3) for ch in chords]      # slide from m3 above
     octs = [_note_name(36 + ch.root) for ch in chords]
@@ -376,6 +512,8 @@ def _pad_pattern_set(pad_style: str, chords: list[Chord],
                      rng: np.random.Generator) -> dict[str, str]:
     syms = [ch.sym for ch in chords]
     C = _alt(syms)
+    if pad_style in figures.COMP_FIGURES:
+        return _comp_pattern_set(pad_style, chords, rng)
     if pad_style == "arp16":
         return _arp_pattern_set(chords, rng)
     if pad_style == "stabs":
@@ -436,9 +574,12 @@ def _build_track(role: str, preset: str, style: dict, chords: list[Chord],
     elif role == "crackle" or preset == "crackle":
         patterns = {"main": "x", "alt": "x", "sparse": "x", "fill": "x"}
     elif role == "bass":
-        patterns = _bass_pattern_set(style["bass_style"], chords, rng)
+        patterns = _bass_pattern_set(style["bass_style"], chords, rng,
+                                     octave=int(style.get("bass_octave", 0)))
     elif role == "pad":
         patterns = _pad_pattern_set(style["pad_style"], chords, rng)
+    elif role == "keys" and style.get("keys_style") in figures.COMP_FIGURES:
+        patterns = _pad_pattern_set(style["keys_style"], chords, rng)
     elif role == "arp":
         patterns = _arp_pattern_set(chords, rng)
     elif role == "lead":
@@ -563,6 +704,8 @@ def compose(spec: PromptSpec, *, seed: int | None = None) -> Session:
     tracks: list[Track] = []
     used_roles: set[str] = set()
     for role, preset in primary["voices"].items():
+        if role in primary.get("live_only_roles", ()):
+            continue
         tracks.append(_build_track(str(role), str(preset), primary, chords,
                                    motif_key, melody_cfg, rng, spread))
         used_roles.add(str(role))

@@ -70,8 +70,12 @@ function store() {
     removeItem: (k) => map.delete(k) };
 }
 
-export async function start(html, { takes, docs, address = '#k=' + 'ab'.repeat(32), pinned = null, stored = null }) {
-  const page = { byId: new Map(), activeElement: null, calls: [], held: [], failNext: {}, saved: {} };
+export async function start(html, { takes, docs, guide = null, home = null, live = null, address = '#k=' + 'ab'.repeat(32), pinned = null, stored = null, setup = null }) {
+  const page = { byId: new Map(), activeElement: null, calls: [], held: [], failNext: {}, saved: {},
+    home, live: live || { state: 'idle' }, replies: {}, down: false, later: new Map(),
+    /* A person who has been through setup, unless a test says otherwise. */
+    setup: setup || { step: 'count', line: 'Knock or clap 8 even beats.', note: null, choices: [], done: true, seconds: 4,
+      device: null, device_name: null, mode: 'room', channel: 1, hear_me: false } };
   page.body = new El(page, 'body');
   page.root = new El(page, 'html');
   page.activeElement = page.body;
@@ -99,12 +103,23 @@ export async function start(html, { takes, docs, address = '#k=' + 'ab'.repeat(3
   const reply = (status, doc) => ({ ok: status < 400, status, json: async () => doc });
   async function bridge(path, opts = {}) {
     const method = opts.method || 'GET', body = opts.body ? JSON.parse(opts.body) : null;
-    const call = { method, path, body, key: opts.headers && opts.headers['X-Plume-Token'] };
+    const call = { method, path, body, key: opts.headers && opts.headers['X-Plume-Token'], keepalive: !!opts.keepalive };
     page.calls.push(call);
-    const op = path.replace('/api/', '');
+    const op = path.replace('/api/', '').split('?')[0];
+    const liveWhenAsked = page.live;   // a held answer still says what was true when it was asked
     const held = page.held.find((h) => h.op === op && !h.taken);
     if (held) { held.taken = true; await held.until; }
+    if (page.down) throw new TypeError('Failed to fetch');
     if (page.failNext[op]) { page.failNext[op] -= 1; return reply(500, { error: 'no' }); }
+    /* Set a reply to answer that op with: [status, doc], used once. */
+    if (page.replies[op]) { const [status, doc] = page.replies[op]; delete page.replies[op]; return reply(status, doc); }
+    if (path === '/api/home') return reply(200, page.home);
+    if (path === '/api/guide') return reply(200, guide);
+    if (path.startsWith('/api/setup')) return reply(200, page.setup);
+    if (path === '/api/live') return reply(200, liveWhenAsked);
+    if (op === 'start') { page.live = { state: 'starting' }; return reply(200, page.live); }
+    if (op === 'stop') { if (page.live.state !== 'elsewhere') page.live = { state: 'stopping' }; return reply(200, page.live); }
+    if (op === 'cue') return reply(200, { ok: true, cue: body.cue });
     if (path === '/api/session') return reply(200, { csrf: 'ab'.repeat(32), open_take: pinned });
     if (path === '/api/takes') return reply(200, { takes: takes.map((t) => Object.assign({}, t, page.saved[t.id])) });
     if (path.startsWith('/api/take/')) {
@@ -116,7 +131,18 @@ export async function start(html, { takes, docs, address = '#k=' + 'ab'.repeat(3
     page.saved[body.take] = doc;
     return reply(200, doc);
   }
-  Object.assign(globalThis, { window: win, location, history, fetch: bridge,
+  /* The page's slow timers wait for page.poll(), so a test decides when a poll happens. */
+  const realTimeout = globalThis.setTimeout, realClear = globalThis.clearTimeout;
+  let timerId = 1e6;
+  const setLater = (fn, ms, ...rest) => {
+    if (ms < 500) return realTimeout(fn, ms, ...rest);
+    timerId += 1;
+    page.lastDelay = ms;
+    page.later.set(timerId, fn);
+    return timerId;
+  };
+  const clearLater = (id) => { if (!page.later.delete(id)) realClear(id); };
+  Object.assign(globalThis, { window: win, location, history, fetch: bridge, setTimeout: setLater, clearTimeout: clearLater,
     getComputedStyle: () => ({ paddingLeft: '40px', paddingRight: '40px', getPropertyValue: () => '#808080' }),
     document: {
       body: page.body, documentElement: page.root,
@@ -133,14 +159,27 @@ export async function start(html, { takes, docs, address = '#k=' + 'ab'.repeat(3
   page.location = location;
   page.stateLog = stateLog;
   page.history = history;
-  page.settle = async () => { for (let i = 0; i < 8; i++) await new Promise((r) => setTimeout(r, 1)); };
+  page.settle = async () => { for (let i = 0; i < 8; i++) await new Promise((r) => realTimeout(r, 1)); };
+  page.poll = async () => {
+    const due = [...page.later.values()];
+    page.later.clear();
+    due.forEach((fn) => fn());
+    await page.settle();
+  };
+  page.screen = () => page.body.getAttribute('data-screen');
   /* The next POST or GET for this op waits until the returned function is called. */
   page.hold = (op) => { let open; const until = new Promise((r) => { open = r; }); page.held.push({ op, until }); return open; };
   /* What the page shows of a take, opened the way a click on the shelf opens it. */
-  page.open = async (id) => { page.$('shelf-' + id).click(); await page.settle(); };
+  page.open = async (id) => {
+    if (!page.$('shelf-' + id) || page.screen() !== 'shelf') { page.$('nav-takes').click(); await page.settle(); }
+    page.$('shelf-' + id).click();
+    await page.settle();
+  };
   page.shelf = async () => { page.$('nav-takes').click(); await page.settle(); };
   /* Typing leaves the box focused and edited, with no change event yet. */
   page.type = (text) => { const box = page.$('take-name'); box.focus(); box._value = text; box.edited = true; };
+  /* The tab going away: a reload, a closed tab, or the browser leaving this page. */
+  page.fireWindow = (type) => (windowListeners[type] || []).forEach((fn) => fn({}));
   page.posts = (op) => page.calls.filter((c) => c.path === '/api/' + op).map((c) => c.body);
   await import('./app.mjs');
   await page.settle();

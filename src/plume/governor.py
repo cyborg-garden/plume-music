@@ -94,6 +94,12 @@ class HarmonyGovernor:
         """Commit to a key the player named, rather than one heard."""
         self._commit(key_str, bar)
 
+    def restyle(self, style: str) -> None:
+        """Play another style's progression, in the same key, on the same cycle."""
+        self._style = str(style)
+        if self._key is not None:
+            self._commit(self._key, self._commit_bar)
+
     def _commit(self, key_str: str, bar: int | None) -> None:
         self._key = key_str
         try:

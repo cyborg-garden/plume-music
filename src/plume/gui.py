@@ -1,8 +1,10 @@
-"""``plume gui``: a local page for reading takes.  It plays nothing by itself.
+"""``plume gui``: a local page for starting takes and reading them.
 
-v0.1 is The Record and the shelf.  There is no route that starts sound or the
-microphone, and this process opens no audio device.  The one way to hear anything
-is a person clicking Listen, which makes their own browser fetch a WAV from here.
+The page opens no device and starts nothing until a person clicks Start.  This
+process never opens an audio device itself: Start runs ``plume lead`` as a child, and
+everything about that child lives in :mod:`plume.guitake`.  The other way to hear
+anything is a person clicking Listen, which makes their own browser fetch a WAV from
+here.
 
 HTTP lets any website try to reach this, unlike plume's unix socket, and the WAVs
 are recordings of a room.  A DNS-rebinding page could find the random port and
@@ -43,19 +45,26 @@ import secrets
 import socket
 import stat
 import sys
+import signal
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-from . import record
+import numpy as np
+import soundfile as sf
+
+from . import fx as _fx
+from . import guitake, record
 from .realtime import REC_HUMAN, REC_MACHINE, list_sessions
 
 STATE_DIR_ENV = "PLUME_GUI_STATE_DIR"
 
 GET_ROUTES = ("/", "/auth", "/static/{name}", "/api/session", "/api/takes",
-              "/api/take/{id}", "/api/take/{id}/audio/{track}")
-POST_OPS = frozenset({"keep", "rename"})
+              "/api/take/{id}", "/api/take/{id}/audio/{track}", "/api/home", "/api/live", "/api/setup",
+              "/api/guide")
+POST_OPS = frozenset({"keep", "rename", "start", "stop", "cue", "setup/listen", "setup/answer",
+                      "setup/cancel", "setup/reset"})
 
 _STATIC_DIR = Path(__file__).with_name("gui_static")
 #: Every file the page may load, and its type.  Nothing else under the folder is served.
@@ -66,12 +75,30 @@ STATIC_FILES = {
     "stone.js": "text/javascript; charset=utf-8",
     "layout.js": "text/javascript; charset=utf-8",
     "session.js": "text/javascript; charset=utf-8",
+    "live.js": "text/javascript; charset=utf-8",
     "app.js": "text/javascript; charset=utf-8",
+    "guide.js": "text/javascript; charset=utf-8",
     "fonts/schibsted-grotesk-latin-400-normal.woff2": "font/woff2",
     "fonts/schibsted-grotesk-latin-500-normal.woff2": "font/woff2",
     "fonts/dm-mono-latin-400-normal.woff2": "font/woff2",
 }
+_GUIDE_DIR = Path(__file__).with_name("guide")
+#: The guide's pages, in reading order.  Each is ``guide/<id>.md`` in the package, written in
+#: the small Markdown the page renders itself.  The page asks for them by this list only.
+GUIDE_PAGES = ("getting-started", "playing", "sound", "terminal", "troubleshooting")
 _TRACKS = {"human": REC_HUMAN, "machine": REC_MACHINE}
+TOGETHER = "together"
+# What leaves room for both when they peak at once.
+_TOGETHER_GAIN = 0.7
+# The band over that.  Both tracks at 0.7 left the band buried: a direct-input page take
+# (2026-11-05) had machine.wav about 12 dB (LUFS) under human.wav, and the owner asked for
+# the other instruments a little louder with her still slightly on top.
+_TOGETHER_BAND_DB = 3.0
+# Where the sum is soft-limited rather than hard-clipped when both peak at once.  The
+# limiter is untouched below 3 dB under it (0.71 of full scale).
+_TOGETHER_CEILING_DB = 0.0
+_TOGETHER_FRAMES = 65536
+_WAV_HEADER = 44
 
 _CSP = ("default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; font-src 'self'; "
         "connect-src 'self'; media-src 'self'; base-uri 'none'; form-action 'none'; "
@@ -90,6 +117,13 @@ _RANGE_RE = re.compile(r"bytes=(\d{0,18})-(\d{0,18})")
 
 class GuiError(RuntimeError):
     """A clean, user-facing failure."""
+
+
+def platform_problem() -> str | None:
+    """Its sockets and its private files need these, and Windows has neither."""
+    if not hasattr(socket, "AF_UNIX") or not hasattr(os, "O_NOFOLLOW"):
+        return "plume gui needs macOS or Linux, and this computer is neither."
+    return None
 
 
 # ------------------------------------------------------------------ the state file
@@ -264,6 +298,11 @@ class Library:
 
     def pinned_id(self) -> str | None:
         return None if self.pinned is None else self._id_of(self.pinned)
+
+    def id_of_folder(self, folder: Path) -> str | None:
+        """The ID of a take this library can see, or None."""
+        take_id = self._id_of(Path(folder).resolve())
+        return take_id if self.path_of(take_id) is not None else None
 
     @staticmethod
     def _signature(path: Path) -> tuple:
@@ -550,6 +589,22 @@ class _Handler(BaseHTTPRequestHandler):
             self.route = "/api/takes"
             self._json({"takes": self.gui.library.shelf()})
             return
+        if path == "/api/home":
+            self.route = "/api/home"
+            self._json(self.gui.takes.home())
+            return
+        if path == "/api/live":
+            self.route = "/api/live"
+            self._json(self.gui.takes.live())
+            return
+        if path == "/api/setup":
+            self.route = "/api/setup"
+            self._setup_view(parts.query)
+            return
+        if path == "/api/guide":
+            self.route = "/api/guide"
+            self._json({"pages": guide_pages()})
+            return
         if found:
             self.route = "/api/take/{id}/audio/{track}"
             self._audio(found.group(1), found.group(2))
@@ -594,7 +649,45 @@ class _Handler(BaseHTTPRequestHandler):
             body = json.loads(self.rfile.read(max(0, length)))
         except (ValueError, RecursionError):
             raise _Refused(400, "body must be JSON") from None
-        if not isinstance(body, dict) or not isinstance(body.get("take"), str):
+        if not isinstance(body, dict):
+            raise _Refused(400, "body must be an object")
+        if op in ("keep", "rename"):
+            self._keep_or_rename(op, body)
+        else:
+            self._take_op(op, body)
+
+    def _setup_view(self, query: str) -> None:
+        values = parse_qs(query, keep_blank_values=True).get("device", [])
+        try:
+            self._json(self.gui.takes.setup(values[0] if len(values) == 1 else None, check_output=True))
+        except guitake.Refused as refused:
+            self._json({"error": refused.message}, refused.status)
+
+    def _take_op(self, op: str, body: dict) -> None:
+        takes = self.gui.takes
+        try:
+            if op == "start":
+                self._json(takes.start(body))
+            elif op == "stop":
+                self._json(takes.stop())
+            elif op == "setup/listen":
+                self._json(takes.listen(body))
+            elif op == "setup/answer":
+                self._json(takes.answer(body))
+            elif op in ("setup/cancel", "setup/reset"):
+                if body:
+                    raise guitake.Refused(400, "That is not something setup understands.")
+                self._json(takes.cancel_listen() if op == "setup/cancel" else takes.reset_setup())
+            else:
+                self._json(takes.cue(body))
+        except guitake.Refused as refused:
+            doc = {"error": refused.message}
+            if refused.live is not None:
+                doc["live"] = refused.live
+            self._json(doc, refused.status)
+
+    def _keep_or_rename(self, op: str, body: dict) -> None:
+        if not isinstance(body.get("take"), str):
             raise _Refused(400, "body needs a take")
         kept, name = None, None
         if op == "keep":
@@ -638,7 +731,59 @@ class _Handler(BaseHTTPRequestHandler):
             raise _Refused(404, "not found") from None
         self._send(200, body, STATIC_FILES[name])
 
+    def _together(self, take_id: str) -> None:
+        """Both recordings as one, lined up and mixed as it is sent, so a listen writes nothing."""
+        folder = self.gui.library.path_of(take_id)
+        doc = self.gui.library.take(take_id) if folder is not None else None
+        if doc is None or not doc.get("together"):
+            raise _Refused(404, "no such recording")
+        try:
+            human_file = sf.SoundFile(_open_track(folder, REC_HUMAN))
+            machine_file = sf.SoundFile(_open_track(folder, REC_MACHINE))
+        except (OSError, RuntimeError, ValueError):
+            raise _Refused(404, "no such recording") from None
+        with human_file as human, machine_file as machine:
+            if human.samplerate != machine.samplerate:
+                raise _Refused(404, "no such recording")
+            shift = record.playing_delay_frames(folder, human.samplerate)
+            frames = max(human.frames - shift, machine.frames)
+            if frames <= 0:
+                raise _Refused(404, "no such recording")
+            size = _WAV_HEADER + frames * 2
+            start, end, status = 0, size - 1, 200
+            headers = {"Accept-Ranges": "bytes"}
+            wanted = self.headers.get("Range")
+            if wanted is not None:
+                bounds = _parse_range(wanted, size)
+                if bounds is None:
+                    self._send(416, headers={"Content-Range": f"bytes */{size}"})
+                    return
+                start, end = bounds
+                status = 206
+                headers["Content-Range"] = f"bytes {start}-{end}/{size}"
+            self.send_response(status)
+            self._security_headers()
+            self.send_header("Content-Type", "audio/wav")
+            self.send_header("Content-Length", str(end - start + 1))
+            for name, value in headers.items():
+                self.send_header(name, value)
+            self.end_headers()
+            if start < _WAV_HEADER:
+                self.wfile.write(_wav_header(frames, human.samplerate)[start:end + 1])
+            at = max(start, _WAV_HEADER)
+            while at <= end:
+                frame = (at - _WAV_HEADER) // 2
+                count = min(_TOGETHER_FRAMES, frames - frame)
+                pcm = _mixed_pcm(human, machine, shift, frame, count)[(at - _WAV_HEADER) % 2:]
+                pcm = pcm[:end + 1 - at]
+                self.wfile.write(pcm)
+                at += len(pcm)
+            self._log(status)
+
     def _audio(self, take_id: str, track: str) -> None:
+        if track == TOGETHER:
+            self._together(take_id)
+            return
         if track not in _TRACKS:
             raise _Refused(404, "no such recording")
         folder = self.gui.library.path_of(take_id)
@@ -693,6 +838,47 @@ class _Handler(BaseHTTPRequestHandler):
             self._log(status)
 
 
+def _open_track(folder: Path, name: str):
+    """A recording opened by handle, refusing a symlink, a FIFO or anything but a file."""
+    where = _open_folder(folder)
+    try:
+        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=where)
+    finally:
+        os.close(where)
+    f = os.fdopen(fd, "rb")
+    if not stat.S_ISREG(os.fstat(f.fileno()).st_mode):
+        f.close()
+        raise OSError("not a file")
+    return f
+
+
+def _wav_header(frames: int, rate: int) -> bytes:
+    data = frames * 2
+    return (b"RIFF" + (36 + data).to_bytes(4, "little") + b"WAVEfmt " + (16).to_bytes(4, "little")
+            + (1).to_bytes(2, "little") + (1).to_bytes(2, "little") + rate.to_bytes(4, "little")
+            + (rate * 2).to_bytes(4, "little") + (2).to_bytes(2, "little") + (16).to_bytes(2, "little")
+            + b"data" + data.to_bytes(4, "little"))
+
+
+def _read_mono(track, start: int, count: int) -> np.ndarray:
+    """``count`` samples from ``start``, silence past either end of the file."""
+    out = np.zeros(count, dtype=np.float32)
+    if start >= track.frames:
+        return out
+    track.seek(start)
+    got = track.read(count, dtype="float32", always_2d=True).mean(axis=1)
+    out[:len(got)] = got
+    return out
+
+
+def _mixed_pcm(human, machine, shift: int, frame: int, count: int) -> bytes:
+    band = 10.0 ** (_TOGETHER_BAND_DB / 20.0)
+    mixed = (_read_mono(human, frame + shift, count) + _read_mono(machine, frame, count) * band) * _TOGETHER_GAIN
+    # Sample by sample, so a range request reads the same bytes as the whole file.
+    mixed = _fx.limiter(mixed, _TOGETHER_CEILING_DB)
+    return (np.clip(mixed, -1.0, 1.0) * 32767.0).astype("<i2").tobytes()
+
+
 def _parse_range(header: str, size: int) -> tuple[int, int] | None:
     """One byte range, or None.  Several ranges in one request are not offered."""
     found = _RANGE_RE.fullmatch(header.strip())
@@ -726,8 +912,15 @@ class _Server(ThreadingHTTPServer):
 class GuiServer:
     """The bridge: an HTTP server on loopback, its session state, and its library."""
 
-    def __init__(self, *, roots=(), pinned=None, log=None, write_state: bool = True):
+    def __init__(self, *, roots=(), pinned=None, log=None, write_state: bool = True,
+                 spawner=None, lister=None, sessions=None, stopper=None, **take_options):
         self.library = Library(roots, pinned)
+        self.takes = guitake.TakeRunner(
+            self.library.roots[0] if self.library.roots else default_library(),
+            log_path=lambda: state_path().with_name("take.log"),
+            setup_path=lambda: state_path().with_name("setup.json"),
+            id_of=self.library.id_of_folder, spawner=spawner, lister=lister,
+            sessions=sessions, stopper=stopper, **take_options)
         self.log = log if log is not None else (lambda line: print(line, file=sys.stderr, flush=True))
         self._write_state_file = write_state
         self._key = secrets.token_bytes(32)
@@ -765,6 +958,7 @@ class GuiServer:
         return self
 
     def close(self) -> None:
+        self.takes.shutdown()
         if self.httpd is not None:
             self.httpd.shutdown()
             self.httpd.server_close()
@@ -822,15 +1016,65 @@ class GuiServer:
         return None
 
 
+def guide_pages() -> list[dict]:
+    """The guide as text, in reading order.  Words only: the page renders them with textContent."""
+    return [{"id": name, "text": (_GUIDE_DIR / f"{name}.md").read_text(encoding="utf-8")}
+            for name in GUIDE_PAGES]
+
+
 def default_library() -> Path:
     return Path.home() / "Music" / "Plume"
 
 
-def serve(*, take=None, takes=None, open_browser: bool = True) -> None:
-    """Run until Ctrl-C.  Opens no audio device and starts no process."""
+class _Closing(BaseException):
+    """SIGTERM or SIGHUP: leave the same way Ctrl-C does."""
+
+
+def _closing_signal(signum, frame):  # noqa: ARG001
+    raise _Closing
+
+
+def _catch_closing_signals() -> dict:
+    """A closed terminal must not orphan the take this bridge started."""
+    previous = {}
+    for name in ("SIGTERM", "SIGHUP"):
+        sig = getattr(signal, name, None)
+        if sig is not None:
+            try:
+                previous[sig] = signal.signal(sig, _closing_signal)
+            except ValueError:      # not the main thread: then it is not ours to set
+                pass
+    return previous
+
+
+def _stop_the_take(server: GuiServer, write) -> None:
+    def say(line: str) -> None:
+        try:
+            write(line)
+        except OSError:              # the terminal may be what went away
+            pass
+
+    try:
+        if server.takes.live(poll=False)["state"] in ("starting", "waiting", "playing", "stopping"):
+            say("Stopping the take...")
+        stopped = server.takes.shutdown()
+    except (KeyboardInterrupt, _Closing):
+        stopped = False
+    if not stopped:
+        say("The take is still running. 'plume stop' ends it.")
+
+
+def serve(*, take=None, takes=None, open_browser: bool = True, wait=None, **server_options) -> None:
+    """Run until Ctrl-C, which also stops the take this started.
+
+    Opens no audio device, and starts nothing until a person clicks Start.
+    """
     def write(line: str) -> None:
         print(line, flush=True)
 
+    problem = platform_problem()
+    if problem is not None:
+        raise GuiError(problem)
     pinned = None
     if take is not None:
         pinned = Path(take)
@@ -838,7 +1082,8 @@ def serve(*, take=None, takes=None, open_browser: bool = True) -> None:
             raise GuiError(f"{take} is not a take folder (no session.json, decisions.ndjson, "
                            "ending.json or human.wav in it).")
     roots = [Path(takes) if takes is not None else default_library()]
-    server = GuiServer(roots=roots, pinned=pinned).start()
+    server = GuiServer(roots=roots, pinned=pinned, **server_options).start()
+    previous = _catch_closing_signals()
     try:
         opened = False
         if open_browser:
@@ -846,14 +1091,24 @@ def serve(*, take=None, takes=None, open_browser: bool = True) -> None:
 
             opened = webbrowser.open(server.first_url())
         if opened:
-            write("plume gui is open in your browser. It plays nothing unless you click Listen.")
+            write("plume gui is open in your browser. It starts nothing until you click Start.")
             write("Lost the page? 'plume gui url' prints a new link. Ctrl-C here to quit.")
         else:
             # Asked for, or no browser.  This one-time link goes to the player's terminal only.
             write(server.first_url())
             write("Open that link once. 'plume gui url' prints a new one. Ctrl-C here to quit.")
-        threading.Event().wait()
-    except KeyboardInterrupt:
+        if wait is None:
+            threading.Event().wait()
+        else:
+            wait(server)
+    except (KeyboardInterrupt, _Closing):
         pass
     finally:
-        server.close()
+        _stop_the_take(server, write)
+        try:
+            server.close()
+        except (KeyboardInterrupt, _Closing):
+            pass
+        finally:
+            for sig, handler in previous.items():
+                signal.signal(sig, handler)

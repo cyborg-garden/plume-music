@@ -277,10 +277,14 @@ class Listener:
             "bar": int(last["bar"]), "t_s": round(float(last["t_s"]), 2),
             "bpm": float(last["bpm"]), "section": last.get("section"),
             "stage": last.get("entry"), "key": last.get("key"),
-            "chord": last.get("chord"), "you_db": round(you_db, 1),
+            "chord": last.get("chord"), "style": last.get("style"),
+            "style_guess": last.get("style_guess"), "key_guess": last.get("key_guess"),
+            "you_db": round(you_db, 1),
             "band_db": round(band_db, 1), "mic_db": round(heard_db, 1),
             "you_busy": round(busy, 2), "you_notes": notes, "you_source": you_source,
             "input": source, "you_trusted": trusted, "you_why": why, "changes": changes,
+            "playing": last.get("playing"), "playing_trusted": last.get("playing_trusted"),
+            "fade_db": last.get("fade_db"),
         }
 
     def _changes(self, row: dict, you_db: float, busy: float) -> list[str]:

@@ -1427,6 +1427,8 @@ class TestStopActuallyStops:
         `time.sleep` rather than the Event.
         """
         sock = short_sock("threads")
+        # Only this session's: a thread another test left behind is not its doing.
+        before = set(threading.enumerate())
         t, done = stop_when_running(sock, after=0.4)
         t0 = time.monotonic()
         run_lead(material["loud"], session=material["session"], sock=sock,
@@ -1438,7 +1440,8 @@ class TestStopActuallyStops:
         assert elapsed < realtime.ENDING_HARD_DEADLINE_S, (
             f"the ending needed {elapsed:.1f}s")
         alive = [th.name for th in threading.enumerate()
-                 if th.name in ("plume-analysis", "plume-planner", "plume-cues")]
+                 if th not in before
+                 and th.name in ("plume-analysis", "plume-planner", "plume-cues")]
         assert alive == [], f"worker threads outlived the session: {alive}"
 
     def test_the_sideman_stops_the_same_way(self, material, isolated_registry,

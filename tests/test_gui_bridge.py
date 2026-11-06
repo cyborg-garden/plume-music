@@ -17,6 +17,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from plume import gui, realtime, record
@@ -216,7 +217,7 @@ def test_the_token_link_works_from_a_terminal(anon):
 
 # ------------------------------------------------------------- token and cookie
 
-@pytest.mark.parametrize("path", ["/", "/static/app.js", "/api/session", "/api/takes"])
+@pytest.mark.parametrize("path", ["/", "/static/app.js", "/api/session", "/api/takes", "/api/guide"])
 def test_nothing_is_served_without_the_cookie(anon, path):
     assert anon.get(path)[0].status == 401
 
@@ -442,15 +443,17 @@ def test_errors_do_not_echo_the_request(client):
 
 # ---------------------------------------------------------------- the route table
 
-def test_the_route_table_is_exactly_what_v0_1_needs():
+def test_the_route_table_is_exactly_what_the_page_needs():
     assert gui.GET_ROUTES == ("/", "/auth", "/static/{name}", "/api/session", "/api/takes",
-                              "/api/take/{id}", "/api/take/{id}/audio/{track}")
-    assert sorted(gui.POST_OPS) == ["keep", "rename"]
+                              "/api/take/{id}", "/api/take/{id}/audio/{track}",
+                              "/api/home", "/api/live", "/api/setup", "/api/guide")
+    assert sorted(gui.POST_OPS) == ["cue", "keep", "rename", "setup/answer", "setup/cancel", "setup/listen",
+                                    "setup/reset", "start", "stop"]
 
 
-@pytest.mark.parametrize("op", ["start", "cue", "stop", "calibrate", "play", "lead", "jam",
-                                "voice", "delete", "record"])
-def test_no_route_starts_sound_or_the_mic(client, op):
+@pytest.mark.parametrize("op", ["calibrate", "play", "lead", "jam", "voice", "delete", "record",
+                                "meter", "listen"])
+def test_only_start_can_start_anything(client, op):
     assert client.post(f"/api/{op}", {"take": "x"})[0].status == 404
     assert client.get(f"/api/{op}")[0].status == 404
 
@@ -460,7 +463,8 @@ def test_other_methods_are_refused(client, method):
     assert client.request(method, "/api/takes")[0].status == 405
 
 
-def test_the_bridge_cannot_reach_a_sound_device_or_start_a_process():
+def test_the_bridge_cannot_reach_a_sound_device_and_starts_nothing_itself():
+    """The child and its consent live in guitake.py, which test_gui_take.py pins."""
     source = Path(gui.__file__).read_text() + Path(record.__file__).read_text()
     for banned in ("sounddevice", "subprocess", "os.system", "Popen", "os.exec", "os.spawn",
                    "realtime.lead", "realtime.jam", "send_cue", "send_stop"):
@@ -794,10 +798,11 @@ def test_the_real_command_serves_then_quits_cleanly_on_ctrl_c(tmp_path):
     assert not (tmp_path / "state" / "gui.json").exists()
 
 
-def test_gui_is_not_an_audio_verb(tmp_path, monkeypatch):
-    """It opens no audio, so it must not ask for or need consent to play."""
+def test_the_bridge_itself_never_handles_consent_to_play():
+    """Only the Start route's spawner may, and test_gui_take.py pins that one by its syntax."""
     source = Path(gui.__file__).read_text()
     assert "PLUME_ALLOW_AUDIO" not in source and "check_audio_consent" not in source
+    assert "AUDIO_CONSENT" not in source
 
 
 # ------------------------------------------------------- the cookie is not the key
@@ -1081,3 +1086,116 @@ def test_every_answer_has_a_status_line_and_headers(client, request_bytes):
     assert out.startswith(b"HTTP/1."), out[:60]
     assert b"Content-Security-Policy:" in out and b"nosniff" in out
     assert b'"takes"' not in out
+
+
+# ---------------------------------------------------------- together: both as one
+
+def _together_take(folder, *, human, machine, rate=48000, stream=None, source="direct"):
+    import soundfile as sf
+    folder.mkdir(parents=True)
+    sf.write(folder / "human.wav", human, rate, subtype="PCM_24")
+    sf.write(folder / "machine.wav", machine, rate, subtype="PCM_24")
+    (folder / "session.json").write_text(json.dumps({"seed": 1, "input": {"source": source}}))
+    (folder / "decisions.ndjson").write_text("")
+    if stream is not None:
+        (folder / "stream.json").write_text(json.dumps(stream))
+    return folder
+
+
+def _mix(tmp_path, source="direct", stream={"reported_ms": 10.0}):
+    from plume import gui
+    human = np.zeros(4800); human[480 + 100] = 0.5          # she played at 100, heard 10 ms late
+    machine = np.zeros(4800); machine[100] = 0.25
+    folder = _together_take(tmp_path / "takes" / "t1", human=human, machine=machine, stream=stream, source=source)
+    return gui, human, machine, folder
+
+
+def test_together_lines_the_player_up_and_leaves_room_for_both(tmp_path):
+    import soundfile as sf
+    from plume import gui, record
+    gui_mod, _, _, folder = _mix(tmp_path)
+    assert record.playing_delay_frames(folder, 48000) == 480
+    with sf.SoundFile(folder / "human.wav") as h, sf.SoundFile(folder / "machine.wav") as m:
+        pcm = np.frombuffer(gui._mixed_pcm(h, m, 480, 0, 200), dtype="<i2") / 32767.0
+    # The band sits 3 dB up on her (it was buried); both stay under the limiter's knee here.
+    assert pcm[100] == pytest.approx((0.5 + 0.25 * 10 ** (3 / 20)) * 0.7, abs=1e-3)
+    assert abs(pcm[:100]).max() == 0
+
+
+def test_together_rounds_off_two_full_scale_peaks_instead_of_clipping(tmp_path):
+    import soundfile as sf
+    from plume import gui
+    human = np.zeros(4800); human[580] = 0.99; human[1580] = 0.5
+    machine = np.zeros(4800); machine[100] = 0.99; machine[1100] = 0.1
+    folder = _together_take(tmp_path / "takes" / "t1", human=human, machine=machine,
+                            stream={"reported_ms": 10.0}, source="direct")
+    with sf.SoundFile(folder / "human.wav") as h, sf.SoundFile(folder / "machine.wav") as m:
+        pcm = np.frombuffer(gui._mixed_pcm(h, m, 480, 0, 1200), dtype="<i2") / 32767.0
+    # Both at full scale at once is under full scale, not clipped flat.
+    assert 0.9 < pcm[100] < 1.0
+    # A quiet pair passes the limiter untouched.
+    assert pcm[1100] == pytest.approx((0.5 + 0.1 * 10 ** (3 / 20)) * 0.7, abs=1e-3)
+
+
+@pytest.mark.parametrize("stream, want", [
+    ({"calibrated_ms": 20.0, "reported_ms": 10.0}, 960), ({"calibrated_ms": None, "reported_ms": 10.0}, 480),
+    ({"reported_ms": "lots"}, 0), ({"reported_ms": True}, 0), ({"reported_ms": -5}, 0), ({"reported_ms": 90000}, 0), (None, 0)])
+def test_the_delay_is_the_measured_one_then_the_reported_one_then_none(tmp_path, stream, want):
+    from plume import record
+    folder = tmp_path / "t"; folder.mkdir()
+    if stream is not None:
+        (folder / "stream.json").write_text(json.dumps(stream))
+    assert record.playing_delay_frames(folder, 48000) == want
+
+
+def test_a_mix_past_the_end_of_a_file_is_silence_not_a_short_read(tmp_path):
+    import soundfile as sf
+    from plume import gui
+    _, _, _, folder = _mix(tmp_path)
+    with sf.SoundFile(folder / "human.wav") as h, sf.SoundFile(folder / "machine.wav") as m:
+        assert len(gui._mixed_pcm(h, m, 480, 4700, 300)) == 600
+
+
+def test_the_mix_header_says_what_follows():
+    import io, wave
+    from plume import gui
+    with wave.open(io.BytesIO(gui._wav_header(10, 48000) + b"\0" * 20)) as w:
+        assert (w.getnframes(), w.getframerate(), w.getnchannels(), w.getsampwidth()) == (10, 48000, 1, 2)
+
+
+def _two_track_take(takes, name, source):
+    human = np.zeros(4800); human[580] = 0.5
+    machine = np.zeros(4800); machine[100] = 0.25
+    return _together_take(takes / name, human=human, machine=machine,
+                          stream={"reported_ms": 10.0}, source=source)
+
+
+def test_together_is_served_whole_and_by_range(takes, client):
+    _two_track_take(takes, "direct-take", "direct")
+    tid = take_id(client, "direct-take")
+    assert json.loads(client.get(f"/api/take/{tid}")[1])["together"] is True
+    resp, whole = client.get(f"/api/take/{tid}/audio/together")
+    assert resp.status == 200 and resp.getheader("Content-Type") == "audio/wav"
+    assert int(resp.getheader("Content-Length")) == len(whole) == 44 + 4800 * 2
+    pcm = np.frombuffer(whole[44:], dtype="<i2")
+    assert int(np.argmax(abs(pcm))) == 100
+    assert pcm[100] / 32767 == pytest.approx((0.5 + 0.25 * 10 ** (3 / 20)) * 0.7, abs=1e-3)
+    # Odd byte edges and the header boundary come back byte for byte.
+    for first, last in ((0, 43), (10, 60), (45, 244), (100, 100), (len(whole) - 3, len(whole) - 1)):
+        part, got = client.get(f"/api/take/{tid}/audio/together", headers={"Range": f"bytes={first}-{last}"})
+        assert part.status == 206 and got == whole[first:last + 1]
+    assert client.get(f"/api/take/{tid}/audio/together",
+                      headers={"Range": f"bytes={len(whole)}-"})[0].status == 416
+
+
+def test_a_room_mic_take_has_no_together_since_it_may_hold_the_band_already(takes, client):
+    _two_track_take(takes, "room-take", "room")
+    tid = take_id(client, "room-take")
+    assert json.loads(client.get(f"/api/take/{tid}")[1])["together"] is False
+    assert client.get(f"/api/take/{tid}/audio/together")[0].status == 404
+
+
+def test_together_needs_the_page_key(takes, anon, client):
+    _two_track_take(takes, "direct-take", "direct")
+    tid = take_id(client, "direct-take")
+    assert anon.get(f"/api/take/{tid}/audio/together")[0].status in (401, 403)

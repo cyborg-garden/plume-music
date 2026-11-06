@@ -152,6 +152,18 @@ def test_the_callback_only_copies_rings(env, run, extra, midi):
     assert watcher.problems() == []
 
 
+def test_a_detect_take_with_a_monitor_leaves_the_callback_alone(env):
+    sd, watcher = watched_device()
+    with patched_module("sounddevice", sd):
+        realtime.lead(prompt=None, detect=True, tap_start=True, seed=0, status=False,
+                      role=roles_mod.RoleParams(role="lead"), max_minutes=0.04,
+                      socket_path=short_socket_path("detp"), record_dir=str(env / "rec"),
+                      monitor=True, input_device="audio interface", input_channel=1, direct=True)
+    assert (env / "rec" / "stream.json").exists()
+    assert watcher.blocks > 50, "the callback barely ran, so this proves nothing"
+    assert watcher.problems() == []
+
+
 class Dirty:
     """Stands in for the things a callback must not touch."""
 

@@ -1,6 +1,7 @@
 """plume.fx — effects DSP (SPEC section 8).
 
-All functions are stateless, take/return numpy arrays, and are fully
+All functions are stateless (the one exception is :class:`BusTone`, a bar-by-bar
+bus stage that has to carry filter and reverb state across bar lines), take/return numpy arrays, and are fully
 vectorized (no per-sample Python loops; recursive filters run through
 scipy.signal.lfilter).
 
@@ -46,6 +47,7 @@ __all__ = [
     "correlation",
     "crossfade",
     "db_glide",
+    "BusTone",
 ]
 
 _F32 = np.float32
@@ -283,15 +285,16 @@ def _var_delay_tap(x: np.ndarray, sr: int, delay_s: np.ndarray) -> np.ndarray:
     return x[i0] * (1.0 - frac) + x[i1] * frac
 
 
-def chorus(x: np.ndarray, sr: int, depth: float = 0.5) -> np.ndarray:
+def chorus(x: np.ndarray, sr: int, depth: float = 0.5, phase_s: float = 0.0) -> np.ndarray:
     """Juno-style chorus: 2 modulated delay lines (1-10 ms), LFOs 0.5/0.8 Hz.
 
     Mono in -> stereo (N, 2). 50% wet per channel; the two lines' LFOs are
-    quadrature-offset so L/R decorrelate.
+    quadrature-offset so L/R decorrelate.  ``phase_s`` is how far into their
+    cycle the LFOs start, for a caller running this on one note of a longer part.
     """
     xm = _mono(x).astype(np.float64)
     n = xm.shape[0]
-    t = np.arange(n, dtype=np.float64) / sr
+    t = np.arange(n, dtype=np.float64) / sr + float(phase_s)
     depth = float(np.clip(depth, 0.0, 1.0))
     base = 5.5e-3                      # centre of the 1-10 ms range
     amp = 4.5e-3 * depth               # stays within 1..10 ms
@@ -546,3 +549,111 @@ def limiter(x: np.ndarray, ceiling_db: float = -1.0) -> np.ndarray:
     excess = np.abs(xf[over]) - knee
     y[over] = np.sign(xf[over]) * (knee + span * np.tanh(excess / span))
     return y.astype(_F32)
+
+
+# ---------------------------------------------------------------------------
+# live bus tone (2026-11-06): what "darker"/"brighter"/"warmer"/"dry"/"wet" do
+# ---------------------------------------------------------------------------
+
+#: The tilt shelf: a low-pass at this corner, mixed in (dark) or subtracted
+#: (bright) by up to ``BUS_TONE_TILT_MIX``.  The same shape simlead always used.
+BUS_TONE_TILT_HZ = 2600.0
+BUS_TONE_TILT_MIX = 0.55
+#: One "wet" cue adds this much reverb send (freeverb's ``wet`` units, where
+#: ``plume render``'s master default is 0.1), up to the max.  "dry" takes one off.
+BUS_TONE_WET_STEP = 0.12
+BUS_TONE_WET_MAX = 0.36
+#: A cue's whole step glides in over this long, so it is a move, not a switch.
+BUS_TONE_GLIDE_S = 1.0
+_BUS_TONE_IR_S = 1.5
+
+
+def _glide(cur: float, target: float, n: int, per_sample: float) -> np.ndarray:
+    d = float(target) - float(cur)
+    steps = np.minimum(np.arange(1, n + 1, dtype=np.float64) * per_sample, abs(d))
+    return float(cur) + np.sign(d) * steps
+
+
+_IR_CACHE: dict[int, np.ndarray] = {}
+
+
+def _bus_reverb_ir(sr: int) -> np.ndarray:
+    """Freeverb's wet path as a stereo impulse response, faded at its end."""
+    ir = _IR_CACHE.get(int(sr))
+    if ir is None:
+        n = int(_BUS_TONE_IR_S * sr)
+        imp = np.zeros(n, dtype=np.float32)
+        imp[0] = 1.0
+        ir = freeverb(imp, sr, 1.0).astype(np.float64) - imp[:, None]
+        k = n // 10
+        ir[-k:] *= np.linspace(1.0, 0.0, k)[:, None]
+        _IR_CACHE[int(sr)] = ir
+    return ir
+
+
+class BusTone:
+    """A stateful tone stage for a band bus rendered one bar at a time.
+
+    ``process(bar, tilt=, wet=)`` takes the bar's stereo audio and the cue
+    state's targets: ``tilt`` in [-1, 1] (dark .. bright) and ``wet`` in
+    [0, ``BUS_TONE_WET_MAX``].  Both glide toward the target at one cue step
+    per ``BUS_TONE_GLIDE_S``, and are clamped, so nothing a player says can push
+    it past a sane bound.  The shelf filter runs on every bar, carrying its
+    state, so the moment a cue lands there is no transient; the reverb is a
+    convolution with freeverb's own impulse response whose tail overlap-adds
+    into the bars after, so "dry" lets what was already ringing ring out.
+
+    Until anything moves, the bar comes back bit-exact: an uncued take sounds
+    and measures exactly as it did before this stage existed.
+    """
+
+    def __init__(self, sr: int):
+        self.sr = int(sr)
+        self.tilt = 0.0
+        self.wet = 0.0
+        self._b, self._a = _svf_coeffs(self.sr, BUS_TONE_TILT_HZ, 0.707, "lp")
+        self._zi: np.ndarray | None = None
+        self._tail = np.zeros((0, 2), dtype=np.float64)
+
+    def process(self, x: np.ndarray, *, tilt: float, wet: float) -> np.ndarray:
+        x = np.asarray(x)
+        n = x.shape[0]
+        if n == 0:
+            return x.astype(_F32)
+        xf = x.astype(np.float64).reshape(n, -1)
+        if xf.shape[1] == 1:
+            xf = np.repeat(xf, 2, axis=1)
+        if self._zi is None:
+            self._zi = np.zeros((2, xf.shape[1]))
+        lp, self._zi = lfilter(self._b, self._a, xf, axis=0, zi=self._zi)
+        tilt = min(1.0, max(-1.0, float(tilt)))
+        wet = min(BUS_TONE_WET_MAX, max(0.0, float(wet)))
+        tc = _glide(self.tilt, tilt, n, 1.0 / (BUS_TONE_GLIDE_S * self.sr))
+        wc = _glide(self.wet, wet, n, BUS_TONE_WET_STEP / (BUS_TONE_GLIDE_S * self.sr))
+        self.tilt, self.wet = float(tc[-1]), float(wc[-1])
+        moved = bool(np.any(tc != 0.0)) or bool(np.any(wc != 0.0)) or self._tail.shape[0] > 0
+        if not moved:
+            return x.astype(_F32)
+        y = xf + (tc * BUS_TONE_TILT_MIX)[:, None] * (xf - lp)
+        if np.any(wc != 0.0) or self._tail.shape[0]:
+            from scipy.signal import fftconvolve
+            acc_n = n
+            parts = []
+            if np.any(wc != 0.0):
+                send = y.mean(axis=1) * wc
+                ir = _bus_reverb_ir(self.sr)
+                parts.append(np.stack([fftconvolve(send, ir[:, c]) for c in (0, 1)],
+                                      axis=1))
+            parts.append(self._tail)
+            acc_n = max([acc_n] + [p.shape[0] for p in parts])
+            acc = np.zeros((acc_n, 2))
+            for p in parts:
+                acc[:p.shape[0]] += p
+            y = y + acc[:n]
+            self._tail = acc[n:].copy()
+        return y.astype(_F32)
+
+    def flush(self) -> np.ndarray:
+        """What the reverb still has ringing after the last bar."""
+        tail, self._tail = self._tail, np.zeros((0, 2), dtype=np.float64)
+        return tail.astype(_F32)

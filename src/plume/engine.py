@@ -78,6 +78,8 @@ _ROLES = {
     "808kick": "kick", "808sub": "bass", "hat": "hat", "openhat": "hat",
     "clap": "clap", "snare": "snare", "pad": "pad", "pluck": "pluck",
     "epiano": "epiano", "lead": "lead", "crackle": "crackle",
+    "housekick": "kick", "boomkick": "kick", "offhat": "hat", "brush": "snare",
+    "upright": "bass", "roundbass": "bass",
 }
 
 _BRIGHTNESS_KEYS = ("cutoff_hz", "cutoff_start_hz")

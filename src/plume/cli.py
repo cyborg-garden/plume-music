@@ -51,7 +51,8 @@ _SECTION_KEYS = {"name", "bars", "energy", "plays", "chords", "fill"}
 _EXTRA_PARAM_KEYS = {"voicing"}   # engine hints that are not voice params
 
 # Presets whose tracks default to kind="drum" when --kind is not given.
-_DRUM_PRESETS = {"808kick", "hat", "openhat", "clap", "snare", "crackle"}
+_DRUM_PRESETS = {"808kick", "hat", "openhat", "clap", "snare", "crackle",
+                 "housekick", "boomkick", "offhat", "brush"}
 
 
 class CliError(Exception):
@@ -2213,6 +2214,9 @@ def _session_or_prompt(args, *, what: str):
         raise CliError(f"{what}: give either --prompt or --session, not both")
     if prompt:
         return None, prompt
+    if getattr(args, "detect", False):
+        # Before discovery: a session file lying in this folder is not this take's.
+        return None, None
     return _load_session(resolve_session(explicit)), None
 
 
@@ -2368,6 +2372,15 @@ def cmd_simlead(args):
 def cmd_lead(args):
     realtime = _import("plume.realtime")
     # Argument errors before hardware probing (see cmd_jam).
+    if args.detect:
+        if not args.tap_start:
+            raise CliError("--detect needs --tap-start: plume listens for what it detects")
+        if getattr(args, "session", None):
+            raise CliError("--detect plays from what it hears, not from a session: "
+                           "drop --session or --detect")
+        if args.style:
+            raise CliError("--style is not read with --detect: "
+                           "name the style in the prompt, or leave it out and plume will guess")
     max_minutes = _parse_max_minutes(getattr(args, "max_minutes", None))
     midi_extra = _midi_args(args)
     try:
@@ -2400,7 +2413,7 @@ def cmd_lead(args):
                 max_minutes=max_minutes,
                 session=session,
                 prompt=prompt,
-                style=args.style,
+                style=args.style or "lofi",
                 seed=args.seed,
                 params=params,
                 role=role,
@@ -2411,6 +2424,7 @@ def cmd_lead(args):
                 from_bar=args.from_bar,
                 socket_path=args.socket,
                 **({"tap_start": True} if args.tap_start else {}),
+                **({"detect": True} if args.detect else {}),
                 **({} if args.wind_down is None else {"wind_down_s": args.wind_down}),
                 **midi_extra,
                 **in_extra,
@@ -2582,7 +2596,7 @@ def _route_kwargs(args) -> dict:
     """The input route, only as far as it was asked for: a bare invocation must reach
     the transport with the signature it always had."""
     extra = {}
-    for name in ("input_device", "input_channel", "voice_channel"):
+    for name in ("input_device", "input_channel", "voice_channel", "output_device"):
         if getattr(args, name, None) is not None:
             extra[name] = getattr(args, name)
     if getattr(args, "direct", False):
@@ -2621,8 +2635,11 @@ def cmd_watch(args):
     watch = _import("plume.watch")
     def write(line):
         print(line, flush=True)
-    watch.follow(args.record_dir, every=args.every,
-                 changes_only=args.changes_only, write=write)
+    try:
+        watch.follow(args.record_dir, every=args.every,
+                     changes_only=args.changes_only, write=write)
+    except KeyboardInterrupt:      # Ctrl-C is how you leave a watch, not a failure
+        pass
     return {"ended": True}, "", 0
 
 
@@ -2976,6 +2993,10 @@ tempo. --role trade alternates authority every trade_bars.
 
 Cues arrive live on a local socket — see 'plume cue'. --record DIR writes
 human.wav + machine.wav + decisions.ndjson. Ctrl-C ends gracefully.
+
+--tap-start --detect needs no PROMPT at all: whatever the prompt does not name,
+plume works out as you play. The key comes from what it hears, and the style
+from your tempo, then your key and how busy you are. Both are guesses.
 
 Needs sounddevice + a duplex-capable audio device; without one it errors
 cleanly — use 'plume simlead' for the offline twin. Run 'plume roles' for the
@@ -3399,9 +3420,9 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--mind", action="append", default=None, metavar="K=V",
                    help="override a MindParams field (repeatable; run "
                         "'plume mind')")
-    p.add_argument("--style", default="lofi",
-                   help="style for --prompt sessions that name none "
-                        "(default: lofi)")
+    p.add_argument("--style", default=None,
+                   help="not read when a prompt or session is given, which is every "
+                        "take: name the style in the prompt")
     p.add_argument("--seed", type=int, default=0,
                    help="integer rng seed (default: 0)")
     p.add_argument("--tightness", type=float, default=None,
@@ -3421,6 +3442,10 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--count-in", dest="count_in", action="store_true",
                    default=False, help=_COUNT_IN_HELP)
     _add_route_flags(p)
+    p.add_argument("--output-device", dest="output_device", default=None, metavar="NAME",
+                   help="send the sound here and leave the input alone (its whole name, as "
+                        "'plume inputs' lists it). Two devices have two clocks: this has "
+                        "not been tried on real gear")
     p.add_argument("--wind-down", dest="wind_down", type=float, default=None,
                    metavar="SECONDS",
                    help="with --tap-start: this long after the drums start, signal "
@@ -3430,6 +3455,9 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="wait silently for 4 knocks, start drums at that tempo "
                         "and hold it; bass and chords join in your key once it "
                         "has settled, then the melody")
+    p.add_argument("--detect", action="store_true", default=False,
+                   help="with --tap-start: no session, and PROMPT is optional. What "
+                        "it does not name, plume guesses from your playing")
     _add_midi_flag(p)
     p.set_defaults(func=cmd_lead)
 
@@ -3511,8 +3539,8 @@ def _build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser(
         "gui", parents=[common],
-        help="read your takes in a local page: what plume did, a roast, and Keep. "
-             "Opens no audio device; plays a take only when you click Listen",
+        help="start a take and read your takes in a local page: what plume did, a roast, "
+             "and Keep. It opens no device and starts nothing until you click Start",
     )
     p.add_argument("action", nargs="?", choices=("url",), default=None,
                    help="'url' prints a new one-time link to the running page")

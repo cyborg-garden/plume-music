@@ -739,8 +739,13 @@ class TestShutdown:
         take.run("lead", tap_start=True, midi="auto", rate=8.0, human=decoy(200.0),
                  max_minutes=3.0, script=presses_script(take.mido, presses))
         take.assert_ended_cleanly(realtime.END_SILENCE)
-        assert take.rows()
+        rows = [r for r in take.rows() if "playing" in r]
+        assert rows
         assert take.sd.stream.sounded()
+        # The short wait reaches keys too.  A playing row reads the bar two before it.
+        bar_s = 240.0 / rows[-1]["bpm"]
+        heard_until = [r for r in rows if r["playing"]][-1]["t_s"] - bar_s
+        assert 16.0 <= rows[-1]["t_s"] + bar_s - heard_until <= 23.0
 
 
 @pytest.mark.usefixtures("fake_device_consent")

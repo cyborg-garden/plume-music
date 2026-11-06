@@ -1,18 +1,17 @@
 # plume
 
-> the visible trace of something else happening — smoke off a fire, spray off
+> the visible trace of something else happening: smoke off a fire, spray off
 > a wave. a plume never starts on its own. it rises off what you're already doing.
 
-**Play music with your machine.** Plume is a musical partner: hand it a prompt
-("chill trap beat over lofi ambient synthwave at 120 bpm and 3 major
-movements") and it writes an arrangement you can read, revise, and render —
-deterministically, to the sample. Live mode (v1) listens through the
-microphone, catches your beat, and enters like a sideman: late, underneath,
+**Play music with your machine.** Give plume a prompt ("chill trap beat over lofi
+ambient synthwave at 120 bpm and 3 major movements") and it writes an arrangement you
+can read, change and render, the same to the sample every time. Live, it listens through
+a mic or an instrument, catches your beat, and comes in like a sideman: late, underneath,
 on the phrase boundary.
 
-Built LLM-first: the CLI is the instrument, the session is a JSON score, every
-command speaks `--json`, and `render` + `analyze` close the loop so an agent
-can hear its own work headlessly — no speakers, no DAW, no GPU.
+It is built for language models as much as for people. The CLI is the instrument, a
+session is a JSON score, every command speaks `--json`, and `render` plus `analyze` let
+an agent hear its own work with no speakers, no DAW and no GPU.
 
 ## Quickstart
 
@@ -38,21 +37,34 @@ plume render && plume analyze take1.wav --json
 
 Every mutating command returns a state hash; `plume show --json` dumps the
 whole score; `plume get`/`set`/`unset` address any field by dotted path.
-Styles: `trap`, `lofi`, `synthwave` (each a data file — new genres need zero
-code). Voices: 808 kick/sub (key-tuned, glides), hats, clap, snare, supersaw
-pad, pluck, FM e-piano, lead, vinyl crackle — pure NumPy DSP, 48kHz.
+Styles: `trap`, `lofi`, `midwest`, `synthwave`, `jazz`, `house`, `hiphop` and
+`rnb`, each a data file; a prompt can also say `boom bap`, `r&b` or `neo soul`.
+Voices: 808 kick/sub (key-tuned, glides), hats, clap, snare, supersaw pad, pluck,
+FM e-piano, lead, vinyl crackle, plus a house kick and stab, a boom bap kick and a
+round bass, all pure NumPy DSP at 48kHz. Beside them is a small recorded kit with a
+brush on a snare, and recorded double bass, grand piano, electric piano and vibraphone,
+all from open sample libraries (see `src/plume/samples/README.md`).
 
 ## Play with it
 
-[docs/PLAYING.md](docs/PLAYING.md) covers playing a real instrument with plume:
-counting it in, talking to it, running it with a coding agent, and setting up for
-recording or filming.
+`plume gui` opens a local page with one Start button. It opens no device and starts
+nothing until you click Start. The first press is the setup, one line at a time: play
+something so plume can find your channel and check your level, say whether headphones are
+on, then count, and the band comes in. Later presses go straight to the count. A Guide
+link next to Settings has short pages on all of this, including how to drive a take from a
+terminal or a coding agent.
 
-## Live mode (v1 — the sideman)
+[docs/PLAYING.md](docs/PLAYING.md) has the long version: counting in, talking to plume,
+running it with a coding agent, and recording or filming. The page has only ever started
+simulated takes, and only one Mac and one audio interface have been tried with plume at
+all, so other computers and other gear are untested. [docs/DIRECT-INPUT-TEST.md](docs/DIRECT-INPUT-TEST.md)
+says how to try it on real hardware.
 
-One pipeline, two transports. `sim` streams a WAV through the identical
-listen → mind → duet code path offline (deterministic, faster than real time);
-`jam` is the same thing live through your mic and speakers.
+## Live mode (v1: the sideman)
+
+One pipeline, two transports. `sim` streams a WAV through the same
+listen → mind → duet code offline, deterministic and faster than real time.
+`jam` does the same thing live through your mic and speakers.
 
 ```bash
 plume sim you_playing.wav --style lofi --out duet.wav   # offline duet
@@ -65,29 +77,27 @@ plume jam --record takes/             # also writes human.wav + machine.wav + lo
 plume calibrate                       # measure your room's speaker->mic round trip
 ```
 
-The machine enters only after it has heard you for `min_listen_bars` with a
-locked beat, on a phrase boundary, 8 dB under your level — then ramps in,
-thins out when you get busy, lays out when you stop, and re-enters the same
-way. Every threshold is a `--mind k=v` override; every decision lands in the
-NDJSON log with a human-readable reason. A worked example lives in
-`renders/duet_demo.*` (input, duet, decision log, manifest).
+The machine comes in only after it has heard you for `min_listen_bars` with a
+locked beat, on a phrase boundary, 8 dB under your level. Then it ramps in, thins
+out when you get busy, lays out when you stop, and comes back the same way. Every
+threshold is a `--mind k=v` override, and every decision lands in the NDJSON log
+with a reason a person can read. A worked example is in `renders/duet_demo.*`
+(input, duet, decision log, manifest).
 
-**Timing is compensated for your room.** Stream time is not room time: audio
-placed on the tracked downbeat leaves the speakers an input+output latency
-later — 112 ms on the development laptop, a fifth of a beat at 120 bpm.
-`plume calibrate` plays a short click train and matched-filters the mic to
-measure the true round trip once per device pair; the sideman (follow-mode
-`jam`) then places bars that much early, so the machine lands **in the room**
-on your beat. (Lead mode owns the clock — its correction is analysis-side,
-and still on the list.)
-Uncalibrated sessions fall back to the stream's reported latency (roughly
-right), and `--latency-comp MS` overrides either (`0` disables).
+**Timing is corrected for your room.** Audio placed on the tracked downbeat leaves
+the speakers one input-plus-output latency later: 112 ms on the development laptop,
+a fifth of a beat at 120 bpm. `plume calibrate` plays a short click train and listens
+for it to measure the real round trip, once per device pair. The sideman
+(follow-mode `jam`) then places bars that much early, so the machine lands on your
+beat in the room. Lead mode owns the clock, so its correction belongs in the analysis,
+and that is still to do. Uncalibrated sessions use the latency the stream reports,
+which is roughly right, and `--latency-comp MS` overrides either (`0` turns it off).
 
-## Lead mode (v2 — the band)
+## Lead mode (v2: the band)
 
-v1 gave the machine one chair: you own the clock, it earns its way in. v2 adds
-the other chair, and the ability to swap mid-song. **The machine starts — from
-a prompt or a session you already wrote — and you join *it*.**
+In v1 the machine has one chair: you own the clock, and it earns its way in. v2 adds
+the other chair, and the two can swap mid-song. **The machine starts, from a prompt
+or a session you already wrote, and you join *it*.**
 
 ```bash
 plume simlead you_joining.wav --prompt "chill trap at 120 bpm"   # offline twin
@@ -99,91 +109,80 @@ plume lead "chill trap at 120 bpm"     # live: the machine starts, you join
 plume cue "take it out"                # to a running lead session
 ```
 
-Authority is two dials, not a mode: `clock_authority` (who owns time) and
-`form_authority` (who owns the form), each a float, each moving *during* the
-session — that movement is the negotiation. Push the beat and it concedes
-tempo and comes with you; lay back and it settles; get busy and it yields the
-lead; stop and it holds the floor; play a semitone away and it transposes to
-meet you. Everything lands in the decision log with a reason, and the flagship
-pair in `renders/lead_demo.*` and `renders/trade_demo.*` (mix, decision log,
-manifest) is regenerated from scratch by
-`.venv/bin/python tests/lead_demo.py`.
+Who leads is two dials: `clock_authority` (who owns time) and `form_authority`
+(who owns the form). Each is a number that moves during the session, and that
+movement is the negotiation. Push the beat and it gives up tempo and comes with you.
+Lay back and it settles. Get busy and it hands you the lead. Stop and it holds the
+floor. Play a semitone away and it transposes to meet you. Everything lands in the
+decision log with a reason. `renders/lead_demo.*` and `renders/trade_demo.*` (mix,
+decision log, manifest) are rebuilt from scratch by `.venv/bin/python tests/lead_demo.py`.
 
-Two things worth knowing, because they are what make it usable rather than
-demoable:
-
-- **The negotiation listens to your playing, not your fader.** The analysis
-  chain takes your level out before anything reads it, so the same take at
-  0 dB and at −20 dB produces bit-identical decisions. (It did not, once:
-  turning a player down 20 dB used to make the machine hand them the band.)
-- **A cue either changes the music or says it did not.** Every cue kind reports
-  its actual effect per bar in `cue_effects`; the ones the renderer cannot
-  honour say "understood but NOT applied", and why.
+- **The negotiation listens to your playing, not your fader.** The analysis takes
+  your level out before anything reads it, so the same take at 0 dB and at −20 dB
+  makes exactly the same decisions.
+- **A cue either changes the music or says it did not.** Every cue reports its real
+  effect per bar in `cue_effects`. A cue the renderer cannot honour says "understood
+  but NOT applied", and why.
 
 ## Live sessions are findable, stoppable, and time-bounded
 
-Live mode makes sound in a real room. Twice during development an automated
-agent started a session and left it running, still audible, stoppable only by finding the PID. So a live session is opt-in to
-start, and it can always be found and ended without hunting a process.
+Live mode makes sound in a real room, and an automated agent can start a session and
+walk away from it. So a live session needs an explicit yes to start, and it can always
+be found and ended without hunting for a process.
 
 ```bash
 plume sessions                         # what is running: pid, role, style, uptime
 plume stop                             # end it (finishes the bar, flushes the tail)
 plume stop --all                       # end every live session
 plume stop --pid 4212                  # end that one
+plume gui                              # a page with one Start: it starts nothing until you click
 plume gui --take takes6/               # read a take: what plume did, a roast, Keep
 plume gui url                          # a new link to the running page
 plume jam --max-minutes 20             # or lead: self-stops after 20 minutes
 plume lead "..." --max-minutes 0       # no cap (an interactive human opting out)
 ```
 
-Four things hold the line, and none of them is a convention anyone has to
-remember:
+None of these rules is a convention anyone has to remember:
 
-- **Nothing opens the speakers unattended.** An interactive terminal, or an
-  explicit `PLUME_ALLOW_AUDIO=1`. Nothing else. On a machine with no audio
-  hardware you get the device error instead — a box that cannot play must not
-  be told to set a consent flag that cannot help it.
-- **Every live session registers itself** — one JSON file per pid under
-  `$PLUME_SESSION_DIR` (default `<tmpdir>/plume-sessions/`), so `sessions`
-  and `stop` work across terminals and outlive the shell that started them.
-  Records whose process is gone are pruned silently.
-- **`plume stop` is graceful first.** It asks over the session's own socket —
-  the same channel `plume cue` uses — and the session finishes its bar,
-  flushes its tail and writes its records, exactly as Ctrl-C does. Then
-  SIGINT, then SIGTERM. Never SIGKILL: that would cut the tail and throw the
-  records away. If nothing is running it says so and exits 0.
-- **Signals are graceful too, including in the background.** A session
-  started in the background by a non-interactive shell (`plume jam &` in a
-  script, an agent's subprocess, a CI job) inherits SIGINT *ignored* — so it
-  used to play straight through Ctrl-C's signal, and the only thing that could
-  end it was a SIGTERM that destroyed the take. Live sessions now handle
-  SIGINT and SIGTERM themselves and end the same graceful way. A second
-  Ctrl-C still gets you out.
-- **A session with nobody watching ends itself** after `--max-minutes`
-  (default 60; `0` disables). It ends the same graceful way, and it says why —
-  in the status line and in `ending.json` beside the recording, so a take that
-  stops because a cap fired never looks like one somebody ended on purpose.
+- **Nothing opens the speakers unattended.** It takes an interactive terminal, or an
+  explicit `PLUME_ALLOW_AUDIO=1`. On a machine with no audio hardware you get the
+  device error instead, since a consent flag could not help there.
+- **Every live session registers itself,** as one JSON file per pid under
+  `$PLUME_SESSION_DIR` (default `<tmpdir>/plume-sessions/`), so `sessions` and `stop`
+  work from any terminal and outlive the shell that started them. Records whose
+  process is gone are pruned silently.
+- **`plume stop` is graceful first.** It asks over the session's own socket, the one
+  `plume cue` uses, and the session finishes its bar, flushes its tail and writes its
+  records, exactly as Ctrl-C does. Then SIGINT, then SIGTERM. Never SIGKILL, which
+  would cut the tail and lose the records. If nothing is running it says so and exits 0.
+- **Signals are graceful in the background too.** A session started in the background
+  by a non-interactive shell (`plume jam &` in a script, an agent's subprocess, a CI job)
+  inherits SIGINT ignored. Live sessions handle SIGINT and SIGTERM themselves, so they
+  still end the graceful way and keep the take. A second Ctrl-C still gets you out.
+- **A session with nobody watching ends itself** after `--max-minutes` (default 60;
+  `0` turns it off). It ends the same graceful way and says why, in the status line and
+  in `ending.json` beside the recording, so a take stopped by the cap never looks like
+  one somebody ended on purpose.
 
 ## The papers behind the play
 
-- **[DREAM.md](DREAM.md)** — why this exists; the sideman ethic
-- **[RESEARCH.md](RESEARCH.md)** — the evidence base (entrainment science, 40
-  years of interactive music systems, groove microtiming, LLM-tool failure
-  modes), distilled from a 10-agent research sweep
-- **[SPEC.md](SPEC.md)** — architecture, score model, notation grammar, API
+- **[DREAM.md](DREAM.md):** why this exists, and the sideman ethic
+- **[RESEARCH.md](RESEARCH.md):** the evidence base (entrainment science, 40 years of
+  interactive music systems, groove microtiming, LLM-tool failure modes), distilled
+  from a 10-agent research sweep
+- **[SPEC.md](SPEC.md):** architecture, score model, notation grammar, API
 
 ## Roadmap
 
-- **v0 — the rhythm section** ✅ prompted mode end-to-end
-- **v1 — the sideman** ✅ live listening: causal beat/key tracking,
-  predict-don't-react clock, the negotiation state machine
-- **v2 — the band** ✅ lead mode and role negotiation: both chairs are real,
-  and the chair changes mid-song (this)
-- **The smart looper** — "make a loop of this": play it by mic or MIDI, and
-  plume trims it, fits it to the tempo and keeps it going. See DREAM.md
-- **v3 — the studio** — record the human into the session, mix stems, bounce
-- **v∞ — the room** — multiple agents in different chairs; forkable jams
+- **v0, the rhythm section** ✅ prompted mode end to end
+- **v1, the sideman** ✅ live listening: causal beat and key tracking, a clock that
+  predicts instead of reacting, the negotiation state machine
+- **v2, the band** ✅ lead mode and role negotiation: both chairs are real, and the
+  chair changes mid-song
+- **The smart looper:** "make a loop of this". Play it by mic or MIDI, and plume trims
+  it, fits it to the tempo and keeps it going. See DREAM.md
+- **v3, the studio:** record the human into the session, mix stems, bounce
+- **v∞, the room:** several agents in different chairs, and jams anyone can fork
 
 License: AGPL-3.0-or-later. Bundled samples carry their own licences and credits: see
 [src/plume/samples/README.md](src/plume/samples/README.md).

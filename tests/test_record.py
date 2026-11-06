@@ -176,10 +176,33 @@ def test_the_note_is_ours_and_never_the_engines_text():
 
 
 def test_darker_says_the_log_claims_it_and_nobody_can_find_it():
+    """A take from before 2026-11-06: live logged the tone and never applied it.
+    Its note said "from here on", and that wording is how such a take is known."""
     rows = song(40, cues={20: {"applied": "darker", "effects": [
         "cue 'darker' (texture:darker): tone +0.0 -> -1.0 from here on"]}})
     event = by_label(record.translate(rows, ending_doc()), "darker, no effect")
     assert event["dashed"] and "I can't find that it did" in event["sentence"]
+
+
+@pytest.mark.parametrize("text,effect", [
+    ("darker", "cue 'darker' (texture:darker): tone +0.0 -> -1.0, gliding in over 1s"),
+    ("warmer", "cue 'warmer' (texture:warmer): tone +0.0 -> -0.5, gliding in over 1s"),
+    ("wet", "cue 'wet' (texture:wet): reverb 0.00 -> 0.12, gliding in over 1s")])
+def test_a_tone_cue_lands_now_that_live_plays_it(text, effect):
+    rows = song(40, cues={20: {"applied": text, "effects": [effect]}})
+    event = by_label(record.translate(rows, ending_doc()), f"{text} landed")
+    assert not event["dashed"]
+
+
+@pytest.mark.parametrize("text,effect", [
+    ("dry", "cue 'dry' (texture:dry): reverb already off; nothing changed"),
+    ("darker", "cue 'darker' (texture:darker): tone already at -1.0, as far as it goes; "
+               "nothing changed")])
+def test_a_tone_cue_at_its_limit_did_nothing(text, effect):
+    rows = song(40, cues={20: {"applied": text, "effects": [effect]}})
+    events = record.translate(rows, ending_doc())
+    assert not [e for e in events if e["label"].endswith(" landed")]
+    assert by_label(events, f"{text}, did nothing")["dashed"]
 
 
 def test_only_an_end_cue_gets_the_credit_for_ending():
@@ -1316,11 +1339,23 @@ def test_an_input_the_band_cannot_reach_never_blames_the_mic(route):
     text = words(events, lines)
     assert "The mic" not in text and "this mic" not in text
     assert "no idea what you did" not in text
-    assert "Nothing from you for 30 seconds" in text
-    assert "I heard nothing from you for 30 seconds" in text
+    assert "I stopped hearing you, so I began to fade" in text
+    assert "I stopped hearing you, so I faded out" in text
+    # That wait depends on the tempo, so no number can be true of every take.
+    assert "30 seconds" not in text
     assert "I could still hear you" in text
     # Class C: being able to hear is not leave to judge.
     assert "drag" not in text
+
+
+@pytest.mark.parametrize("route", ["direct", "midi"])
+def test_an_input_that_never_heard_a_note_really_did_wait_thirty_seconds(route):
+    rows = song(20, heard_bar=None, band_bar=None, cues={b: {"fade_db": -6.0} for b in range(16, 20)})
+    ending = ending_doc(realtime.END_SILENCE)
+    text = words(record.translate(rows, ending, route=route))
+    assert "Nothing from you for 30 seconds" in text
+    assert "I heard nothing from you for 30 seconds" in text
+    assert "I stopped hearing you" not in text
 
 
 @pytest.mark.parametrize("route", ["room", "unknown"])
@@ -1420,3 +1455,48 @@ def test_a_log_too_big_to_read_does_not_claim_before_the_first_bar():
             "loop": {"op": "record", "ok": True}}]
     events = record.translate([], ending_doc(), log, unread=True)
     assert [e["tier"] for e in events] == ["end"]
+
+
+# ------------------------------------------------------- when the band followed
+
+def _song_with_follow(moved, *, bar=30, bars=3):
+    rows = song(40)
+    for r in rows:
+        if r.get("entry") != "drums":
+            r["follow"] = {"mode": "follow", "trusted": True, "gain_db": 0.0, "density": 1.0,
+                           "moved": [], "bars": bars}
+    rows[bar]["follow"]["moved"] = moved
+    return rows
+
+
+@pytest.mark.parametrize("route", ["direct", "midi"])
+def test_a_move_the_band_made_to_follow_is_a_moment(route):
+    events = record.translate(_song_with_follow(["softer"]), ending_doc(), route=route)
+    event = by_label(events, "band followed")
+    assert event["bar"] == 30 and event["tier"] == "plan"
+    assert "softer" in event["sentence"] and "3 bars" in event["sentence"]
+    assert "came down" in event["sentence"]
+
+
+def test_on_a_room_mic_it_only_says_what_the_mic_heard():
+    events = record.translate(_song_with_follow(["louder"], bars=4), ending_doc(), route="room")
+    sentence = by_label(events, "band followed")["sentence"]
+    assert "mic" in sentence and "4 bars" in sentence and "you" not in sentence.lower().split()
+
+
+def test_each_way_it_followed_gets_its_own_plain_sentence():
+    events = record.translate(_song_with_follow(["softer", "sparser"]), ending_doc(), route="direct")
+    said = [e["sentence"] for e in events if e["label"] == "band followed"]
+    assert len(said) == 2 and len(set(said)) == 2
+
+
+def test_a_moved_word_it_does_not_know_never_reaches_the_page():
+    events = record.translate(_song_with_follow(["human sounds tired"], bars=99), ending_doc(),
+                              route="direct")
+    assert not [e for e in events if e["label"] == "band followed"]
+    assert_clean(words(events))
+
+
+def test_steady_following_says_nothing():
+    events = record.translate(_song_with_follow([]), ending_doc(), route="direct")
+    assert not [e for e in events if e["label"] == "band followed"]

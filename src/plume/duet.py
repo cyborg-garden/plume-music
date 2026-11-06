@@ -111,6 +111,7 @@ its tests stand alone while the mind is built concurrently.
 """
 from __future__ import annotations
 
+import json
 import math
 from typing import TYPE_CHECKING
 
@@ -118,7 +119,9 @@ import dataclasses
 
 import numpy as np
 
+from plume import figures
 from plume import fx as _fx
+from plume.governor import progression_symbols
 from plume.groove import GrooveParams, apply_groove
 from plume.styles_lib import load_style
 from plume.theory import (
@@ -226,6 +229,40 @@ _ROLE_GAIN_DB = {
 }
 _ROLE_PAN = {"hat": 0.25, "openhat": 0.2, "clap": -0.1, "lead": -0.15,
              "arp": 0.2, "tom": -0.2, "crash": -0.3}
+
+
+_CHORUS_PEAK_ROOM = 2.0 ** 0.5
+
+
+def _hold_level(wet: np.ndarray, dry: np.ndarray, peak_room: float = 1.0) -> np.ndarray:
+    """``wet`` at the RMS of ``dry``, its peak no more than ``peak_room`` times that of ``dry``
+    and never past full scale because of this."""
+    wet_rms = float(np.sqrt(np.mean(wet ** 2))) if wet.size else 0.0
+    if wet_rms <= 0.0:
+        return wet
+    dry_peak = float(np.abs(dry).max())
+    ceiling = max(dry_peak, min(1.0, peak_room * dry_peak))
+    return wet * min(float(np.sqrt(np.mean(dry ** 2))) / wet_rms,
+                     ceiling / float(np.abs(wet).max()))
+
+
+def _saturate(y: np.ndarray, amount: float) -> np.ndarray:
+    """fx.drive at the note's own level: the peaks round off, so it is as loud as before
+    with a lower peak.  This drives one note at a time, where an offline render drives the
+    whole mix."""
+    return _hold_level(_fx.drive(y, amount).astype(np.float64), y)
+
+
+def _chorus(y: np.ndarray, sr: int, depth: float, at_s: float) -> np.ndarray:
+    """fx.chorus on one note, level held.  ``at_s`` is when the note plays: the wobble carries
+    on from there, as it does across a whole part offline, so a pitch that falls in a dip of
+    the delay on one note does not fall in it on every note.  Offline the part goes through
+    one chorus and overlapping notes share it; here each note has its own.  Half the note goes
+    through the delay, so the level comes back at about 3 dB and the peak gets that much room."""
+    wet = _fx.chorus(y.astype(np.float32), sr, depth, phase_s=at_s).astype(np.float64)
+    return _hold_level(wet, y, peak_room=_CHORUS_PEAK_ROOM)
+
+
 # roles Mind may name that a style spells differently
 _ROLE_ALIASES = {"keys": "pad"}
 
@@ -354,14 +391,17 @@ class _PlanEcho:
 class DuetEngine:
     """Bar-by-bar accompanist over one style (SPEC-V1 section 5)."""
 
-    def __init__(self, *, style: str, key_fallback: str = "A minor",
+    def __init__(self, *, style: "str | dict", key_fallback: str = "A minor",
                  seed: int, sr: int = 48000,
                  fade_in_bars: float | None = None,
                  fade_out_bars: float | None = None,
                  texture_xfade_beats: float | None = None,
                  announce_gain_db: float | None = None,
                  announce_beats: float | None = None):
-        self._style = load_style(style)
+        # A style is a bundled one's name, or a style already loaded and changed (the
+        # plain beat a detected take starts on: bandentry.plain_intro_style).
+        self._style = (load_style(style) if isinstance(style, str)
+                       else json.loads(json.dumps(style)))
         self._key_fallback = parse_key(key_fallback)
         self._seed = int(seed)
         self._sr = int(sr)
@@ -391,6 +431,7 @@ class DuetEngine:
             for role, variants in self._style.get("slow_drum_patterns", {}).items()}
         # introspection: events chosen for the most recent render_bar
         self.last_events: list[dict] = []
+        self._progressions: dict[str, list[str]] = {}
 
         # ---- gentle entrances/exits (v1.4) --------------------------------
         # Style data first, constructor override second (tests and the live
@@ -888,6 +929,7 @@ class DuetEngine:
         roles: dict[str, float] = dict(getattr(plan, "roles", {}) or {})
         voices: dict = self._style["voices"]
         fx_defaults: dict = self._style.get("fx_defaults", {})
+        live_fx: dict = self._style.get("live_fx", {})
 
         chord = getattr(harmony, "chord", None)
         chord_conf = float(getattr(harmony, "chord_conf", 0.0) or 0.0)
@@ -914,7 +956,10 @@ class DuetEngine:
                 events += self._drum_events(role, preset, density, bar_s,
                                             tonic_pc, plan)
             elif role == "bass":
-                events += self._bass_events(preset, density, spb, root_pc)
+                events += self._bass_events(
+                    preset, density, spb, root_pc,
+                    chord=chord if tier == "triad" else None, key=key,
+                    bar=int(getattr(plan, "bar", 0)))
             elif role == "lead":
                 if self._style.get("melody", {}).get("motifs"):
                     events += self._motif_events(
@@ -926,11 +971,15 @@ class DuetEngine:
             elif preset == "crackle" or role == "crackle":
                 events.append((role, preset, 0.0, bar_s, None, 0.7))
             else:  # pad / keys / unknown tonal role: chordal figure
-                events += self._pad_events(role, preset, density, spb, voicing)
+                events += self._pad_events(
+                    role, preset, density, spb, voicing,
+                    chord=chord if tier == "triad" else None, ceiling=ceiling,
+                    bar=int(getattr(plan, "bar", 0)))
 
         # ---- render + place
         self.last_events = []
         placed: list[tuple[int, np.ndarray]] = []
+        ducked: list[tuple[int, float]] = []
         end_max = n
         for role, preset, onset_beats, dur_s, freq, base_vel in events:
             level = float(roles.get(role, 0.0))
@@ -945,15 +994,23 @@ class DuetEngine:
                 y = _fx.svf_highpass(y, sr, float(fxd["hpf_hz"])).astype(np.float64)
             if float(fxd.get("lpf_hz", 0.0)) > 0.0:
                 y = _fx.svf_lowpass(y, sr, float(fxd["lpf_hz"])).astype(np.float64)
+            lfx = live_fx.get(role, {})
+            if float(lfx.get("drive", 0.0)) > 0.0:
+                y = _saturate(y, float(lfx["drive"]))
             role_db = self._style.get("role_gain_db", {}).get(
                 role, _ROLE_GAIN_DB.get(role, -6.0))
             gain = 10.0 ** ((role_db + gain_db) / 20.0)
             y *= gain * level
             pan = float(np.clip(_ROLE_PAN.get(role, 0.0), -1.0, 1.0))
             theta = (pan + 1.0) * (np.pi / 4.0)
-            st = y[:, None] * np.array([np.cos(theta), np.sin(theta)])[None, :]
+            spread = (_chorus(y, sr, float(lfx["chorus"]),
+                              int(getattr(plan, "bar", 0)) * bar_s + onset_s)
+                      if float(lfx.get("chorus", 0.0)) > 0.0 else y[:, None])
+            st = spread * np.array([np.cos(theta), np.sin(theta)])[None, :]
             i0 = int(round(onset_s * sr))
             placed.append((i0, st))
+            if float(lfx.get("duck", 0.0)) > 0.0:
+                ducked.append((len(placed) - 1, float(lfx["duck"])))
             end_max = max(end_max, i0 + st.shape[0])
             midi = (None if freq is None
                     else int(round(69.0 + 12.0 * np.log2(freq / 440.0))))
@@ -962,6 +1019,14 @@ class DuetEngine:
                 "dur_s": dur_s, "freq_hz": freq, "midi": midi,
                 "velocity": vel, "level": level, "tier": tier,
             })
+
+        # ---- pump: the same dip the offline ducker gives, from this bar's kicks
+        kicks = [e["onset_s"] for e in self.last_events if e["role"] == "kick"]
+        if ducked and kicks:
+            for k, depth in ducked:
+                i0, st = placed[k]
+                dip = _fx.ducker(np.ones(i0 + st.shape[0]), sr, kicks, depth)[i0:]
+                placed[k] = (i0, st * dip[:, None])
 
         # ---- reciprocal cue: announce the change in the bar BEFORE it
         # An entry cue is only meaningful on an otherwise tacet bar (if the
@@ -1021,9 +1086,43 @@ class DuetEngine:
                         kick_hz, vel))
         return out
 
+    def _next_root(self, chord: str | None, key: str | None, root_pc: int) -> int:
+        """The root of the chord after this one, where the style's progression says.
+
+        A chord the progression does not hold, as when following a tracker, is taken to
+        stay where it is: the line then leans back into its own root.
+        """
+        if chord is None or key is None:
+            return root_pc
+        symbols = self._progressions.get(key)
+        if symbols is None:
+            try:
+                symbols = progression_symbols(str(self._style["name"]), key)
+            except (ValueError, KeyError, OSError):
+                symbols = []
+            self._progressions[key] = symbols
+        if chord not in symbols:
+            return root_pc
+        return parse_chord(symbols[(symbols.index(chord) + 1) % len(symbols)]).root
+
     def _bass_events(self, preset: str, density: float, spb: float,
-                     root_pc: int) -> list[tuple]:
+                     root_pc: int, *, chord: str | None = None,
+                     key: str | None = None, bar: int = 0) -> list[tuple]:
         hz = _low_octave_hz(root_pc) * 2.0 ** int(self._style.get("bass_octave", 0))
+        line_style = str(self._style.get("bass_style", ""))
+        if line_style in figures.FIGURE_BASS_STYLES and density >= _BASS_WHOLE:
+            # No chord belief means no third to lean on: root and fifth only.
+            intervals = parse_chord(chord).intervals if chord is not None else (0, 7)
+            if line_style == figures.WALKING:
+                rng = np.random.default_rng((self._seed, 73, bar))
+                line = figures.walking_line(root_pc, intervals,
+                                            self._next_root(chord, key, root_pc), rng)
+                return [("bass", preset, float(k), 0.95 * spb, midi_to_hz(m),
+                         0.85 if k % 2 == 0 else 0.76)
+                        for k, m in enumerate(line)]
+            return [("bass", preset, ob, d * spb,
+                     hz * 2.0 ** (figures.degree_semitones(intervals, deg) / 12.0), v)
+                    for ob, d, v, deg in figures.BASS_FIGURES[line_style]]
         if density < _BASS_WHOLE:
             figure = [(0.0, 3.6, 0.85)]
         elif density < _BASS_HALVES:
@@ -1043,11 +1142,34 @@ class DuetEngine:
                           for k in range(8)]
         return [("bass", preset, ob, d * spb, hz, v) for ob, d, v in figure]
 
+    def _comp_events(self, role: str, preset: str, pad_style: str, density: float,
+                     spb: float, voicing: list[int], chord: str | None,
+                     ceiling: float | None, bar: int) -> list[tuple]:
+        """A chord figure in the genre's own voicing, its rhythm changing by the bar."""
+        notes = list(voicing)
+        if pad_style == "house_stabs":
+            notes = [m + 12 for m in voicing]
+        elif chord is not None:
+            notes = figures.rootless_voicing(parse_chord(chord),
+                                             shell=pad_style == "shell_comp")
+        notes = _apply_ceiling(notes, ceiling)
+        comps = figures.COMP_FIGURES[pad_style]
+        pick = int(np.random.default_rng((self._seed, 97, bar)).integers(len(comps)))
+        figure = comps[pick][:1] if density < _BASS_WHOLE else comps[pick]
+        return [(role, preset, ob, d * spb, midi_to_hz(m), v)
+                for ob, d, v in figure for m in notes]
+
     def _pad_events(self, role: str, preset: str, density: float, spb: float,
-                    voicing: list[int]) -> list[tuple]:
+                    voicing: list[int], *, chord: str | None = None,
+                    ceiling: float | None = None, bar: int = 0) -> list[tuple]:
         pad_style = str(self._style.get(f"{role}_style")
                         or self._style.get("pad_style", "held"))
         out: list[tuple] = []
+        if pad_style == "none":
+            return out
+        if pad_style in figures.COMP_FIGURES:
+            return self._comp_events(role, preset, pad_style, density, spb, voicing,
+                                     chord, ceiling, bar)
         if pad_style == "high":
             # The top of the chord an octave up: air over a lift.
             return [(role, preset, 0.0, 3.92 * spb, midi_to_hz(m + 12), 0.42)
@@ -1126,6 +1248,8 @@ class DuetEngine:
             vel = 0.62 if float(beat) % 2.0 == 0.0 else 0.48
             hz = midi_to_hz(pitch)
             out.append(("lead", preset, float(beat), 1.8 * spb, hz, vel))
+            if not cfg.get("echo", True):
+                continue
             # A dotted-eighth echo, built from notes: the bar loop runs no delay.
             out.append(("lead", preset, float(beat) + 0.75, 1.2 * spb, hz, vel * 0.42))
             if lifted:

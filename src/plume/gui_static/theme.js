@@ -4,5 +4,5 @@
   'use strict';
   var saved = null;
   try { saved = localStorage.getItem('plume-theme'); } catch (e) { /* private window */ }
-  if (saved === 'dim' || saved === 'night') document.documentElement.setAttribute('data-theme', saved);
+  if (saved === 'night') document.documentElement.setAttribute('data-theme', 'night');
 })();

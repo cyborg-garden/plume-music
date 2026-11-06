@@ -67,6 +67,7 @@ _KEY_RE = re.compile(r"[A-G][#b]? (?:major|minor)")
 _CHORD_RE = re.compile(r"[A-G][#b]?(?:" + "|".join(sorted(map(re.escape, _QUALITIES), key=len, reverse=True))
                        + r")(?:/[A-G][#b]?)?")
 _ROLE_RE = re.compile(r"[a-z_]{1,16}")
+_STYLE_RE = re.compile(r"[a-z][a-z0-9_-]{0,31}")
 _ACTION_RE = re.compile(r"[a-z_]{1,16}")
 _CUE_NAME_RE = re.compile(r"[A-Za-z0-9' -]{1,32}")
 _DENSITY_NOTE_RE = re.compile(r"density x(\d+(?:\.\d+)?) -> x(\d+(?:\.\d+)?)")
@@ -88,6 +89,8 @@ _END_SENTENCE = {
                 "You did not choose this.",
 }
 _END_SILENCE_ALONE = "I heard nothing from you for 30 seconds, so I faded out."
+#: Once a direct input or keys have heard the player, the wait depends on the tempo.
+_END_SILENCE_STOPPED = "I stopped hearing you, so I faded out."
 #: What a cue to the looper asked for.  Fixed words: a loop's name can be anything
 #: anyone typed, so the text itself is never echoed.
 _LOOP_ASKS = {"record": "to record a loop", "close": "to close a loop take",
@@ -162,6 +165,19 @@ def _section(row: dict) -> str | None:
 def _key(row: dict) -> str | None:
     value = row.get("key")
     return value if isinstance(value, str) and _KEY_RE.fullmatch(value) else None
+
+
+def _key_words(row: dict) -> str | None:
+    """The key as a sentence says it: one plume worked out is never stated as a fact."""
+    key = _key(row)
+    if key and row.get("key_guess") is True:
+        return f"{key} (a guess)"
+    return key
+
+
+def _style(row: dict) -> str | None:
+    value = row.get("style")
+    return value if isinstance(value, str) and _STYLE_RE.fullmatch(value) else None
 
 
 def _tempo_from_loop(row: dict) -> bool:
@@ -332,7 +348,8 @@ def _changed_nothing(effect: str | None) -> bool:
     if effect is None:
         return False
     found = _TEMPO_NOTE_RE.search(effect)
-    return "NOT applied" in effect or bool(found and found.group(1) == found.group(2))
+    return ("NOT applied" in effect or "nothing changed" in effect
+            or bool(found and found.group(1) == found.group(2)))
 
 
 def _loop_held_tempo(row: dict) -> bool:
@@ -371,9 +388,12 @@ def _outcome(row: dict, text: str, effect: str | None, *, next_row: dict | None 
             return "landed", ""
         if fate is None:
             return "unsure", ""
-    if effect is None or "NOT applied" in effect:
+    if effect is None or _changed_nothing(effect) and "(tempo:" not in effect:
         return "nothing", ""
-    if "(texture:darker)" in effect or "(texture:brighter)" in effect:
+    # Before 2026-11-06 a live take logged the tone ("... from here on") and
+    # never applied it.  Now the bus plays it, and its note says it glides in.
+    if (("(texture:darker)" in effect or "(texture:brighter)" in effect)
+            and "from here on" in effect):
         return "tone", ""
     # A tempo cue sets the next bar's tempo.  With no next bar, nothing sounded.
     if kind == "tempo" and next_row is None:
@@ -556,6 +576,8 @@ def _ending_sentence(rows: list[dict], ending: dict | None, *, live: bool = Fals
     reason = ending.get("reason")
     if reason == END_FORM:
         return _cue_ending(rows, end_at)
+    if reason == END_SILENCE and _heard_them_stop(rows, route):
+        return _END_SILENCE_STOPPED
     if reason == END_SILENCE and (_hears_player(route) or (rows and _entry(rows[-1]) == "drums")):
         return _END_SILENCE_ALONE
     if reason == END_MAX_MINUTES:
@@ -611,9 +633,39 @@ def recorded_from(manifest) -> str:
     return "input" if isinstance(audio, dict) and audio.get("source") == "direct" else "mic"
 
 
+#: What the band did when it followed, by the word the row logs.  The row's word is only
+#: ever used to pick one of these, so nothing in it reaches the page.  An input that hears
+#: only the player can say what it heard her do; a room mic hears the band as well, so its
+#: sentences are about the mic.  It never counts notes, so it has no busier or sparser.
+_FOLLOWED = {
+    "softer": ("I heard you get softer for {n}, so the band came down to find you.",
+               "The mic got quieter for {n}, so the band came down."),
+    "louder": ("I heard you get louder for {n}, so the band came up with you.",
+               "The mic got louder for {n}, so the band came up."),
+    "busier": ("I heard you get busier for {n}, so the band filled in.", None),
+    "sparser": ("I heard you leave more space for {n}, so the band thinned out.", None),
+}
+
+
+def _follow_moves(row: dict) -> tuple[list[str], int | None]:
+    """(known words for what the band followed this bar, bars it waited, if sane)."""
+    follow = row.get("follow")
+    if not isinstance(follow, dict) or not isinstance(follow.get("moved"), list):
+        return [], None
+    moved = [m for m in follow["moved"][:4] if isinstance(m, str) and m in _FOLLOWED]
+    bars = follow.get("bars")
+    sane = isinstance(bars, int) and not isinstance(bars, bool) and 1 <= bars <= 16
+    return moved, bars if sane else None
+
+
 def _hears_player(route: str) -> bool:
     """The band's own sound does not reach these, so silence there really is the player."""
     return route in ("direct", "midi")
+
+
+def _heard_them_stop(rows: list[dict], route: str) -> bool:
+    """The short wait applies once such an input has heard one bar of playing."""
+    return _hears_player(route) and any(r.get("playing") is True for r in rows)
 
 
 def translate(rows: list[dict], ending: dict | None = None,
@@ -684,7 +736,7 @@ def translate(rows: list[dict], ending: dict | None = None,
                 "I was sure I could hear you by here."
                 + ("" if _hears_player(route) else " That takes me about three bars."))
         if entry and entry != prev_entry and i > 0:
-            key = _key(row)
+            key = _key_words(row)
             if entry == "band":
                 add(row, "plan", "bass and chords",
                     f"Bass and chords in, in {key}." if key else "Bass and chords in.")
@@ -710,6 +762,8 @@ def translate(rows: list[dict], ending: dict | None = None,
             silent = _fade(row) < 0 and section != "outro"
             if silent and not fading:
                 add(row, "plan", "fade started",
+                    "I stopped hearing you, so I began to fade."
+                    if _heard_them_stop(rows, route) else
                     "Nothing from you for 30 seconds, so I began to fade."
                     if entry == "drums" or _hears_player(route) else
                     "The mic went silent for 30 seconds, so I began to fade.")
@@ -719,6 +773,14 @@ def translate(rows: list[dict], ending: dict | None = None,
                     if entry == "drums" or _hears_player(route) else
                     "The mic stopped being silent, so the band came straight back.")
             fading = silent
+            moved, waited = _follow_moves(row)
+            for word in moved:
+                near, room = _FOLLOWED[word]
+                said = near if _hears_player(route) else room
+                if said is None:
+                    continue
+                n = f"{waited} bars" if waited is not None else "a few bars"
+                add(row, "plan", "band followed", said.format(n=n))
         form = _form(row)
         next_row = rows[i + 1] if i + 1 < len(rows) else None
         all_texts = _cue_texts(form.get("applied_cue"))
@@ -982,8 +1044,8 @@ def roast(rows: list[dict], ending: dict | None = None, cue_log: list[dict] | No
 def band_line(rows: list[dict]) -> list[dict]:
     """How much band plume planned, per bar: the one quiet line on the sheet.
 
-    Roles are always 1.0 and density comes from a fixed arc plus cues, so this is
-    mostly the same shape in every take.  It is a timeline, not a fingerprint.
+    Roles are always 1.0 and density comes from a fixed arc, bent by following and
+    cues, so this is mostly the same shape in every take.  It is a timeline, not a fingerprint.
     """
     out = []
     for row in rows:
@@ -1117,6 +1179,17 @@ def _audio_size(path: Path) -> int | None:
     return info.st_size if stat.S_ISREG(info.st_mode) else None
 
 
+def playing_delay_frames(take_dir, rate: int) -> int:
+    """How far ``human.wav`` runs behind ``machine.wav``: the band's way out plus the player's
+    way back.  The measured figure if there is one, else what the device reported, else none."""
+    stream = _read_json(Path(take_dir) / "stream.json") or {}
+    for name in ("calibrated_ms", "reported_ms"):
+        ms = stream.get(name)
+        if isinstance(ms, (int, float)) and not isinstance(ms, bool) and 0 <= ms <= 1000:
+            return round(ms * rate / 1000)
+    return 0
+
+
 def read_take(take_dir, *, fallback_seed: int = 0, live: bool = False) -> dict:
     """Everything The Record shows about one folder.  Never raises on bad contents.
 
@@ -1155,7 +1228,10 @@ def _take_doc(rows, cue_log, take_dir, ending, manifest, seed, sizes, keep, live
     lines = roast(rows, ending, cue_log, events=events, route=route)
     started = _number(manifest.get("started_at"))
     bpm = _number(rows[0].get("bpm")) if rows else None
-    key = next((_key(r) for r in rows if _key(r)), None)
+    key_row = next((r for r in rows if _key(r)), None)
+    key = None if key_row is None else _key(key_row)
+    # The last one: a style picked as the band comes in replaces the one from the count.
+    style_row = next((r for r in reversed(rows) if _style(r)), None)
     tap = bool(rows) and _entry(rows[0]) is not None
     band = _first(rows, lambda r: _entry(r) == "band")
     if unread:
@@ -1172,6 +1248,9 @@ def _take_doc(rows, cue_log, take_dir, ending, manifest, seed, sizes, keep, live
         "name": keep["name"],
         "started_at": started,
         "key": key,
+        "key_guess": key_row is not None and key_row.get("key_guess") is True,
+        "style": None if style_row is None else _style(style_row),
+        "style_guess": style_row is not None and style_row.get("style_guess") is True,
         "bpm": None if bpm is None else round(bpm),
         "seconds": round(_length_s(rows, ending), 2),
         "bars": len(rows),
@@ -1183,6 +1262,9 @@ def _take_doc(rows, cue_log, take_dir, ending, manifest, seed, sizes, keep, live
         "unread": unread,
         "route": route,
         "recorded_from": recorded_from(manifest),
+        # Only a direct input is the player alone. A mic may have heard the band in the room too.
+        "together": (recorded_from(manifest) == "input" and not live
+                     and sizes.get("human") is not None and sizes.get("machine") is not None),
         "band_t_s": None if band is None else float(band["t_s"]),
         "start_t_s": float(rows[0]["t_s"]) if rows else None,
         "end_t_s": float(rows[-1]["t_s"]) if rows else None,
@@ -1196,6 +1278,7 @@ def _take_doc(rows, cue_log, take_dir, ending, manifest, seed, sizes, keep, live
 
 def summary(take: dict) -> dict:
     """The shelf's view of :func:`read_take`."""
-    names = ("folder", "kept", "name", "started_at", "key", "bpm", "seconds", "bars",
+    names = ("folder", "kept", "name", "started_at", "key", "key_guess", "style", "style_guess",
+             "bpm", "seconds", "bars",
              "bytes", "portrait")
     return {name: take[name] for name in names}

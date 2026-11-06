@@ -954,7 +954,7 @@ class DuetEngine:
             preset = str(preset)
             if role in self._grids:
                 events += self._drum_events(role, preset, density, bar_s,
-                                            tonic_pc, plan)
+                                            tonic_pc, plan, root_pc=root_pc)
             elif role == "bass":
                 events += self._bass_events(
                     preset, density, spb, root_pc,
@@ -1065,7 +1065,8 @@ class DuetEngine:
                                                 self._groove.timing_bias_ms)))
 
     def _drum_events(self, role: str, preset: str, density: float,
-                     bar_s: float, tonic_pc: int, plan) -> list[tuple]:
+                     bar_s: float, tonic_pc: int, plan, *,
+                     root_pc: int | None = None) -> list[tuple]:
         variants = self._grids[role]
         # A slow count is her real tempo, and half-time on top of it would crawl,
         # so below this the style can state a plain backbeat instead.
@@ -1078,7 +1079,15 @@ class DuetEngine:
             steps = [s for s in steps
                      if abs((s.start * 4.0) - round(s.start * 4.0)) < 1e-6]
         out = []
-        kick_hz = _low_octave_hz(tonic_pc) if role == "kick" else None
+        # An 808 is a pitched drum, so it plays a note of the key whatever role it
+        # is in.  As the kick it is the low end and holds the tonic; as a sub under
+        # a bass player it doubles the bass's root.  Only the "kick" role used to be
+        # tuned, so midwest's sub 808 boomed at 45 Hz in every key.
+        if preset.startswith("808"):
+            pc = root_pc if role == "sub" and root_pc is not None else tonic_pc
+            kick_hz = _low_octave_hz(pc)
+        else:
+            kick_hz = _low_octave_hz(tonic_pc) if role == "kick" else None
         for s in steps:
             _, tok_vel = _strip_vel(s.token)
             vel = tok_vel if tok_vel is not None else _DEFAULT_VELOCITY

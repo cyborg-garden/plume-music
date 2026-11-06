@@ -255,6 +255,9 @@
     "lead": {},
     "shimmer": {
       "lpf_hz": 5000
+    },
+    "sub": {
+      "lpf_hz": 160
     }
   },
   "fades": {
@@ -371,7 +374,7 @@
     "lead": -8.0,
     "crackle": -22.0,
     "shimmer": -19.0,
-    "sub": -9.0,
+    "sub": -14.0,
     "clap": -7.0,
     "openhat": -8.0,
     "crash": -10.0

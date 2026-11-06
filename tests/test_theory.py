@@ -338,3 +338,45 @@ def test_chord_parsing_accepts_both_spellings():
     assert parse_chord("Bbm7").root == parse_chord("A#m7").root == 10
     assert parse_chord("Eb7").root == parse_chord("D#7").root == 3
     assert note_to_midi("ab2") == note_to_midi("g#2")
+
+
+# Keys typed with sharps (audit, 2026-11-06): "A# major" spelled A# B# D D# E# G A,
+# two D's and two G's.  A conventional key uses each letter once; a theoretical one
+# (it would need double sharps or flats) is spelled as the key everyone writes.
+
+def _scale(key_str):
+    key = parse_key(key_str)
+    return " ".join(spell(p, key) for p in key.scale())
+
+
+@pytest.mark.parametrize("key_str,want", [
+    ("Cb major", "Cb Db Eb Fb Gb Ab Bb"),
+    ("C# major", "C# D# E# F# G# A# B#"),
+    ("Gb major", "Gb Ab Bb Cb Db Eb F"),
+    ("F# major", "F# G# A# B C# D# E#"),
+    ("D# minor", "D# E# F# G# A# B C#"),
+    ("A# minor", "A# B# C# D# E# F# G#"),
+    ("Ab minor", "Ab Bb Cb Db Eb Fb Gb"),
+    ("A# major", "Bb C D Eb F G A"),
+    ("G# major", "Ab Bb C Db Eb F G"),
+    ("D# major", "Eb F G Ab Bb C D"),
+    ("Fb major", "E F# G# A B C# D#"),
+    ("Gb minor", "F# G# A B C# D E"),
+])
+def test_each_letter_once_where_the_key_is_conventional(key_str, want):
+    got = _scale(key_str)
+    assert got == want
+    assert len({n[0] for n in got.split()}) == 7
+
+
+@pytest.mark.parametrize("typed,shown", [
+    ("Gb major", "Gb major"), ("F# major", "F# major"), ("Cb major", "Cb major"),
+    ("A# major", "Bb major"), ("Gb minor", "F# minor"), ("A# minor", "A# minor"),
+])
+def test_a_typed_key_has_one_name_everywhere(typed, shown):
+    from plume.guitake import canonical_key
+    from plume.realtime import _named_key
+    from plume.theory import key_name
+    assert key_name(parse_key(typed)) == shown
+    assert canonical_key(typed) == shown, "the page"
+    assert _named_key(f"midwest in {typed}") == shown, "the logs"

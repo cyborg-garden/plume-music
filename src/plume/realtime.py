@@ -3954,12 +3954,13 @@ def _named_key(prompt: str | None) -> str | None:
     if not prompt:
         return None
     from .compose import parse_prompt  # noqa: PLC0415
-    from .theory import parse_key  # noqa: PLC0415
+    from .theory import Key, key_name, parse_key  # noqa: PLC0415
     named = parse_prompt(prompt).key
     if not named:
         return None
     key = parse_key(str(named))
-    return f"{str(named).split()[0]} {'major' if key.mode == 'major' else 'minor'}"
+    return key_name(Key(tonic=key.tonic, mode="major" if key.mode == "major" else "minor",
+                        flats=key.flats))
 
 
 def _wants_lead(role, lead_in, session) -> bool:

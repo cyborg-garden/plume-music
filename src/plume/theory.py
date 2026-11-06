@@ -115,22 +115,71 @@ def parse_key(s: str) -> Key:
     return Key(tonic=tonic, mode=_MODE_ALIASES[mode_txt], flats=flats)
 
 
+_LETTERS = "CDEFGAB"
+_ACC_NAME = {0: "", 1: "#", 11: "b"}
+
+
+def _letter_name(letter: str, pc: int) -> str | None:
+    """``pc`` written on ``letter`` with one accidental at most, or None."""
+    acc = _ACC_NAME.get((pc - _LETTER_PC[letter.lower()]) % 12)
+    return None if acc is None else letter + acc
+
+
+def _default_tonic(key: Key) -> str:
+    """How a key known only by its pitch class is written."""
+    if key.mode == "major":
+        sharp = key.tonic in _SHARP_MAJOR_TONICS
+    else:
+        sharp = key.tonic in _SHARP_MINOR_TONICS
+    return (_PC_NAMES if sharp else _FLAT_PC_NAMES)[key.tonic]
+
+
+def _spells_cleanly(tonic: str, key: Key) -> bool:
+    """Does the scale on ``tonic`` take each letter once with one accidental at most?
+    Harmonic minor is judged by its natural minor: its raised seventh is an
+    accidental in any key."""
+    mode = "minor" if key.mode == "harmonic_minor" else key.mode
+    scale = Key(tonic=key.tonic, mode=mode).scale()
+    start = _LETTERS.index(tonic[0])
+    return all(_letter_name(_LETTERS[(start + i) % 7], pc) is not None
+               for i, pc in enumerate(scale))
+
+
+def tonic_name(key: Key) -> str:
+    """The key's tonic as written: as typed when that is a key people write (Gb, F#,
+    Cb, D# minor), else the usual name of its pitch class.  A# major would need F##
+    and G##, so it is written Bb major."""
+    if key.flats is not None:
+        letter = _LETTERS[[_LETTER_PC[c.lower()] for c in _LETTERS].index(
+            (key.tonic + (1 if key.flats else -1)) % 12)]
+        typed = letter + ("b" if key.flats else "#")
+        if _spells_cleanly(typed, key):
+            return typed
+    return _default_tonic(key)
+
+
+def key_name(key: Key) -> str:
+    """'Gb major', 'F# minor': the one name a key goes by on the page and in the logs."""
+    return f"{tonic_name(key)} {key.mode.replace('_', ' ')}"
+
+
 def key_prefers_flats(key: Key) -> bool:
     """True when chord/note spelling in this key should use flats.
 
     Major keys: F, Bb, Eb, Ab, Db, Gb (and C, whose chromatic chord roots are
-    borrowed flat degrees) prefer flats; G, D, A, E, B prefer sharps.
+    borrowed flat degrees) prefer flats; G, D, A, E, B, F# prefer sharps.
     Minor-family modes (minor, harmonic_minor, dorian, phrygian): d, g, c, f,
-    bb, eb (and a) prefer flats; e, b, f#, c#, g# prefer sharps.
+    bb, eb (and a) prefer flats; e, b, f#, c#, g# prefer sharps.  A key whose
+    tonic is written with an accidental (see :func:`tonic_name`) follows it.
     """
-    if key.flats is not None:
-        return key.flats
+    tonic = tonic_name(key)
+    if tonic.endswith("b"):
+        return True
+    if tonic.endswith("#"):
+        return False
     if key.mode == "major":
         return key.tonic not in _SHARP_MAJOR_TONICS
     return key.tonic not in _SHARP_MINOR_TONICS
-
-
-_LETTERS = "CDEFGAB"
 
 
 def spell(pc: int, key: Key | None = None) -> str:
@@ -139,7 +188,8 @@ def spell(pc: int, key: Key | None = None) -> str:
 
     A note of the key's own scale takes its scale degree's letter, so each
     letter appears once: E# (not F) in F# major, Cb (not B) in Gb major.
-    Notes outside the scale use the key's preferred accidental.
+    Notes outside the scale, and a degree that would need a double accidental,
+    use the key's preferred accidental.
     """
     pc %= 12
     names = (_FLAT_PC_NAMES if key is not None and key_prefers_flats(key)
@@ -147,11 +197,11 @@ def spell(pc: int, key: Key | None = None) -> str:
     if key is not None:
         scale = key.scale()
         if pc in scale:
-            letter = _LETTERS[(_LETTERS.index(names[key.tonic][0])
+            letter = _LETTERS[(_LETTERS.index(tonic_name(key)[0])
                                + scale.index(pc)) % 7]
-            acc = {0: "", 1: "#", 11: "b"}.get((pc - _LETTER_PC[letter.lower()]) % 12)
-            if acc is not None:
-                return letter + acc
+            name = _letter_name(letter, pc)
+            if name is not None:
+                return name
     return names[pc]
 
 

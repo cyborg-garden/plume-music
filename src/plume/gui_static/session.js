@@ -7,6 +7,9 @@ export function routeOf(hash) {
   if (hash === '#/takes') return { name: 'takes' };
   if (hash === '#/live') return { name: 'live' };
   if (hash === '#/settings') return { name: 'settings' };
+  if (hash === '#/guide') return { name: 'guide', page: null };
+  const page = /^#\/guide\/([a-z0-9-]{1,40})$/.exec(hash);
+  if (page) return { name: 'guide', page: page[1] };
   return { name: 'home' };
 }
 

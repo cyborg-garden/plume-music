@@ -66,12 +66,13 @@ def run_page(tmp_path, docs, body, **options):
     """Run ``body`` against the real app.js.  Only the import paths change, for Node."""
     work = tmp_path / "page"
     work.mkdir(exist_ok=True)
-    for name in ("app", "stone", "layout", "session", "live"):
+    for name in ("app", "stone", "layout", "session", "live", "guide"):
         source = (STATIC / f"{name}.js").read_text()
         (work / f"{name}.mjs").write_text(re.sub(r"'/static/(\w+)\.js'", r"'./\1.mjs'", source))
     assert "/static/" not in (work / "app.mjs").read_text()
     shutil.copy(STUB, work / "stub.mjs")
-    settings = {"takes": docs["takes"], "docs": docs["docs"], "home": docs["home"], **options}
+    settings = {"takes": docs["takes"], "docs": docs["docs"], "home": docs["home"],
+                "guide": {"pages": gui.guide_pages()}, **options}
     (work / "html.txt").write_text((STATIC / "index.html").read_text())
     (work / "settings.json").write_text(json.dumps(settings))
     (work / "ids.json").write_text(json.dumps(docs["ids"]))
@@ -2554,3 +2555,84 @@ def test_the_header_cannot_push_a_phone_page_sideways():
     assert "flex-wrap: wrap" in re.search(r"(?m)^header \{([^}]*)\}", css)[1]
     assert "white-space: nowrap" in re.search(r"(?m)^\.navlink \{([^}]*)\}", css)[1]
     assert "margin-left: auto" in re.search(r"(?m)^\.seg \{([^}]*)\}", css)[1], "wrapped, the light switch stays on the right"
+
+
+# ---------------------------------------------------------------------- the guide
+
+GUIDE = """{ ...""" + LOOK + """, title: ($('guide-body').children.find((c) => c.tag === 'h1') || {}).textContent,
+  tabs: $('guide-pages').children.map((c) => c.textContent),
+  current: $('guide-pages').children.filter((c) => c.getAttribute('aria-current') === 'page').map((c) => c.textContent),
+  next: $('guide-next').textContent, asked: page.calls.filter((c) => c.path === '/api/guide').length }"""
+
+
+def test_the_guide_sits_next_to_settings_and_opens_on_its_first_page(tmp_path, docs):
+    html = (STATIC / "index.html").read_text()
+    assert html.index('id="nav-settings"') < html.index('id="nav-guide"') < html.index('id="nav-live"')
+    out = run_page(tmp_path, docs, f"$('nav-guide').click(); await page.settle(); return {GUIDE};")
+    assert out["screen"] == "guide" and out["hash"] == "#/guide"
+    assert out["title"] == "Getting started" and out["current"] == ["Getting started"]
+    assert out["tabs"] == ["Getting started", "Playing with plume", "Settings and sound",
+                           "From a terminal or a coding agent", "Troubleshooting"]
+    assert out["next"] == "Next: Playing with plume"
+
+
+def test_the_guide_asks_for_no_takes_and_starts_nothing(tmp_path, docs):
+    out = run_page(tmp_path, docs, """
+        $('nav-guide').click(); await page.settle();
+        $('guide-next').children[0].click(); await page.settle();
+        return page.calls.map((c) => c.method + ' ' + c.path.split('?')[0]);""")
+    assert not [c for c in out if c.startswith("POST")]
+    assert not [c for c in out if "/api/take" in c]
+    assert out.count("GET /api/guide") == 1, "the words are fetched once"
+
+
+def test_a_link_inside_a_page_moves_to_that_page_and_back_comes_back(tmp_path, docs):
+    out = run_page(tmp_path, docs, f"""
+        const seen = [];
+        $('nav-guide').click(); await page.settle();
+        const link = $('guide-body').walk().find((e) => e.tag === 'a' && e.getAttribute('href') === '#/guide/sound');
+        link.click(); await page.settle(); seen.push({GUIDE});
+        page.history.go(-1); await page.settle(); seen.push({GUIDE});
+        return seen;""")
+    assert out[0]["hash"] == "#/guide/sound" and out[0]["title"] == "Settings and sound"
+    assert out[1]["hash"] == "#/guide" and out[1]["title"] == "Getting started"
+
+
+def test_a_reload_of_a_guide_page_stays_on_it(tmp_path, docs):
+    out = run_page(tmp_path, docs, f"return {GUIDE};", address="#/guide/terminal", stored=KEY)
+    assert out["screen"] == "guide" and out["title"] == "From a terminal or a coding agent"
+    assert out["next"] == "Next: Troubleshooting"
+
+
+def test_an_unknown_guide_page_shows_the_first_one(tmp_path, docs):
+    out = run_page(tmp_path, docs, f"return {GUIDE};", address="#/guide/nope", stored=KEY)
+    assert out["screen"] == "guide" and out["title"] == "Getting started"
+
+
+def test_the_last_guide_page_offers_no_next(tmp_path, docs):
+    out = run_page(tmp_path, docs, f"return {GUIDE};", address="#/guide/troubleshooting", stored=KEY)
+    assert out["title"] == "Troubleshooting" and out["next"] == ""
+
+
+def test_settings_has_one_quiet_way_to_the_terminal_page(tmp_path, docs):
+    out = run_page(tmp_path, docs, f"""
+        $('nav-settings').click(); await page.settle();
+        $('settings-terminal').click(); await page.settle();
+        return {GUIDE};""")
+    assert out["hash"] == "#/guide/terminal" and out["title"] == "From a terminal or a coding agent"
+
+
+def test_the_guide_can_be_read_during_a_take_and_leaves_it_running(tmp_path, docs):
+    out = run_page(tmp_path, docs, f"""
+        $('nav-guide').click(); await page.settle();
+        return {{ ...{GUIDE}, guide: !$('nav-guide').hidden, back: !$('nav-live').hidden,
+                 stops: page.posts('stop').length }};""", live=PLAYING, address="", stored=KEY)
+    assert out["screen"] == "guide" and out["guide"] and out["back"] and out["stops"] == 0
+
+
+def test_a_guide_that_cannot_load_says_so_in_words(tmp_path, docs):
+    out = run_page(tmp_path, docs, """
+        page.failNext['guide'] = 1;
+        $('nav-guide').click(); await page.settle();
+        return { screen: page.screen(), text: $('guide-body').textContent };""")
+    assert out["screen"] == "guide" and "did not load" in out["text"]

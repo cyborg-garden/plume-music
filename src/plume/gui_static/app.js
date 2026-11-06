@@ -1,4 +1,4 @@
-/* Home, Settings, the live view, the Record and the shelf. Everything shown comes from the bridge,
+/* Home, Settings, the Guide, the live view, the Record and the shelf. Everything shown comes from the bridge,
    already filtered and already in sentences. Words go in with textContent only.
 
    Nothing here starts anything by itself: every POST that opens a device follows a click on
@@ -7,6 +7,7 @@
 import { clearStones, cssVar, queueStone, rng, stonesIdle, tok } from '/static/stone.js';
 import { hitBoxes, lineSpans, nextIndex } from '/static/layout.js';
 import { lostWords, pinnedRoute, routeOf } from '/static/session.js';
+import { pageTitle, parseGuide, renderGuide } from '/static/guide.js';
 import { BAND_IN_INPUT_LINE, DIRECT_LINE, FADING_LINE, NO_ENDING, ROOM_END_LINE, ROOM_OUTPUT_LINE, SEND_LINE, WIRELESS_LINE, askingLine, bandInInput, countWords, delayLine, endLine, endedNote, isFading, isRunning, keyLine, landing, meterShare, movedOutput, routeLine, sendDelayLine, settledLine, setupTrouble, setupView, signView, stageWords, watchEnding, youView } from '/static/live.js';
 
 const $ = function (id) { return document.getElementById(id); };
@@ -16,7 +17,8 @@ const S = { csrf: '', take: null, selected: null, roastOn: true, screen: 'loadin
   live: { state: 'idle' }, liveTurn: 0, following: false, starting: false, stopSent: false, stopPending: false,
   trackButtons: {}, track: null, audioOn: false, seekTo: null,
   home: null, homeTurn: 0, homeNote: '', settingsNote: '', form: { device: null, channel: null },
-  setup: null, setupTurn: 0, listening: false, listenSlow: false, answering: false, ending: NO_ENDING };
+  setup: null, setupTurn: 0, listening: false, listenSlow: false, answering: false, ending: NO_ENDING,
+  guide: null };
 
 function load(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
 function save(k, v) { try { localStorage.setItem(k, v); } catch (e) { /* private window */ } }
@@ -76,7 +78,7 @@ function setScreen(name) {
   if (S.screen === 'settings' && name !== 'settings') S.settingsNote = '';
   S.screen = name;
   document.body.setAttribute('data-screen', name);
-  ['home', 'settings', 'setup', 'live', 'record', 'shelf', 'problem'].forEach(function (s) { $(s).hidden = s !== name; });
+  ['home', 'settings', 'guide', 'setup', 'live', 'record', 'shelf', 'problem'].forEach(function (s) { $(s).hidden = s !== name; });
   if (name !== 'record') stopAudio();
   window.scrollTo(0, 0);
   reflectNav();
@@ -359,6 +361,7 @@ function showRoute() {
   else if (route.name === 'takes') openShelf();
   else if (route.name === 'live') openLive();
   else if (route.name === 'settings') openSettings();
+  else if (route.name === 'guide') openGuide(route.page);
   else openHome();
 }
 function goTake(id) {
@@ -379,6 +382,11 @@ function goSettings() {
   S.settingsNote = '';
   if (location.hash !== '#/settings') history.pushState(null, '', '#/settings');
   openSettings();
+}
+function goGuide(page) {
+  const where = page ? '#/guide/' + page : '#/guide';
+  if (location.hash !== where) history.pushState(null, '', where);
+  openGuide(page);
 }
 function goLive() {
   if (location.hash !== '#/live') history.pushState(null, '', '#/live');
@@ -779,6 +787,53 @@ function openSettings() {
   /* A device plugged in since the page opened shows up here. */
   loadHome();
 }
+/* ---------------------------------------------------------------------- the guide */
+
+/* The words come from the bridge once, and each page is drawn from them the same way every
+   time. A link inside a page only ever goes to one of the page's own screens. */
+async function openGuide(page) {
+  arriveAt('guide');
+  const turn = S.nav;
+  if (!S.guide) {
+    let doc;
+    try { doc = await api('/api/guide'); } catch (err) {
+      if (turn !== S.nav) return;
+      if (err.status === 401) { problem(err); return; }
+      $('guide-pages').textContent = '';
+      $('guide-next').textContent = '';
+      $('guide-body').textContent = 'The guide did not load. Is plume gui still running in your terminal?';
+      return;
+    }
+    if (turn !== S.nav) return;
+    S.guide = doc.pages.map(function (p) { const blocks = parseGuide(p.text); return { id: p.id, blocks: blocks, title: pageTitle(blocks) }; });
+  }
+  drawGuide(page);
+}
+function followGuideLink(href) {
+  history.pushState(null, '', href);
+  showRoute();
+}
+function guideLink(page, words) {
+  const b = document.createElement('button');
+  b.type = 'button'; b.className = 'textlink'; b.textContent = words;
+  b.addEventListener('click', function () { goGuide(page.id); });
+  return b;
+}
+function drawGuide(id) {
+  const pages = S.guide, at = Math.max(0, pages.findIndex(function (p) { return p.id === id; })), page = pages[at];
+  const nav = $('guide-pages');
+  nav.textContent = '';
+  pages.forEach(function (p) {
+    const b = guideLink(p, p.title);
+    if (p === page) b.setAttribute('aria-current', 'page');
+    nav.appendChild(b);
+  });
+  renderGuide($('guide-body'), page.blocks, followGuideLink);
+  const next = $('guide-next');
+  next.textContent = '';
+  if (pages[at + 1]) next.appendChild(guideLink(pages[at + 1], 'Next: ' + pages[at + 1].title));
+}
+
 /* Only what was decided here, so what setup learned is not overruled by a page that never
    changed it, and the device setup just heard, so the bridge does not choose again. It checks
    every field again, and a device that has gone is refused rather than swapped for another. */
@@ -1232,6 +1287,8 @@ $('player').addEventListener('ended', function () {
 $('nav-takes').addEventListener('click', goShelf);
   $('nav-settings').addEventListener('click', goSettings);
   $('settings-done').addEventListener('click', goHome);
+  $('nav-guide').addEventListener('click', function () { goGuide(null); });
+  $('settings-terminal').addEventListener('click', function () { goGuide('terminal'); });
   $('nav-live').addEventListener('click', goLive);
   $('start').addEventListener('click', pressStart);
   $('rec-again').addEventListener('click', function (ev) { if (!(ev && ev.detail > 1)) pressStart(); });

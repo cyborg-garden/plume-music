@@ -61,7 +61,8 @@ from .realtime import REC_HUMAN, REC_MACHINE, list_sessions
 STATE_DIR_ENV = "PLUME_GUI_STATE_DIR"
 
 GET_ROUTES = ("/", "/auth", "/static/{name}", "/api/session", "/api/takes",
-              "/api/take/{id}", "/api/take/{id}/audio/{track}", "/api/home", "/api/live", "/api/setup")
+              "/api/take/{id}", "/api/take/{id}/audio/{track}", "/api/home", "/api/live", "/api/setup",
+              "/api/guide")
 POST_OPS = frozenset({"keep", "rename", "start", "stop", "cue", "setup/listen", "setup/answer",
                       "setup/cancel", "setup/reset"})
 
@@ -76,10 +77,15 @@ STATIC_FILES = {
     "session.js": "text/javascript; charset=utf-8",
     "live.js": "text/javascript; charset=utf-8",
     "app.js": "text/javascript; charset=utf-8",
+    "guide.js": "text/javascript; charset=utf-8",
     "fonts/schibsted-grotesk-latin-400-normal.woff2": "font/woff2",
     "fonts/schibsted-grotesk-latin-500-normal.woff2": "font/woff2",
     "fonts/dm-mono-latin-400-normal.woff2": "font/woff2",
 }
+_GUIDE_DIR = Path(__file__).with_name("guide")
+#: The guide's pages, in reading order.  Each is ``guide/<id>.md`` in the package, written in
+#: the small Markdown the page renders itself.  The page asks for them by this list only.
+GUIDE_PAGES = ("getting-started", "playing", "sound", "terminal", "troubleshooting")
 _TRACKS = {"human": REC_HUMAN, "machine": REC_MACHINE}
 TOGETHER = "together"
 # What leaves room for both when they peak at once.
@@ -595,6 +601,10 @@ class _Handler(BaseHTTPRequestHandler):
             self.route = "/api/setup"
             self._setup_view(parts.query)
             return
+        if path == "/api/guide":
+            self.route = "/api/guide"
+            self._json({"pages": guide_pages()})
+            return
         if found:
             self.route = "/api/take/{id}/audio/{track}"
             self._audio(found.group(1), found.group(2))
@@ -1004,6 +1014,12 @@ class GuiServer:
                 if hmac.compare_digest(known.encode(), value.encode()):
                     return csrf
         return None
+
+
+def guide_pages() -> list[dict]:
+    """The guide as text, in reading order.  Words only: the page renders them with textContent."""
+    return [{"id": name, "text": (_GUIDE_DIR / f"{name}.md").read_text(encoding="utf-8")}
+            for name in GUIDE_PAGES]
 
 
 def default_library() -> Path:

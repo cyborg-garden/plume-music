@@ -221,3 +221,12 @@ def test_only_day_and_night_are_offered():
         assert 'data-theme="dim"' not in text
     assert 'id="theme-day"' in (static / "index.html").read_text(encoding="utf-8")
     assert 'id="theme-night"' in (static / "index.html").read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("hash_,want", [
+    ("#/guide", {"name": "guide", "page": None}),
+    ("#/guide/terminal", {"name": "guide", "page": "terminal"}),
+    ("#/guide/../x", {"name": "home"}), ("#/guide/", {"name": "home"}),
+    ("#/guide/" + "a" * 41, {"name": "home"}), ("#/guide/Terminal", {"name": "home"})])
+def test_only_a_plain_page_name_is_a_guide_address(tmp_path, hash_, want):
+    assert run_js(tmp_path, "session", body=f"return session.routeOf({json.dumps(hash_)});") == want

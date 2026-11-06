@@ -109,6 +109,30 @@ header { display: flex; flex-wrap: wrap; align-items: center; gap: 0 16px; paddi
 .textlink { background: none; border: 0; padding: 6px 0; min-height: 32px; font-size: 14px; color: var(--secondary); text-decoration: underline; text-underline-offset: 3px; text-align: left; overflow-wrap: anywhere; }
 .textlink:hover { color: var(--text); }
 
+/* The guide: a page of words, drawn from the package's own files. Quiet, like Settings. */
+#guide { flex: 1; padding: 12px 0 48px; }
+#guide-wrap { width: min(100%, 38rem); margin: 0 auto; }
+#guide-pages { display: flex; flex-wrap: wrap; gap: 0 16px; border-bottom: 1px solid var(--hairline); padding-bottom: 6px; }
+#guide-pages button { text-decoration: none; }
+#guide-pages button:hover { text-decoration: underline; }
+#guide-pages button[aria-current="page"] { color: var(--text); text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 4px; }
+#guide-body { line-height: 1.55; overflow-wrap: anywhere; }
+#guide-body h1 { font-size: 22px; font-weight: 500; letter-spacing: -.01em; margin: 22px 0 10px; }
+#guide-body h2 { font-size: 17px; font-weight: 500; margin: 30px 0 6px; }
+#guide-body h3 { font-size: 15px; font-weight: 500; margin: 22px 0 4px; color: var(--secondary); }
+#guide-body p, #guide-body ul, #guide-body ol { margin: 0 0 12px; }
+#guide-body ul, #guide-body ol { padding-left: 1.3em; }
+#guide-body li { margin: 3px 0; }
+#guide-body li::marker { color: var(--secondary); }
+#guide-body code { font: 400 .875em var(--mono); white-space: nowrap; }
+#guide-body pre { font: 400 13px/1.6 var(--mono); margin: 0 0 14px; padding: 4px 0 4px 14px; border-left: 1px solid var(--hairline); overflow-x: auto; white-space: pre; }
+#guide-body pre code { font: inherit; white-space: inherit; }
+#guide-body a { color: var(--text); text-decoration: underline; text-underline-offset: 3px; }
+#guide-body a:hover { color: var(--now); }
+#guide-body strong { font-weight: 500; }
+#guide-next { margin: 24px 0 0; }
+#settings-terminal { align-self: flex-start; }
+
 /* The first press: one line and one obvious thing to do, where Start was. The words, with the
    gap, are taller than Start, so a double click on Start lands on the words and not on a choice. */
 #setup-words { min-height: 90px; }

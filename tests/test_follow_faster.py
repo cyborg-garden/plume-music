@@ -1,7 +1,7 @@
 """The band finds her within a few seconds (Juniper, 2026-11-06).
 
 "it did not get quieter when i was playing quieter tho."  On that take (60 bpm, a
-Scarlett direct input) she went about 14 dB softer for four bars, and the band's first
+direct input) she went about 14 dB softer for four bars, and the band's first
 move was heard sixteen seconds later, after she had come back up.  The patience stays,
 "so that if i just make like a little mistake it doesnt assume thats the whole
 direction", but it is counted in half bars and seconds, the planner reads her half a
@@ -217,7 +217,7 @@ PAIR_RIG = [{"name": "Audio Interface 4x4", "max_input_channels": 4, "max_output
 def test_the_band_gets_quieter_in_what_the_output_device_plays(tmp_path, monkeypatch,
                                                               plume_registry):
     """The follow gain is in the samples sent to another output device, not only in the
-    log: the output pair is how Juniper played (a Scarlett in, the laptop speakers out)."""
+    log: the output pair is the common setup (an interface in, built-in speakers out)."""
     import json
 
     import numpy as np

@@ -597,6 +597,7 @@ class BandFollow:
                 self._learn(float(rms_db), busy)
             return FollowState(0.0, 1.0, (), "follow: listening until the band is in")
         moved: list[str] = []
+        gain_was, dens_was = self._targets()
         known = self._learned >= FOLLOW_LEARN_BARS
         # Off a room mic, take back what the band's own lean put into it.
         own = 0.0 if self.trusted else self.gain_db
@@ -620,6 +621,11 @@ class BandFollow:
                     moved.append("busier" if step > 0 else "sparser")
             self._learn(float(rms_db) - own, busy)
         gain_t, dens_t = self._targets()
+        # A move the band cannot make (already at its limit) is not one to report:
+        # the log and the after-take recap would claim a change nobody heard.
+        moved = [m for m in moved
+                 if (m in ("louder", "softer") and gain_t != gain_was)
+                 or (m in ("busier", "sparser") and dens_t != dens_was)]
         back = abs(gain_t) < abs(self.gain_db)
         self.gain_db = _toward(self.gain_db, gain_t, FOLLOW_GAIN_RETURN_STEP_DB if back
                                else FOLLOW_GAIN_STEP_DB)

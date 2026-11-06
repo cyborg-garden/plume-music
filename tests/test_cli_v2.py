@@ -38,6 +38,7 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
+from conftest import needs_unix_sockets  # noqa: E402
 import soundfile as sf
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -761,6 +762,7 @@ class TestCueSocket:
         msg = str(ei.value)
         assert "no running plume session" in msg and path in msg
 
+    @needs_unix_sockets
     def test_junk_does_not_take_the_server_down(self):
         """A cue arriving mid-song must not be able to end the session."""
         path = sock_path("junk")
@@ -780,6 +782,7 @@ class TestCueSocket:
             assert realtime.send_cue("darker", socket_path=path)["ok"] is True
             assert [c["text"] for c in srv.drain()] == ["darker"]
 
+    @needs_unix_sockets
     def test_oversized_cue_is_refused_not_buffered(self):
         path = sock_path("big")
         with realtime.CueServer(path) as srv:
@@ -804,6 +807,7 @@ class TestCueSocket:
                 realtime.CueServer(path).start()
             assert "already listening" in str(ei.value)
 
+    @needs_unix_sockets
     def test_stale_socket_file_is_reclaimed(self):
         """A crashed session leaves the file behind; the next one must start."""
         path = sock_path("stale")
@@ -827,6 +831,7 @@ class TestCueSocket:
         monkeypatch.delenv("PLUME_SOCKET")
         assert realtime.default_socket_path().endswith("plume-live.sock")
 
+    @needs_unix_sockets
     def test_absurd_path_length_says_so(self):
         long = "/tmp/" + "x" * 200 + ".sock"
         with pytest.raises(realtime.RealtimeError) as ei:

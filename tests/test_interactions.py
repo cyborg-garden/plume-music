@@ -18,7 +18,7 @@ import numpy as np
 import pytest
 import soundfile as sf
 from conftest import FakeMidiMessage as Msg
-from conftest import FakeMido, fake_audio, patched_module, short_socket_path, wait_until
+from conftest import FakeMido, fake_audio, patched_module, short_socket_path, signal_self, wait_until
 from test_looper_live import PlannerGate, cue_when, held, notes, rows_of, tone_db
 from test_midi import Player, StuckMido, recorded
 
@@ -695,7 +695,7 @@ class TestShutdown:
     def test_a_signal(self, env, combo, sig, reason):
         verb, kw = COMBOS[combo]
         take = Take(env)
-        take.run(verb, stop_t=4.0, rate=12.0, on_stream=lambda: os.kill(os.getpid(), sig), **kw)
+        take.run(verb, stop_t=4.0, rate=12.0, on_stream=lambda: signal_self(sig), **kw)
         take.assert_ended_cleanly(reason)
 
     @pytest.mark.parametrize("combo", COMBOS)

@@ -24,7 +24,8 @@ import pytest
 import soundfile as sf
 
 from conftest import fake_audio, patched_module, short_socket_path, wait_until
-from plume import cli, gui, guitake, realtime
+from conftest import WINDOWS, closing_signal_params, needs_symlinks, signal_self  # noqa: E402
+from plume import cli, gui, guitake, oscompat, realtime
 from test_gui_bridge import Client
 
 SR = 48000
@@ -496,6 +497,7 @@ def test_a_used_folder_is_never_used_again(rig, runner):
     assert (used / "human.wav").read_bytes() == b"hers"
 
 
+@needs_symlinks
 def test_a_symlink_at_that_name_is_not_used_either(rig, runner, tmp_path):
     rig.root.mkdir()
     (rig.root / "2031-02-03-040506").symlink_to(tmp_path / "elsewhere")
@@ -1006,6 +1008,7 @@ def test_a_failed_start_removes_only_its_own_empty_files(rig, runner):
     assert sorted(p.name for p in folder.iterdir()) == ["hers.txt"]
 
 
+@needs_symlinks
 def test_a_failed_start_leaves_a_symlink_alone(rig, runner, tmp_path):
     other = tmp_path / "other.json"
     other.write_text("hers")
@@ -1363,18 +1366,18 @@ def plumed_home(tmp_path, monkeypatch, plume_registry):
     monkeypatch.setenv(gui.STATE_DIR_ENV, str(tmp_path / "state"))
 
 
-@pytest.mark.parametrize("how", ["ctrl-c", signal.SIGTERM, signal.SIGHUP])
+@pytest.mark.parametrize("how", ["ctrl-c", *closing_signal_params()])
 def test_closing_the_bridge_stops_the_take_it_started(rig, how, plumed_home, capsys):
     def wait(server):
         server.takes.start({})
         assert rig.proc.code is None
         if how == "ctrl-c":
             raise KeyboardInterrupt
-        os.kill(os.getpid(), how)
+        signal_self(how)
         time.sleep(5.0)
         pytest.fail("the signal did not arrive")
 
-    before = {s: signal.getsignal(s) for s in (signal.SIGTERM, signal.SIGHUP)}
+    before = {s: signal.getsignal(s) for s in closing_signal_params()}
     gui.serve(takes=rig.root, open_browser=False, wait=wait, spawner=rig.spawner, lister=rig.lister,
               sessions=rig.sessions, stopper=rig.stopper)
     assert rig.proc.code == 0
@@ -1411,15 +1414,17 @@ def test_a_second_ctrl_c_leaves_and_says_how_to_stop_it(rig, plumed_home, capsys
 def test_stopping_a_real_child_reaps_it(rig, tmp_path, plume_registry):
     """A sleeping Python child, not plume.  stop_session waits for the pid to go, and an
     unreaped child still has one, so this hangs if nothing is reaping it."""
+    # SIGBREAK is what plume stop's CTRL_BREAK_EVENT arrives as, on Windows.
     code = ("import signal,sys,time\n"
-            "signal.signal(signal.SIGINT, lambda *a: sys.exit(0))\n"
+            "for n in ('SIGINT', 'SIGBREAK'):\n"
+            "    if hasattr(signal, n): signal.signal(getattr(signal, n), lambda *a: sys.exit(0))\n"
             "print('up', flush=True)\n"
             "time.sleep(30)\n")
     children = []
 
     def inert(argv, log_path):
         child = subprocess.Popen([sys.executable, "-c", code], stdin=subprocess.DEVNULL,
-                                 stdout=subprocess.PIPE, start_new_session=True)
+                                 stdout=subprocess.PIPE, **oscompat.detached_kwargs())
         child.stdout.readline()
         children.append(child)
         return child
@@ -1551,8 +1556,10 @@ def test_the_click_is_the_consent(monkeypatch, tmp_path):
     assert guitake.default_spawner(["x", "--y"], tmp_path / "state" / "take.log").pid == 5
     assert seen["argv"] == ["x", "--y"]
     assert seen["env"][realtime.AUDIO_CONSENT_ENV] == "1"
-    assert seen["stdin"] == subprocess.DEVNULL and seen["start_new_session"] is True
-    assert seen["log_mode"] == 0o600
+    assert seen["stdin"] == subprocess.DEVNULL
+    assert all(seen[k] == v for k, v in oscompat.detached_kwargs().items())
+    if not WINDOWS:                     # Windows: the folder's ACL, not a mode
+        assert seen["log_mode"] == 0o600
     assert "shell" not in seen
     assert realtime.AUDIO_CONSENT_ENV not in os.environ
 
@@ -1566,6 +1573,7 @@ def test_an_explicit_no_beats_the_click(monkeypatch, tmp_path, off):
     assert seen == {}
 
 
+@needs_symlinks
 def test_a_symlink_at_the_log_is_not_followed(monkeypatch, tmp_path):
     monkeypatch.delenv(realtime.AUDIO_CONSENT_ENV, raising=False)
     _fake_popen(monkeypatch)

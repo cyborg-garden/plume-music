@@ -620,11 +620,14 @@ class BandFollow:
                     moved.append("busier" if step > 0 else "sparser")
             self._learn(float(rms_db) - own, busy)
         gain_t, dens_t = self._targets()
-        # A move the band cannot make (already at its limit) is not one to report:
-        # the log and the after-take recap would claim a change nobody heard.
-        moved = [m for m in moved
-                 if (m in ("louder", "softer") and gain_t != gain_was)
-                 or (m in ("busier", "sparser") and dens_t != dens_was)]
+        # A move is reported only when the band's own target went that way: at a limit,
+        # or thinned by the torrent cap on a "busier" bar, the log and the after-take
+        # recap would otherwise claim a change nobody heard.  Her level drives density
+        # too, so a softer bar at the gain cap still counts when the band thins.
+        up = {"louder": gain_t > gain_was or dens_t > dens_was,
+              "softer": gain_t < gain_was or dens_t < dens_was,
+              "busier": dens_t > dens_was, "sparser": dens_t < dens_was}
+        moved = [m for m in moved if up[m]]
         back = abs(gain_t) < abs(self.gain_db)
         self.gain_db = _toward(self.gain_db, gain_t, FOLLOW_GAIN_RETURN_STEP_DB if back
                                else FOLLOW_GAIN_STEP_DB)

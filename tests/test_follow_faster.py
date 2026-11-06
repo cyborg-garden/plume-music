@@ -301,3 +301,4 @@ def test_a_softer_turn_still_above_the_cap_is_not_reported_as_a_move():
     states = halves(f, 80, [(loud - 5, loud - 5)] * 4)
     assert all(s.gain_db == at_cap for s in states)
     assert not any("softer" in s.moved for s in states)
+

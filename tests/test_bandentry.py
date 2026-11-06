@@ -5,6 +5,7 @@ import pytest
 from plume.bandentry import (BAND, DRUMS, FULL, SONG_ARC, BandEntry, SilenceEnding,
                              count_start, first_bar_time, song_section, tap_tempo)
 from plume.listen.harmony import HarmonyState
+from plume.theory import parse_key
 
 
 def h(key):
@@ -182,6 +183,77 @@ def test_a_bar_the_tracker_cannot_name_does_not_reset_a_key_change():
         last = e.update(bar, h("G major"), True)
         bar += 1
     assert last.key == "G major"
+
+
+# A real take (2026-11-06): she opened on the ii chord, so the tracker's first four
+# bars said G# minor and the governor committed to it while the drums were still
+# alone.  By the time the band came in the tracker had moved to her real key, F#
+# major, but the commitment nobody had heard yet held for eight more bars.
+def test_the_band_enters_in_the_key_heard_when_it_enters():
+    e = BandEntry("midwest", after_first_heard_bars=6)
+    keys = ["G# minor"] * 5 + ["F# major"] * 5
+    states = [e.update(1 + i, h(k), True) for i, k in enumerate(keys)]
+    entered = next(s for s in states if s.stage != DRUMS)
+    assert entered.key == "F# major"
+    assert {s.key for s in states if s.stage != DRUMS} == {"F# major"}
+
+
+def test_a_take_that_opens_on_the_ii_gets_the_band_in_its_home_key():
+    """The same take end to end, on synthetic chroma: two bars of the ii chord
+    (G# minor), then a I-IV-V-I loop in F# major, through the real tracker."""
+    from types import SimpleNamespace
+
+    from plume.listen.harmony import HarmonyTracker
+
+    hop, bar_s = 512 / 48000, 2.5
+    per_bar = int(round(bar_s / hop))
+
+    def chroma(pcs):
+        c = np.zeros(12)
+        c[list(pcs)] = 1.0
+        return c / c.sum()
+
+    ii = [(8, 11, 3)]
+    home = [(6, 10, 1), (11, 3, 6), (1, 5, 8), (6, 10, 1)]
+    frames = []
+    for b in range(10):
+        loop = ii if b < 2 else home
+        for k in range(per_bar):
+            frames.append(SimpleNamespace(
+                t_s=(len(frames) + 1) * hop, rms_db=-20.0, centroid_hz=880.0,
+                chroma=chroma(loop[k * len(loop) // per_bar])))
+    tracker, e = HarmonyTracker(), BandEntry("midwest", after_first_heard_bars=6)
+    states, i = [], 0
+    for bar in range(10):
+        batch = []
+        while i < len(frames) and frames[i].t_s < bar * bar_s:
+            batch.append(frames[i])
+            i += 1
+        states.append(e.update(bar, tracker.process(batch), bar >= 1))
+    entered = next(s for s in states if s.stage != DRUMS)
+    assert entered.key is not None and parse_key(entered.key) == parse_key("F# major")
+
+
+def test_hearing_the_key_late_does_not_delay_the_band():
+    e = BandEntry("midwest", after_first_heard_bars=6)
+    keys = ["G# minor"] * 6 + ["F# major"] * 2
+    states = [e.update(1 + i, h(k), True) for i, k in enumerate(keys)]
+    assert [s.stage for s in states] == [DRUMS] * 7 + [BAND]
+    assert states[-1].key == "F# major"
+
+
+def test_a_bar_the_tracker_cannot_name_at_entry_keeps_the_settled_key():
+    e = BandEntry("midwest", after_first_heard_bars=6)
+    keys = ["G# minor"] * 6 + [None, None]
+    states = [e.update(1 + i, h(k), True) for i, k in enumerate(keys)]
+    assert states[-1].stage == BAND and states[-1].key == "G# minor"
+
+
+def test_once_the_band_is_in_its_key_still_needs_the_release_bars():
+    e = BandEntry("midwest", after_first_heard_bars=6, release_bars=8)
+    run(e, ["F# major"] * 8, start=1)
+    later = run(e, ["G# minor"] * 7, start=9)
+    assert {s.key for s in later} == {"F# major"}
 
 
 def test_one_bar_back_home_still_holds_the_key():

@@ -15,7 +15,7 @@ speakers.
 ## Your first take
 
 ```bash
-.venv/bin/pip install -e '.[play,voice]'
+.venv/bin/pip install -e '.[play,voice]'   # voice: mlx-whisper on Apple Silicon, faster-whisper elsewhere
 plume calibrate        # plays clicks; skip this on Bluetooth (see below)
 plume lead --tap-start "lofi midwest emo in F major" --input acoustic --record takes1/
 ```
@@ -537,8 +537,10 @@ Chromium with the sound muted. It has never started a real take, so follow
 [the direct input test](DIRECT-INPUT-TEST.md#7-the-start-button-5-minutes) the first time.
 Only one Mac and one interface have been tried with plume at all, so other computers and
 other gear are untested. The names it uses to recognise software and laptop devices on
-Linux come from what those systems usually list, not from a real machine. `plume gui`
-refuses to run where there are no unix sockets, such as Windows.
+Linux and Windows come from what those systems usually list, not from a real machine. On
+Windows each device is listed once, from the default sound system (MME), so names can be
+cut short and the delay is longer than it needs to be. Nobody has played through plume on
+Windows yet.
 
 ### Another output
 

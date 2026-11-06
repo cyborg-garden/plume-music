@@ -18,6 +18,11 @@ works both out as you play, and the live screen marks what it chose as a guess, 
 example "F major, midwest (a guess)". A key or style you typed is never called a guess,
 and a key you named never moves. Plume plays major and minor keys.
 
+With Style on Detect, plume does not know your style yet when you start, so it plays
+only a quiet click on each beat, a little stronger on the one, like a metronome. The
+style's own drums come in with the bass and chords, at the start of a bar. A style you
+typed plays its own drums from the first bar.
+
 The styles are `lofi`, `midwest`, `trap`, `synthwave`, `jazz`, `house`, `hiphop` and `rnb`.
 You can also type `boom bap` for hiphop, or `r&b` or `neo soul` for rnb.
 

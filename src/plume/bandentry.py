@@ -84,16 +84,15 @@ def _mode_of(key: str | None) -> str | None:
 #: 2026-11-06: "the lofi intro drum beat felt weird and clunky ... it should give a
 #: simple beat until it both key and genre deduces".  The count's pick was a guess from
 #: the tempo alone, so its swing, its pushed and dragged hits and its 808 were a style
-#: she had not chosen yet.  Kick on one and three, snare on two and four, soft eighth
-#: hats on a recorded kit, straight, a little under the style's level.
+#: she had not chosen yet.  A plain kick, snare and hat was still "too opinionated --
+#: it should almost just be like a metronome or a wood block".  So: one recorded
+#: cross-stick click on each beat, the one a little stronger, straight, well under the
+#: band.  No groove, nothing of any genre; the style's own drums come in with the band.
 PLAIN_INTRO_PATTERNS = {
-    "kick": ("bd ~ ~ ~ ~ ~ ~ ~ bd ~ ~ ~ ~ ~ ~ ~",),
-    "snare": ("~ ~ ~ ~ sd ~ ~ ~ ~ ~ ~ ~ sd ~ ~ ~",),
-    "hat": ("hh:v0.6 ~ hh:v0.45 ~ hh:v0.6 ~ hh:v0.45 ~ "
-            "hh:v0.6 ~ hh:v0.45 ~ hh:v0.6 ~ hh:v0.45 ~",),
+    "click": ("rs:v1.0 ~ ~ ~ rs:v0.6 ~ ~ ~ rs:v0.6 ~ ~ ~ rs:v0.6 ~ ~ ~",),
 }
-PLAIN_INTRO_VOICES = {"kick": "kit_kick", "snare": "kit_snare", "hat": "kit_hat"}
-PLAIN_INTRO_GAIN_DB = -3.0
+PLAIN_INTRO_VOICES = {"click": "kit_rim"}
+PLAIN_INTRO_GAIN_DB = -2.0
 
 
 def plain_intro_style(name: str) -> dict:

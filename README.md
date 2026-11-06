@@ -57,7 +57,8 @@ terminal or a coding agent.
 [docs/PLAYING.md](docs/PLAYING.md) has the long version: counting in, talking to plume,
 running it with a coding agent, and recording or filming. The page has only ever started
 simulated takes, and only one Mac and one audio interface have been tried with plume at
-all, so other computers and other gear are untested. [docs/DIRECT-INPUT-TEST.md](docs/DIRECT-INPUT-TEST.md)
+all, so other computers and other gear are untested. The test suite runs on macOS, Linux
+and Windows; live sound on Linux and Windows has not been tried yet. [docs/DIRECT-INPUT-TEST.md](docs/DIRECT-INPUT-TEST.md)
 says how to try it on real hardware.
 
 ## Live mode (v1: the sideman)
@@ -155,6 +156,8 @@ None of these rules is a convention anyone has to remember:
   `plume cue` uses, and the session finishes its bar, flushes its tail and writes its
   records, exactly as Ctrl-C does. Then SIGINT, then SIGTERM. Never SIGKILL, which
   would cut the tail and lose the records. If nothing is running it says so and exits 0.
+  On Windows the signal rung is Ctrl-Break, and ending a take outright waits for
+  `--force`.
 - **Signals are graceful in the background too.** A session started in the background
   by a non-interactive shell (`plume jam &` in a script, an agent's subprocess, a CI job)
   inherits SIGINT ignored. Live sessions handle SIGINT and SIGTERM themselves, so they

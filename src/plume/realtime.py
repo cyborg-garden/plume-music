@@ -3849,6 +3849,12 @@ def transpose_key(key: str | None, semitones: int) -> str | None:
     return f"{spell(nk.tonic, nk)} {nk.mode.replace('_', ' ')}"
 
 
+def window_lag_bars(t_bar: float, w_start: float, bar_len: float) -> int:
+    """How many bars behind the planned bar the reading of her playing is.  The loop
+    plans a bar ahead and reads the last bar that has finished: two bars."""
+    return int(round((t_bar - w_start) / bar_len))
+
+
 def machine_harmony_state(t_s: float, key: str | None, chord: str | None, *,
                           transpose: int = 0):
     """The harmony the MACHINE is playing this bar (its composed key/chord,
@@ -4464,7 +4470,8 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
                 playing = bar >= first_heard_bar and guitar_ear.bar(bar_chroma)
             # ``playing`` is about the bar the window read, two bars back; the ear
             # confirms on her second tonal bar, so her playing may have begun on the first.
-            heard_bar = bar - int(round((t_bar - w_start) / bar_len))
+            lag = window_lag_bars(t_bar, w_start, bar_len)
+            heard_bar = bar - lag
             if playing and not is_direct and not entry.band_is_in:
                 heard_bar -= guitar_ear.began_bars_ago
             entered = entry.update(bar, harm_state, playing, heard_bar=heard_bar)
@@ -4515,10 +4522,9 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
                 followed = follow.bar(None if human is None else human.rms_db,
                                       None if human is None else human.onset_density,
                                       playing=playing and human is not None,
-                                      band_in=entry.band_is_in and follow_band_settled(
-                                          entry.bars_in - int(round((t_bar - w_start)
-                                                                    / bar_len)),
-                                          trusted=follow.trusted,
+                                      band_in=entry.band_is_in,
+                                      settled=follow_band_settled(
+                                          entry.bars_in - lag, trusted=follow.trusted,
                                           ramp_bars=params.ramp_bars),
                                       parts=parts,
                                       bar_s=bar_len)

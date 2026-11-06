@@ -27,6 +27,8 @@ MELODY_ROLES = ("lead", "arp")
 CHORD_ROLES = ("pad", "keys", "shimmer")
 #: Bars the drums and bass play before the chords join them.
 CHORDS_DELAY_BARS = 2
+#: Bars after the band before the melody joins: the last part of the entry.
+MELODY_DELAY_BARS = 4
 #: Pitched drums, which play a note of the key: held back until there is one.
 PITCHED_DRUM_ROLES = ("sub",)
 #: Bars of rest after which her playing again starts a new phrase.  One bar is a
@@ -228,7 +230,7 @@ class GuitarEar:
 
 class BandEntry:
     def __init__(self, style: str, *, min_drum_bars: int = 8, key_bars: int = 4,
-                 melody_delay_bars: int = 4, release_bars: int = 8,
+                 melody_delay_bars: int = MELODY_DELAY_BARS, release_bars: int = 8,
                  known_key: str | None = None, after_first_heard_bars: int = 5,
                  key_fallback_bars: int | None = None, phrase_bars: int = 1):
         """``after_first_heard_bars`` counts from when she is confirmed, which is
@@ -420,30 +422,39 @@ class EntryRamp:
     the drums and bass, then the chords, then the melody, each swell in.  What was
     already playing over the intro stays where it was."""
 
-    def __init__(self, *, under_db: float, ramp_bars: int):
+    def __init__(self, *, under_db: float, ramp_bars: int,
+                 last_join_bars: int = MELODY_DELAY_BARS):
         self._under, self._bars = float(under_db), int(ramp_bars)
+        self._last_join = int(last_join_bars)
         self._joined: dict[str, int] = {}
 
     def levels(self, bars_in: int, roles, *, intro=()) -> dict[str, float]:
+        """Only the entry swells.  A part first heard after the last one the entry
+        brings in (the outro's crash, a lift's high pad) is not entering the band, so
+        it plays at full."""
         out = {}
         for r in roles:
             if r in intro:
                 out[r] = 1.0
                 continue
             first = self._joined.setdefault(r, int(bars_in))
+            if first > self._last_join:
+                out[r] = 1.0
+                continue
             db = entry_ramp_db(int(bars_in) - first, under_db=self._under,
                                ramp_bars=self._bars)
             out[r] = 10.0 ** (db / 20.0)
         return out
 
 
-def follow_band_settled(bars_heard_in: int, *, trusted: bool, ramp_bars: int) -> bool:
+def follow_band_settled(bars_heard_in: int, *, trusted: bool, ramp_bars: int,
+                        last_join_bars: int = MELODY_DELAY_BARS) -> bool:
     """May the follow learn her level from a bar heard ``bars_heard_in`` bars after the
     band came in?  A room mic hears the band as well as her, and while the band is
     still swelling in it would learn a quiet normal, then read her as louder once the
-    whole band lands and push the band up.  So it waits for the last of the chords to
-    reach full."""
-    return trusted or int(bars_heard_in) >= CHORDS_DELAY_BARS + int(ramp_bars)
+    whole band lands and push the band up.  So it waits for every part of the entry,
+    the melody last, to reach full."""
+    return trusted or int(bars_heard_in) >= int(last_join_bars) + int(ramp_bars)
 
 
 class PhraseHold:
@@ -460,16 +471,16 @@ class PhraseHold:
         self._recent: list[float] = []
 
     def value(self, bars_in: int, section: str, density: float) -> float:
-        """At the top of a phrase, the median of the phrase's own readings (the last
-        ``bars`` of them), so one odd bar does not set the next phrase.  A new section
+        """At the top of a phrase, the median of the phrase just played (its own
+        ``bars`` readings), so one odd bar does not set the next phrase.  A new section
         takes its own density at once."""
         if section != self._section:
             self._recent = []
-        self._recent = [*self._recent, float(density)][-self._bars:]
         if self._held is None or section != self._section:
             self._held, self._section = float(density), section
-        elif int(bars_in) % self._bars == 0:
+        elif int(bars_in) % self._bars == 0 and self._recent:
             self._held = float(np.median(self._recent))
+        self._recent = [*self._recent, float(density)][-self._bars:]
         return self._held
 
 
@@ -746,8 +757,10 @@ class BandFollow:
 
     def bar(self, rms_db: float | None, onsets_per_beat: float | None, *,
             playing: bool, band_in: bool = True, parts=None,
-            bar_s: float | None = None) -> FollowState:
-        """This bar's lean.  ``band_in`` False: drums alone, so only listen."""
+            bar_s: float | None = None, settled: bool = True) -> FollowState:
+        """This bar's lean.  ``band_in`` False: drums alone, so only listen.
+        ``settled`` False: the band is in but still swelling in (see
+        follow_band_settled), so it listens without learning or moving."""
         busy = None if onsets_per_beat is None or not self.trusted else float(onsets_per_beat)
         if bar_s is not None:
             self._level.quick = follow_hold_bars(bar_s, trusted=self.trusted)
@@ -757,6 +770,13 @@ class BandFollow:
             if self.trusted and playing and rms_db is not None:
                 self._learn(float(rms_db), busy)
             return FollowState(0.0, 1.0, (), "follow: listening until the band is in")
+        if not settled:
+            # The same as drums alone for a room mic: it hears a mix that is still
+            # changing.  A trusted input still learns her.
+            if self.trusted and playing and rms_db is not None:
+                self._learn(float(rms_db), busy)
+            return FollowState(0.0, 1.0, (),
+                               "follow: listening while the band comes in")
         moved: list[str] = []
         gain_was, dens_was = self._targets()
         known = self._learned >= FOLLOW_LEARN_BARS

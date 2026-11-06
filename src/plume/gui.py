@@ -6,7 +6,7 @@ everything about that child lives in :mod:`plume.guitake`.  The other way to hea
 anything is a person clicking Listen, which makes their own browser fetch a WAV from
 here.
 
-HTTP lets any website try to reach this, unlike plume's unix socket, and the WAVs
+HTTP lets any website try to reach this, unlike plume's cue socket, and the WAVs
 are recordings of a room.  A DNS-rebinding page could find the random port and
 read them.  So, on every route, before anything else:
 
@@ -55,7 +55,7 @@ import numpy as np
 import soundfile as sf
 
 from . import fx as _fx
-from . import guitake, record
+from . import guitake, oscompat, record
 from .realtime import REC_HUMAN, REC_MACHINE, list_sessions
 
 STATE_DIR_ENV = "PLUME_GUI_STATE_DIR"
@@ -119,13 +119,6 @@ class GuiError(RuntimeError):
     """A clean, user-facing failure."""
 
 
-def platform_problem() -> str | None:
-    """Its sockets and its private files need these, and Windows has neither."""
-    if not hasattr(socket, "AF_UNIX") or not hasattr(os, "O_NOFOLLOW"):
-        return "plume gui needs macOS or Linux, and this computer is neither."
-    return None
-
-
 # ------------------------------------------------------------------ the state file
 
 def state_path() -> Path:
@@ -142,28 +135,19 @@ def _own_state_path(port: int) -> Path:
 def _write_state(doc: dict, path: Path | None = None) -> None:
     path = state_path() if path is None else path
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    os.chmod(path.parent, 0o700)
+    oscompat.chmod_private(path.parent, 0o700)
     # O_NOFOLLOW: a planted symlink must not redirect the key somewhere readable.
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+    fd = oscompat.open_private(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     try:
-        os.fchmod(fd, 0o600)
+        oscompat.fchmod_private(fd, 0o600)
         os.write(fd, json.dumps(doc).encode())
     finally:
         os.close(fd)
 
 
 def _pid_alive(pid) -> bool:
-    if not isinstance(pid, int) or pid <= 0:
-        return False
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    except OSError:
-        return False
-    return True
+    # Never os.kill(pid, 0) here: on Windows that is a Ctrl-C to the bridge it asks about.
+    return oscompat.pid_alive(pid)
 
 
 def _sign(key: bytes, nonce: str) -> str:
@@ -177,11 +161,11 @@ def _mint(key: bytes) -> str:
 
 def _read_state(path: Path) -> tuple[bytes, int, object] | None:
     try:
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        fd = oscompat.open_private(path, oscompat.read_flags())
     except OSError:
         return None
     try:
-        with os.fdopen(fd) as f:
+        with os.fdopen(fd, encoding="utf-8") as f:
             if not stat.S_ISREG(os.fstat(f.fileno()).st_mode):
                 return None
             doc = json.load(f)
@@ -219,9 +203,47 @@ def fresh_url() -> str:
     raise GuiError("no plume gui is running. Start one with 'plume gui'.")
 
 
-def _open_folder(path: Path) -> int:
-    """A handle on the folder itself, so a later swap of its name changes nothing."""
-    return os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_NONBLOCK)
+def _open_folder(path: Path):
+    """A handle on the folder itself, so a later swap of its name changes nothing.
+
+    Where folders cannot be opened by handle (Windows), the handle is the path,
+    checked here to be a real folder with no symlink on the way.  The calls below
+    then refuse a symlink at the file itself.  That is a narrower guarantee than a
+    handle, and the reason it is acceptable there: making a symlink on Windows
+    takes an administrator or developer mode.
+    """
+    if oscompat.DIR_FDS:
+        return os.open(path, os.O_RDONLY | os.O_DIRECTORY | oscompat.O_NOFOLLOW
+                       | oscompat.O_NONBLOCK)
+    if not _still_real(Path(path)):
+        raise NotADirectoryError(str(path))
+    return Path(path)
+
+
+def _close_folder(where) -> None:
+    if isinstance(where, int):
+        os.close(where)
+
+
+def _open_in(where, name: str, flags: int, mode: int = 0o600) -> int:
+    """Open ``name`` inside a folder from :func:`_open_folder`, never through a symlink."""
+    if isinstance(where, int):
+        return oscompat.open_private(name, flags, mode, dir_fd=where)
+    return oscompat.open_private(Path(where) / name, flags, mode)
+
+
+def _replace_in(where, src: str, dst: str) -> None:
+    if isinstance(where, int):
+        os.replace(src, dst, src_dir_fd=where, dst_dir_fd=where)
+    else:
+        os.replace(Path(where) / src, Path(where) / dst)
+
+
+def _unlink_in(where, name: str) -> None:
+    if isinstance(where, int):
+        os.unlink(name, dir_fd=where)
+    else:
+        os.unlink(Path(where) / name)
 
 
 def _still_real(path: Path) -> bool:
@@ -361,20 +383,19 @@ class Library:
             # a symlink waiting here must not aim this write at another file.
             tmp = f".{record.REC_KEEP}.{secrets.token_hex(8)}.tmp"
             try:
-                fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600,
-                             dir_fd=folder)
+                fd = _open_in(folder, tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
                 try:
                     with os.fdopen(fd, "w", encoding="utf-8") as f:
                         f.write(json.dumps(doc))
-                    os.replace(tmp, record.REC_KEEP, src_dir_fd=folder, dst_dir_fd=folder)
+                    _replace_in(folder, tmp, record.REC_KEEP)
                 except OSError:
                     try:
-                        os.unlink(tmp, dir_fd=folder)
+                        _unlink_in(folder, tmp)
                     except OSError:
                         pass
                     raise
             finally:
-                os.close(folder)
+                _close_folder(folder)
         return doc
 
 
@@ -795,10 +816,9 @@ class _Handler(BaseHTTPRequestHandler):
             # a FIFO would wait for ever, before the regular-file check below.
             where = _open_folder(folder)
             try:
-                fd = os.open(_TRACKS[track], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
-                             dir_fd=where)
+                fd = _open_in(where, _TRACKS[track], oscompat.read_flags())
             finally:
-                os.close(where)
+                _close_folder(where)
         except OSError:
             raise _Refused(404, "no such recording") from None
         with os.fdopen(fd, "rb") as f:
@@ -842,9 +862,9 @@ def _open_track(folder: Path, name: str):
     """A recording opened by handle, refusing a symlink, a FIFO or anything but a file."""
     where = _open_folder(folder)
     try:
-        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=where)
+        fd = _open_in(where, name, oscompat.read_flags())
     finally:
-        os.close(where)
+        _close_folder(where)
     f = os.fdopen(fd, "rb")
     if not stat.S_ISREG(os.fstat(f.fileno()).st_mode):
         f.close()
@@ -1027,7 +1047,7 @@ def default_library() -> Path:
 
 
 class _Closing(BaseException):
-    """SIGTERM or SIGHUP: leave the same way Ctrl-C does."""
+    """SIGTERM, SIGHUP or SIGBREAK: leave the same way Ctrl-C does."""
 
 
 def _closing_signal(signum, frame):  # noqa: ARG001
@@ -1037,7 +1057,7 @@ def _closing_signal(signum, frame):  # noqa: ARG001
 def _catch_closing_signals() -> dict:
     """A closed terminal must not orphan the take this bridge started."""
     previous = {}
-    for name in ("SIGTERM", "SIGHUP"):
+    for name in oscompat.closing_signals():
         sig = getattr(signal, name, None)
         if sig is not None:
             try:
@@ -1072,9 +1092,6 @@ def serve(*, take=None, takes=None, open_browser: bool = True, wait=None, **serv
     def write(line: str) -> None:
         print(line, flush=True)
 
-    problem = platform_problem()
-    if problem is not None:
-        raise GuiError(problem)
     pinned = None
     if take is not None:
         pinned = Path(take)

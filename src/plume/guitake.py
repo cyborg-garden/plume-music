@@ -51,6 +51,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
+from . import oscompat
 from .compose import parse_prompt
 from .realtime import (AUDIO_CONSENT_ENV, AUDIO_CONSENT_OFF, OPEN_TOGETHER_FAILED, REC_CUES,
                        REC_DECISIONS, REC_ENDING, REC_HUMAN, REC_MACHINE, REC_MANIFEST, REC_MIDI, REC_STREAM, REC_VOICE,
@@ -179,8 +180,11 @@ _BUILT_IN = ("built-in", "builtin", "internal", "microphone array", "mic array",
              "macbook", "imac", "mac mini", "mac studio", "mac pro", "hda ", "hd-audio", "sof-", "bcm2835",
              "realtek", "conexant", "smart sound", "webcam", "camera", "facetime", "display", "hdmi", "dock",
              "iphone", "ipad")
-#: Not a card at all: the sound system's own names for whatever is current.
-_SYSTEM_NAMES = frozenset({"default", "sysdefault", "pulse", "pipewire", "jack"})
+#: Not a card at all: the sound system's own names for whatever is current.  The last four
+#: are Windows': MME's and DirectSound's stand-ins for the default device.
+_SYSTEM_NAMES = frozenset({"default", "sysdefault", "pulse", "pipewire", "jack",
+                           "microsoft sound mapper - input", "microsoft sound mapper - output",
+                           "primary sound capture driver", "primary sound driver"})
 #: Not a card either: ALSA's plugins, whole names, each one a software path to some other device.
 #: From what PortAudio usually lists there.  Nobody has run plume on Linux to capture a real list.
 _SOFTWARE_NAMES = re.compile(r"samplerate|speexrate|speex|lavrate|lavcrate|upmix|vdownmix|dmix|dsnoop|front|rear"
@@ -234,15 +238,15 @@ def default_spawner(argv: list[str], log_path: Path):
         raise SoundOff(SOUND_OFF)
     log_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     # O_NOFOLLOW: a planted symlink must not point stderr at something else.
-    log = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+    log = oscompat.open_private(log_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     try:
-        os.fchmod(log, 0o600)
+        oscompat.fchmod_private(log, 0o600)
         return subprocess.Popen(
             argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=log,
             env={**os.environ, AUDIO_CONSENT_ENV: "1"},
             # Its own session: a Ctrl-C in this terminal must not reach it as well as
             # us, or the band gets two interrupts, and a second one cuts its ending short.
-            start_new_session=True)
+            **oscompat.detached_kwargs())
     finally:
         os.close(log)
 
@@ -254,7 +258,7 @@ def default_lister() -> list[dict]:
     try:
         done = subprocess.run([*PLUME_CHILD, "inputs", "--json"],
                               stdin=subprocess.DEVNULL, capture_output=True, check=False,
-                              timeout=LIST_TIMEOUT_S, start_new_session=True)
+                              timeout=LIST_TIMEOUT_S, **oscompat.detached_kwargs())
         doc = json.loads(done.stdout)
     except (OSError, ValueError, subprocess.SubprocessError):
         raise TakeError(NO_LISTING) from None
@@ -285,7 +289,7 @@ def default_meter(name: str, seconds: float, cancelled: threading.Event) -> dict
             # Glued to its flag, so a name cannot read as a flag of its own.
             [*PLUME_CHILD, "inputs", f"--meter={name}", f"--seconds={seconds}", "--json"],
             stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            env={**os.environ, AUDIO_CONSENT_ENV: "1"}, start_new_session=True)
+            env={**os.environ, AUDIO_CONSENT_ENV: "1"}, **oscompat.detached_kwargs())
     except OSError:
         raise TakeError(NO_READING) from None
     until = time.monotonic() + float(seconds) + METER_GRACE_S
@@ -562,7 +566,7 @@ class SetupStore:
             return empty
         try:
             # O_NOFOLLOW and O_NONBLOCK: a planted symlink or a FIFO is not this file.
-            fd = os.open(self._path_of(), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            fd = oscompat.open_private(self._path_of(), oscompat.read_flags())
         except OSError:
             return empty
         try:
@@ -593,11 +597,11 @@ class SetupStore:
         try:
             path = Path(self._path_of())
             path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-            os.chmod(path.parent, 0o700)
+            oscompat.chmod_private(path.parent, 0o700)
             # A name nobody could have planted, and a rename that replaces a symlink rather
             # than writing through it.
             tmp = path.with_name(f".{path.name}.{secrets.token_hex(8)}.tmp")
-            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+            fd = oscompat.open_private(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
             try:
                 with os.fdopen(fd, "w", encoding="utf-8") as f:
                     f.write(json.dumps({"version": SETUP_VERSION, **self._doc}))

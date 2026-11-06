@@ -19,8 +19,9 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from conftest import WINDOWS, needs_dir_fds, needs_fifo, needs_posix_modes, needs_symlinks  # noqa: E402
 
-from plume import gui, realtime, record
+from plume import gui, oscompat, realtime, record
 from record_fixture import POISON, cue_line, ending_doc, landed, song, write_take
 
 WAV = bytes(range(256)) * 4
@@ -301,12 +302,14 @@ def test_a_fresh_url_comes_from_the_state_file_alone(server, anon):
     assert gui.fresh_url() != url
 
 
+@needs_posix_modes
 def test_the_state_file_is_only_hers(server):
     path = gui.state_path()
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
     assert stat.S_IMODE(path.parent.stat().st_mode) == 0o700
 
 
+@needs_posix_modes
 def test_a_state_dir_others_could_read_is_tightened(tmp_path, monkeypatch, takes):
     loose = tmp_path / "loose"
     loose.mkdir(mode=0o755)
@@ -318,6 +321,7 @@ def test_a_state_dir_others_could_read_is_tightened(tmp_path, monkeypatch, takes
         srv.close()
 
 
+@needs_symlinks
 def test_a_symlink_at_the_state_path_is_not_followed(tmp_path, monkeypatch, takes):
     state = tmp_path / "s"
     state.mkdir(mode=0o700)
@@ -545,6 +549,7 @@ def test_the_shelf_notices_a_take_that_changed(client, takes):
                 if t["folder"] == "two")["bars"] == 5
 
 
+@needs_symlinks
 def test_a_symlinked_folder_in_the_library_is_not_followed(client, takes, tmp_path):
     outside = write_take(tmp_path / "outside", song(3))
     (takes / "link").symlink_to(outside, target_is_directory=True)
@@ -634,6 +639,7 @@ def test_an_oversized_body_is_refused(client):
     assert resp.status == 413
 
 
+@needs_posix_modes
 def test_a_read_only_folder_is_reported_not_crashed(client):
     tid = take_id(client)
     folder = client.server.library.path_of(tid)
@@ -683,6 +689,7 @@ def test_a_take_with_no_recording_is_a_404(client):
     assert audio(client, take_id(client, "two"))[0].status == 404
 
 
+@needs_symlinks
 def test_a_symlinked_recording_is_not_served(client, takes, tmp_path):
     secret = tmp_path / "secret.bin"
     secret.write_bytes(b"secret")
@@ -777,9 +784,11 @@ def test_the_real_command_serves_then_quits_cleanly_on_ctrl_c(tmp_path):
     env = {**os.environ, "HOME": str(tmp_path), "PLUME_GUI_STATE_DIR": str(tmp_path / "state"),
            "PYTHONPATH": str(Path(gui.__file__).parents[1])}
     env.pop("PLUME_ALLOW_AUDIO", None)
+    # Windows: its own process group, so Ctrl-Break (Windows' Ctrl-C) reaches only it.
     proc = subprocess.Popen([sys.executable, "-m", "plume", "gui", "--take", str(take), "--no-open"],
                             stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                            text=True, env=env)
+                            text=True, env=env,
+                            **(oscompat.detached_kwargs() if WINDOWS else {}))
     try:
         url = proc.stdout.readline().strip()
         found = re.fullmatch(r"http://127\.0\.0\.1:(\d+)(/auth\?token=\S+)", url)
@@ -791,7 +800,7 @@ def test_the_real_command_serves_then_quits_cleanly_on_ctrl_c(tmp_path):
         assert conn.getresponse().status == 303
         conn.close()
     finally:
-        proc.send_signal(signal.SIGINT)
+        proc.send_signal(oscompat.interrupt_signal())
         out, err = proc.communicate(timeout=15)
     assert proc.returncode == 0
     assert "token=" not in out + err, "the one-time link must only be printed once"
@@ -838,6 +847,7 @@ def test_the_key_alone_is_not_enough_either(client, anon):
 
 # ------------------------------------------------------------- a folder can change
 
+@needs_symlinks
 def test_a_planted_tmp_symlink_cannot_aim_keep_at_another_file(client, takes, tmp_path, monkeypatch):
     """Even one that guessed the temporary name, which is what the O_EXCL is for."""
     tid = take_id(client)
@@ -868,6 +878,7 @@ def test_keeps_temporary_file_has_a_new_name_each_time(client, takes, monkeypatc
     assert not [p.name for p in (takes / "one").glob(".*")]
 
 
+@needs_symlinks
 def test_a_symlink_on_the_way_to_a_library_folder_is_not_a_real_folder(tmp_path):
     real = tmp_path / "real"
     (real / "take").mkdir(parents=True)
@@ -877,6 +888,7 @@ def test_a_symlink_on_the_way_to_a_library_folder_is_not_a_real_folder(tmp_path)
     assert gui._still_real(link / "take") is False
 
 
+@needs_symlinks
 def test_a_symlink_at_a_state_file_is_not_read(tmp_path):
     target = tmp_path / "elsewhere.json"
     target.write_text(json.dumps({"pid": 1, "port": 1, "key": "00"}))
@@ -886,6 +898,7 @@ def test_a_symlink_at_a_state_file_is_not_read(tmp_path):
     assert gui._read_state(link) is None
 
 
+@needs_dir_fds
 def test_a_recording_is_opened_in_the_folder_it_was_checked_in(client, takes, tmp_path, monkeypatch):
     """The folder's name is looked at once.  Swapping it after the check changes nothing."""
     tid = take_id(client)
@@ -920,6 +933,7 @@ def test_a_stale_file_naming_a_reused_pid_does_not_beat_a_live_bridge(server):
     assert f":{server.port}/" in gui.fresh_url()
 
 
+@needs_symlinks
 def test_keep_replaces_a_symlinked_keep_file_without_touching_its_target(client, takes, tmp_path):
     tid = take_id(client)
     outside = tmp_path / "precious"
@@ -939,6 +953,7 @@ def _swap_for_symlink(folder, tmp_path):
     return outside
 
 
+@needs_symlinks
 def test_a_listed_folder_swapped_for_a_symlink_is_gone(client, takes, tmp_path):
     tid = take_id(client)
     outside = _swap_for_symlink(takes / "one", tmp_path)
@@ -948,6 +963,7 @@ def test_a_listed_folder_swapped_for_a_symlink_is_gone(client, takes, tmp_path):
     assert not (outside / record.REC_KEEP).exists()
 
 
+@needs_symlinks
 def test_a_pinned_folder_swapped_for_a_symlink_is_gone(tmp_path, monkeypatch):
     monkeypatch.setenv(gui.STATE_DIR_ENV, str(tmp_path / "s9"))
     pinned = write_take(tmp_path / "pinned", song(5), wav_bytes=WAV).resolve()
@@ -982,6 +998,7 @@ def test_an_unexpected_failure_is_an_answer_not_a_dropped_connection(client, mon
 
 @pytest.mark.parametrize("name", [record.REC_KEEP, record.REC_DECISIONS, realtime.REC_MANIFEST,
                                   realtime.REC_ENDING, realtime.REC_CUES])
+@needs_fifo
 def test_a_fifo_answers_instead_of_hanging(client, takes, name):
     path = takes / "one" / name
     path.unlink(missing_ok=True)
@@ -989,6 +1006,7 @@ def test_a_fifo_answers_instead_of_hanging(client, takes, name):
     assert client.get("/api/takes")[0].status == 200
 
 
+@needs_fifo
 def test_a_fifo_keep_file_does_not_wedge_the_library(client, takes):
     tid = take_id(client)
     good = take_id(client, "two")
@@ -1004,6 +1022,7 @@ def test_a_stalled_keep_write_does_not_hold_the_lock_readers_need(client, takes)
         assert client.get(f"/api/take/{good}")[0].status == 200
 
 
+@needs_fifo
 def test_a_fifo_named_as_a_recording_is_refused_at_once(client, takes):
     tid = take_id(client)
     path = takes / "one" / realtime.REC_HUMAN
@@ -1056,6 +1075,7 @@ def test_a_dead_bridges_file_does_not_mint_a_link(takes, tmp_path, monkeypatch):
         gui.fresh_url()
 
 
+@needs_posix_modes
 def test_each_bridges_own_file_is_only_hers(server):
     mode = stat.S_IMODE(os.stat(gui._own_state_path(server.port)).st_mode)
     assert mode == 0o600

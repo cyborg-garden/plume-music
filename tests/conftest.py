@@ -352,6 +352,71 @@ def short_socket_path(name: str) -> str:
     return str(p)
 
 
+# ------------------------------------------------------------------ other platforms
+#
+# Each mark says exactly which POSIX feature a test needs, so a Windows run skips
+# only that and the reason reads as a fact.  The Windows-side logic each one
+# guards is tested on every OS in tests/test_cross_platform.py.
+
+WINDOWS = sys.platform == "win32"
+#: POSIX file modes: Windows' os.chmod only toggles read-only.
+needs_posix_modes = pytest.mark.skipif(WINDOWS, reason="POSIX file modes")
+#: SIGINT/SIGTERM/SIGKILL sent with os.kill: on Windows that is TerminateProcess.
+needs_posix_signals = pytest.mark.skipif(WINDOWS, reason="POSIX signals")
+needs_fifo = pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="no FIFOs here")
+needs_dev_zero = pytest.mark.skipif(not os.path.exists("/dev/zero"), reason="no /dev/zero here")
+needs_unix_sockets = pytest.mark.skipif(not hasattr(__import__("socket"), "AF_UNIX"),
+                                        reason="no AF_UNIX here")
+
+
+def _can_symlink() -> bool:
+    probe = Path(tempfile.mkdtemp(prefix="plume-link-"))
+    try:
+        (probe / "l").symlink_to(probe, target_is_directory=True)
+        return True
+    except (OSError, NotImplementedError):
+        return False
+    finally:
+        try:
+            (probe / "l").unlink()
+        except OSError:
+            pass
+        probe.rmdir()
+
+
+#: Windows makes symlinks only for administrators or in developer mode.
+needs_symlinks = pytest.mark.skipif(not _can_symlink(), reason="cannot make symlinks here")
+
+
+def _has_dir_fds() -> bool:
+    from plume import oscompat
+    return oscompat.DIR_FDS
+
+
+#: A folder opened by handle, so a swap of its name after the check changes nothing.
+needs_dir_fds = pytest.mark.skipif(not _has_dir_fds(), reason="no dir_fd support here")
+
+
+def signal_self(sig) -> None:
+    """Deliver ``sig`` to this process, the way another process would.
+
+    On POSIX that is ``os.kill``.  On Windows ``os.kill`` on our own pid would be
+    TerminateProcess, ending the test run, so the handler is invoked by raise_signal.
+    """
+    import signal as _signal
+    if WINDOWS:
+        _signal.raise_signal(sig)
+    else:
+        os.kill(os.getpid(), sig)
+
+
+def closing_signal_params() -> list:
+    """SIGTERM, plus SIGHUP or SIGBREAK where this platform has them."""
+    import signal as _signal
+    from plume import oscompat
+    return [getattr(_signal, n) for n in oscompat.closing_signals()]
+
+
 def wait_until(predicate, *, timeout: float = 5.0, poll: float = 0.01) -> bool:
     """Poll ``predicate`` until it is true or the timeout runs out."""
     until = time.monotonic() + float(timeout)
@@ -360,6 +425,42 @@ def wait_until(predicate, *, timeout: float = 5.0, poll: float = 0.01) -> bool:
             return True
         time.sleep(poll)
     return bool(predicate())
+
+
+# ------------------------------------------------------------------ CI shards
+#
+# The whole suite takes most of an hour on one core, and CI runs it on three
+# operating systems.  ``PLUME_TEST_SHARD=K/N`` keeps the tests whose node id hashes
+# to K of N, so N jobs together run every test exactly once.  Unset: everything.
+
+SHARD_ENV = "PLUME_TEST_SHARD"
+
+
+def _shard() -> tuple[int, int] | None:
+    raw = os.environ.get(SHARD_ENV, "").strip()
+    if not raw:
+        return None
+    k, _, n = raw.partition("/")
+    k, n = int(k), int(n)
+    if not 1 <= k <= n:
+        raise pytest.UsageError(f"{SHARD_ENV} must be K/N with 1 <= K <= N, got {raw!r}")
+    return k, n
+
+
+def pytest_collection_modifyitems(config, items):
+    shard = _shard()
+    if shard is None:
+        return
+    import zlib
+    k, n = shard
+    kept, dropped = [], []
+    for item in items:
+        # The node id, with / separators on every OS, so a test lands in the same shard.
+        nodeid = item.nodeid.replace("\\", "/")
+        (kept if zlib.crc32(nodeid.encode()) % n == k - 1 else dropped).append(item)
+    if dropped:
+        config.hook.pytest_deselected(items=dropped)
+    items[:] = kept
 
 
 # ------------------------------------------------------------------ fixtures

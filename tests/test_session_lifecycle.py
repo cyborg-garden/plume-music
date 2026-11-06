@@ -120,7 +120,11 @@ def write_record(reg: Path, pid: int, **kw) -> realtime.LiveSession:
 
 from conftest import (  # noqa: E402
     fake_audio,
+    needs_fifo,
+    needs_posix_modes,
+    needs_posix_signals,
     patched_module,
+    signal_self,
     wait_until,
 )
 
@@ -404,6 +408,7 @@ class TestStopSession:
             realtime.send_stop(socket_path=short_sock("absent"))
         assert "nothing is listening" in str(exc.value)
 
+    @needs_posix_signals
     def test_a_dead_socket_falls_back_to_signals(self, isolated_registry,
                                                  monkeypatch):
         """A session whose socket never opened is still stoppable.
@@ -453,6 +458,7 @@ class TestStopSession:
         assert "SIGKILL" not in realtime._STOP_SIGNALS
         assert realtime._STOP_SIGNALS == ("SIGINT", "SIGTERM")
 
+    @needs_posix_signals
     def test_force_adds_a_sigkill_rung_and_says_it_forced(
             self, isolated_registry, monkeypatch):
         """The deliberate escalation.
@@ -475,6 +481,7 @@ class TestStopSession:
         assert out["tried"] == ["SIGINT", "SIGTERM", "SIGKILL"]
         assert "the tail did not play" in out["detail"]
 
+    @needs_posix_signals
     def test_without_force_nothing_sends_sigkill(self, isolated_registry,
                                                  monkeypatch):
         sent = []
@@ -486,6 +493,7 @@ class TestStopSession:
         assert signal.SIGKILL not in sent
         assert out["stopped"] is False
 
+    @needs_posix_signals
     def test_sigint_gets_the_whole_graceful_budget_not_a_fraction(
             self, isolated_registry, monkeypatch):
         """Regression: SIGTERM used to land while the flush was still running.
@@ -521,6 +529,7 @@ class TestStopSession:
         assert realtime.DEFAULT_STOP_TIMEOUT > realtime.ENDING_HARD_DEADLINE_S
         assert realtime.DEFAULT_STOP_TIMEOUT > 40.0
 
+    @needs_posix_signals
     def test_a_wedged_session_is_reported_not_silently_left(self,
                                                             isolated_registry,
                                                             monkeypatch):
@@ -539,6 +548,7 @@ class TestStopSession:
         assert "--pid 12345 --force" in out["detail"]
         assert out["tried"] == ["SIGINT", "SIGTERM"]
 
+    @needs_posix_signals
     def test_force_that_also_fails_says_what_that_means(self,
                                                         isolated_registry,
                                                         monkeypatch):
@@ -571,13 +581,13 @@ class TestGracefulSignals:
     def test_sigint_sets_the_ending_flag_instead_of_raising(self):
         with realtime.GracefulSignals() as g:
             assert not g.event.is_set()
-            os.kill(os.getpid(), signal.SIGINT)
+            signal_self(signal.SIGINT)
             assert _wait_for(g.event)
             assert g.reason == realtime.END_INTERRUPT
 
     def test_sigterm_is_graceful_too_and_says_which_signal(self):
         with realtime.GracefulSignals() as g:
-            os.kill(os.getpid(), signal.SIGTERM)
+            signal_self(signal.SIGTERM)
             assert _wait_for(g.event)
             assert g.reason == realtime.END_TERMINATED
 
@@ -608,7 +618,7 @@ class TestGracefulSignals:
             assert signal.getsignal(signal.SIGINT) is signal.SIG_IGN
             with realtime.GracefulSignals() as g:
                 assert signal.getsignal(signal.SIGINT) is not signal.SIG_IGN
-                os.kill(os.getpid(), signal.SIGINT)
+                signal_self(signal.SIGINT)
                 assert _wait_for(g.event), "SIGINT was still being ignored"
             assert signal.getsignal(signal.SIGINT) is signal.SIG_IGN
         finally:
@@ -617,7 +627,7 @@ class TestGracefulSignals:
     def test_a_second_signal_stands_aside_so_a_user_can_always_get_out(self):
         """A graceful ending must never become a trap."""
         with realtime.GracefulSignals() as g:
-            os.kill(os.getpid(), signal.SIGTERM)
+            signal_self(signal.SIGTERM)
             assert _wait_for(g.event)
             g._handle(signal.SIGTERM, None)      # the impatient second press
             assert signal.getsignal(signal.SIGTERM) is signal.SIG_DFL
@@ -661,6 +671,7 @@ class TestStopCli:
         assert code == 0
         assert doc == {"stopped": [], "count": 0, "failed": 0}
 
+    @needs_posix_signals
     def test_stop_json_shape_for_a_real_stop(self, capsys, isolated_registry,
                                              monkeypatch):
         # Listed as running, but the signal finds nothing: the ladder's
@@ -679,6 +690,7 @@ class TestStopCli:
         assert row["pid"] == DEAD_PID and row["kind"] == "lead"
         assert row["uptime"] == "12m"
 
+    @needs_posix_signals
     def test_human_line_names_kind_pid_and_uptime(self, capsys,
                                                   isolated_registry,
                                                   monkeypatch):
@@ -701,6 +713,7 @@ class TestStopCli:
         assert "pid 101" in err and "pid 102" in err
         assert "--all" in err
 
+    @needs_posix_signals
     def test_all_stops_every_session(self, capsys, isolated_registry,
                                      monkeypatch):
         monkeypatch.setattr(realtime, "_pid_alive", lambda pid: True)
@@ -1472,7 +1485,7 @@ class TestStopActuallyStops:
         pulled = []
         g = realtime.GracefulSignals(on_repeat=pulled.append)
         with g:
-            os.kill(os.getpid(), signal.SIGTERM)
+            signal_self(signal.SIGTERM)
             assert _wait_for(g.event)
             assert pulled == [], "the FIRST signal must be graceful"
             g._handle(signal.SIGTERM, None)      # the impatient second press
@@ -1551,6 +1564,7 @@ while True:
 """
 
 
+@needs_posix_signals
 def test_a_fake_session_that_ignores_sigint_still_dies_within_the_deadline(
         tmp_path):
     """The cross-process proof, because the in-process one cannot be honest.
@@ -1607,6 +1621,7 @@ with patched_module("sounddevice", fake):
 """
 
 
+@needs_posix_signals
 @pytest.mark.usefixtures("fake_device_consent")
 def test_a_take_survives_a_real_kill_9(tmp_path, isolated_registry):
     """The postmortem's actual loss, reproduced with a real SIGKILL.
@@ -1935,6 +1950,7 @@ class TestABarIsRenderedOnce:
 class TestTheControlPathsAreHers:
     """Linux /tmp is shared, and these two can stop or hijack a take."""
 
+    @needs_posix_modes
     def test_the_cue_socket_is_owner_only_under_a_loose_umask(self):
         path = short_sock("mode")
         old = os.umask(0o022)
@@ -1944,6 +1960,7 @@ class TestTheControlPathsAreHers:
         finally:
             os.umask(old)
 
+    @needs_posix_modes
     def test_the_registry_is_owner_only_under_a_loose_umask(self, tmp_path, monkeypatch):
         where = tmp_path / "sessions"
         monkeypatch.setenv(realtime.SESSION_DIR_ENV, str(where))
@@ -1956,6 +1973,7 @@ class TestTheControlPathsAreHers:
         assert stat.S_IMODE(os.stat(rec.path).st_mode) == 0o600
         realtime.unregister_session()
 
+    @needs_posix_modes
     def test_a_loose_existing_registry_is_tightened(self, tmp_path, monkeypatch):
         where = tmp_path / "sessions"
         where.mkdir(mode=0o755)
@@ -1971,6 +1989,7 @@ class TestTheControlPathsAreHers:
         assert rec.record_dir == str(tmp_path / "takes3")
         realtime.unregister_session()
 
+    @needs_fifo
     def test_a_fifo_in_the_registry_does_not_hang_the_lister(self, tmp_path, monkeypatch):
         where = tmp_path / "sessions"
         where.mkdir()

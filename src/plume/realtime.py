@@ -4118,7 +4118,9 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
         named_key = _named_key(prompt)
         entry = BandEntry(style, known_key=named_key,
                           **({"after_first_heard_bars": 6} if is_direct else {}),
-                          **({"key_fallback_bars": DETECT_KEY_FALLBACK_BARS} if detect else {}))
+                          **({"key_fallback_bars": DETECT_KEY_FALLBACK_BARS} if detect else {}),
+                          # on her four-bar groups, not plume's own count
+                          phrase_bars=int(params.entry_boundary_bars))
         if detect:
             from .compose import parse_prompt  # noqa: PLC0415
             if not parse_prompt(prompt or "").styles:
@@ -4456,7 +4458,12 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
                 playing = human is not None and not human.silent
             else:
                 playing = bar >= first_heard_bar and guitar_ear.bar(bar_chroma)
-            entered = entry.update(bar, harm_state, playing)
+            # ``playing`` is about the bar the window read, two bars back; the ear
+            # confirms on her second tonal bar, so her playing may have begun on the first.
+            heard_bar = bar - int(round((t_bar - w_start) / bar_len))
+            if playing and not is_direct and not entry.band_is_in:
+                heard_bar -= guitar_ear.began_bars_ago
+            entered = entry.update(bar, harm_state, playing, heard_bar=heard_bar)
             if style_pick is not None and not style_pick.settled:
                 if playing:
                     style_pick.heard_bar(len(onsets))

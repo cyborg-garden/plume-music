@@ -120,11 +120,14 @@ def test_the_ear_tells_a_guitar_from_drums_alone():
     assert ear.bar([played] * 40) is False, "one bar could be a ringing drum"
     assert ear.bar([flat] * 40) is False
     assert ear.bar([played] * 40) is True, "two within three bars is someone playing"
+    assert ear.began_bars_ago == 0, "across a gap she starts on the confirming bar"
     assert ear.notes(3) == (f, c, g)
     assert ear.bar([]) is False and ear.last_bar_tonal is False
     for _ in range(4):
         ear.bar([flat] * 40)
     assert ear.bar([played] * 40) is False, "the confirmation expires"
+    assert ear.bar([played] * 40) is True and ear.began_bars_ago == 1, \
+        "two in a row: she began on the first"
     assert ear.last_bar_tonal is True, "but a fade can still hear this one bar"
 
 
@@ -266,9 +269,10 @@ def test_waiting_for_knocks_needs_no_quiet_start_and_forgives_a_stray_hit():
 
 # ------------------------------------------------- the real transport, no device
 
-def _take(sr=48000, bpm=75.0, seconds=45.0, room_s=0.0):
+def _take(sr=48000, bpm=75.0, seconds=45.0, room_s=0.0, strum_beats=12, rest=()):
     """Quiet, four knocks, a beat of nothing, a steady C major strum, then
-    ``room_s`` of an empty room (the fake device loops whatever it is given)."""
+    ``room_s`` of an empty room (the fake device loops whatever it is given).
+    ``rest``: beats (from the first knock) between which she stops strumming."""
     import numpy as np
     rng = np.random.default_rng(1)
     x = np.zeros(int((seconds + room_s) * sr), dtype=np.float32)
@@ -284,10 +288,11 @@ def _take(sr=48000, bpm=75.0, seconds=45.0, room_s=0.0):
                 for j, f in enumerate((130.81, 164.81, 196.0, 261.63, 329.63,
                                        392.0, 523.25)))
     chord = (chord * env * 0.08).astype(np.float32)
-    at = 2.0 + 4 * period + 8 * period   # drums alone for two bars first
+    at = 2.0 + strum_beats * period   # by default drums alone for two bars first
     while at + 2 < seconds:
         i = int(at * sr)
-        x[i:i + chord.shape[0]] += chord
+        if not (rest and 2.0 + rest[0] * period <= at < 2.0 + rest[1] * period):
+            x[i:i + chord.shape[0]] += chord
         at += 2 * period
     return x
 
@@ -321,6 +326,10 @@ def test_tap_start_end_to_end_over_the_fake_device(tmp_path, monkeypatch,
     entered = [r for r in rows if r["entry"] != DRUMS]
     assert entered, f"the band never came in: {[r['entry_reason'] for r in rows][-3:]}"
     assert entered[0]["bar"] >= 8 and "bass" in entered[0]["roles"]
+    # on the top of one of her four-bar groups, counted from her first strum
+    bar_s = rows[1]["t_s"] - rows[0]["t_s"]
+    her_first = round((2.0 + 12 * 0.8 - rows[0]["t_s"]) / bar_s)
+    assert (entered[0]["bar"] - her_first) % 4 == 0, (her_first, entered[0]["bar"])
     # the same notes can honestly read as their relative minor
     assert entered[0]["key"] in ("C major", "A minor")
     # no harmony claimed before she has played
@@ -330,6 +339,32 @@ def test_tap_start_end_to_end_over_the_fake_device(tmp_path, monkeypatch,
     assert ending["reason"] == realtime.END_SILENCE
     assert rows[-1]["fade_db"] < 0.0
     assert 110.0 < rows[-1]["t_s"] < 150.0
+
+
+def test_after_a_restart_the_band_enters_on_her_group_end_to_end(tmp_path, monkeypatch,
+                                                                plume_registry):
+    """Her 18:37 take's shape: she strums in early, stops for two bars, starts again on
+    plume's bar 3.  The band used to come in on bar 8, the middle of her group."""
+    import json
+    from conftest import fake_audio, patched_module, short_socket_path
+    from plume import realtime
+    from plume import roles as roles_mod
+
+    monkeypatch.setenv("PLUME_CALIBRATION_FILE", str(tmp_path / "none.json"))
+    monkeypatch.setenv(realtime.AUDIO_CONSENT_ENV, "1")
+    human = _take(seconds=90.0, room_s=120.0, strum_beats=4, rest=(12, 20))
+    with patched_module("sounddevice", fake_audio(human, rate_x=12.0)):
+        realtime.lead(prompt="lofi", seed=0, tap_start=True,
+                      role=roles_mod.RoleParams(role="lead"),
+                      record_dir=str(tmp_path / "rec"), socket_path=short_socket_path("rs"),
+                      status=False, max_minutes=0.5)
+    rows = [json.loads(line) for line in
+            (tmp_path / "rec" / "decisions.ndjson").read_text().splitlines()]
+    rows = [r for r in rows if isinstance(r.get("bar"), int)]
+    bar_s = rows[1]["t_s"] - rows[0]["t_s"]
+    restart = round((2.0 + 20 * 0.8 - rows[0]["t_s"]) / bar_s)
+    entered = next(r["bar"] for r in rows if r["entry"] != DRUMS)
+    assert restart == 3 and entered == restart + 8
 
 
 def test_at_real_speed_it_can_tell_she_is_playing(tmp_path, monkeypatch,
@@ -413,3 +448,51 @@ def test_named_key_is_read_from_the_prompt():
     assert _named_key("midwest emo in A minor") == "A minor"
     assert _named_key("lofi midwest emo") is None
     assert _named_key(None) is None
+
+
+# ------------------------------------------- entering on her phrase, not plume's count
+#
+# Juniper, 2026-11-06: "the chords came in not at what felt like the end of a group of
+# measures".  The band entered whenever the key settled, which was bar 8 of plume's
+# count and bar 6 of hers.  Her readings arrive two bars late in the live loop, so each
+# one says which bar it heard.
+
+def _entry_bar(entry, readings, *, lag=2, key="D minor", bars=24):
+    """The bar the band comes in, given which plume bars she played in."""
+    for bar in range(bars):
+        heard = bar - lag
+        state = entry.update(bar, h(key), heard in readings, heard_bar=heard)
+        if state.stage != DRUMS:
+            return bar
+    return None
+
+
+def test_the_band_enters_on_her_four_bar_group_after_a_restart():
+    """Her take of 2026-11-06 18:37: played into bar 0, silent in bar 1, restarted on 2."""
+    e = BandEntry("lofi", key_bars=4, after_first_heard_bars=6, phrase_bars=4)
+    played = {0} | set(range(2, 30))
+    assert _entry_bar(e, played) == 10, "her bar 9, the top of her third group"
+
+
+def test_a_late_first_note_sets_the_grid():
+    """First heard in plume bar 2 after two quiet bars: ready on 9, her group turns on 10."""
+    e = BandEntry("lofi", key_bars=4, after_first_heard_bars=5, phrase_bars=4)
+    assert _entry_bar(e, set(range(2, 30))) == 10
+
+
+def test_a_named_key_enters_on_her_phrase_too():
+    e = BandEntry("lofi", known_key="F major", after_first_heard_bars=5, phrase_bars=4)
+    assert _entry_bar(e, set(range(1, 30)), key=None) == 9
+
+
+def test_once_in_the_band_ignores_later_restarts():
+    e = BandEntry("lofi", key_bars=4, after_first_heard_bars=4, phrase_bars=4)
+    played = set(range(0, 30)) - {10}
+    assert _entry_bar(e, played) == 8
+    assert e.update(13, h("D minor"), True, heard_bar=11).stage != DRUMS
+
+
+def test_without_a_phrase_length_it_enters_when_ready():
+    e = BandEntry("lofi", key_bars=4, after_first_heard_bars=6)
+    assert _entry_bar(e, {0} | set(range(2, 30))) == 8
+

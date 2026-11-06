@@ -183,6 +183,10 @@ class GuitarEar:
         #: This bar alone sounded played, confirmed or not.  A fade needs this: a
         #: player coming back must not wait a bar for confirmation.
         self.last_bar_tonal = False
+        #: 1 when this bar confirmed her on the tonal bar just before it, so her
+        #: playing began a bar earlier; 0 otherwise.  Across a gap the earlier bar is
+        #: as likely a ringing tail, and this bar is where she (re)started.
+        self.began_bars_ago = 0
 
     def bar(self, chromas) -> bool:
         """Is someone playing?  One tonal bar could be a drum ringing near the
@@ -196,6 +200,7 @@ class GuitarEar:
             self._since_tonal += 1
             return False
         confirmed = self._since_tonal <= 2
+        self.began_bars_ago = 1 if self._since_tonal == 1 else 0
         self._since_tonal = 1
         self._heard += mean
         return confirmed
@@ -212,13 +217,19 @@ class BandEntry:
     def __init__(self, style: str, *, min_drum_bars: int = 8, key_bars: int = 4,
                  melody_delay_bars: int = 4, release_bars: int = 8,
                  known_key: str | None = None, after_first_heard_bars: int = 5,
-                 key_fallback_bars: int | None = None):
+                 key_fallback_bars: int | None = None, phrase_bars: int = 1):
         """``after_first_heard_bars`` counts from when she is confirmed, which is
         about three bars after her first note, so she gets about eight bars.
 
         ``key_fallback_bars``: the governor wants several bars running on one key, and
         a player who moves around may never give it that.  After this many heard bars,
         commit to the tracker's latest key instead.  None waits for as long as it takes.
+
+        ``phrase_bars``: the band comes in only on the top of one of her groups of this
+        many bars, counted from the bar she last started playing in after a rest.  Juniper,
+        2026-11-06: "the chords came in not at what felt like the end of a group of
+        measures".  It used to come in on whatever bar the key settled, which was bar 8
+        of plume's count and bar 6 of hers.  1 enters as soon as it is ready.
         """
         self._min_drum_bars = int(min_drum_bars)
         self._melody_delay = int(melody_delay_bars)
@@ -232,6 +243,10 @@ class BandEntry:
         self._first_heard: int | None = None
         self._key_fallback_bars = key_fallback_bars
         self._latest_key: str | None = None
+        self._phrase_bars = max(1, int(phrase_bars))
+        #: The bar she last (re)started playing in: where her groups are counted from.
+        self.phrase_start: int | None = None
+        self._was_playing = False
         self.bars_in = 0
 
     @property
@@ -247,13 +262,25 @@ class BandEntry:
         return self._gov.govern(bar, harmony if harmony is not None else _NOTHING_HEARD,
                                 resting=True).chord
 
-    def update(self, bar: int, harmony, playing: bool) -> EntryState:
+    def _on_her_phrase(self, bar: int) -> bool:
+        return (self._phrase_bars <= 1 or self.phrase_start is None
+                or (bar - self.phrase_start) % self._phrase_bars == 0)
+
+    def update(self, bar: int, harmony, playing: bool, *,
+               heard_bar: int | None = None) -> EntryState:
+        """``heard_bar``: the bar ``playing`` describes.  The live loop plans a bar
+        ahead and reads the last bar that has finished, so it is two bars behind
+        ``bar``; None means ``bar`` itself."""
+        if self._band_bar is None and playing and not self._was_playing:
+            self.phrase_start = bar if heard_bar is None else int(heard_bar)
+        self._was_playing = bool(playing)
         if playing:
             self._heard += 1
             if self._first_heard is None:
                 self._first_heard = bar
         ready = (self._first_heard is not None and bar >= max(
-            self._min_drum_bars, self._first_heard + self._after_heard))
+            self._min_drum_bars, self._first_heard + self._after_heard)
+            and self._on_her_phrase(bar))
         if self._known_key is not None:
             # She told us the key, so nothing heard can change it.  The band still
             # waits for her to start: drums alone are for playing over.
@@ -287,8 +314,11 @@ class BandEntry:
                                         resting=True)
         key = self._gov.committed_key
         if key is None or (not ready and self._band_bar is None):
-            return EntryState(DRUMS, HARMONY_ROLES + MELODY_ROLES, None, None,
-                              f"drums: heard {self._heard} bars, no settled key")
+            why = (f"drums: {key} settled, in at the top of her next "
+                   f"{self._phrase_bars} bars"
+                   if key is not None and not self._on_her_phrase(bar)
+                   else f"drums: heard {self._heard} bars, no settled key")
+            return EntryState(DRUMS, HARMONY_ROLES + MELODY_ROLES, None, None, why)
         if self._band_bar is None:
             self._band_bar = bar
         self.bars_in = bar - self._band_bar

@@ -407,12 +407,43 @@ _SECTION_RESTS = {"verse": ("shimmer",), "break": ("kick", "snare", "shimmer", "
 
 
 def entry_ramp_db(bars_in: int, *, under_db: float, ramp_bars: int) -> float:
-    """The band's level ``bars_in`` bars after it came in: ``under_db`` on its first
-    bar, rising in a straight line to 0 dB after ``ramp_bars`` bars.  The engine glides
-    each bar's step, so it is heard as a swell rather than steps."""
+    """A part's level ``bars_in`` bars after it came in: ``under_db`` on its first
+    bar, rising in a straight line to 0 dB after ``ramp_bars`` bars.  It steps at the
+    bar lines: a few dB a bar, under the rest of the band."""
     if ramp_bars <= 0 or bars_in >= ramp_bars:
         return 0.0
     return float(under_db) * (1.0 - max(0, int(bars_in)) / float(ramp_bars))
+
+
+class EntryRamp:
+    """Each part's level as the band comes in, counted from that part's own first bar:
+    the drums and bass, then the chords, then the melody, each swell in.  What was
+    already playing over the intro stays where it was."""
+
+    def __init__(self, *, under_db: float, ramp_bars: int):
+        self._under, self._bars = float(under_db), int(ramp_bars)
+        self._joined: dict[str, int] = {}
+
+    def levels(self, bars_in: int, roles, *, intro=()) -> dict[str, float]:
+        out = {}
+        for r in roles:
+            if r in intro:
+                out[r] = 1.0
+                continue
+            first = self._joined.setdefault(r, int(bars_in))
+            db = entry_ramp_db(int(bars_in) - first, under_db=self._under,
+                               ramp_bars=self._bars)
+            out[r] = 10.0 ** (db / 20.0)
+        return out
+
+
+def follow_band_settled(bars_heard_in: int, *, trusted: bool, ramp_bars: int) -> bool:
+    """May the follow learn her level from a bar heard ``bars_heard_in`` bars after the
+    band came in?  A room mic hears the band as well as her, and while the band is
+    still swelling in it would learn a quiet normal, then read her as louder once the
+    whole band lands and push the band up.  So it waits for the last of the chords to
+    reach full."""
+    return trusted or int(bars_heard_in) >= CHORDS_DELAY_BARS + int(ramp_bars)
 
 
 class PhraseHold:
@@ -426,11 +457,19 @@ class PhraseHold:
         self._bars = max(1, int(bars))
         self._held: float | None = None
         self._section: str | None = None
+        self._recent: list[float] = []
 
     def value(self, bars_in: int, section: str, density: float) -> float:
-        if (self._held is None or section != self._section
-                or int(bars_in) % self._bars == 0):
+        """At the top of a phrase, the median of the phrase's own readings (the last
+        ``bars`` of them), so one odd bar does not set the next phrase.  A new section
+        takes its own density at once."""
+        if section != self._section:
+            self._recent = []
+        self._recent = [*self._recent, float(density)][-self._bars:]
+        if self._held is None or section != self._section:
             self._held, self._section = float(density), section
+        elif int(bars_in) % self._bars == 0:
+            self._held = float(np.median(self._recent))
         return self._held
 
 

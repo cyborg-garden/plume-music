@@ -29,8 +29,10 @@ sys.path.insert(0, os.path.join(REPO, "src"))
 from plume.bandentry import DETECT_KEY_FALLBACK_BARS, BandEntry  # noqa: E402
 from plume.listen import harmony as H                             # noqa: E402
 from plume.listen.features import FeatureExtractor                # noqa: E402
+from plume.mind import MindParams                                 # noqa: E402
 
 BLOCK = 4096
+LIVE_LAG_BARS = 2
 
 
 def frames_of(path):
@@ -58,8 +60,10 @@ def replay(take, ahead=0.0, style=None):
     rows = [r for r in rows if isinstance(r.get("bar"), int)]
     frames = frames_of(os.path.join(take, "human.wav"))
     tracker = H.HarmonyTracker()
+    # As the live loop builds it for a direct input in detect mode.
     entry = BandEntry(style or rows[0].get("style") or "midwest",
-                      after_first_heard_bars=6, key_fallback_bars=DETECT_KEY_FALLBACK_BARS)
+                      after_first_heard_bars=6, key_fallback_bars=DETECT_KEY_FALLBACK_BARS,
+                      phrase_bars=MindParams().entry_boundary_bars)
     i = 0
     while i < len(frames) and frames[i].t_s < rows[0]["t_s"]:
         i += 1
@@ -70,7 +74,9 @@ def replay(take, ahead=0.0, style=None):
             batch.append(frames[i])
             i += 1
         h = tracker.process(batch)
-        e = entry.update(r["bar"], h, bool(r.get("playing")))
+        # The logged ``playing`` is the live loop's reading, of the bar its window
+        # read: two bars before the bar it planned.
+        e = entry.update(r["bar"], h, bool(r.get("playing")), heard_bar=r["bar"] - LIVE_LAG_BARS)
         out.append((r["bar"], h.key, top3(tracker), e.key, e.chord, r.get("key")))
     return out
 

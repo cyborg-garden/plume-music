@@ -4107,8 +4107,9 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
         from .bandentry import (DETECT_KEY_FALLBACK_BARS, END_AFTER_S,  # noqa: PLC0415
                                 FOLLOW, PLAIN_INTRO_GAIN_DB, BandEntry, BandFollow,
                                 GuitarEar, PhraseHold, SilenceEnding, StylePick,
-                                entry_ramp_db, outro, song_section)
+                                EntryRamp, follow_band_settled, outro, song_section)
         density_hold = PhraseHold(int(params.entry_boundary_bars))
+        entry_ramp = EntryRamp(under_db=params.enter_under_db, ramp_bars=params.ramp_bars)
         guitar_ear = GuitarEar()
         # The band follows how she plays.  FOLLOW is the only mode so far: the seam a
         # "plume leads" mode would come in by.  A room mic hears the band too, so it
@@ -4513,17 +4514,18 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
                 followed = follow.bar(None if human is None else human.rms_db,
                                       None if human is None else human.onset_density,
                                       playing=playing and human is not None,
-                                      band_in=entry.band_is_in, parts=parts,
+                                      band_in=entry.band_is_in and follow_band_settled(
+                                          entry.bars_in - int(round((t_bar - w_start)
+                                                                    / bar_len)),
+                                          trusted=follow.trusted,
+                                          ramp_bars=params.ramp_bars),
+                                      parts=parts,
                                       bar_s=bar_len)
-            ramp_db = 0.0
             if entered.stage == "drums":
                 section, density, resting = "intro", TAP_START_MIN_DENSITY, ()
             else:
                 section, density, resting = song_section(entry.bars_in)
                 density = follow.shape(density) * follow.density
-                # The session's own entry ramp: under her, up to full over a few bars.
-                ramp_db = entry_ramp_db(entry.bars_in, under_db=params.enter_under_db,
-                                        ramp_bars=params.ramp_bars)
             crash = False
             if ending_now is not None:
                 out_bar, out_db, out_done = ending_now
@@ -4542,13 +4544,15 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
                      if r not in entered.held_back and r not in resting]
             if entered.stage == "drums":
                 state["intro_roles"] = set(roles)
-            # What was not playing over the intro swells in under what was.  A
-            # detected take's click gives way to a whole new kit, so all of it does.
-            ramp_lin = 10.0 ** (ramp_db / 20.0)
+            # The session's own entry ramp: each part that was not playing over the
+            # intro swells in from its own first bar, under what was.  A detected
+            # take's click gives way to a whole new kit, so all of it does.
+            levels = ({r: 1.0 for r in roles} if entered.stage == "drums"
+                      else entry_ramp.levels(entry.bars_in, roles,
+                                             intro=state.get("intro_roles", ())))
             plan = dataclasses.replace(
                 plan,
-                roles={r: (1.0 if r in state.get("intro_roles", ()) else ramp_lin)
-                       for r in roles},
+                roles=levels,
                 # a live "busier" or "sparser" cue scales the song's own shape
                 density=float(min(1.0, max(0.05, density * lead_cues.density_scale))),
                 gain_db=(plan.gain_db + TAP_START_GAIN_DB + follow.gain_db + fade_db
@@ -4636,7 +4640,7 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
             doc["playing"] = playing
             doc["playing_trusted"] = playing_trusted
             doc["fade_db"] = round(fade_db, 2)
-            doc["entry_ramp_db"] = round(ramp_db, 2)
+            doc["entry_ramp"] = {r: round(v, 3) for r, v in levels.items() if v < 1.0}
             doc["follow"] = {"mode": follow.mode, "trusted": follow.trusted,
                              "gain_db": round(follow.gain_db, 3),
                              "density": round(follow.density, 4),

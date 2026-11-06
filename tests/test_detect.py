@@ -353,8 +353,11 @@ def test_a_busy_player_at_85_starts_lofi_and_the_band_arrives_as_midwest(tmp_pat
     assert {r["style"] for r in drums} == {"lofi"}
     assert {r["style"] for r in band} == {"midwest"}
     assert all(r["style_guess"] and r["key_guess"] for r in rows)
-    # midwest's own instruments are playing from the first bar it is in
-    assert "keys" in band[0]["roles"] and "keys" not in drums[-1]["roles"]
+    # midwest's own instruments: its drums and bass from the first bar it is in, its
+    # keys once the chords join (bandentry.CHORDS_DELAY_BARS later)
+    from plume.bandentry import CHORDS_DELAY_BARS
+    assert "bass" in band[0]["roles"] and "keys" not in drums[-1]["roles"]
+    assert "keys" in band[CHORDS_DELAY_BARS]["roles"]
     # and in a key it heard
     assert band[0]["key"] in ("C major", "A minor")
     prog = governor.progression_symbols("midwest", band[0]["key"])

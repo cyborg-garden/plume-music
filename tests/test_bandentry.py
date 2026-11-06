@@ -404,6 +404,7 @@ def test_tap_start_end_to_end_over_the_fake_device(tmp_path, monkeypatch,
     assert "pad" not in first and "keys" not in first
     assert entered[1]["roles"]["bass"] > first["bass"]
     assert entered[3]["roles"]["bass"] == 1.0 and "pad" in entered[3]["roles"]
+    assert entered[2]["roles"]["pad"] < 0.5, "the chords swell in from their own first bar"
     # on the top of one of her four-bar groups, counted from her first strum
     bar_s = rows[1]["t_s"] - rows[0]["t_s"]
     her_first = round((2.0 + 12 * 0.8 - rows[0]["t_s"]) / bar_s)
@@ -612,7 +613,8 @@ def test_density_holds_through_a_phrase():
     hold = PhraseHold(4)
     got = [hold.value(b, "verse", d) for b, d in
            enumerate([0.56, 0.62, 0.68, 0.62, 0.73, 0.56, 0.68, 0.62])]
-    assert got == [0.56] * 4 + [0.73] * 4
+    assert got[:4] == [0.56] * 4 and len(set(got[4:])) == 1
+    assert got[4] == pytest.approx(0.65), "the median of the phrase's bars"
 
 
 def test_a_new_section_moves_the_density_at_once():
@@ -683,3 +685,33 @@ def test_the_sub_808_waits_for_her_key():
     assert states[0].stage == DRUMS and "sub" in states[0].held_back
     assert states[4].stage == BAND and "sub" not in states[4].held_back
 
+
+def test_each_part_swells_in_from_its_own_first_bar():
+    """The ramp used to count from the band's entry, so the chords joined nearly at
+    full and the melody at full."""
+    from plume.bandentry import EntryRamp
+    ramp = EntryRamp(under_db=-8.0, ramp_bars=3)
+    drums, chords, melody = ["kick", "bass"], ["kick", "bass", "pad"], ["kick", "bass", "pad", "lead"]
+    got = [ramp.levels(b, roles, intro=("kick",)) for b, roles in
+           enumerate([drums, drums, chords, chords, melody, melody, melody, melody])]
+    assert all(g["kick"] == 1.0 for g in got), "what played over the intro stays put"
+    assert got[0]["bass"] == got[2]["pad"] == got[4]["lead"] < 0.5
+    assert got[3]["bass"] == got[5]["pad"] == got[7]["lead"] == 1.0
+    assert got[2]["pad"] < got[3]["pad"] < got[4]["pad"] < got[5]["pad"]
+
+
+def test_a_room_mic_learns_her_level_only_once_the_band_is_all_in():
+    from plume.bandentry import CHORDS_DELAY_BARS, follow_band_settled
+    settle = CHORDS_DELAY_BARS + 3
+    assert follow_band_settled(0, trusted=True, ramp_bars=3)
+    assert not follow_band_settled(settle - 1, trusted=False, ramp_bars=3)
+    assert follow_band_settled(settle, trusted=False, ramp_bars=3)
+
+
+def test_the_phrase_density_is_the_phrase_s_own():
+    """One odd bar at the top of a phrase must not set the whole next phrase."""
+    from plume.bandentry import PhraseHold
+    hold = PhraseHold(4)
+    readings = [0.5, 0.5, 0.5, 0.5, 0.9, 0.5, 0.5, 0.5, 0.5]
+    got = [hold.value(b, "verse", d) for b, d in enumerate(readings)]
+    assert got[4] == 0.5 and got[8] == 0.5

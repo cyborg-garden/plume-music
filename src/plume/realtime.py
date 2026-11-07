@@ -1890,7 +1890,9 @@ class SessionRecorder:
             tmp = self.dir / f"{name}.tmp"
             with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(doc, f, indent=2, sort_keys=True)
-            os.replace(tmp, self.dir / name)   # observers never see half a file
+            # Observers never see half a file.  On Windows a reader holding it open
+            # makes the replace fail for a moment, so it is retried, not dropped.
+            oscompat.replace(tmp, self.dir / name)
         except (OSError, TypeError, ValueError) as e:
             self._note(f"{name}: {e}")
 
@@ -2996,6 +2998,22 @@ def _connect(path: str, timeout: float) -> tuple[socket.socket, str | None]:
     return s, None
 
 
+def _read_small(path: str, limit: int = 4096) -> bytes | None:
+    """The first bytes of a small endpoint file, or None when it cannot be read."""
+    from .oscompat import open_private, read_flags  # noqa: PLC0415
+
+    try:
+        fd = open_private(path, read_flags())
+    except OSError:
+        return None
+    try:
+        return os.read(fd, limit)
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+
+
 def _publish_exclusive(tmp: str, path: str) -> None:
     """Move a finished file into place, failing if ``path`` already exists.
 
@@ -3129,17 +3147,28 @@ class CueServer:
             try:
                 _publish_exclusive(tmp, self.path)
             except FileExistsError:
+                taken = RealtimeError(
+                    f"another plume session is already listening at "
+                    f"{self.path} — end it, or set {SOCKET_ENV} to a "
+                    f"different path")
+                stale = _read_small(self.path)
                 if _socket_is_live(self.path):
-                    raise RealtimeError(
-                        f"another plume session is already listening at "
-                        f"{self.path} — end it, or set {SOCKET_ENV} to a "
-                        f"different path") from None
-                # A crashed session's file: nobody answers it, so it can go.
+                    raise taken from None
+                # A crashed session's file: nobody answers it, so it can go.  Unless
+                # it changed while we asked: then a session starting at the same
+                # moment reclaimed it first, and that one is not ours to unlink.
+                # (A window remains between this read and the unlink; two sessions
+                # starting in the same millisecond on one stale path is accepted.)
+                if _read_small(self.path) != stale:
+                    raise taken from None
                 try:
                     os.unlink(self.path)
                 except OSError:
                     pass
-                _publish_exclusive(tmp, self.path)
+                try:
+                    _publish_exclusive(tmp, self.path)
+                except FileExistsError:
+                    raise taken from None
         except RealtimeError:
             s.close()
             raise
@@ -3587,6 +3616,11 @@ class LiveSession:
     started_at: float = 0.0         # epoch seconds
     max_minutes: float = DEFAULT_MAX_MINUTES
     record_dir: str | None = None
+    #: True only when the process was started as the leader of its own process
+    #: group (by the gui or by voice).  On Windows that is the one case where
+    #: Ctrl-Break can be aimed at it alone; aimed at any other pid it reaches
+    #: every process on the console, ``plume stop`` and its shell included.
+    own_group: bool = False
 
     # -- serialization --------------------------------------------------
 
@@ -3679,6 +3713,7 @@ def register_session(*, kind: str, style: str = "", role: str = "",
         max_minutes=resolve_max_minutes(max_minutes),
         # Absolute, because other processes read this from their own directories.
         record_dir=None if record_dir is None else os.path.abspath(record_dir),
+        own_group=(pid is None or int(pid) == os.getpid()) and oscompat.leads_own_group(),
     )
     try:
         d = session_dir()
@@ -3689,7 +3724,7 @@ def register_session(*, kind: str, style: str = "", role: str = "",
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             oscompat.fchmod_private(f.fileno(), 0o600)
             json.dump(rec.to_dict(), f, sort_keys=True)
-        os.replace(tmp, rec.path)      # atomic: a lister never sees a half file
+        oscompat.replace(tmp, rec.path)   # atomic: a lister never sees a half file
     except OSError:
         return None
     return rec
@@ -3893,18 +3928,36 @@ def stop_session(rec: LiveSession, *, timeout: float = DEFAULT_STOP_TIMEOUT,
         # Nothing to finish and nothing to lose: on Windows the only way to silence
         # one that did not hear Ctrl-Break is to end it, so that is the next rung.
         ladder = (*ladder, "TerminateProcess")
+    gone = {**info, "stopped": True, "how": "already-gone",
+            "detail": "the process exited on its own"}
+    # Why Ctrl-Break could not be sent, when it could not: the honest report for a
+    # session that is probably playing normally, rather than calling it wedged.
+    unreachable: str | None = None
     for name in ladder:
         sig = _signal_number(name)
         if sig is None:                       # pragma: no cover - defensive
+            continue
+        if name == "CTRL_BREAK_EVENT" and not rec.own_group:
+            # os.kill(pid, CTRL_BREAK_EVENT) is GenerateConsoleCtrlEvent(1, pid).
+            # Unless pid leads its own group, Windows sends that to every process
+            # on the console: this command, its shell, whatever started it.
+            tried.append("CTRL_BREAK_EVENT-skipped: not its own process group")
+            unreachable = ("it was not started in a process group of its own, so "
+                           "Ctrl-Break would reach this console too")
             continue
         try:
             os.kill(rec.pid, sig)
         except ProcessLookupError:
             unregister_session(rec.pid)
-            return {**info, "stopped": True, "how": "already-gone",
-                    "tried": tried, "detail": "the process exited on its own"}
+            return {**gone, "tried": tried}
         except (OSError, PermissionError) as e:
+            # Windows says OSError, not ProcessLookupError, for a pid that is gone.
+            if not rec.alive():
+                unregister_session(rec.pid)
+                return {**gone, "tried": tried}
             tried.append(f"{name}-failed: {e}")
+            if name == "CTRL_BREAK_EVENT":
+                unreachable = "it is running in another console window"
             continue
         tried.append(name)
         until = (deadline if name in _GRACEFUL_SIGNALS
@@ -3935,6 +3988,9 @@ def stop_session(rec: LiveSession, *, timeout: float = DEFAULT_STOP_TIMEOUT,
                         "tried": tried, "forced": True,
                         "detail": "the process exited on its own"}
             except (OSError, PermissionError) as e:
+                if not rec.alive():
+                    unregister_session(rec.pid)
+                    return {**gone, "tried": tried, "forced": True}
                 tried.append(f"{kill_name}-failed: {e}")
             else:
                 if _wait(time.monotonic() + grace):
@@ -3953,6 +4009,20 @@ def stop_session(rec: LiveSession, *, timeout: float = DEFAULT_STOP_TIMEOUT,
                                        "not play. This session keeps no records, "
                                        "so none are lost.")}
 
+    if not rec.alive():                       # it ended while the last rung waited
+        unregister_session(rec.pid)
+        return {**gone, "tried": tried, "forced": bool(force)}
+    if unreachable and not force:
+        return {**info, "stopped": False, "how": "unreachable", "tried": tried,
+                "forced": False,
+                "detail": (f"pid {rec.pid} is still running, and probably playing "
+                           f"normally: plume stop cannot ask it to finish from "
+                           f"here, because {unreachable}. Press Ctrl-C in its own "
+                           f"window, or 'plume stop --pid {rec.pid} --force' ends "
+                           f"it with {kill_name}."
+                           + (" The take is streamed to disk as it happens, so "
+                              "forcing costs the tail, not the recording."
+                              if rec.record_dir else ""))}
     return {**info, "stopped": False, "how": "failed", "tried": tried,
             "forced": bool(force),
             "detail": (f"pid {rec.pid} is still running after "

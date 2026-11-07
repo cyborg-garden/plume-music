@@ -224,7 +224,7 @@ def test_windows_ladder_asks_with_ctrl_break_and_never_terminates_unasked(
     monkeypatch.setattr(realtime, "_pid_alive", lambda pid: True)
     sent = []
     monkeypatch.setattr(os, "kill", lambda pid, sig: sent.append(sig))
-    rec = _record(isolated_registry, 4242, socket=None)
+    rec = _record(isolated_registry, 4242, socket=None, own_group=True)
     out = realtime.stop_session(rec, timeout=0.2, poll=0.02)
     assert sent == [1]                                   # CTRL_BREAK_EVENT only
     assert out["tried"] == ["CTRL_BREAK_EVENT"]
@@ -238,7 +238,7 @@ def test_windows_ladder_ctrl_break_gets_the_whole_graceful_budget(isolated_regis
     monkeypatch.setattr(os, "kill", lambda pid, sig: t_sent.setdefault(sig, time.monotonic()))
     monkeypatch.setattr(realtime, "_pid_alive",
                         lambda pid: 1 not in t_sent or time.monotonic() - t_sent[1] < 1.0)
-    rec = _record(isolated_registry, 4243, socket=None)
+    rec = _record(isolated_registry, 4243, socket=None, own_group=True)
     out = realtime.stop_session(rec, timeout=10.0, poll=0.02)
     assert out["stopped"] is True and out["how"] == "signal:CTRL_BREAK_EVENT"
     assert list(t_sent) == [1]
@@ -249,7 +249,7 @@ def test_windows_force_terminates_and_says_so(isolated_registry, monkeypatch):
     sent = []
     monkeypatch.setattr(os, "kill", lambda pid, sig: sent.append(sig))
     monkeypatch.setattr(realtime, "_pid_alive", lambda pid: signal.SIGTERM not in sent)
-    rec = _record(isolated_registry, 4244, socket=None)
+    rec = _record(isolated_registry, 4244, socket=None, own_group=True)
     out = realtime.stop_session(rec, timeout=0.2, poll=0.02, force=True)
     assert sent == [1, signal.SIGTERM]
     assert out["stopped"] is True and out["forced"] is True
@@ -265,10 +265,87 @@ def test_windows_ladder_survives_a_session_in_another_console(isolated_registry,
     def refuse(pid, sig):
         raise OSError(87, "The parameter is incorrect")
     monkeypatch.setattr(os, "kill", refuse)
-    rec = _record(isolated_registry, 4245, socket=None)
+    rec = _record(isolated_registry, 4245, socket=None, own_group=True)
     out = realtime.stop_session(rec, timeout=0.2, poll=0.02)
-    assert out["stopped"] is False
+    assert out["stopped"] is False and out["how"] == "unreachable"
     assert out["tried"][0].startswith("CTRL_BREAK_EVENT-failed")
+    assert "another console" in out["detail"] and "wedged" not in out["detail"]
+
+
+def test_windows_never_sends_ctrl_break_to_a_session_that_is_not_a_group_leader(
+        isolated_registry, monkeypatch):
+    """Started from a terminal, Ctrl-Break aimed at its pid reaches the whole console."""
+    monkeypatch.setattr(oscompat, "IS_WINDOWS", True)
+    monkeypatch.setattr(realtime, "_pid_alive", lambda pid: True)
+    sent = []
+    monkeypatch.setattr(os, "kill", lambda pid, sig: sent.append(sig))
+    rec = _record(isolated_registry, 4250, socket=None, record_dir="takes/x")
+    out = realtime.stop_session(rec, timeout=0.2, poll=0.02)
+    assert sent == []
+    assert out["stopped"] is False and out["how"] == "unreachable"
+    assert out["tried"] == ["CTRL_BREAK_EVENT-skipped: not its own process group"]
+    assert "--force" in out["detail"] and "wedged" not in out["detail"]
+    # --force is still targeted at the one process, so it still works.
+    monkeypatch.setattr(realtime, "_pid_alive", lambda pid: signal.SIGTERM not in sent)
+    out = realtime.stop_session(rec, timeout=0.2, poll=0.02, force=True)
+    assert sent == [signal.SIGTERM] and out["stopped"] is True
+
+
+def test_windows_a_pid_that_died_reads_as_gone_not_stuck(isolated_registry, monkeypatch):
+    """Windows raises a plain OSError for a dead pid; that is not "stuck in the kernel"."""
+    monkeypatch.setattr(oscompat, "IS_WINDOWS", True)
+    state = {"alive": True}
+    monkeypatch.setattr(realtime, "_pid_alive", lambda pid: state["alive"])
+
+    def died(pid, sig):
+        state["alive"] = False
+        raise OSError(87, "The parameter is incorrect")
+    monkeypatch.setattr(os, "kill", died)
+    rec = _record(isolated_registry, 4251, socket=None, own_group=True)
+    out = realtime.stop_session(rec, timeout=0.2, poll=0.02, force=True)
+    assert out["stopped"] is True and out["how"] == "already-gone"
+
+
+def test_only_a_session_whose_parent_marked_it_leads_its_group():
+    assert oscompat.leads_own_group(mark="77", parent=77) is True
+    assert oscompat.leads_own_group(mark="77", parent=78) is False   # a grandchild
+    assert oscompat.leads_own_group(mark=None, parent=77) is False
+    assert oscompat.leads_own_group(mark="x", parent=77) is False
+    assert oscompat.own_group_env() == {oscompat.OWN_GROUP_ENV: str(os.getpid())}
+
+
+def test_the_mark_is_not_inherited_by_what_a_session_starts():
+    assert oscompat.OWN_GROUP_ENV not in os.environ
+
+
+def test_a_registered_session_records_whether_it_leads_its_group(
+        isolated_registry, monkeypatch):
+    monkeypatch.setattr(oscompat, "_OWN_GROUP_MARK", str(os.getppid()))
+    assert realtime.register_session(kind="lead").own_group is True
+    monkeypatch.setattr(oscompat, "_OWN_GROUP_MARK", None)
+    assert realtime.register_session(kind="lead").own_group is False
+    assert realtime.LiveSession.from_dict({"pid": 9, "kind": "lead"}).own_group is False
+
+
+def test_windows_replace_retries_while_a_reader_holds_the_file(monkeypatch, tmp_path):
+    monkeypatch.setattr(oscompat, "IS_WINDOWS", True)
+    calls = []
+    real = os.replace
+
+    def busy(src, dst, **kw):
+        calls.append(1)
+        if len(calls) < 3:
+            raise PermissionError(13, "in use")
+        real(src, dst, **kw)
+    monkeypatch.setattr(os, "replace", busy)
+    src, dst = tmp_path / "a", tmp_path / "b"
+    src.write_text("new")
+    oscompat.replace(src, dst, delay=0.001)
+    assert dst.read_text() == "new" and len(calls) == 3
+    calls.clear()
+    monkeypatch.setattr(os, "replace", lambda *a, **k: (_ for _ in ()).throw(PermissionError()))
+    with pytest.raises(PermissionError):
+        oscompat.replace(src, dst, attempts=2, delay=0.001)
 
 
 def test_windows_silences_a_stuck_play_but_never_terminates_a_take(isolated_registry, monkeypatch):
@@ -277,13 +354,14 @@ def test_windows_silences_a_stuck_play_but_never_terminates_a_take(isolated_regi
     sent = []
     monkeypatch.setattr(os, "kill", lambda pid, sig: sent.append(sig))
     monkeypatch.setattr(realtime, "_pid_alive", lambda pid: signal.SIGTERM not in sent)
-    play = _record(isolated_registry, 4246, kind="play", socket=None)
+    play = _record(isolated_registry, 4246, kind="play", socket=None, own_group=True)
     out = realtime.stop_session(play, timeout=30.0, poll=0.02)
     assert sent == [1, signal.SIGTERM] and out["stopped"] is True
     assert "no records" in out["detail"]
     sent.clear()
     monkeypatch.setattr(realtime, "_pid_alive", lambda pid: True)
-    take = _record(isolated_registry, 4247, kind="lead", record_dir="takes/x", socket=None)
+    take = _record(isolated_registry, 4247, kind="lead", record_dir="takes/x", socket=None,
+                   own_group=True)
     out = realtime.stop_session(take, timeout=0.2, poll=0.02)
     assert sent == [1] and out["stopped"] is False
 
@@ -379,6 +457,20 @@ class TestTcpTransport:
         Path(path).write_text(json.dumps({"port": port, "token": "ab" * 32, "pid": 1}))
         with realtime.CueServer(path, transport="tcp"):
             assert realtime.send_cue("darker", socket_path=path)["ok"] is True
+
+    def test_a_file_reclaimed_by_another_session_meanwhile_is_left_alone(self, monkeypatch):
+        """Two sessions on one stale file: the second must not unlink the first's."""
+        path = _short("race")
+        Path(path).write_text(json.dumps({"port": 1, "token": "ab" * 32, "pid": 1}))
+        fresh = json.dumps({"port": 2, "token": "ef" * 32, "pid": 2})
+
+        def meanwhile(p):
+            Path(p).write_text(fresh)                 # the other session got there first
+            return False
+        monkeypatch.setattr(realtime, "_socket_is_live", meanwhile)
+        with pytest.raises(realtime.RealtimeError, match="already listening"):
+            realtime.CueServer(path, transport="tcp").start()
+        assert Path(path).read_text() == fresh
 
     def test_a_port_now_used_by_something_else_is_not_mistaken_for_a_session(self):
         """After a crash the port can be anyone's.  Only a reply with our token counts."""
@@ -554,10 +646,59 @@ def test_faster_whisper_is_driven_without_downloading_anything(monkeypatch):
     fake.WhisperModel = Model
     monkeypatch.setitem(sys.modules, "faster_whisper", fake)
     monkeypatch.setattr(voice, "_FASTER_MODEL", None)
+    monkeypatch.setattr(voice, "_FASTER_ON_CPU", False)
     import numpy as np
     assert voice._whisper_faster(np.zeros(16000, dtype=np.float32)) == " plume, stop"
     voice._whisper_faster(np.zeros(16000, dtype=np.float32))
     assert [m[0] for m in made] == ["large-v3-turbo"]       # loaded once
+
+
+@pytest.mark.parametrize("fails_at", ["load", "transcribe"])
+def test_faster_whisper_falls_back_to_the_cpu_when_cuda_is_half_installed(monkeypatch, fails_at):
+    """An NVIDIA driver without the CUDA libraries: "auto" picks CUDA, then fails."""
+    import types
+    made = []
+
+    class Model:
+        def __init__(self, name, device, compute_type):
+            made.append((device, compute_type))
+            if device != "cpu" and fails_at == "load":
+                raise RuntimeError("Library cublas64_12.dll is not found")
+            self.device = device
+
+        def transcribe(self, audio, **kw):
+            def segs():
+                if self.device != "cpu":
+                    raise RuntimeError("Library cublas64_12.dll is not found")
+                yield types.SimpleNamespace(text=" plume, stop")
+            return segs(), None
+
+    fake = types.ModuleType("faster_whisper")
+    fake.WhisperModel = Model
+    monkeypatch.setitem(sys.modules, "faster_whisper", fake)
+    monkeypatch.setattr(voice, "_FASTER_MODEL", None)
+    monkeypatch.setattr(voice, "_FASTER_ON_CPU", False)
+    import numpy as np
+    assert voice._whisper_faster(np.zeros(16000, dtype=np.float32)) == " plume, stop"
+    assert voice._whisper_faster(np.zeros(16000, dtype=np.float32)) == " plume, stop"
+    assert made == [("auto", "default"), ("cpu", "int8")]      # retried once, then kept
+
+
+def test_faster_whisper_on_the_cpu_still_reports_a_real_failure(monkeypatch):
+    import types
+
+    class Broken:
+        def __init__(self, name, device, compute_type):
+            raise OSError("no model here")
+
+    fake = types.ModuleType("faster_whisper")
+    fake.WhisperModel = Broken
+    monkeypatch.setitem(sys.modules, "faster_whisper", fake)
+    monkeypatch.setattr(voice, "_FASTER_MODEL", None)
+    monkeypatch.setattr(voice, "_FASTER_ON_CPU", False)
+    import numpy as np
+    with pytest.raises(OSError):
+        voice._whisper_faster(np.zeros(16000, dtype=np.float32))
 
 
 def test_the_band_is_ended_even_when_the_interrupt_cannot_be_sent(tmp_path):

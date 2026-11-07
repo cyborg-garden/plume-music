@@ -540,7 +540,9 @@ other gear are untested. The names it uses to recognise software and laptop devi
 Linux and Windows come from what those systems usually list, not from a real machine. On
 Windows each device is listed once, from the default sound system (MME), so names can be
 cut short and the delay is longer than it needs to be. Nobody has played through plume on
-Windows yet.
+Windows yet. There, closing the window a take runs in gives plume about five seconds
+before Windows ends it, too short for its usual ending, so the tail is cut. The recording
+up to then is safe. End a take with Ctrl-C or `plume stop` instead.
 
 ### Another output
 

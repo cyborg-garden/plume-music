@@ -188,3 +188,57 @@ def closing_signals() -> tuple[str, ...]:
     SIGBREAK where Windows sends Ctrl-Break and a closing console.
     """
     return tuple(n for n in ("SIGTERM", "SIGHUP", "SIGBREAK") if hasattr(signal, n))
+
+
+#: Set by a parent that started this process with :func:`detached_kwargs`, to its
+#: own pid.  On Windows a console event can only be aimed at one process when that
+#: process leads its own group, and there is no API to ask whether it does.
+OWN_GROUP_ENV = "PLUME_OWN_GROUP"
+
+# Read once and removed, so nothing this process starts inherits a claim that is
+# only true of this process.
+_OWN_GROUP_MARK = os.environ.pop(OWN_GROUP_ENV, None)
+
+
+def own_group_env() -> dict:
+    """The env entry a parent adds when it starts a child with :func:`detached_kwargs`."""
+    return {OWN_GROUP_ENV: str(os.getpid())}
+
+
+def leads_own_group(mark: str | None = None, parent: int | None = None) -> bool:
+    """True when this process was started as the leader of its own process group.
+
+    Only when the mark names our actual parent.  A copy inherited by a grandchild, or
+    an interpreter started through a launcher that is itself the group leader, has a
+    different parent and is not a leader, so it says False.  False is the safe answer:
+    it costs ``plume stop`` its Ctrl-Break rung, never a stray Ctrl-Break.
+    """
+    mark = _OWN_GROUP_MARK if mark is None else mark
+    parent = os.getppid() if parent is None else parent
+    try:
+        return mark is not None and int(mark) == int(parent) and int(parent) > 0
+    except (TypeError, ValueError):
+        return False
+
+
+def replace(src, dst, *, attempts: int = 5, delay: float = 0.02, **kw) -> None:
+    """``os.replace``, retried briefly on Windows when a reader holds ``dst`` open.
+
+    Windows refuses to replace a file another process has open without
+    ``FILE_SHARE_DELETE``, which is how Python opens files.  The reader lets go in
+    milliseconds, so a short retry keeps the update instead of dropping it.  POSIX
+    replaces regardless, so there this is ``os.replace`` exactly.
+    """
+    if not IS_WINDOWS:
+        os.replace(src, dst, **kw)
+        return
+    import time  # noqa: PLC0415
+
+    for i in range(max(1, int(attempts))):
+        try:
+            os.replace(src, dst, **kw)
+            return
+        except PermissionError:
+            if i + 1 >= attempts:
+                raise
+            time.sleep(delay * (i + 1))

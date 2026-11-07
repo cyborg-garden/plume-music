@@ -192,17 +192,39 @@ def _whisper_mlx(audio: np.ndarray) -> str:
 
 
 _FASTER_MODEL = None
+_FASTER_ON_CPU = False
 
 
 def _whisper_faster(audio: np.ndarray) -> str:
-    global _FASTER_MODEL
-    if _FASTER_MODEL is None:
-        from faster_whisper import WhisperModel  # noqa: PLC0415 — optional and heavy
-        _FASTER_MODEL = WhisperModel(MODELS["faster"], device="auto", compute_type="default")
-    segments, _info = _FASTER_MODEL.transcribe(
-        audio, language="en", condition_on_previous_text=False, no_speech_threshold=0.5,
-        beam_size=1)
-    return "".join(seg.text for seg in segments)
+    """Transcribe with faster-whisper, on the GPU if it works and the CPU if not.
+
+    ``device="auto"`` picks CUDA on any machine with an NVIDIA driver, even one
+    missing the CUDA libraries, and then loading or transcribing fails ("cublas64_12.dll
+    not found").  So a failure off the CPU is retried once on the CPU, and the CPU is
+    kept from then on.  Segments are lazy, so the failure can come while reading them.
+    """
+    global _FASTER_MODEL, _FASTER_ON_CPU
+    from faster_whisper import WhisperModel  # noqa: PLC0415 — optional and heavy
+
+    def run() -> str:
+        global _FASTER_MODEL
+        if _FASTER_MODEL is None:
+            _FASTER_MODEL = (WhisperModel(MODELS["faster"], device="cpu", compute_type="int8")
+                             if _FASTER_ON_CPU else
+                             WhisperModel(MODELS["faster"], device="auto",
+                                          compute_type="default"))
+        segments, _info = _FASTER_MODEL.transcribe(
+            audio, language="en", condition_on_previous_text=False,
+            no_speech_threshold=0.5, beam_size=1)
+        return "".join(seg.text for seg in segments)
+
+    try:
+        return run()
+    except (RuntimeError, OSError):
+        if _FASTER_ON_CPU:
+            raise
+        _FASTER_MODEL, _FASTER_ON_CPU = None, True
+        return run()
 
 
 _TRANSCRIBERS = {"mlx": _whisper_mlx, "faster": _whisper_faster}
@@ -348,6 +370,7 @@ class Band:
         # Whoever started this process was asked or set it themselves (see cmd_voice);
         # the child has no terminal of its own to be asked through.
         env[AUDIO_CONSENT_ENV] = "1"
+        env.update(oscompat.own_group_env())      # it leads its group: see detached_kwargs
         with self.log.open("a") as log:
             self._proc = self._popen(
                 # After "--" a prompt is only ever a prompt.  Before the flags, one

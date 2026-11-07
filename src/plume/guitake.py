@@ -245,7 +245,7 @@ def default_spawner(argv: list[str], log_path: Path):
         oscompat.fchmod_private(log, 0o600)
         return subprocess.Popen(
             argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=log,
-            env={**os.environ, AUDIO_CONSENT_ENV: "1"},
+            env={**os.environ, AUDIO_CONSENT_ENV: "1", **oscompat.own_group_env()},
             # Its own session: a Ctrl-C in this terminal must not reach it as well as
             # us, or the band gets two interrupts, and a second one cuts its ending short.
             **oscompat.detached_kwargs())
@@ -607,7 +607,7 @@ class SetupStore:
             try:
                 with os.fdopen(fd, "w", encoding="utf-8") as f:
                     f.write(json.dumps({"version": SETUP_VERSION, **self._doc}))
-                os.replace(tmp, path)
+                oscompat.replace(tmp, path)   # retried while the page reads it
             except OSError:
                 try:
                     os.unlink(tmp)
@@ -1585,7 +1585,8 @@ class TakeRunner:
         # No record yet means it is still starting: the ladder goes straight to SIGINT,
         # and the pid is safe to signal, because an unreaped child's pid cannot be reused.
         rec = self._record_of(take.proc.pid) or LiveSession(
-            pid=take.proc.pid, kind="lead", record_dir=str(take.folder))
+            pid=take.proc.pid, kind="lead", record_dir=str(take.folder),
+            own_group=True)                     # started with detached_kwargs, above
         try:
             self._stopper(rec)
         except Exception:  # noqa: BLE001 - the page says "still stopping" from the clock

@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 
 import pytest
+from conftest import DEV_ZERO, needs_dev_zero, needs_fifo, needs_symlinks  # noqa: E402
 
 from plume import realtime, record
 from plume.mind import parse_cue
@@ -519,6 +520,7 @@ def test_an_empty_folder_is_not_a_take(tmp_path):
     assert not record.is_take_dir(tmp_path)
 
 
+@needs_symlinks
 def test_a_symlinked_recording_is_not_part_of_the_take(tmp_path):
     folder = write_take(tmp_path / "t", song(3))
     outside = tmp_path / "outside.wav"
@@ -829,6 +831,7 @@ def test_read_take_survives_a_bug_in_its_own_translation(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("name", [realtime.REC_DECISIONS, realtime.REC_MANIFEST, realtime.REC_CUES,
                                   record.REC_KEEP, realtime.REC_ENDING])
+@needs_fifo
 def test_a_fifo_in_a_take_folder_does_not_block_the_reader(tmp_path, name):
     import os
     import threading
@@ -843,14 +846,17 @@ def test_a_fifo_in_a_take_folder_does_not_block_the_reader(tmp_path, name):
     assert box, f"a FIFO at {name} hung the reader"
 
 
+@needs_dev_zero
+@needs_symlinks
 @pytest.mark.parametrize("name", [realtime.REC_DECISIONS, realtime.REC_CUES])
 def test_a_symlink_to_a_device_is_not_read(tmp_path, name):
     folder = write_take(tmp_path / "t", song(5), ending=ending_doc(), cues=[])
     (folder / name).unlink()
-    (folder / name).symlink_to("/dev/zero")
+    (folder / name).symlink_to(DEV_ZERO)
     assert record.read_take(folder)["events"]
 
 
+@needs_symlinks
 def test_a_symlinked_keep_file_is_not_believed(tmp_path):
     outside = tmp_path / "outside.json"
     outside.write_text(json.dumps({"kept": True, "name": "LEAKED"}))
@@ -860,6 +866,8 @@ def test_a_symlinked_keep_file_is_not_believed(tmp_path):
     assert out["name"] == "" and out["kept"] is False
 
 
+@needs_symlinks
+@needs_fifo
 def test_a_folder_holding_only_symlinks_or_fifos_is_not_a_take(tmp_path):
     import os
 

@@ -31,6 +31,7 @@ import stat
 from bisect import bisect_right
 from pathlib import Path
 
+from . import oscompat
 from .mind import CUE_BOUNDARIES, cue_is_exact, parse_cue
 from .realtime import (DEFAULT_MAX_MINUTES, END_FORM, END_INTERRUPT, END_MAX_MINUTES, END_SILENCE,
                        END_SONG, END_STOPPED, END_TERMINATED, END_WEDGED,
@@ -1094,7 +1095,7 @@ def _read_bytes(path: Path, limit: int) -> bytes | None:
     refuses all three before it reads, and reads no more than the limit.
     """
     try:
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        fd = oscompat.open_private(path, oscompat.read_flags())
     except OSError:
         return None
     try:

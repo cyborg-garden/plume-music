@@ -19,6 +19,7 @@ import pytest
 import soundfile as sf
 
 from conftest import fake_audio, patched_module, short_socket_path, wait_until
+from conftest import WINDOWS, needs_posix_modes, needs_symlinks  # noqa: E402
 from plume import cli, gui, guitake, realtime, roles as roles_mod
 from test_gui_bridge import Client
 from test_gui_take import AUDIO_BOX, LAPTOP_MIC, LAPTOP_OUT, VIRTUAL_DEVICE, Rig, _ask, _parsed
@@ -700,6 +701,7 @@ def test_after_setup_start_goes_straight_to_the_count_with_what_it_learned(rig, 
     assert len(meter.calls) == calls
 
 
+@needs_posix_modes
 def test_the_answers_survive_a_new_bridge_and_are_private(rig, runner, meter, setup_file):
     _finished(runner, meter)
     assert stat.S_IMODE(os.stat(setup_file).st_mode) == 0o600
@@ -713,6 +715,7 @@ def test_no_device_name_is_written_down(runner, meter, setup_file):
     assert AUDIO_BOX["name"] not in setup_file.read_text()
 
 
+@needs_symlinks
 def test_a_planted_symlink_is_not_followed_either_way(rig, tmp_path, meter, setup_file):
     target = tmp_path / "elsewhere.json"
     target.write_text("keep me")
@@ -1164,7 +1167,9 @@ def test_the_whole_flow_over_http_saves_in_the_state_folder(rig, meter, page, tm
     assert json.loads(page.post("/api/setup/listen", {})[1])["step"] == "headphones"
     assert json.loads(page.post("/api/setup/answer", {"step": "headphones", "answer": "no"})[1])["done"] is True
     saved = tmp_path / "state" / "setup.json"
-    assert stat.S_IMODE(os.stat(saved).st_mode) == 0o600
+    assert saved.exists()
+    if not WINDOWS:                     # Windows: the folder's ACL, not a mode
+        assert stat.S_IMODE(os.stat(saved).st_mode) == 0o600
     assert page.post("/api/start", {})[0].status == 200
     assert "--input-channel=2" in rig.spawned[-1] and "--monitor" not in rig.spawned[-1]
 
@@ -1219,11 +1224,5 @@ def test_a_setup_post_needs_an_origin_and_json_and_a_get_does_nothing(meter, pag
 
 # ------------------------------------------------------------------ other computers
 
-def test_a_machine_with_no_unix_sockets_gets_a_plain_refusal(monkeypatch):
-    monkeypatch.delattr(gui.socket, "AF_UNIX", raising=False)
-    with pytest.raises(gui.GuiError, match="macOS or Linux"):
-        gui.serve(open_browser=False, wait=lambda s: None)
-
-
-def test_this_machine_is_not_refused():
-    assert gui.platform_problem() is None
+# A machine with no unix sockets is no longer refused: the cue transport falls back to
+# loopback TCP.  tests/test_cross_platform.py serves the gui with AF_UNIX taken away.

@@ -20,6 +20,7 @@ import types
 
 import numpy as np
 import pytest
+from conftest import needs_posix_signals  # noqa: E402
 import soundfile as sf
 
 from plume import realtime
@@ -193,6 +194,7 @@ calibrate.run = lambda device=None: wait()
     ("engine.play(object())", "play"),
     ("cli.cmd_calibrate(types.SimpleNamespace(device=None))", "calibrate"),
 ])
+@needs_posix_signals
 def test_stop_silences_a_session_that_inherited_sigint_ignored(call, kind, plume_registry,
                                                                monkeypatch):
     monkeypatch.delenv(realtime.AUDIO_CONSENT_ENV, raising=False)
@@ -246,6 +248,7 @@ calibrate.run = lambda device=None: sound() or {{"ok": False}}
     ("engine.play(object())", "lambda device=None: None", "play"),
     ("cli.cmd_calibrate(types.SimpleNamespace(device=None))", "slow", "calibrate"),
 ])
+@needs_posix_signals
 def test_a_stop_while_getting_ready_means_no_sound_ever_starts(call, check, kind, plume_registry,
                                                                monkeypatch):
     monkeypatch.delenv(realtime.AUDIO_CONSENT_ENV, raising=False)
@@ -267,6 +270,7 @@ def test_a_stop_while_getting_ready_means_no_sound_ever_starts(call, check, kind
             child.wait(timeout=5.0)
 
 
+@needs_posix_signals
 def test_a_stuck_play_gets_a_short_fuse_and_loses_no_records(monkeypatch, plume_registry):
     """Even if SIGINT goes unheard, sound must not run on for the graceful budget."""
     sent = []
@@ -283,6 +287,7 @@ def test_a_stuck_play_gets_a_short_fuse_and_loses_no_records(monkeypatch, plume_
     assert "no records" in out["detail"] and "probably lost" not in out["detail"]
 
 
+@needs_posix_signals
 @pytest.mark.parametrize("record_dir,says", [(None, "no records"), ("takes/x", "probably lost")])
 def test_a_take_with_no_records_does_not_report_losing_them(record_dir, says, monkeypatch,
                                                             plume_registry):

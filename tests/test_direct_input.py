@@ -9,6 +9,7 @@ import threading
 
 import numpy as np
 import pytest
+from conftest import needs_laptop_speed  # noqa: E402
 import soundfile as sf
 
 from conftest import fake_audio, patched_module, short_socket_path
@@ -273,6 +274,7 @@ def _play(tmp_path, *, human, name, **kw):
     return tmp_path / name
 
 
+@needs_laptop_speed
 def test_direct_hears_her_stop_with_the_band_in_and_fades(tmp_path, consent):
     # the room is loud, and the only input that can hear it is the voice mic
     rec = _play(tmp_path, human=_direct_take(), name="direct", direct=True,
@@ -299,6 +301,7 @@ def test_hum_on_an_idle_pickup_is_not_her_playing(tmp_path, consent):
     assert json.loads((rec / "ending.json").read_text())["reason"] == realtime.END_SILENCE
 
 
+@needs_laptop_speed
 def test_a_room_mic_with_the_band_in_says_its_playing_flag_cannot_be_believed(tmp_path, consent):
     rec = _play(tmp_path, human=_direct_take(), name="room",
                 fake={"bleed_db": -6.0})

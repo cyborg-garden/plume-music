@@ -3,7 +3,13 @@ import numpy as np
 import pytest
 import soundfile as sf
 
+from conftest import closing_signal_params, signal_self  # noqa: E402
+
+from plume import oscompat
 from plume.voice import VoiceLoop, command_in, next_take_dir
+
+#: What stopping a band sends it: SIGINT on POSIX, CTRL_BREAK_EVENT on Windows.
+INTERRUPT = oscompat.interrupt_signal()
 
 
 @pytest.mark.parametrize("text,want", [
@@ -154,9 +160,8 @@ def _run(tmp_path, transcripts, *, after=None):
 
 
 def test_stop_signals_its_own_band_and_ends(tmp_path):
-    import signal
     lines = _run(tmp_path, iter(["plume stop"]))
-    assert FakeProc.made[0].signals == [signal.SIGINT]
+    assert FakeProc.made[0].signals == [INTERRUPT]
     assert '{"heard": "stop"}' in lines
 
 
@@ -166,10 +171,9 @@ def test_the_band_gets_consent_it_has_no_terminal_to_give(tmp_path):
 
 
 def test_restart_replaces_the_band_and_never_stacks_one(tmp_path):
-    import signal
     _run(tmp_path, iter(["plume restart", "plume stop"]))
     first, second = FakeProc.made
-    assert first.signals == [signal.SIGINT] and second.signals == [signal.SIGINT]
+    assert first.signals == [INTERRUPT] and second.signals == [INTERRUPT]
     assert first.dir != second.dir
 
 
@@ -193,7 +197,7 @@ def test_a_crash_here_leaves_no_band_playing(tmp_path):
                       popen=FakeProc, poll_s=0.0)
     finally:
         voice.VoiceLoop = orig
-    assert FakeProc.made[0].signals == [signal.SIGINT]
+    assert FakeProc.made[0].signals == [INTERRUPT]
 
 
 def test_a_song_that_ended_ends_voice_and_a_faded_take_starts_another(tmp_path):
@@ -223,7 +227,7 @@ def test_voice_refuses_to_start_a_band_without_whisper(tmp_path, monkeypatch):
     from plume import voice
     monkeypatch.setattr(voice.importlib.util, "find_spec", lambda name: None)
     FakeProc.made = []
-    with pytest.raises(RuntimeError, match="mlx-whisper"):
+    with pytest.raises(RuntimeError, match=r"(mlx|faster)-whisper"):
         voice.run(prompt="p", base=tmp_path, write=lambda s: None, popen=FakeProc)
     assert FakeProc.made == []
 
@@ -239,11 +243,11 @@ def test_the_band_gets_its_own_process_group(tmp_path):
     from plume import voice
     band = voice.Band(prompt="p", base=tmp_path, write=lambda s: None, popen=Recording)
     band.start()
-    assert seen["start_new_session"] is True
+    assert all(seen[k] == v for k, v in oscompat.detached_kwargs().items())
     band.stop()
 
 
-@pytest.mark.parametrize("signame", ["SIGTERM", "SIGHUP"])
+@pytest.mark.parametrize("signame", list(oscompat.closing_signals()))
 def test_being_told_to_end_stops_the_band_on_its_way_out(tmp_path, signame):
     import os
     import signal
@@ -251,14 +255,14 @@ def test_being_told_to_end_stops_the_band_on_its_way_out(tmp_path, signame):
     FakeProc.made = []
 
     def terminate(_audio):
-        os.kill(os.getpid(), getattr(signal, signame))
+        signal_self(getattr(signal, signame))
         return ""
 
     class Feeder(VoiceLoop):
         def tail(self):
             return np.full(16000, 0.05, dtype=np.float32)
     orig_loop = voice.VoiceLoop
-    handlers = {s: signal.getsignal(s) for s in (signal.SIGTERM, signal.SIGHUP)}
+    handlers = {s: signal.getsignal(s) for s in closing_signal_params()}
     voice.VoiceLoop = Feeder
     try:
         with pytest.raises(SystemExit):
@@ -268,7 +272,7 @@ def test_being_told_to_end_stops_the_band_on_its_way_out(tmp_path, signame):
         voice.VoiceLoop = orig_loop
         for sig, handler in handlers.items():
             signal.signal(sig, handler)
-    assert FakeProc.made[0].signals == [signal.SIGINT]
+    assert FakeProc.made[0].signals == [INTERRUPT]
 
 
 def test_a_prompt_that_looks_like_a_flag_stays_a_prompt(tmp_path):

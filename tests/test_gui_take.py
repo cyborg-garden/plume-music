@@ -306,7 +306,7 @@ def test_the_default_argv_exactly(rig, runner, monkeypatch):
     runner.start({})
     assert rig.spawned == [[
         sys.executable, "-P", "-m", "plume", "lead", "--tap-start", "--detect",
-        f"--record={rig.root}/2031-02-03-040506/", "--seed=4242",
+        f"--record={rig.root / '2031-02-03-040506'}/", "--seed=4242",
         f"--device={AUDIO_BOX['name']}", "--input-channel=1", "--direct"]]
 
 
@@ -508,14 +508,16 @@ def test_a_symlink_at_that_name_is_not_used_either(rig, runner, tmp_path):
 def test_a_folder_that_cannot_be_made_is_said_plainly(rig, runner):
     rig.root.write_text("a file, not a folder")
     doc = runner.start({})
-    assert doc == {"state": "failed", "message": f"Could not make a folder in {rig.root}."}
+    # pretty_path: on Windows the temp folder is under home, so it reads as ~\...
+    assert doc == {"state": "failed",
+                   "message": f"Could not make a folder in {guitake.pretty_path(rig.root)}."}
     assert rig.spawned == []
 
 
 def test_home_shows_the_folder_with_a_tilde(rig):
     runner = rig.runner()
     runner.root = Path.home() / "Music" / "Plume"
-    assert runner.home()["folder"] == "~/Music/Plume"
+    assert runner.home()["folder"] == os.path.join("~", "Music", "Plume")
 
 
 # ----------------------------------------------------------------- one take at a time
@@ -1419,7 +1421,8 @@ def test_stopping_a_real_child_reaps_it(rig, tmp_path, plume_registry):
             "for n in ('SIGINT', 'SIGBREAK'):\n"
             "    if hasattr(signal, n): signal.signal(getattr(signal, n), lambda *a: sys.exit(0))\n"
             "print('up', flush=True)\n"
-            "time.sleep(30)\n")
+            # Short sleeps: on Windows a handler only runs between them.
+            "for _ in range(300): time.sleep(0.1)\n")
     children = []
 
     def inert(argv, log_path):
@@ -1860,7 +1863,7 @@ def test_home_over_http_has_what_the_page_needs(page, rig):
     assert resp.status == 200
     assert {"devices", "device", "mode", "channel", "hear_me", "folder", "styles", "problem"} <= set(doc)
     assert doc["styles"] == ["hiphop", "house", "jazz", "lofi", "midwest", "rnb", "synthwave", "trap"]
-    assert doc["folder"] == str(rig.root)
+    assert doc["folder"] == guitake.pretty_path(rig.root)
 
 
 def test_a_new_take_lands_on_the_shelf_and_its_record(rig, served, page):

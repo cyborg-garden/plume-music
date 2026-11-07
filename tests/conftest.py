@@ -71,6 +71,14 @@ from plume import realtime  # noqa: E402
 
 SR = realtime.SR
 
+def _rate_scale() -> float:
+    try:
+        scale = float(os.environ.get("PLUME_TEST_RATE_SCALE", "1") or 1)
+    except ValueError:
+        return 1.0
+    return min(1.0, max(0.05, scale))
+
+
 #: The longest ``hold`` can pause the fake device: a wedge must still fail the test.
 HOLD_MAX_S = 30.0
 #: A device table that satisfies ``_resolve_device``: one duplex device.
@@ -122,7 +130,10 @@ class FakeAudioStream:
                         else (float(latency[0]), float(latency[1])))
         self._n = int(blocksize)
         self._cb = callback
-        self._rate = float(rate_x)
+        # A shared CI runner falls behind a fast playhead that a laptop keeps up
+        # with, and the failure reads as a musical one.  PLUME_TEST_RATE_SCALE
+        # slows every fake device by the same factor (never speeds one up).
+        self._rate = float(rate_x) * _rate_scale()
         self._warmup_s = float(warmup_s)
         self._in_ch = int(channels[0]) if isinstance(channels, (tuple, list)) else 1
         self._out_ch = int(channels[1]) if isinstance(channels, (tuple, list)) else 2
@@ -364,7 +375,9 @@ needs_posix_modes = pytest.mark.skipif(WINDOWS, reason="POSIX file modes")
 #: SIGINT/SIGTERM/SIGKILL sent with os.kill: on Windows that is TerminateProcess.
 needs_posix_signals = pytest.mark.skipif(WINDOWS, reason="POSIX signals")
 needs_fifo = pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="no FIFOs here")
-needs_dev_zero = pytest.mark.skipif(not os.path.exists("/dev/zero"), reason="no /dev/zero here")
+#: An endless device file: POSIX has one, Windows does not.
+DEV_ZERO = os.path.join(os.sep, "dev", "zero")
+needs_dev_zero = pytest.mark.skipif(not os.path.exists(DEV_ZERO), reason="no endless device file here")
 needs_unix_sockets = pytest.mark.skipif(not hasattr(__import__("socket"), "AF_UNIX"),
                                         reason="no AF_UNIX here")
 

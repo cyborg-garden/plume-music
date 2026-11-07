@@ -869,8 +869,9 @@ def test_keeps_temporary_file_has_a_new_name_each_time(client, takes, monkeypatc
     real = os.open
 
     def spy(path, flags, *args, **kw):
-        if isinstance(path, str) and path.endswith(".tmp"):
-            names.append(path)
+        # A name inside the folder's handle, or (no dir_fd: Windows) a whole path.
+        if os.fspath(path).endswith(".tmp"):
+            names.append(os.path.basename(os.fspath(path)))
         return real(path, flags, *args, **kw)
 
     monkeypatch.setattr(gui.os, "open", spy)

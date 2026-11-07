@@ -1718,7 +1718,12 @@ class TakeRunner:
             return OPENING if now - take.started >= OPENING_AFTER_S else None
         if take.phase == "playing":
             # A buzzing or dead input, as the take's own log says (plume.inputguard).
-            return INPUT_FAULT_LINES.get((take.row or {}).get("input_fault"))
+            # Not while it stops or fades: she has stopped on purpose.
+            row = take.row or {}
+            fading = isinstance(row.get("fade_db"), (int, float)) and row["fade_db"] < 0
+            if getattr(take, "stop_asked", False) or (fading and row.get("input_fault") == "silent"):
+                return None
+            return INPUT_FAULT_LINES.get(row.get("input_fault"))
         if take.phase != "waiting":
             return None
         waited = now - take.opened

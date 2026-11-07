@@ -4521,10 +4521,12 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
                 # would be pitched to it.
                 mh = machine_harmony_state(t_bar, named_key, None)
             # A busier or sparser cue is her own word, and beats following.
+            texture_cue = False
             for text in str(getattr(form, "applied_cue", None) or "").split("; "):
                 said = parse_cue(text) if text else {}
                 if said.get("kind") == "texture":
                     follow.cue(str(said.get("value")))
+                    texture_cue = True
             ending_now = outro(t_bar - song_start[0], wind_down_s, bar_len)
             followed = None
             if ending_now is None:
@@ -4593,6 +4595,10 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
             if plain_feel is not None:
                 entry_feel = plain_feel
                 notes.append("a plain first phrase")
+                if texture_cue:
+                    # The cue reaches the rest of the band now, and the drums at
+                    # the phrase line: their figure is the plain one until then.
+                    notes.append("drums held plain until the phrase ends")
             bridge_note = "".join(f"; {n}" for n in notes)
             plan = dataclasses.replace(
                 plan,

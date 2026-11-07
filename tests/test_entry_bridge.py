@@ -87,13 +87,25 @@ def test_a_click_at_full_sounds_as_it_did_over_the_intro(name):
 
 # ------------------------------------------------------------------ the plain first phrase
 
-def _plain(name):
-    return DuetEngine(style=name, seed=0)._entry_grids
+#: The densities a plain phrase meets: the verse's, a sparser cue's, a lift's.
+DENSITIES = (0.3, 0.45, 0.9)
+#: midwest's slow figures start below this
+SLOW = 65.0
 
 
-@pytest.mark.parametrize("name", list_styles())
-def test_the_plain_phrase_kick_is_on_the_beat_in_every_style(name):
-    grids = _plain(name)
+def _plain(name, density=0.45, *, slow=False):
+    return DuetEngine(style=name, seed=0).plain_grids(density, slow=slow)
+
+
+def _cases():
+    out = [(n, d, False) for n in list_styles() for d in DENSITIES]
+    return out + [(n, d, True) for n in list_styles() if load_style(n).get("slow_drum_patterns")
+                  for d in DENSITIES]
+
+
+@pytest.mark.parametrize("name,density,slow", _cases())
+def test_the_plain_phrase_kick_is_on_the_beat_in_every_style(name, density, slow):
+    grids = _plain(name, density, slow=slow)
     kick = notation.steps_for_cycle(grids["kick"], 0)
     assert kick and kick[0].start == 0.0, "the one"
     assert all(abs(s.start * 4 - round(s.start * 4)) < 1e-9 for s in kick)
@@ -103,19 +115,51 @@ def test_the_plain_phrase_kick_is_on_the_beat_in_every_style(name):
     assert on3
 
 
-@pytest.mark.parametrize("name", list_styles())
-def test_the_plain_phrase_is_chosen_from_the_style_not_rewritten(name):
+@pytest.mark.parametrize("name,density,slow", _cases())
+def test_the_plain_phrase_is_chosen_from_the_style_not_rewritten(name, density, slow):
     """Each role plays one of the style's own figures; the kick only drops hits, and adds
     a beat-3 kick only when the style's kick and backbeat both leave it empty."""
     duet = DuetEngine(style=name, seed=0)
-    for role, steps in duet._entry_grids.items():
-        own = [{(s.start, s.token) for s in v} for v in duet._grids[role]]
+    grids = {**duet._grids, **duet._slow_grids} if slow else duet._grids
+    for role, steps in duet.plain_grids(density, slow=slow).items():
+        own = [{(s.start, s.token) for s in v} for v in grids[role]]
         mine = {(s.start, s.token) for s in steps}
         if role in ("kick", "sub"):
             extra = mine - set().union(*own)
             assert extra <= {(0.5, "bd:v0.6")}, role
         else:
             assert mine in own, role
+
+
+@pytest.mark.parametrize("name,density,slow", _cases())
+def test_the_plain_phrase_is_never_busier_than_the_style_s_own_pick(name, density, slow):
+    duet = DuetEngine(style=name, seed=0)
+    grids = {**duet._grids, **duet._slow_grids} if slow else duet._grids
+    for role, steps in duet.plain_grids(density, slow=slow).items():
+        variants = grids[role]
+        own = variants[min(len(variants) - 1, int(density * len(variants)))]
+        extra = 1 if role in ("kick", "sub") else 0      # the soft beat-3 kick, at most
+        assert len(steps) <= len(own) + extra, role
+
+
+def test_synthwave_s_plain_hat_is_its_own_sparse_one():
+    hat = [s.start for s in _plain("synthwave")["hat"]]
+    assert hat == [0.125, 0.375, 0.625, 0.875]
+
+
+def test_midwest_s_slow_plain_phrase_comes_from_its_slow_figures():
+    grids = _plain("midwest", slow=True)
+    slow_snare = notation.parse(load_style("midwest")["slow_drum_patterns"]["snare"][0])
+    assert [s.start for s in grids["snare"]] == [s.start for s in slow_snare]
+    assert [s.start for s in grids["kick"]] == [0.0, 0.5]   # its backbeat is 2 and 4
+    # and the engine plays it below the slow tempo
+    duet = DuetEngine(style="midwest", seed=0)
+    bar_s = 240.0 / SLOW
+    duet.render_bar(_plan(0, {"kick": 1.0, "snare": 1.0}),
+                    realtime.machine_beat_state(0, 0.0, SLOW),
+                    realtime.machine_harmony_state(0.0, "D major", "D"), entry_feel=0.0)
+    kicks = [e["onset_s"] / (bar_s / 4) for e in duet.last_events if e["role"] == "kick"]
+    assert [round(b) for b in kicks] == [0, 2] and all(abs(b - round(b)) < 0.03 for b in kicks)
 
 
 def test_four_on_the_floor_and_the_jazz_kick_stay_as_they_are():
@@ -135,9 +179,25 @@ def test_lofi_s_plain_phrase_is_a_plain_backbeat():
 def test_a_style_can_name_its_own_entry_patterns():
     s = load_style("lofi")
     s["entry_patterns"] = {"kick": "bd ~ ~ ~ ~ ~ ~ ~ bd ~ ~ ~ ~ ~ ~ ~", "hat": "hh ~ ~ ~"}
-    grids = DuetEngine(style=s, seed=0)._entry_grids
-    assert [s.start for s in grids["kick"]] == [0.0, 0.5]
-    assert [s.start for s in grids["hat"]] == [0.0]
+    duet = DuetEngine(style=s, seed=0)
+    for slow in (False, True):          # one override, at every tempo
+        grids = duet.plain_grids(0.45, slow=slow)
+        assert [s.start for s in grids["kick"]] == [0.0, 0.5]
+        assert [s.start for s in grids["hat"]] == [0.0]
+
+
+def test_an_entry_pattern_may_be_a_list_like_drum_patterns():
+    s = load_style("lofi")
+    s["entry_patterns"] = {"kick": ["bd ~ bd ~", "bd bd bd bd"]}
+    assert [x.start for x in DuetEngine(style=s, seed=0).plain_grids(0.45)["kick"]] == [0.0, 0.5]
+
+
+@pytest.mark.parametrize("bad", [[], 3, {"bd": 1}, [7]])
+def test_a_bad_entry_pattern_is_refused_when_the_style_loads(bad):
+    s = load_style("lofi")
+    s["entry_patterns"] = {"kick": bad}
+    with pytest.raises(ValueError, match="entry_patterns"):
+        DuetEngine(style=s, seed=0)
 
 
 def test_plain_entry_grids_adds_nothing_where_the_backbeat_has_beat_3():
@@ -248,3 +308,24 @@ def test_the_recap_claims_no_bridge_that_did_not_happen():
     events = record.translate(song(40, band_bar=9), ending_doc())
     entry = next(e for e in events if e["label"] == "bass and chords")
     assert entry["sentence"] == "Bar 9. Bass and chords in, in F major."
+
+
+# ------------------------------------------------------------------ the bass under it
+
+@pytest.mark.parametrize("name", list_styles())
+@pytest.mark.parametrize("density", DENSITIES)
+def test_the_bass_keeps_to_the_beat_through_the_plain_phrase(name, density):
+    duet = DuetEngine(style=name, seed=0)
+    for bar, feel in enumerate((0.0, 0.25, 0.5, 0.75)):
+        bass = _beats(_render(duet, bar, {"bass": 1.0}, entry_feel=feel, density=density),
+                      "bass")
+        assert len(bass) >= 2, f"bar {bar}"
+        assert all(abs(b - round(b)) < 0.03 for b in bass), (bar, bass)
+
+
+def test_hiphop_s_boom_bap_bass_is_back_after_the_phrase():
+    duet = DuetEngine(style="hiphop", seed=0)
+    plain = _beats(_render(duet, 0, {"bass": 1.0}, entry_feel=0.0), "bass")
+    after = _beats(_render(duet, 4, {"bass": 1.0}), "bass")
+    assert all(abs(b - round(b)) < 0.03 for b in plain)
+    assert any(abs(b - round(b)) > 0.2 for b in after), "its own figure again"

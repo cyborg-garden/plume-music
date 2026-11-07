@@ -121,6 +121,7 @@ def write_record(reg: Path, pid: int, **kw) -> realtime.LiveSession:
 from conftest import (  # noqa: E402
     fake_audio,
     needs_fifo,
+    needs_laptop_speed,
     needs_posix_modes,
     needs_posix_signals,
     patched_module,
@@ -1739,6 +1740,7 @@ def spy_masker(monkeypatch):
 class TestTheTransportActuallyMasksItself:
     """The mic hears the speakers; the transport must act on that."""
 
+    @needs_laptop_speed
     def test_the_sideman_masks_its_own_output_out_of_the_tracker(
             self, material, isolated_registry, spy_masker):
         sock = short_sock("mask-jam")

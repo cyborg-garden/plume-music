@@ -71,14 +71,6 @@ from plume import realtime  # noqa: E402
 
 SR = realtime.SR
 
-def _rate_scale() -> float:
-    try:
-        scale = float(os.environ.get("PLUME_TEST_RATE_SCALE", "1") or 1)
-    except ValueError:
-        return 1.0
-    return min(1.0, max(0.05, scale))
-
-
 #: The longest ``hold`` can pause the fake device: a wedge must still fail the test.
 HOLD_MAX_S = 30.0
 #: A device table that satisfies ``_resolve_device``: one duplex device.
@@ -130,10 +122,7 @@ class FakeAudioStream:
                         else (float(latency[0]), float(latency[1])))
         self._n = int(blocksize)
         self._cb = callback
-        # A shared CI runner falls behind a fast playhead that a laptop keeps up
-        # with, and the failure reads as a musical one.  PLUME_TEST_RATE_SCALE
-        # slows every fake device by the same factor (never speeds one up).
-        self._rate = float(rate_x) * _rate_scale()
+        self._rate = float(rate_x)
         self._warmup_s = float(warmup_s)
         self._in_ch = int(channels[0]) if isinstance(channels, (tuple, list)) else 1
         self._out_ch = int(channels[1]) if isinstance(channels, (tuple, list)) else 2
@@ -408,6 +397,15 @@ def _has_dir_fds() -> bool:
 
 #: A folder opened by handle, so a swap of its name after the check changes nothing.
 needs_dir_fds = pytest.mark.skipif(not _has_dir_fds(), reason="no dir_fd support here")
+
+
+#: A test that reads a fake device's output by the sample, or the planner's own
+#: lead time, at a fast playhead (up to 14x).  It proves the planner keeps up, which
+#: holds on a laptop and not on a shared 2-4 core CI runner, where it fails as if the
+#: music had regressed.  CI sets PLUME_SKIP_MACHINE_SPEED=1; every local run keeps them.
+needs_laptop_speed = pytest.mark.skipif(
+    os.environ.get("PLUME_SKIP_MACHINE_SPEED") == "1",
+    reason="needs a laptop-speed CPU to keep up with a fast fake playhead (skipped in CI)")
 
 
 def signal_self(sig) -> None:

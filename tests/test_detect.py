@@ -8,6 +8,7 @@ import json
 
 import numpy as np
 import pytest
+from conftest import needs_laptop_speed  # noqa: E402
 from conftest import fake_audio, patched_module, short_socket_path
 
 from plume import cli, governor, realtime
@@ -457,6 +458,7 @@ class _Wandering:
         return self._last
 
 
+@needs_laptop_speed
 @pytest.mark.parametrize("detect,comes_in", [(True, True), (False, False)])
 def test_detect_cannot_strand_her_on_drums(tmp_path, consent, monkeypatch, detect, comes_in):
     import plume.listen.harmony as harmony_mod

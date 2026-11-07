@@ -232,7 +232,10 @@ def test_the_band_gets_quieter_in_what_the_output_device_plays(tmp_path, monkeyp
     bpm, soft_at = 115.0, 50.0
     human = _take(bpm=bpm, seconds=130.0)
     human[int(soft_at * 48000):] *= 0.2                     # 14 dB softer from here on
-    sd = fake_audio(human, devices=PAIR_RIG, rate_x=12.0)
+    # 4x, not 12x: this reads the output by the sample against the log's times, and a
+    # slower machine (a Linux container measured it) falls behind a 12x playhead, so
+    # the gain lands late in the samples while the log says it is on time.
+    sd = fake_audio(human, devices=PAIR_RIG, rate_x=4.0)
     with patched_module("sounddevice", sd):
         realtime.lead(prompt="midwest emo in C major", seed=0, tap_start=True, direct=True,
                       role=roles_mod.RoleParams(role="lead"), record_dir=str(tmp_path / "rec"),

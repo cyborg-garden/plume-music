@@ -804,7 +804,8 @@ def test_frame_features_are_independent_of_blocking_on_real_audio(material):
     for fa, fb in zip(a, b):
         assert fa.t_s == fb.t_s
         assert fa.rms_db == fb.rms_db
-        assert fa.flux == fb.flux
+        # The FFT may round the last bit differently by alignment (Linux aarch64).
+        assert fa.flux == pytest.approx(fb.flux, rel=1e-12, abs=1e-9)
         assert fa.onset == fb.onset
         assert np.array_equal(fa.chroma, fb.chroma)
 

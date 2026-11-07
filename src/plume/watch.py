@@ -285,6 +285,7 @@ class Listener:
             "input": source, "you_trusted": trusted, "you_why": why, "changes": changes,
             "playing": last.get("playing"), "playing_trusted": last.get("playing_trusted"),
             "fade_db": last.get("fade_db"),
+            "input_fault": last.get("input_fault"),
         }
 
     def _changes(self, row: dict, you_db: float, busy: float) -> list[str]:

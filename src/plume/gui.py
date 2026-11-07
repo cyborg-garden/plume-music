@@ -1115,7 +1115,11 @@ def serve(*, take=None, takes=None, open_browser: bool = True, wait=None, **serv
             write(server.first_url())
             write("Open that link once. 'plume gui url' prints a new one. Ctrl-C here to quit.")
         if wait is None:
-            threading.Event().wait()
+            # In short waits, not one long one: on Windows a lock wait with no timeout
+            # cannot be interrupted, so Ctrl-C and Ctrl-Break would never be handled.
+            forever = threading.Event()
+            while not forever.wait(0.25):
+                pass
         else:
             wait(server)
     except (KeyboardInterrupt, _Closing):

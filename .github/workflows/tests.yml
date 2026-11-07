@@ -6,7 +6,7 @@ name: tests
 # fake device in tests/conftest.py, and PLUME_ALLOW_AUDIO is never set here.
 #
 # The suite takes most of an hour on one core, so each OS and Python runs it as
-# four shards (PLUME_TEST_SHARD, see tests/conftest.py).  Together the four run
+# six shards (PLUME_TEST_SHARD, see tests/conftest.py).  Together the six run
 # every test once; none is a subset.
 
 on:
@@ -31,9 +31,12 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
         python: ["3.11", "3.12"]
-        shard: ["1/4", "2/4", "3/4", "4/4"]
+        shard: ["1/6", "2/6", "3/6", "4/6", "5/6", "6/6"]
     env:
       PLUME_TEST_SHARD: ${{ matrix.shard }}
+      # Shared runners fall behind a 12x fake playhead; half speed keeps the
+      # planner ahead of it, as it is on a laptop (tests/conftest.py).
+      PLUME_TEST_RATE_SCALE: "0.5"
       PYTHONUNBUFFERED: "1"
       PYTHONUTF8: "1"
     steps:
@@ -67,4 +70,4 @@ jobs:
         shell: bash
         run: |
           unset PLUME_ALLOW_AUDIO
-          python -m pytest -p no:cacheprovider -q -rs
+          python -m pytest -p no:cacheprovider -q -rfEs

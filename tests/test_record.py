@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 
 import pytest
-from conftest import needs_dev_zero, needs_fifo, needs_symlinks  # noqa: E402
+from conftest import DEV_ZERO, needs_dev_zero, needs_fifo, needs_symlinks  # noqa: E402
 
 from plume import realtime, record
 from plume.mind import parse_cue
@@ -852,7 +852,7 @@ def test_a_fifo_in_a_take_folder_does_not_block_the_reader(tmp_path, name):
 def test_a_symlink_to_a_device_is_not_read(tmp_path, name):
     folder = write_take(tmp_path / "t", song(5), ending=ending_doc(), cues=[])
     (folder / name).unlink()
-    (folder / name).symlink_to("/dev/zero")
+    (folder / name).symlink_to(DEV_ZERO)
     assert record.read_take(folder)["events"]
 
 

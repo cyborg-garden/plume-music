@@ -216,6 +216,9 @@ _DENSITY_BEATS_ONLY = 0.25    # drums: thin the sparsest grid to on-beat hits
 _BASS_WHOLE = 0.3             # bass: whole-note root below this
 _BASS_HALVES = 0.65           # bass: beats 1+3 below this, style figure above
 _PAD_ACTIVE = 0.5             # pad: stabs/arp figures at/above this
+#: The plain phrase's bass: a note left alone by a dropped one rings this much of the
+#: way to the next.
+_BASS_RING = 0.95
 
 _DEFAULT_VELOCITY = 0.8
 #: From this density a motif plays through its phrases, with a longer echo.
@@ -1270,15 +1273,36 @@ class DuetEngine:
                                    key=key, bar=bar)
         if self._entry_feel is None:
             return events
-        # The plain first phrase: the bass keeps to the beat with the kick.  Its
-        # hits between the beats go; a figure left with fewer than two plays the
-        # root on beats 1 and 3.
-        on = [e for e in events if abs(e[2] - round(e[2])) < 1e-6]
-        if len(on) >= 2:
-            return on
-        hz = _low_octave_hz(root_pc) * 2.0 ** int(self._style.get("bass_octave", 0))
-        return [("bass", preset, ob, d * spb, hz, v)
-                for ob, d, v in ((0.0, 1.9, 0.85), (2.0, 1.6, 0.7))]
+        # The plain first phrase: where the plain kick straightened the style's own,
+        # the bass drops its hits off the eighth grid (the pushed sixteenths), and
+        # what it keeps rings on to its next note.  Straight eighths stay: a steady
+        # pulse was never the problem.  A style whose kick is on the beat already
+        # (house, synthwave, jazz) keeps its bass as written.
+        if not self._kick_straightened(density, slow=60.0 / spb < float(
+                self._style.get("slow_below_bpm", 0.0))):
+            return events
+        kept = [e for e in events if abs(e[2] * 2.0 - round(e[2] * 2.0)) < 1e-6]
+        if len(kept) == len(events):
+            return events
+        if len(kept) < 2:
+            hz = _low_octave_hz(root_pc) * 2.0 ** int(self._style.get("bass_octave", 0))
+            return [("bass", preset, ob, d * spb, hz, v)
+                    for ob, d, v in ((0.0, 1.9, 0.85), (2.0, 1.6, 0.7))]
+        out = []
+        for i, (role, pre, ob, dur, hz, v) in enumerate(kept):
+            nxt = kept[i + 1][2] if i + 1 < len(kept) else 4.0
+            out.append((role, pre, ob, max(dur, _BASS_RING * (nxt - ob) * spb), hz, v))
+        return out
+
+    def _kick_straightened(self, density: float, *, slow: bool) -> bool:
+        """Did the plain phrase change the kick from the style's own at ``density``?"""
+        grids = {**self._grids, **self._slow_grids} if slow else self._grids
+        if "kick" not in grids or not grids["kick"]:
+            return False
+        own = grids["kick"][density_index(len(grids["kick"]), density)]
+        plain = self.plain_grids(density, slow=slow).get("kick", own)
+        return ([(x.start, x.token, x.cycle_alts) for x in plain]
+                != [(x.start, x.token, x.cycle_alts) for x in own])
 
     def _bass_figure(self, preset: str, density: float, spb: float,
                      root_pc: int, *, chord: str | None = None,

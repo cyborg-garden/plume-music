@@ -52,6 +52,7 @@ from datetime import datetime
 from pathlib import Path
 
 from .compose import parse_prompt
+from .inputguard import BUZZ_LINE, SILENT_LINE
 from .realtime import (AUDIO_CONSENT_ENV, AUDIO_CONSENT_OFF, OPEN_TOGETHER_FAILED, REC_CUES,
                        REC_DECISIONS, REC_ENDING, REC_HUMAN, REC_MACHINE, REC_MANIFEST, REC_MIDI, REC_STREAM, REC_VOICE,
                        LiveSession, RealtimeError, list_sessions, send_cue, stop_session)
@@ -74,6 +75,7 @@ NO_COUNT = ("Still waiting for a count. A knock may not reach a pickup, "
 NO_COUNT_ROOM = "Still waiting for a count. Try knocking or clapping louder, closer to the mic."
 OPENING = "Still opening the device. This computer may be asking to use the microphone."
 STALLED = "The audio device stopped answering."
+INPUT_FAULT_LINES = {"buzz": BUZZ_LINE, "silent": SILENT_LINE}
 ENDED_EARLY = "The take ended early."
 NO_PAGE = "No page was open, so plume stopped this take."
 WEDGED = "Still stopping. Run plume stop in a terminal."
@@ -164,7 +166,7 @@ _FIELDS = frozenset({"device", "channel", "key", "style", "hear_me"})
 #: A row may carry more than a page needs.  Only these fields leave the bridge.
 _ROW_FIELDS = ("bar", "t_s", "bpm", "section", "stage", "key", "chord", "style", "style_guess",
                "key_guess", "you_db", "band_db", "you_busy", "you_notes", "you_source", "input",
-               "you_trusted", "playing", "playing_trusted", "fade_db")
+               "you_trusted", "playing", "playing_trusted", "fade_db", "input_fault")
 _STREAM_FIELDS = ("input_ms", "output_ms", "reported_ms", "block_ms", "calibrated_ms")
 
 #: Software that shows up as a many-channel device.  "zoomaudio", not "zoom": Zoom also
@@ -1714,6 +1716,14 @@ class TakeRunner:
     def _hint(take: _Take, now: float) -> str | None:
         if take.phase == "starting":
             return OPENING if now - take.started >= OPENING_AFTER_S else None
+        if take.phase == "playing":
+            # A buzzing or dead input, as the take's own log says (plume.inputguard).
+            # Not while it stops or fades: she has stopped on purpose.
+            row = take.row or {}
+            fading = isinstance(row.get("fade_db"), (int, float)) and row["fade_db"] < 0
+            if getattr(take, "stop_asked", False) or (fading and row.get("input_fault") == "silent"):
+                return None
+            return INPUT_FAULT_LINES.get(row.get("input_fault"))
         if take.phase != "waiting":
             return None
         waited = now - take.opened

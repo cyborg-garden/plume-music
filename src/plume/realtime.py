@@ -51,6 +51,7 @@ from .listen.features import HOP, RMS_FLOOR_DB, Frame  # noqa: F401 (Frame: typi
 # sound", and v1.8's unlocked-tick rendering (below) must select exactly the
 # plans sim's unlocked tick selects or the twins diverge on which bars exist.
 from .sim import SILENCE_REL_DB, _SOUNDING_STATES
+from .inputguard import InputGuard
 
 SR = 48000
 BLOCK = 256
@@ -1906,6 +1907,64 @@ def session_manifest(*, kind: str, style: str, role: str, seed: int,
     }
 
 
+# Hear me, kept safe.  Raw input summed onto the band had no ceiling: a buzzing cable
+# went to the speakers at full scale.  mix_monitor runs IN the audio callback, so it
+# is numpy arithmetic only (no reductions, no calls off the purity list), in float32.
+# Telling a fault from a hard strum takes the analysis thread (plume.inputguard),
+# which asks for the duck through slot[0]; slot[1] is the monitor gain, the
+# callback's own.  With Hear me on, anything in the sum over the knee (the band's
+# rare peaks above -2 dBFS, her own hottest strums) is rounded off toward the
+# ceiling; below the knee the sound is untouched, and with Hear me off nothing is.
+MONITOR_CEILING = 10.0 ** (-1.0 / 20.0)     # -1 dBFS: band + monitor never go past it
+MONITOR_KNEE = 10.0 ** (-2.0 / 20.0)        # below this the output is untouched
+_MONITOR_SPAN = MONITOR_CEILING - MONITOR_KNEE
+_MONITOR_INV_SPAN = 1.0 / _MONITOR_SPAN
+MONITOR_UP_PER_SAMPLE = 1.0 / (0.2 * SR)    # back up over 200 ms; down within one call
+_MONITOR_STEPS = np.arange(1, (1 << 16) + 1, dtype=np.float32)
+
+
+def mix_monitor(outdata, x, slot) -> None:
+    """Add her input ``x`` onto ``outdata`` (both channels) at the guarded gain, then
+    soft-limit the sum to MONITOR_CEILING.  Called from the audio callback."""
+    n = x.shape[0]
+    g0 = float(slot[1])
+    target = 0.0 if slot[0] > 0.5 else 1.0
+    g1 = target if target < g0 else min(target, g0 + MONITOR_UP_PER_SAMPLE * n)
+    slot[1] = g1
+    if g0 == g1 == 1.0:
+        m = x
+    elif g0 == g1:
+        m = x * g1
+    else:
+        m = _MONITOR_STEPS[:n] * ((g1 - g0) / n)
+        m += g0
+        m *= x
+    outdata[:, 0] += m
+    outdata[:, 1] += m
+    # y = sign(v) * (knee + span * tanh((|v| - knee) / span)) over the knee, v below it:
+    # take off what is over, then give back its rounded version.
+    over = np.abs(outdata)
+    np.subtract(over, MONITOR_KNEE, out=over)
+    np.maximum(over, 0.0, out=over)
+    kept = over * _MONITOR_INV_SPAN
+    np.tanh(kept, out=kept)
+    kept *= _MONITOR_SPAN
+    over -= kept
+    np.copysign(over, outdata, out=over)
+    outdata -= over
+
+
+def heed_input(guard, x, ending: bool = False) -> None:
+    """Analysis thread: look at her input, and say a fault once where a terminal sees it."""
+    try:
+        guard.ending = ending
+        line = guard.feed(x)
+    except Exception:  # noqa: BLE001 - a look at the input must never stop the band
+        return
+    if line:
+        print(f"input: {line}", file=sys.stderr, flush=True)
+
+
 def stream_report(stream, *, block: int = BLOCK, sr: int = SR,
                   calibrated_ms: float | None = None) -> dict:
     """What can honestly be said about this stream's latency, in milliseconds.
@@ -2253,6 +2312,10 @@ def jam(*, style: str, seed: int, params, device: str | None = None,
     duet = DuetEngine(style=style, seed=seed, sr=SR)
 
     in_ring = RingBuffer(SR * 8)                  # mic -> analysis (mono)
+    # A buzzing or dead input.  On a MIDI take her notes are not this input: it is
+    # still kept off the speakers if it buzzes, but nothing is said of it.
+    guard = InputGuard(SR, notices=midi_port is None)
+    guard_slot = guard.slot
     machine_ring = RingBuffer(SR * 8)             # what we played (mono sum)
     timeline = TimelineBuffer(SR * 30, channels=2)
 
@@ -2330,14 +2393,14 @@ def jam(*, style: str, seed: int, params, device: str | None = None,
         timeline.read_into(outdata)
         machine_ring.write(0.5 * (outdata[:, 0] + outdata[:, 1]))
         if monitor:
-            outdata[:, 0] += indata[:, route.guitar]
-            outdata[:, 1] += indata[:, route.guitar]
+            mix_monitor(outdata, indata[:, route.guitar], guard_slot)
 
     hop_rms = HopRms()
 
     def _log(doc: dict) -> None:
         """One decision -> the live log, flushed (v1.3)."""
         n_decisions[0] += 1
+        doc.setdefault("input_fault", guard.fault)   # a buzzing or dead input
         if recorder is not None:
             recorder.decision(doc)
 
@@ -2361,6 +2424,7 @@ def jam(*, style: str, seed: int, params, device: str | None = None,
                 continue
             x = in_ring.read(n)
             m = machine_ring.read(n)
+            heed_input(guard, x, ending.is_set() or stop.is_set())
             if recorder is not None:
                 recorder.audio(x, m)
             masked_frames, _flags, beat_state, harm_state = analysis_step(
@@ -2402,6 +2466,8 @@ def jam(*, style: str, seed: int, params, device: str | None = None,
             "chord": harm_state.chord if harm_state else None,
             "roles": plan.roles, "gain_db": plan.gain_db,
         }
+        if beat_state.bpm and math.isfinite(beat_state.bpm) and beat_state.bpm > 0:
+            guard.bar_s = 240.0 / beat_state.bpm
         if math.isinf(beat_state.next_downbeat_t_s):
             doc["cal_db"] = None
             _log(doc)
@@ -4198,6 +4264,10 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
     in_ring = RingBuffer(SR * 8)
     machine_ring = RingBuffer(SR * 8)
     voice_ring = None if route.voice is None else RingBuffer(SR * 8)
+    # A buzzing or dead input.  On a MIDI take her notes are not this input: it is
+    # still kept off the speakers if it buzzes, but nothing is said of it.
+    guard = InputGuard(SR, notices=midi_port is None)
+    guard_slot = guard.slot
     timeline = TimelineBuffer(SR * 30, channels=2)
 
     stop = threading.Event()
@@ -4264,8 +4334,7 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
         timeline.read_into(outdata)
         machine_ring.write(0.5 * (outdata[:, 0] + outdata[:, 1]))
         if monitor:
-            outdata[:, 0] += indata[:, route.guitar]
-            outdata[:, 1] += indata[:, route.guitar]
+            mix_monitor(outdata, indata[:, route.guitar], guard_slot)
 
     hop_rms = HopRms()
 
@@ -4287,6 +4356,7 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
                 continue
             x = in_ring.read(n)
             m = machine_ring.read(n)
+            heed_input(guard, x, ending.is_set() or stop.is_set())
             v = None if voice_ring is None else voice_ring.read(n)
             if recorder is not None:
                 recorder.audio(x, m, v)
@@ -4349,6 +4419,7 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
             bpm = held_bpm
         bar, t_bar, _ = clock.commit(bpm)
         bar_len = clock.bar_len_s(bpm)
+        guard.bar_s = bar_len
         looper.note_bar(bar, int(round(t_bar * SR)) - comp_samples[0], bpm)
         # This bar is planned a bar ahead of the playhead, so the bar just
         # before it has barely started and holds almost no frames.  Read the
@@ -4627,6 +4698,7 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
             "human_offset_ms": (None if offset_ms is None
                                 else round(offset_ms, 2)),
             "cue_effects": cue_notes or None,
+            "input_fault": guard.fault,
         }
         if looper.active or loop_events:
             doc["loop"] = {**looper.status(), "events": loop_events,
@@ -4652,6 +4724,7 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
             doc["playing"] = playing
             doc["playing_trusted"] = playing_trusted
             doc["fade_db"] = round(fade_db, 2)
+            guard.winding = fade_db < 0.0     # the band is ending: her silence is expected
             doc["entry_ramp"] = {r: round(v, 3) for r, v in levels.items() if v < 1.0}
             doc["follow"] = {"mode": follow.mode, "trusted": follow.trusted,
                              "gain_db": round(follow.gain_db, 3),

@@ -458,7 +458,26 @@ def _shard() -> tuple[int, int] | None:
     return k, n
 
 
+#: Tests whose failure is never a lost race: they check consent, file hardening and
+#: process safety, which a slow runner cannot make fail.  CI reruns a failed live-path
+#: test (``--reruns``) because a stalled shared runner can leave one behind its fake
+#: playhead; these never get that second chance, so a real regression cannot pass on
+#: a lucky retry.
+NEVER_RERUN_FILES = {"test_audio_consent.py", "test_cross_platform.py",
+                     "test_callback_purity.py"}
+NEVER_RERUN_WORDS = ("consent", "symlink", "secret", "token", "private", "refus")
+
+
+def _never_rerun(item) -> bool:
+    name = os.path.basename(str(item.fspath))
+    return name in NEVER_RERUN_FILES or any(w in item.name.lower() for w in NEVER_RERUN_WORDS)
+
+
 def pytest_collection_modifyitems(config, items):
+    if config.pluginmanager.hasplugin("rerunfailures"):
+        for item in items:
+            if _never_rerun(item):
+                item.add_marker(pytest.mark.flaky(reruns=0))
     shard = _shard()
     if shard is None:
         return

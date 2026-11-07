@@ -88,6 +88,19 @@ def hum(seconds: float, *, level: float = 1.0, hz: float = 50.0, clip: bool = Tr
     return np.clip(x, -1.0, 1.0).astype(np.float32)
 
 
+def buzz(seconds: float, *, base: float = 60.0, amps=(1.0,), level: float = 0.89,
+         pulse_duty: float | None = None, offset_hz: float = 0.0) -> np.ndarray:
+    """A grid buzz: harmonic k of ``base`` at ``amps[k-1]``, or a narrow pulse train."""
+    t = np.arange(int(seconds * SR)) / SR
+    f = base + offset_hz
+    if pulse_duty is not None:
+        x = ((t * f) % 1.0 < pulse_duty).astype(float)
+        x -= x.mean()
+    else:
+        x = sum(a * np.sin(2 * np.pi * (k + 1) * f * t + 0.7 * k) for k, a in enumerate(amps))
+    return (x / np.max(np.abs(x)) * level).astype(np.float32)
+
+
 def quiet(seconds: float, db: float = -65.0, seed: int = 1) -> np.ndarray:
     rng = np.random.default_rng(seed)
     return (rng.standard_normal(int(seconds * SR)) * _db_to_lin(db)).astype(np.float32)
@@ -157,13 +170,25 @@ HUMS = {
                                   harmonics=((2, 0.5), (3, 0.33), (4, 0.25), (5, 0.2))),
     "100hz-buzz": dict(hz=100.0, clip=False, level=0.5, harmonics=((2, 0.4), (3, 0.3))),
 }
+BUZZES = {
+    "120hz-led-weak-60": dict(base=60.0, amps=(0.3, 1.0)),
+    "100hz-led-weak-50": dict(base=50.0, amps=(0.3, 1.0)),
+    "180hz-led": dict(base=60.0, amps=(0.5, 0.0, 1.0)),
+    "150hz-led-on-50": dict(base=50.0, amps=(0.3, 0.0, 1.0)),
+    "spread-over-harmonics": dict(base=60.0, amps=(1.0, 0.9, 0.8, 0.7, 0.6, 0.5)),
+    "120hz-led-at--12-dbfs": dict(base=60.0, amps=(0.3, 1.0), level=0.25),
+    "pulse-10pc": dict(base=60.0, pulse_duty=0.10),
+    "pulse-5pc": dict(base=50.0, pulse_duty=0.05),
+    "generator-50.5hz": dict(base=50.0, amps=(1.0, 0.0, 0.3), offset_hz=0.5),
+    "generator-59.5hz": dict(base=60.0, amps=(1.0, 0.4), offset_hz=-0.5),
+}
 
 
-@pytest.mark.parametrize("kind", list(HUMS))
+@pytest.mark.parametrize("kind", [*HUMS, *BUZZES])
 def test_a_hum_ducks_the_monitor_says_so_and_comes_back(kind):
     # She plays loud (-6 dBFS peaks), so a hum well under her level counts too.
     before = strums(2.0, peak_db=-6.0)
-    burst = hum(2.5, **HUMS[kind])
+    burst = hum(2.5, **HUMS[kind]) if kind in HUMS else buzz(2.5, **BUZZES[kind])
     after = strums(3.0, peak_db=-6.0, seed=3)
     x = np.concatenate([before, burst, after])
     _, gains, guard, lines = run(x)
@@ -180,6 +205,16 @@ def test_a_hum_ducks_the_monitor_says_so_and_comes_back(kind):
     assert back.size and back[0] * BLOCK / SR <= 0.9
     assert [line for _, line in lines] == [BUZZ_LINE]
     assert guard.fault is None
+
+
+def test_a_hum_that_keeps_the_monitor_off_is_always_said():
+    # A generator warbling quickly sits at the edge of the test: caught often enough
+    # to hold Hear me off, too unevenly for the hop counts.  Held off is said.
+    t = np.arange(4 * SR) / SR
+    x = np.sin(2 * np.pi * np.cumsum(50.0 + 0.5 * np.sin(2 * np.pi * 3.0 * t)) / SR)
+    _, gains, guard, lines = run(np.concatenate([quiet(0.5), (0.7 * x).astype(np.float32)]))
+    assert np.sum(gains < 1.0) * BLOCK / SR > 1.0
+    assert [line for _, line in lines] == [BUZZ_LINE]
 
 
 def test_buzz_output_stays_under_the_ceiling_with_hear_me_on():
@@ -204,6 +239,23 @@ PLAYING = {
                                         mute_s=0.09, decay=8.0),
     "drop-d-ringing": lambda: plucks(6.0, [(73.42, 110.0, 146.83)], every_s=1.0, decay=1.0),
 }
+
+
+#: Notes near a mains line, at A440: held perfectly steady (a sine, an organ-like
+#: tone with harmonics), none of them may be taken for hum.
+NEAR_MAINS_HZ = (49.0, 58.27, 61.74, 98.0, 116.54, 123.47, 146.83, 196.0, 233.08, 246.94)
+
+
+@pytest.mark.parametrize("organ", [False, True], ids=["sine", "organ"])
+@pytest.mark.parametrize("hz", NEAR_MAINS_HZ)
+def test_a_steady_note_near_mains_is_not_hum(hz, organ):
+    t = np.arange(4 * SR) / SR
+    amps = (1.0, 0.6, 0.4, 0.3, 0.2) if organ else (1.0,)
+    x = sum(a * np.sin(2 * np.pi * (k + 1) * hz * t) for k, a in enumerate(amps))
+    x = (x / np.max(np.abs(x)) * 0.7).astype(np.float32)
+    _, gains, guard, lines = run(np.concatenate([quiet(0.5), x]))
+    assert np.all(gains == 1.0)
+    assert lines == [] and guard.fault is None
 
 
 @pytest.mark.parametrize("drive", [1.0, 1.2, 1.5, 2.5], ids=["clean", "x1.2", "x1.5", "x2.5"])

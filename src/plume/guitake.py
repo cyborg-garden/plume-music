@@ -36,6 +36,7 @@ and are never sent to the page.
 """
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import json
 import math
@@ -920,6 +921,16 @@ class _Take:
     listener: object = None
 
 
+def _same_dir(a, b) -> bool:
+    return os.path.normcase(os.path.abspath(a)) == os.path.normcase(os.path.abspath(b))
+
+
+def _is_take(rec, take: _Take) -> bool:
+    """Whether a session record is this take: by its pid, or by the folder it records to."""
+    return rec.pid == take.proc.pid or (rec.record_dir is not None
+                                        and _same_dir(rec.record_dir, take.folder))
+
+
 class TakeRunner:
     """The state of the one take this bridge may be running, for every page that asks."""
 
@@ -1095,9 +1106,9 @@ class TakeRunner:
 
     def _others(self) -> list:
         with self._lock:
-            mine = None if self._take is None else self._take.proc.pid
+            take = self._take
         try:
-            return [r for r in self._sessions() if r.pid != mine]
+            return [r for r in self._sessions() if take is None or not _is_take(r, take)]
         except OSError:
             return []
 
@@ -1575,16 +1586,26 @@ class TakeRunner:
         threading.Thread(target=self._stop_child, args=(take,), name="plume-gui-stop",
                          daemon=True).start()
 
-    def _record_of(self, pid: int):
+    def _record_of(self, take: _Take):
+        """This take's session record, aimed at the process this bridge started.
+
+        On Windows a venv's python.exe is a launcher that runs the real interpreter as
+        its own child, so the session registers a pid that is not ``take.proc.pid``.
+        The take's folder names it either way.  The pid that gets signalled stays the
+        one started here: it leads the process group, so Ctrl-Break reaches both.
+        """
         try:
-            return next((r for r in self._sessions() if r.pid == pid), None)
+            rec = next((r for r in self._sessions() if _is_take(r, take)), None)
         except OSError:
             return None
+        if rec is None or rec.pid == take.proc.pid:
+            return rec
+        return dataclasses.replace(rec, pid=take.proc.pid, own_group=True)
 
     def _stop_child(self, take: _Take) -> None:
         # No record yet means it is still starting: the ladder goes straight to SIGINT,
         # and the pid is safe to signal, because an unreaped child's pid cannot be reused.
-        rec = self._record_of(take.proc.pid) or LiveSession(
+        rec = self._record_of(take) or LiveSession(
             pid=take.proc.pid, kind="lead", record_dir=str(take.folder),
             own_group=True)                     # started with detached_kwargs, above
         try:
@@ -1647,7 +1668,7 @@ class TakeRunner:
             doc = self._doc()
         if not ok:
             raise Refused(409, "No take is playing.", live=doc)
-        rec = self._record_of(take.proc.pid)
+        rec = self._record_of(take)
         if rec is None or not rec.socket:
             raise Refused(409, "The band did not answer that cue.", live=doc)
         try:

@@ -70,6 +70,9 @@ class Rig:
         self.child_writes = None
         self.list_error = None
         self.human = None
+        #: Set to stand in for a venv launcher on Windows: the session registers the
+        #: real interpreter's pid, a child of the one the bridge started.
+        self.launcher = False
 
     def spawner(self, argv, log_path):
         if self.spawn_error is not None:
@@ -87,7 +90,13 @@ class Rig:
     def sessions(self):
         recs = list(self.others)
         if self.proc is not None and self.proc.code is None:
-            recs.append(realtime.LiveSession(pid=self.proc.pid, kind="lead", socket="/nowhere/sock"))
+            if self.launcher:
+                recs.append(realtime.LiveSession(pid=self.proc.pid + 5000, kind="lead",
+                                                 socket="/nowhere/sock",
+                                                 record_dir=str(self.folder) + "/"))
+            else:
+                recs.append(realtime.LiveSession(pid=self.proc.pid, kind="lead",
+                                                 socket="/nowhere/sock"))
         return recs
 
     def stopper(self, rec):
@@ -1277,6 +1286,30 @@ def test_a_cue_goes_to_this_takes_socket_marked_as_the_page(rig, runner, cue):
     _to_playing(rig, runner)
     assert runner.cue({"cue": cue}) == {"ok": True, "cue": cue}
     assert rig.cues == [(cue, "/nowhere/sock", "gui")]
+
+
+def test_a_cue_finds_its_take_when_a_launcher_started_the_interpreter(rig, runner):
+    """A Windows venv's python.exe runs the real one as a child, so the pids differ."""
+    rig.launcher = True
+    _to_playing(rig, runner)
+    assert runner.cue({"cue": "busier"}) == {"ok": True, "cue": "busier"}
+    assert rig.cues == [("busier", "/nowhere/sock", "gui")]
+
+
+def test_stop_uses_the_takes_record_but_signals_the_process_it_started(rig, runner):
+    rig.launcher = True
+    _to_playing(rig, runner)
+    runner.stop()
+    assert wait_until(lambda: rig.stopped)
+    rec = rig.stopped[0]
+    assert (rec.pid, rec.socket, rec.own_group) == (rig.proc.pid, "/nowhere/sock", True)
+
+
+def test_a_launched_take_is_never_counted_as_another_session(rig, runner):
+    rig.launcher = True
+    _to_playing(rig, runner)
+    rig.others = [realtime.LiveSession(pid=77, kind="lead", record_dir="/elsewhere/take")]
+    assert [r.pid for r in runner._others()] == [77]
 
 
 @pytest.mark.parametrize("cue", ["darker", "go to the chorus", "", None, 7, ["busier"]])

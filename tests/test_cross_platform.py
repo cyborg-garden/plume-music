@@ -230,6 +230,8 @@ def test_windows_ladder_asks_with_ctrl_break_and_never_terminates_unasked(
     assert out["tried"] == ["CTRL_BREAK_EVENT"]
     assert out["stopped"] is False and "--force" in out["detail"]
     assert "TerminateProcess" in out["detail"]
+    # Ctrl-Break into another console can succeed and do nothing: say it may be there.
+    assert "another console" in out["detail"]
 
 
 def test_windows_ladder_ctrl_break_gets_the_whole_graceful_budget(isolated_registry, monkeypatch):
@@ -647,6 +649,8 @@ def test_faster_whisper_is_driven_without_downloading_anything(monkeypatch):
     monkeypatch.setitem(sys.modules, "faster_whisper", fake)
     monkeypatch.setattr(voice, "_FASTER_MODEL", None)
     monkeypatch.setattr(voice, "_FASTER_ON_CPU", False)
+    monkeypatch.setattr(voice, "_FASTER_WORKED", False)
+    monkeypatch.delenv(voice.WHISPER_DEVICE_ENV, raising=False)
     import numpy as np
     assert voice._whisper_faster(np.zeros(16000, dtype=np.float32)) == " plume, stop"
     voice._whisper_faster(np.zeros(16000, dtype=np.float32))
@@ -678,10 +682,57 @@ def test_faster_whisper_falls_back_to_the_cpu_when_cuda_is_half_installed(monkey
     monkeypatch.setitem(sys.modules, "faster_whisper", fake)
     monkeypatch.setattr(voice, "_FASTER_MODEL", None)
     monkeypatch.setattr(voice, "_FASTER_ON_CPU", False)
+    monkeypatch.setattr(voice, "_FASTER_WORKED", False)
+    monkeypatch.delenv(voice.WHISPER_DEVICE_ENV, raising=False)
     import numpy as np
     assert voice._whisper_faster(np.zeros(16000, dtype=np.float32)) == " plume, stop"
     assert voice._whisper_faster(np.zeros(16000, dtype=np.float32)) == " plume, stop"
     assert made == [("auto", "default"), ("cpu", "int8")]      # retried once, then kept
+
+
+def _flaky_gpu_model(made, fail):
+    import types
+
+    class Model:
+        def __init__(self, name, device, compute_type):
+            made.append(device)
+
+        def transcribe(self, audio, **kw):
+            if fail["now"]:
+                raise RuntimeError("out of memory")
+            return iter([types.SimpleNamespace(text=" plume, stop")]), None
+
+    fake = types.ModuleType("faster_whisper")
+    fake.WhisperModel = Model
+    return fake
+
+
+def test_faster_whisper_keeps_the_gpu_after_it_has_worked(monkeypatch):
+    """A failure mid-session is a real one: no reload on the CPU, no stalled cues."""
+    made, fail = [], {"now": False}
+    monkeypatch.setitem(sys.modules, "faster_whisper", _flaky_gpu_model(made, fail))
+    monkeypatch.setattr(voice, "_FASTER_MODEL", None)
+    monkeypatch.setattr(voice, "_FASTER_ON_CPU", False)
+    monkeypatch.setattr(voice, "_FASTER_WORKED", False)
+    monkeypatch.delenv(voice.WHISPER_DEVICE_ENV, raising=False)
+    import numpy as np
+    assert voice._whisper_faster(np.zeros(16000, dtype=np.float32)) == " plume, stop"
+    fail["now"] = True
+    with pytest.raises(RuntimeError):
+        voice._whisper_faster(np.zeros(16000, dtype=np.float32))
+    assert made == ["auto"] and voice._FASTER_ON_CPU is False
+
+
+def test_faster_whisper_can_be_told_to_use_the_cpu(monkeypatch):
+    made = []
+    monkeypatch.setitem(sys.modules, "faster_whisper", _flaky_gpu_model(made, {"now": False}))
+    monkeypatch.setattr(voice, "_FASTER_MODEL", None)
+    monkeypatch.setattr(voice, "_FASTER_ON_CPU", False)
+    monkeypatch.setattr(voice, "_FASTER_WORKED", False)
+    monkeypatch.setenv(voice.WHISPER_DEVICE_ENV, "cpu")
+    import numpy as np
+    assert voice._whisper_faster(np.zeros(16000, dtype=np.float32)) == " plume, stop"
+    assert made == ["cpu"]
 
 
 def test_faster_whisper_on_the_cpu_still_reports_a_real_failure(monkeypatch):
@@ -696,6 +747,8 @@ def test_faster_whisper_on_the_cpu_still_reports_a_real_failure(monkeypatch):
     monkeypatch.setitem(sys.modules, "faster_whisper", fake)
     monkeypatch.setattr(voice, "_FASTER_MODEL", None)
     monkeypatch.setattr(voice, "_FASTER_ON_CPU", False)
+    monkeypatch.setattr(voice, "_FASTER_WORKED", False)
+    monkeypatch.delenv(voice.WHISPER_DEVICE_ENV, raising=False)
     import numpy as np
     with pytest.raises(OSError):
         voice._whisper_faster(np.zeros(16000, dtype=np.float32))

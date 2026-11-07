@@ -193,6 +193,12 @@ def _whisper_mlx(audio: np.ndarray) -> str:
 
 _FASTER_MODEL = None
 _FASTER_ON_CPU = False
+#: Set once a transcription has worked.  After that a failure is a real one, not a
+#: half-installed GPU, and reloading the model on the CPU would only stall the cues.
+_FASTER_WORKED = False
+#: PLUME_WHISPER_DEVICE=cpu skips the GPU, for a machine where a missing cuDNN ends
+#: the process outright rather than raising anything a fallback could catch.
+WHISPER_DEVICE_ENV = "PLUME_WHISPER_DEVICE"
 
 
 def _whisper_faster(audio: np.ndarray) -> str:
@@ -202,8 +208,11 @@ def _whisper_faster(audio: np.ndarray) -> str:
     missing the CUDA libraries, and then loading or transcribing fails ("cublas64_12.dll
     not found").  So a failure off the CPU is retried once on the CPU, and the CPU is
     kept from then on.  Segments are lazy, so the failure can come while reading them.
+    Only before the first transcription that works: after that a failure is real.
     """
-    global _FASTER_MODEL, _FASTER_ON_CPU
+    global _FASTER_MODEL, _FASTER_ON_CPU, _FASTER_WORKED
+    if os.environ.get(WHISPER_DEVICE_ENV, "").strip().lower() == "cpu":
+        _FASTER_ON_CPU = True
     from faster_whisper import WhisperModel  # noqa: PLC0415 — optional and heavy
 
     def run() -> str:
@@ -219,12 +228,14 @@ def _whisper_faster(audio: np.ndarray) -> str:
         return "".join(seg.text for seg in segments)
 
     try:
-        return run()
+        text = run()
     except (RuntimeError, OSError):
-        if _FASTER_ON_CPU:
+        if _FASTER_ON_CPU or _FASTER_WORKED:
             raise
         _FASTER_MODEL, _FASTER_ON_CPU = None, True
-        return run()
+        text = run()
+    _FASTER_WORKED = True
+    return text
 
 
 _TRANSCRIBERS = {"mlx": _whisper_mlx, "faster": _whisper_faster}

@@ -4023,10 +4023,16 @@ def stop_session(rec: LiveSession, *, timeout: float = DEFAULT_STOP_TIMEOUT,
                            + (" The take is streamed to disk as it happens, so "
                               "forcing costs the tail, not the recording."
                               if rec.record_dir else ""))}
+    # Ctrl-Break aimed at a group on another console can succeed and do nothing, so
+    # on Windows a session that heard nothing may just be playing in another window.
+    maybe_elsewhere = (not force and _on_windows() and "CTRL_BREAK_EVENT" in tried)
+    verdict = ("it may be running in another console window, where Ctrl-Break "
+               "from here does not reach it, or it is wedged. " if maybe_elsewhere
+               else "it is wedged. ")
     return {**info, "stopped": False, "how": "failed", "tried": tried,
             "forced": bool(force),
             "detail": (f"pid {rec.pid} is still running after "
-                       f"{', '.join(tried) or 'no attempt'} — it is wedged. "
+                       f"{', '.join(tried) or 'no attempt'} — {verdict}"
                        + (f"Even {kill_name} did not clear it, which means the "
                           f"process is stuck in the kernel (uninterruptible "
                           f"I/O); only a reboot or the device coming back will "

@@ -589,6 +589,7 @@ Every cue that reaches a session goes in `cues.ndjson`, including what the loope
 | Band never joins | Plume hasn't heard steady notes | Play sustained notes over the drums |
 | Doesn't fade when you stop | The band is in, and a room mic can't tell you stopped | Say "plume, stop" or run `plume stop`; a direct input or `--midi` fixes it |
 | A spoken command does nothing | Look at `voice.ndjson` in the take | `DIRECT-INPUT-TEST.md` says what each line means |
+| `plume voice` quits at once on an NVIDIA machine | The GPU libraries are only half there | Set `PLUME_WHISPER_DEVICE=cpu` |
 | `live MIDI needs mido` | The `midi` extra isn't installed | `pip install -e '.[midi]'` |
 | `more than one MIDI port` | `--midi auto` won't guess | Run `plume midi` and name one |
 | Band sticks to the wrong tempo over MIDI | `--midi-clock` is on and your gear's clock isn't what you're playing | Drop `--midi-clock` |

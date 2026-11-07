@@ -640,6 +640,8 @@ def test_an_oversized_body_is_refused(client):
 
 
 @needs_posix_modes
+@pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0,
+                    reason="root writes into a read-only folder anyway")
 def test_a_read_only_folder_is_reported_not_crashed(client):
     tid = take_id(client)
     folder = client.server.library.path_of(tid)

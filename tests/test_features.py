@@ -33,21 +33,28 @@ def onset_frames(frames):
     return [i for i, f in enumerate(frames) if f.onset]
 
 
+#: How far apart two blockings' spectral values (flux, centroid, attack) may be.
+#: The FFT's SIMD path depends on how a buffer is aligned in memory, so on some
+#: builds (Linux aarch64, measured) the same frame differs in the last bit or two.
+#: Every decision (onset, chroma, attack breadth) stays exact.
+FLUX_REL = 1e-12
+
+
 def assert_frames_equal(a, b):
     assert len(a) == len(b)
     for fa, fb in zip(a, b):
         assert fa.t_s == fb.t_s
         assert fa.rms_db == fb.rms_db
-        assert fa.flux == fb.flux
+        assert fa.flux == pytest.approx(fb.flux, rel=FLUX_REL, abs=1e-9)
         assert fa.onset == fb.onset
-        assert fa.onset_strength == fb.onset_strength
+        assert fa.onset_strength == pytest.approx(fb.onset_strength, rel=FLUX_REL, abs=1e-9)
         assert np.array_equal(fa.chroma, fb.chroma)
-        assert fa.centroid_hz == fb.centroid_hz
+        assert fa.centroid_hz == pytest.approx(fb.centroid_hz, rel=FLUX_REL)
         # v1.5: attack carries ATTACK_LAG frames of band history across
         # process() calls, so it is part of the blocking-invariance contract
         # and has to be compared here or the invariance tests would not
         # actually cover it.
-        assert fa.attack == fb.attack
+        assert fa.attack == pytest.approx(fb.attack, rel=FLUX_REL, abs=1e-12)
         assert fa.attack_breadth == fb.attack_breadth
 
 
@@ -106,7 +113,7 @@ def test_flux_zero_on_dc():
     warmup = WIN // HOP
     assert len(frames) > warmup + 10
     for f in frames[warmup:]:
-        assert f.flux == 0.0
+        assert f.flux == pytest.approx(0.0, abs=1e-9)    # FFT rounding, not a change
         assert not f.onset
 
 

@@ -132,6 +132,54 @@ def plain_intro_style(name: str) -> dict:
     return s
 
 
+#: The click's role.  It stays in the style that takes over from the plain beat
+#: (bridged_style), so it can fade out under the drums coming in.
+CLICK_ROLE = "click"
+#: The click's level in the plain beat: the mix default, under the plain bus gain.
+_CLICK_ROLE_DB = -6.0
+
+
+def bridged_style(name: str) -> dict:
+    """``name``'s own style, with the plain beat's click kept as one more role.
+
+    Juniper, 2026-11-07: when the click stopped dead on the entry bar and the style's
+    drums came in under it, the beat "came in awkwardly".  So the click carries on
+    through the entry, at the level the plain beat had it, and fades out as the
+    drums swell in (click_bridge_level).  The plain beat's bus was
+    :data:`PLAIN_INTRO_GAIN_DB` under the band's, so the click's own gain takes that
+    on, and a level of 1.0 sounds as it did over the intro."""
+    from .styles_lib import load_style  # noqa: PLC0415
+    s = load_style(name)
+    s["drum_patterns"] = {**s["drum_patterns"],
+                          CLICK_ROLE: list(PLAIN_INTRO_PATTERNS[CLICK_ROLE])}
+    s["voices"] = {**s["voices"], CLICK_ROLE: PLAIN_INTRO_VOICES[CLICK_ROLE]}
+    s["role_gain_db"] = {**(s.get("role_gain_db") or {}),
+                         CLICK_ROLE: _CLICK_ROLE_DB + PLAIN_INTRO_GAIN_DB}
+    return s
+
+
+def click_bridge_level(bars_in: int, ramp_bars: int) -> float:
+    """The click's level ``bars_in`` bars after the band came in: the inverse of the
+    drums' swell.  Down a step on the entry bar, a step less each bar, and gone on
+    the bar the drums reach full (``ramp_bars``).  With no ramp the drums are full at
+    once, and so is the click gone."""
+    ramp = int(ramp_bars)
+    if ramp <= 0 or bars_in < 0 or bars_in >= ramp:
+        return 0.0
+    return 1.0 - (int(bars_in) + 1) / float(ramp + 1)
+
+
+def plain_phrase_feel(bars_in: int, phrase_bars: int) -> float | None:
+    """A bar of the plain first phrase after the band came in: how much of the
+    style's swing and push it plays (DuetEngine.render_bar's ``entry_feel``), eased
+    in from straight over the phrase.  None once the phrase is over: the style's own
+    figures and feel from there."""
+    n = int(phrase_bars)
+    if n <= 0 or bars_in < 0 or bars_in >= n:
+        return None
+    return int(bars_in) / float(n)
+
+
 class StylePick:
     """Where a detected style comes from over a take.
 

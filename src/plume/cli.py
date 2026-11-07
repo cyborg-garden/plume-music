@@ -2815,6 +2815,9 @@ SIGTERM does not land, the output says so and names the command to run:
 
 On Windows the signal rung is CTRL_BREAK_EVENT (the session ends gracefully on
 it, as on Ctrl-C), and --force ends the process with TerminateProcess.
+Ctrl-Break is only sent to a session the gui or plume voice started, which
+leads its own process group; one started from a terminal is reported as
+unreachable from here, not wedged.
 
 Forcing costs the tail and ending.json, not the recording — since v1.3 the
 take is streamed to disk as it happens, so everything up to the last flush

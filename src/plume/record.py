@@ -738,8 +738,16 @@ def translate(rows: list[dict], ending: dict | None = None,
         if entry and entry != prev_entry and i > 0:
             key = _key_words(row)
             if entry == "band":
+                # Only what the row says happened: the click bridging the style's
+                # drums in, and their plain first phrase (bandentry.bridged_style).
+                bridge = row.get("click_bridge")
+                said = (" The click fades out as the style's drums swell in."
+                        if isinstance(bridge, (int, float)) and bridge > 0 else "")
+                if isinstance(row.get("plain_phrase"), (int, float)):
+                    said += " Their first phrase stays plain, on the beat."
                 add(row, "plan", "bass and chords",
-                    f"Bass and chords in, in {key}." if key else "Bass and chords in.")
+                    (f"Bass and chords in, in {key}." if key else "Bass and chords in.")
+                    + said)
             elif entry == "full":
                 add(row, "plan", "melody", f"Melody in, over {key}." if key else "Melody in.")
         if (entry and section and section != prev_section and entry == prev_entry

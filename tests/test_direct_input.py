@@ -9,6 +9,7 @@ import threading
 
 import numpy as np
 import pytest
+from conftest import needs_laptop_speed  # noqa: E402
 import soundfile as sf
 
 from conftest import fake_audio, patched_module, short_socket_path
@@ -273,6 +274,7 @@ def _play(tmp_path, *, human, name, **kw):
     return tmp_path / name
 
 
+@needs_laptop_speed
 def test_direct_hears_her_stop_with_the_band_in_and_fades(tmp_path, consent):
     # the room is loud, and the only input that can hear it is the voice mic
     rec = _play(tmp_path, human=_direct_take(), name="direct", direct=True,

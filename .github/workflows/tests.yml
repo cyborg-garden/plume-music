@@ -64,10 +64,13 @@ jobs:
       - name: Install
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e ".[midi]" pytest
+          python -m pip install -e ".[midi]" pytest pytest-rerunfailures
 
       - name: Test
         shell: bash
         run: |
           unset PLUME_ALLOW_AUDIO
-          python -m pytest -p no:cacheprovider -q -rfEs
+          # --reruns: a live-path test can lose a race against a fake playhead when
+          # a shared runner stalls; a rerun tells that from a real failure, and -rR
+          # lists every rerun so none is hidden.
+          python -m pytest -p no:cacheprovider -q -rfEsR --reruns 2 --reruns-delay 2

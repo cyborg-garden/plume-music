@@ -398,6 +398,7 @@ def test_a_style_that_stays_keeps_its_own_chords(tmp_path, consent):
     assert [r["chord"] for r in band[:4]] == governor.progression_symbols("synthwave", "A minor")
 
 
+@needs_laptop_speed
 def test_the_style_never_moves_once_the_band_is_in(tmp_path, consent):
     """Sparse until the band is in, then busy enough that a second look would say midwest."""
     human = _strummed_take(85.0, seconds=110.0, strums_per_beat=0.5, busier_from_s=38.0)

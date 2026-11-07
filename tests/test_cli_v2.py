@@ -38,7 +38,7 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
-from conftest import needs_unix_sockets  # noqa: E402
+from conftest import needs_laptop_speed, needs_unix_sockets  # noqa: E402
 import soundfile as sf
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -1686,6 +1686,7 @@ class TestLeadPlannerOnRealMaterial:
         assert applied or dropped, (
             "a cue was accepted by the socket but never reached the form log")
 
+    @needs_laptop_speed
     def test_planning_cost_leaves_the_live_headroom_intact(self, trap_pass,
                                                            capsys):
         """v1's beat tracker runs ~180x real time and that headroom is why a

@@ -301,6 +301,7 @@ def test_hum_on_an_idle_pickup_is_not_her_playing(tmp_path, consent):
     assert json.loads((rec / "ending.json").read_text())["reason"] == realtime.END_SILENCE
 
 
+@needs_laptop_speed
 def test_a_room_mic_with_the_band_in_says_its_playing_flag_cannot_be_believed(tmp_path, consent):
     rec = _play(tmp_path, human=_direct_take(), name="room",
                 fake={"bleed_db": -6.0})

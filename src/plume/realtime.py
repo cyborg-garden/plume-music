@@ -4697,6 +4697,31 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
                                              if masker.coupling_measured else None))
     cues = CueServer(socket_path, kind="lead")
     cues.intercept = looper.handle_cue
+    # A cue can arrive the moment the socket listens, and the looper answers one at
+    # once, before any bar.  The take is not open yet then (its session.json must
+    # not appear before the socket can take a stop), so such a cue is held and
+    # logged when it opens.  Lost, it was answered and never on the record: a slow
+    # disk opening the take was enough.
+    cue_log_lock = threading.Lock()
+    held_cues: list[dict] | None = [] if recorder is not None else None
+
+    def log_cue(item: dict, source: str) -> None:
+        # ``t_s`` is on the rows' clock: a bar written at t sounds at the
+        # playhead position t - comp (see the write_at in plan_one_bar).
+        doc = {"received_at": time.time(),
+               "t_s": round((timeline.playhead + comp_samples[0]) / SR, 4),
+               "bar": cues.bar, "text": item["text"], "source": source,
+               "at": item["at"], "ttl_bars": item["ttl_bars"]}
+        if "loop" in item:
+            doc["loop"] = item["loop"]
+        with cue_log_lock:
+            if held_cues is not None:
+                held_cues.append(doc)
+            else:
+                recorder.cue_soon(doc)
+    if recorder is not None:
+        cues.on_received = log_cue
+    cues.start()
     # v2.2 — discoverable and stoppable.  Lead already owns a socket, so the
     # stop verb rides it; only the registry entry is new.
     started_mono = time.monotonic()
@@ -4704,6 +4729,10 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
     shown_style = "detect" if style_pick is not None else style
     sess_name = None if detect else getattr(sess, "name", None)
     cues.info = {"style": shown_style, "role": role.role, "name": sess_name}
+    register_session(kind="lead", style=shown_style, role=role.role,
+                     session_name=sess_name,
+                     socket_path=cues.path, max_minutes=max_minutes,
+                     record_dir=record_dir)
     # v1.3 — streamed from here on: manifest first, then a flushed line per bar.
     if recorder is not None:
         recorder.open(session_manifest(
@@ -4713,32 +4742,10 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
             bpm=composed_bpm, params=params, role_params=role,
             started_at=time.time(), input_route=route, midi_port=midi_port,
             detect=detect, monitor=monitor))
-
-        def log_cue(item: dict, source: str) -> None:
-            # ``t_s`` is on the rows' clock: a bar written at t sounds at the
-            # playhead position t - comp (see the write_at in plan_one_bar).
-            doc = {"received_at": time.time(),
-                   "t_s": round((timeline.playhead + comp_samples[0]) / SR, 4),
-                   "bar": cues.bar, "text": item["text"], "source": source,
-                   "at": item["at"], "ttl_bars": item["ttl_bars"]}
-            if "loop" in item:
-                doc["loop"] = item["loop"]
-            recorder.cue_soon(doc)
-        cues.on_received = log_cue
-    # Listening only now, with the take open and its cue log hooked up: a cue sent
-    # the moment the socket appears is answered, so it must also be on the record.
-    # (The looper answers one at once, before any bar; when the socket came first,
-    # a slow disk opening the take was enough to lose it from the log.)
-    try:
-        cues.start()
-    except BaseException:
-        if recorder is not None:
-            recorder.close()
-        raise
-    register_session(kind="lead", style=shown_style, role=role.role,
-                     session_name=sess_name,
-                     socket_path=cues.path, max_minutes=max_minutes,
-                     record_dir=record_dir)
+        with cue_log_lock:
+            for doc in held_cues:
+                recorder.cue_soon(doc)
+            held_cues = None
     stop_deadline = session_deadline(started_mono, max_minutes)
 
     def callback(indata, outdata, frames, time_info, status_flags):  # noqa: ARG001

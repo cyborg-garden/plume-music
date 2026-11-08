@@ -361,8 +361,8 @@ class TestLoopSetsTheTempo:
 
     def test_a_cue_sent_while_the_take_opens_is_on_the_record(self, live_env, monkeypatch):
         """A slow disk opening the take (Windows CI) once lost the first cue from the
-        log: the socket was listening before the log was hooked up, and the looper
-        answers at once.  The socket now opens last."""
+        log: the socket listens before the take is open, and the looper answers a
+        cue at once.  Such a cue is now held until the take opens."""
         real_open = realtime.SessionRecorder.open
 
         def slow_open(recorder, *a, **kw):

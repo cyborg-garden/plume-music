@@ -11,6 +11,7 @@ Nothing here plays sound: live takes run on the fake device.
 """
 import numpy as np
 import pytest
+from conftest import playhead_rate
 from record_fixture import ending_doc, song
 from test_detect import _detect_take, _rows, _strummed_take, consent  # noqa: F401
 
@@ -260,7 +261,10 @@ def test_the_click_bridges_the_entry_and_the_first_phrase_is_plain(tmp_path, con
             return out
 
     monkeypatch.setattr(duet_mod, "DuetEngine", Listening)
-    rec = _detect_take(tmp_path, _strummed_take(85.0), max_minutes=0.5)
+    # It asserts what the band did, so on a shared runner its playhead is slowed:
+    # starved of CPU, the planner falls behind 12x and the band never comes in.
+    rec = _detect_take(tmp_path, _strummed_take(85.0), max_minutes=0.5,
+                       rate_x=playhead_rate(12.0))
     rows = _rows(rec)
     band = [r for r in rows if r["entry"] != "drums"]
     assert band and len(band) > 6, "the band never came in"

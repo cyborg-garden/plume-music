@@ -55,10 +55,11 @@
     "snare": "snare",
     "hat": "hat",
     "bass": "808sub",
-    "pad": "epiano",
-    "lead": "pluck",
+    "pad": "tapekeys",
+    "lead": "glasskeys",
     "crackle": "crackle"
   },
+  "voice_variants": {"pad": ["tapekeys", "tapekeys", "breathpad"]},
   "fx_defaults": {
     "pad": {"lpf_hz": 1800, "reverb": 0.4, "chorus": 0.5},
     "hat": {"lpf_hz": 8000},

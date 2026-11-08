@@ -232,16 +232,17 @@
     "snare": "kit_snare",
     "hat": "kit_hat",
     "bass": "fingerbass",
-    "pad": "airpad",
+    "pad": "breathpad",
     "lead": "vibes",
     "crackle": "crackle",
     "keys": "wurli",
-    "shimmer": "airpad",
+    "shimmer": "breathpad",
     "sub": "808kick",
     "clap": "clap",
     "openhat": "kit_openhat",
     "crash": "kit_crash"
   },
+  "voice_variants": {"pad": ["breathpad", "strings"]},
   "fx_defaults": {
     "bass": {
       "lpf_hz": 2500

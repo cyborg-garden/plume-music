@@ -63,9 +63,10 @@
     "hat": "hat",
     "openhat": "openhat",
     "bass": "808sub",
-    "pad": "pluck",
-    "lead": "lead"
+    "pad": "bell",
+    "lead": "synthlead"
   },
+  "voice_variants": {"pad": ["bell", "bell", "junopoly"]},
   "fx_defaults": {
     "bass": {"drive": 0.25},
     "pad": {"lpf_hz": 2600, "reverb": 0.3, "delay": 0.15},

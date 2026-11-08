@@ -77,18 +77,28 @@ def resolve(sound, style=None) -> str:
     return sound_for_style(style) if name == MATCH else name
 
 
+def _sound_words(text) -> list[str] | None:
+    """The words after (or before) "sound", when the cue is about her sound at all:
+    "sound dreamy", "my sound off", "dreamy sound".  "make it sound darker" is not."""
+    if not isinstance(text, str):
+        return None
+    words = text.lower().replace(":", " ").split()
+    if words[:2] == ["my", "sound"]:
+        return words[2:]
+    if words[:1] == ["sound"]:
+        return words[1:]
+    if 2 <= len(words) <= 3 and words[-1] == "sound":
+        return words[:-1]
+    return None
+
+
 def parse_sound_cue(text) -> str | None:
     """A cue that changes her sound: "sound dreamy", "dreamy sound", "my sound off".
 
     The word "sound" has to be there.  "dreamy" alone is a mood for the band, and "dry"
     and "wet" are the band's own tone cues.
     """
-    if not isinstance(text, str):
-        return None
-    words = text.lower().replace(":", " ").split()
-    if "sound" not in words:
-        return None
-    rest = [w for w in words if w not in ("sound", "my", "the", "to", "set", "make", "it")]
+    rest = _sound_words(text)
     return canonical_sound(" ".join(rest)) if rest else None
 
 
@@ -332,7 +342,7 @@ class InputFx:
         """The reply to a sound cue ("sound dreamy"), or None if it is not one."""
         name = parse_sound_cue(text)
         if name is None:
-            if isinstance(text, str) and "sound" in text.lower().split():
+            if _sound_words(text) is not None:
                 return {"ok": False, "op": "sound",
                         "error": "plume knows these sounds: " + ", ".join(SOUNDS)
                                  + ", and match (picked from the style)"}

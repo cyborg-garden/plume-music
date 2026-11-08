@@ -110,6 +110,8 @@ def test_a_cue_needs_the_word_sound():
     assert inputfx.parse_sound_cue("dreamy") is None
     assert inputfx.parse_sound_cue("dry") is None
     assert inputfx.parse_sound_cue("wet") is None
+    assert inputfx.parse_sound_cue("make it sound darker") is None   # the band's, not hers
+    assert InputFx(SR, N).handle_cue("make it sound darker") is None
     fx = InputFx(SR, N, "clean")
     assert fx.handle_cue("busier") is None
     reply = fx.handle_cue("sound lofi")

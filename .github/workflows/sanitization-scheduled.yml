@@ -13,7 +13,7 @@ permissions:
 
 jobs:
   sanitize-full-tree:
-    uses: cyborg-garden/swarm-map/.github/workflows/sanitization-gate.yml@sanitization-gate-v1.0.1
+    uses: cyborg-garden/swarm-map/.github/workflows/sanitization-gate.yml@sanitization-gate-v1.1.0
     with:
       mode: full-tree
     secrets:

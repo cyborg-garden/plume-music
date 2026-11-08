@@ -216,6 +216,9 @@ _DENSITY_BEATS_ONLY = 0.25    # drums: thin the sparsest grid to on-beat hits
 _BASS_WHOLE = 0.3             # bass: whole-note root below this
 _BASS_HALVES = 0.65           # bass: beats 1+3 below this, style figure above
 _PAD_ACTIVE = 0.5             # pad: stabs/arp figures at/above this
+#: The plain phrase's bass: a note left alone by a dropped one rings this much of the
+#: way to the next.
+_BASS_RING = 0.95
 
 _DEFAULT_VELOCITY = 0.8
 #: From this density a motif plays through its phrases, with a longer echo.
@@ -363,6 +366,116 @@ def _root_pc(harmony, key_fallback: Key) -> int:
     return _tonic_pc(harmony, key_fallback)
 
 
+# ---- the plain first phrase -------------------------------------------------
+#
+# Juniper, 2026-11-07, on a lofi take: the band "came in awkwardly on the beat".  The
+# plain click had held one hit on every beat for bars; on the entry bar it stopped
+# and the style's kick landed its loudest hits between the beats, with nothing on 3.
+# So for the first phrase after the band comes in the drums play the style's most
+# on-beat figures, and the style's own pattern choice takes over after that.
+
+#: Roles that play the kick's figure: the kick, and the 808 that doubles it.
+_KICK_ROLES = ("kick", "sub")
+#: Roles that play the backbeat.  If none of them nor the kick lands on beat 3 the
+#: plain phrase gives the kick a soft one there.
+_BACKBEAT_ROLES = ("snare", "clap")
+#: The soft kick on beat 3, only for a style that has nothing there.
+_PLAIN_BEAT3_KICK = "bd:v0.6"
+#: Cycles scanned to resolve ``<...>`` alternations when scoring a pattern.
+_SCORE_CYCLES = 4
+
+
+def _off_quarter_16ths(start: float) -> float:
+    """How far a hit at ``start`` (fraction of the bar) sits from the nearest beat,
+    in sixteenths."""
+    return abs(start * 16.0 - round(start * 4.0) * 4.0)
+
+
+def _on_quarter(start: float) -> bool:
+    return _off_quarter_16ths(start) < 1e-6
+
+
+def _on_beat_cost(steps: list) -> float:
+    """The share of a pattern's hits that fall between the beats, every alternation
+    included.  A share, not a mean distance: filling the gaps between off-beat hits
+    with more hits must not make a pattern read as plainer."""
+    from plume import notation  # noqa: PLC0415
+    hits = [s for c in range(_SCORE_CYCLES) for s in notation.steps_for_cycle(steps, c)]
+    if not hits:
+        return math.inf
+    return sum(not _on_quarter(s.start) for s in hits) / len(hits)
+
+
+def density_index(n_variants: int, density: float) -> int:
+    """The variant ``density`` picks from ``n_variants`` sorted sparse first."""
+    return max(0, min(int(n_variants) - 1, int(float(density) * int(n_variants))))
+
+
+def entry_pattern(role: str, value) -> str:
+    """A style's ``entry_patterns`` value: one pattern, or a list like
+    ``drum_patterns`` holds, of which the first is used."""
+    if isinstance(value, (list, tuple)):
+        if not value or not isinstance(value[0], str):
+            raise ValueError(f"entry_patterns[{role!r}]: a list needs a pattern first")
+        return value[0]
+    if not isinstance(value, str):
+        raise ValueError(f"entry_patterns[{role!r}]: a pattern string or a list of them,"
+                         f" not {type(value).__name__}")
+    return value
+
+
+def _hits_at(steps: list, start: float) -> bool:
+    from plume import notation  # noqa: PLC0415
+    return any(abs(s.start - start) < 1e-6 for c in range(_SCORE_CYCLES)
+               for s in notation.steps_for_cycle(steps, c))
+
+
+def plain_entry_grids(grids: dict[str, list[list]],
+                      overrides: dict | None = None,
+                      density: float | None = None) -> dict[str, list]:
+    """Each drum role's figure for the first phrase after the band comes in.
+
+    ``grids`` holds each role's parsed variants, sparse first.  A style may name its
+    own in ``entry_patterns`` (role -> a pattern, or a list whose first pattern is
+    used), as written, at every tempo: it stands in for the slow figures as well.
+    Otherwise each role plays the variant with the smallest share of hits between the
+    beats, the sparser on a tie, and never one busier than ``density`` would pick (all
+    of them when it is None).  The kick (and an 808 doubling it) keeps only that
+    variant's hits that land on a beat.  A style whose kick and backbeat leave beat 3
+    empty gets one soft kick there; that is the one hit the plain phrase adds to a
+    style.  Selecting comes first.
+    """
+    from plume import notation  # noqa: PLC0415
+    overrides = {str(k): entry_pattern(str(k), v) for k, v in (overrides or {}).items()}
+    out: dict[str, list] = {}
+    for role, variants in grids.items():
+        if role in overrides:
+            out[role] = notation.parse(overrides[role])
+            continue
+        if not variants:
+            continue
+        top = (len(variants) - 1 if density is None
+               else density_index(len(variants), density))
+        best = min(range(top + 1), key=lambda i: (_on_beat_cost(variants[i]), i))
+        steps = list(variants[best])
+        if role in _KICK_ROLES:
+            steps = [s for s in steps if _on_quarter(s.start)]
+        out[role] = steps
+    beat3 = any(_hits_at(out[r], 0.5) for r in (*_KICK_ROLES, *_BACKBEAT_ROLES)
+                if r in out)
+    if not beat3:
+        added = notation.parse(f"~ ~ {_PLAIN_BEAT3_KICK} ~")[0]
+        for r in _KICK_ROLES:
+            if r in out and r not in overrides:
+                out[r] = sorted([*out[r], added], key=lambda s: s.start)
+    return out
+
+
+def _straight_eighths(events: list[tuple]) -> bool:
+    """A bass figure of straight eighths: a hit on every half beat of the bar."""
+    return sorted(round(e[2] * 2.0, 6) for e in events) == [float(k) for k in range(8)]
+
+
 class _PlanEcho:
     """Duck-typed stand-in for the PREVIOUS bar's texture at the CURRENT bar.
 
@@ -429,6 +542,17 @@ class DuetEngine:
         self._slow_grids: dict[str, list[list]] = {
             str(role): [notation.parse(str(p)) for p in variants]
             for role, variants in self._style.get("slow_drum_patterns", {}).items()}
+        # The first phrase after the band comes in (plain_entry_grids).  Below the
+        # style's slow tempo it plays the slow figures, so its plain phrase comes
+        # from those.
+        # Picked per density (never busier than its own pick), so kept by that.
+        self._entry_over = self._style.get("entry_patterns") or {}
+        plain_entry_grids(self._grids, self._entry_over)   # a bad override fails here
+        self._entry_cache: dict[tuple, dict[str, list]] = {}
+        #: None: the style's own figures and feel.  A number in [0, 1]: a bar of the
+        #: plain first phrase, played with that fraction of the style's swing and
+        #: push.  Set for one render by render_bar's ``entry_feel``.
+        self._entry_feel: float | None = None
         # introspection: events chosen for the most recent render_bar
         self.last_events: list[dict] = []
         self._progressions: dict[str, list[str]] = {}
@@ -493,8 +617,13 @@ class DuetEngine:
 
     def render_bar(self, plan: "BarPlan", beat: "BeatState",
                    harmony: "HarmonyState", *,
-                   continuation: bool = False) -> np.ndarray:
+                   continuation: bool = False,
+                   entry_feel: float | None = None) -> np.ndarray:
         """Render exactly one bar at ``beat.bpm`` -> stereo float32 (n, 2).
+
+        ``entry_feel``: this bar is in the plain first phrase after the band came
+        in (:func:`plain_entry_grids`), its swing and push this fraction (0..1) of
+        the style's.  None, the default, plays the style as written.
 
         The bar is the raw overlap-added render multiplied by the machine
         bus envelope (fade in/out, gain glide) and, when the texture moved,
@@ -520,6 +649,8 @@ class DuetEngine:
         bpm = float(beat.bpm)
         if not np.isfinite(bpm) or bpm <= 0.0:
             raise ValueError(f"render_bar requires beat.bpm > 0, got {bpm}")
+        self._entry_feel = (None if entry_feel is None
+                            else float(min(1.0, max(0.0, entry_feel))))
         bar_idx = int(getattr(plan, "bar", 0))
 
         # A revision of the bar we just rendered must not advance the
@@ -1055,15 +1186,31 @@ class DuetEngine:
 
     # ---- per-role figure builders ----------------------------------------
 
+    def plain_grids(self, density: float, *, slow: bool = False) -> dict[str, list]:
+        """The plain first phrase's figures at ``density`` (plain_entry_grids), below
+        the style's slow tempo from its slow figures."""
+        grids = {**self._grids, **self._slow_grids} if slow else self._grids
+        key = (slow, tuple(density_index(len(v), density) for v in grids.values()))
+        if key not in self._entry_cache:
+            self._entry_cache[key] = plain_entry_grids(grids, self._entry_over, density)
+        return self._entry_cache[key]
+
     def _groove_at(self, bpm: float) -> GrooveParams:
-        """The style's feel, or its slow-tempo feel below ``slow_below_bpm``."""
-        if bpm >= float(self._style.get("slow_below_bpm", 0.0)):
-            return self._groove
+        """The style's feel, or its slow-tempo feel below ``slow_below_bpm``; in the
+        plain first phrase, ``_entry_feel`` of it, eased in from straight."""
+        g = self._groove
+        if bpm < float(self._style.get("slow_below_bpm", 0.0)):
+            g = dataclasses.replace(
+                g,
+                swing=float(self._style.get("slow_swing", g.swing)),
+                timing_bias_ms=dict(self._style.get("slow_timing_bias_ms",
+                                                    g.timing_bias_ms)))
+        f = self._entry_feel
+        if f is None:
+            return g
         return dataclasses.replace(
-            self._groove,
-            swing=float(self._style.get("slow_swing", self._groove.swing)),
-            timing_bias_ms=dict(self._style.get("slow_timing_bias_ms",
-                                                self._groove.timing_bias_ms)))
+            g, swing=0.5 + (g.swing - 0.5) * f,
+            timing_bias_ms={r: v * f for r, v in g.timing_bias_ms.items()})
 
     def _drum_events(self, role: str, preset: str, density: float,
                      bar_s: float, tonic_pc: int, plan, *,
@@ -1072,8 +1219,12 @@ class DuetEngine:
         variants = self._grids[role]
         # A slow count is her real tempo, and half-time on top of it would crawl,
         # so below this the style can state a plain backbeat instead.
-        if 240.0 / bar_s < float(self._style.get("slow_below_bpm", 0.0)):
+        slow = 240.0 / bar_s < float(self._style.get("slow_below_bpm", 0.0))
+        if slow:
             variants = self._slow_grids.get(role, variants)
+        if self._entry_feel is not None:
+            plain = self.plain_grids(density, slow=slow)
+            variants = [plain[role]] if role in plain else variants
         idx = min(len(variants) - 1, int(density * len(variants)))
         steps = self._notation.steps_for_cycle(
             variants[idx], int(getattr(plan, "bar", 0)))
@@ -1121,6 +1272,55 @@ class DuetEngine:
         return parse_chord(symbols[(symbols.index(chord) + 1) % len(symbols)]).root
 
     def _bass_events(self, preset: str, density: float, spb: float,
+                     root_pc: int, *, chord: str | None = None,
+                     key: str | None = None, bar: int = 0) -> list[tuple]:
+        events = self._bass_figure(preset, density, spb, root_pc, chord=chord,
+                                   key=key, bar=bar)
+        if self._entry_feel is None:
+            return events
+        # The plain first phrase: the bass leaves out every hit that sat on a kick
+        # the plain phrase took away, since a kick-locked bass would carry the same
+        # jump on its own.  What it keeps rings on to its next note, and a figure
+        # left with fewer than two plays roots on 1 and 3.  A straight-eighth bass is
+        # a steady pulse, never the problem, and keeps its eighths; a style whose kick
+        # was on the beat already (house, synthwave, jazz) loses nothing.
+        slow = 60.0 / spb < float(self._style.get("slow_below_bpm", 0.0))
+        removed = self._kicks_removed(density, slow=slow, bar=bar)
+        if not removed or _straight_eighths(events):
+            return events
+        kept = [e for e in events if all(abs(e[2] - k) > 1e-6 for k in removed)]
+        if len(kept) == len(events):
+            return events
+        if len(kept) < 2:
+            hz = _low_octave_hz(root_pc) * 2.0 ** int(self._style.get("bass_octave", 0))
+            return [("bass", preset, ob, d * spb, hz, v)
+                    for ob, d, v in ((0.0, 1.9, 0.85), (2.0, 1.6, 0.7))]
+        out = []
+        for i, (role, pre, ob, dur, hz, v) in enumerate(kept):
+            nxt = kept[i + 1][2] if i + 1 < len(kept) else 4.0
+            out.append((role, pre, ob, max(dur, _BASS_RING * (nxt - ob) * spb), hz, v))
+        return out
+
+    def kicks_removed(self, density: float, *, slow: bool = False,
+                      bar: int = 0) -> tuple[float, ...]:
+        """Beats (from the bar line) where any of the style's own kicks hits on
+        ``bar`` and the plain phrase's kick at ``density`` does not.  Any of them, not
+        only the density's pick: a style's bass figure locks to its kick in general
+        (trap's sits on a sixteenth only its busier kick plays)."""
+        return self._kicks_removed(density, slow=slow, bar=bar)
+
+    def _kicks_removed(self, density: float, *, slow: bool, bar: int) -> tuple[float, ...]:
+        grids = {**self._grids, **self._slow_grids} if slow else self._grids
+        variants = grids.get("kick") or []
+        if not variants:
+            return ()
+        plain = self.plain_grids(density, slow=slow).get("kick", variants[0])
+        at = lambda steps: {round(x.start * 4.0, 6)  # noqa: E731
+                            for x in self._notation.steps_for_cycle(steps, int(bar))}
+        own = set().union(*(at(v) for v in variants))
+        return tuple(sorted(own - at(plain)))
+
+    def _bass_figure(self, preset: str, density: float, spb: float,
                      root_pc: int, *, chord: str | None = None,
                      key: str | None = None, bar: int = 0) -> list[tuple]:
         hz = _low_octave_hz(root_pc) * 2.0 ** int(self._style.get("bass_octave", 0))

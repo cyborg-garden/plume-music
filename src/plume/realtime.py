@@ -4112,9 +4112,11 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
     named_key = None
     if tap_start:
         from .bandentry import (DETECT_KEY_FALLBACK_BARS, END_AFTER_S,  # noqa: PLC0415
-                                FOLLOW, PLAIN_INTRO_GAIN_DB, BandEntry, BandFollow,
-                                GuitarEar, PhraseHold, SilenceEnding, StylePick,
-                                EntryRamp, follow_band_settled, outro, song_section)
+                                CLICK_ROLE, FOLLOW, PLAIN_INTRO_GAIN_DB, BandEntry,
+                                BandFollow, GuitarEar, PhraseHold, SilenceEnding,
+                                StylePick, EntryRamp, click_bridge_level,
+                                follow_band_settled, outro, plain_phrase_feel,
+                                song_section)
         density_hold = PhraseHold(int(params.entry_boundary_bars))
         entry_ramp = EntryRamp(under_db=params.enter_under_db, ramp_bars=params.ramp_bars)
         guitar_ear = GuitarEar()
@@ -4171,16 +4173,29 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
 
     #: The plain beat is playing: a detected take before its style and key are known.
     plain_intro = [False]
+    #: The style's drums took over from the plain beat: its click fades out under them
+    #: and they play a plain first phrase (bandentry.bridged_style).
+    bridged = [False]
 
-    def change_style(name: str, *, plain: bool = False) -> "np.ndarray":
+    def change_style(name: str, *, plain: bool = False,
+                     bridge: bool = False) -> "np.ndarray":
         """A new engine in another style.  Returns what the old one still had ringing.
-        ``plain``: that style's harmony under the plain beat (plain_intro_style)."""
+        ``plain``: that style's harmony under the plain beat (plain_intro_style).
+        ``bridge``: the style itself, taking over from the plain beat, with its click
+        kept to fade out under the drums (bridged_style)."""
         nonlocal duet, style, machine_swing
         old = duet
         if plain:
             from .bandentry import plain_intro_style  # noqa: PLC0415
-        duet = DuetEngine(style=plain_intro_style(name) if plain else name,
+            spec = plain_intro_style(name)
+        elif bridge:
+            from .bandentry import bridged_style  # noqa: PLC0415
+            spec = bridged_style(name)
+        else:
+            spec = name
+        duet = DuetEngine(style=spec,
                           key_fallback=str(composed_key or "A minor"), seed=seed, sr=SR)
+        bridged[0] = bridge
         style = name
         plain_intro[0] = plain
         machine_swing = 0.5 if plain else swing_of(name)
@@ -4454,6 +4469,7 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
                              human=human, density_scale=lead_cues.density_scale)
         entered = None
         loop_db = 0.0
+        entry_feel = None
         if entry is not None:
             # Over drums alone the mic can hear steady pitch, which is her.  Once
             # the band is in, all that is left is whether the mic is silent.  A
@@ -4486,7 +4502,7 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
                         # Before anything of this bar is rendered, and it rings out
                         # under the new engine's first bar, so there is no gap.
                         timeline.write_at(int(round(t_bar * SR)) - comp_samples[0],
-                                          change_style(picked))
+                                          change_style(picked, bridge=plain_intro[0]))
                         entered = dataclasses.replace(
                             entered, chord=entry.chord_at(bar, harm_state))
             # Over a room mic with the band in, "not silent" mostly means the band.
@@ -4505,10 +4521,12 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
                 # would be pitched to it.
                 mh = machine_harmony_state(t_bar, named_key, None)
             # A busier or sparser cue is her own word, and beats following.
+            texture_cue = False
             for text in str(getattr(form, "applied_cue", None) or "").split("; "):
                 said = parse_cue(text) if text else {}
                 if said.get("kind") == "texture":
                     follow.cue(str(said.get("value")))
+                    texture_cue = True
             ending_now = outro(t_bar - song_start[0], wind_down_s, bar_len)
             followed = None
             if ending_now is None:
@@ -4552,8 +4570,10 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
             if not crash:
                 resting = (*resting, "crash")
             loop_db = fade_db
+            # The click the style's drums took over from is only ever the bridge's.
             roles = [r for r in duet.roles
-                     if r not in entered.held_back and r not in resting]
+                     if r not in entered.held_back and r not in resting
+                     and not (bridged[0] and r == CLICK_ROLE)]
             if entered.stage == "drums":
                 state["intro_roles"] = set(roles)
             # The session's own entry ramp: each part that was not playing over the
@@ -4562,6 +4582,24 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
             levels = ({r: 1.0 for r in roles} if entered.stage == "drums"
                       else entry_ramp.levels(entry.bars_in, roles,
                                              intro=state.get("intro_roles", ())))
+            # Over that swell the click she has been playing to fades out, and the
+            # drums keep their first phrase plain (bandentry.bridged_style).
+            click_level, plain_feel, notes = 0.0, None, []
+            if bridged[0] and entered.stage != "drums":
+                click_level = click_bridge_level(entry.bars_in, params.ramp_bars)
+                plain_feel = plain_phrase_feel(entry.bars_in,
+                                               int(params.entry_boundary_bars))
+            if click_level > 0.0:
+                levels[CLICK_ROLE] = click_level
+                notes.append(f"the click fading out under the drums ({click_level:.2f})")
+            if plain_feel is not None:
+                entry_feel = plain_feel
+                notes.append("a plain first phrase")
+                if texture_cue:
+                    # The cue reaches the rest of the band now, and the drums at
+                    # the phrase line: their figure is the plain one until then.
+                    notes.append("drums held plain until the phrase ends")
+            bridge_note = "".join(f"; {n}" for n in notes)
             plan = dataclasses.replace(
                 plan,
                 roles=levels,
@@ -4569,9 +4607,9 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
                 density=float(min(1.0, max(0.05, density * lead_cues.density_scale))),
                 gain_db=(plan.gain_db + TAP_START_GAIN_DB + follow.gain_db + fade_db
                          + (PLAIN_INTRO_GAIN_DB if plain_intro[0] else 0.0)),
-                reason=f"{entered.reason}; {plan.reason}"
+                reason=f"{entered.reason}{bridge_note}; {plan.reason}"
                        + (f"; {followed.reason}" if followed is not None else ""))
-        audio = lead_tone.process(duet.render_bar(plan, mbeat, mh),
+        audio = lead_tone.process(duet.render_bar(plan, mbeat, mh, entry_feel=entry_feel),
                                   tilt=lead_cues.tilt, wet=lead_cues.wet)
         if entry is not None:
             audio = _fx.limiter(audio, TAP_START_CEILING_DB)
@@ -4639,7 +4677,7 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
             doc["key"] = entered.key
             doc["chord"] = entered.chord
             doc["entry"] = entered.stage
-            doc["entry_reason"] = entered.reason
+            doc["entry_reason"] = entered.reason + bridge_note
             # Heard or worked out, rather than named by the player: a page must say so.
             doc["style"] = style
             doc["style_guess"] = style_pick is not None
@@ -4652,7 +4690,13 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
             doc["playing"] = playing
             doc["playing_trusted"] = playing_trusted
             doc["fade_db"] = round(fade_db, 2)
-            doc["entry_ramp"] = {r: round(v, 3) for r, v in levels.items() if v < 1.0}
+            doc["entry_ramp"] = {r: round(v, 3) for r, v in levels.items()
+                                 if v < 1.0 and r != CLICK_ROLE}
+            if click_level > 0.0:
+                doc["click_bridge"] = round(click_level, 3)
+            if plain_feel is not None:
+                # how much of the style's swing and push this bar of it plays
+                doc["plain_phrase"] = round(plain_feel, 3)
             doc["follow"] = {"mode": follow.mode, "trusted": follow.trusted,
                              "gain_db": round(follow.gain_db, 3),
                              "density": round(follow.density, 4),

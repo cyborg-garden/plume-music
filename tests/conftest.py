@@ -57,6 +57,7 @@ import sys
 import tempfile
 import threading
 import time
+import weakref
 from pathlib import Path
 
 import numpy as np
@@ -73,6 +74,49 @@ SR = realtime.SR
 
 #: The longest ``hold`` can pause the fake device: a wedge must still fail the test.
 HOLD_MAX_S = 30.0
+#: On a shared runner the fake device waits while the ear is this far behind it: more
+#: than this much of the input not yet read by the analysis thread.
+EAR_BEHIND_S = 0.5
+#: ... unless nothing has read that ring for this long: its reader has finished (a
+#: take's tail plays on after the ear has stopped), and waiting would only stall.
+EAR_GONE_S = 1.0
+#: Every live ring the transports feed the ear through (in, machine, voice).
+_EAR_RINGS: "weakref.WeakSet" = weakref.WeakSet()
+
+
+def _watch_the_ear() -> None:
+    """Note each ring, and when its reader last read it."""
+    ring = realtime.RingBuffer
+    if getattr(ring, "_ear_watched", False):
+        return
+    real_init, real_read = ring.__init__, ring.read
+
+    def __init__(self, *a, **kw):
+        real_init(self, *a, **kw)
+        self._ear_read_at = time.perf_counter()
+        _EAR_RINGS.add(self)
+
+    def read(self, *a, **kw):
+        self._ear_read_at = time.perf_counter()
+        return real_read(self, *a, **kw)
+
+    ring.__init__, ring.read, ring._ear_watched = __init__, read, True
+
+
+def ear_behind() -> bool:
+    """Whether the analysis thread has fallen behind a fake device's input."""
+    now = time.perf_counter()
+    for ring in list(_EAR_RINGS):
+        if (ring.available > EAR_BEHIND_S * SR
+                and now - getattr(ring, "_ear_read_at", now) < EAR_GONE_S):
+            return True
+    return False
+
+
+# Before any transport builds its rings, so every one of them is watched.
+if os.environ.get("PLUME_SKIP_MACHINE_SPEED") == "1":
+    _watch_the_ear()
+
 #: A device table that satisfies ``_resolve_device``: one duplex device.
 DUPLEX_DEVICES = [{"name": "Fake Duplex", "max_input_channels": 2,
                    "max_output_channels": 2}]
@@ -107,6 +151,14 @@ class FakeAudioStream:
         self._loop_human = bool(loop_human)
         #: while this says so, the device waits, as if the test had paused time.
         self._hold = hold
+        if os.environ.get("PLUME_SKIP_MACHINE_SPEED") == "1":
+            # A shared runner can starve the ear of CPU until it falls whole bars
+            # behind a fast fake playhead: no key settles, the band never comes in,
+            # and that reads as a broken band.  A real device at real time leaves
+            # the ear seconds to spare, so here the device waits for it instead.
+            # A fast machine never waits, so it still runs at full speed.
+            self._hold = (ear_behind if hold is None
+                          else (lambda: hold() or ear_behind()))
         #: speaker -> room -> mic path.  None = headphones (perfect isolation).
         self._bleed = (None if bleed_db is None
                        else float(10.0 ** (float(bleed_db) / 20.0)))

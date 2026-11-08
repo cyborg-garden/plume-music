@@ -118,18 +118,62 @@ class InputGuard:
         self.notices = notices
         self.hop = max(1, int(round(HOP_S * sr)))
         self.win = int(round(WINDOW_S * sr))
-        # One block per grid: e^(-i 2 pi k b t) for each of its lines k b, over a
-        # whole number of the fundamental's periods.
+        # Each grid's lines, demodulated as the input comes in, not once per hop for
+        # every hop a sample stays in the window (eight times over), which nearly
+        # doubled the analysis thread's work.  On a grid every line's oscillator repeats with its
+        # fundamental's period, so one table over the grids' common period serves
+        # every sample.  Hops and periods all start on a whole number of ``sub``
+        # samples, so the input is summed per sub-block, and a period's sum is the
+        # difference of two running sums read at its ends.
         self._grids = []
+        lines, periods_all = [], []
         for b in (*MAINS_BASES_HZ, *RECTIFIED_BASES_HZ):
             period = int(round(sr / b))
             periods = self.win // period
             if periods < 3 or abs(sr / period - b) > 1e-9:
                 continue
             ks = np.arange(1, int(GRID_TOP_HZ // b) + 1)
-            t = np.arange(periods * period) / sr
-            self._grids.append((b, period, periods, ks,
-                                np.exp(-2j * np.pi * np.outer(ks * b, t))))
+            start = sum(len(k) for k, _p in lines)
+            self._grids.append((b, period, periods, ks, start))
+            lines.append((ks, period))
+            periods_all.append(period)
+        self._sub = math.gcd(self.hop, *periods_all)
+        cycle = math.lcm(*periods_all) if periods_all else self._sub
+        self._cycle = cycle // self._sub                 # in sub-blocks
+        m = np.arange(cycle)
+        osc = (np.concatenate([np.exp(-2j * np.pi * np.outer(ks, m % period) / period)
+                               for ks, period in lines])
+               if lines else np.zeros((0, cycle), dtype=np.complex128))
+        # [sub-block, sample, line] with each line's real and imaginary parts side by
+        # side, so a sub-block's turned sums are one real matrix product.
+        self._lines = osc.shape[0]
+        self._osc = np.ascontiguousarray(
+            osc.reshape(self._lines, self._cycle, self._sub).transpose(1, 2, 0)
+        ).view(np.float64)
+        # The running sums at the last sub-block boundaries, in a ring wide enough
+        # for a window plus one batch of hops.
+        self._batch = 8
+        self._span = (self.win + self._batch * self.hop) // self._sub + 2
+        self._sums = np.zeros((self._span, self._lines), dtype=np.complex128)
+        self._total = np.zeros(self._lines, dtype=np.complex128)
+        self._n = 0                                      # sub-blocks taken in
+        # One gather for every grid's period ends: line by line, the window's last
+        # ``periods`` periods back from its end (in sub-blocks), then the end again,
+        # so a grid with fewer periods than the most gets empty ones after its own.
+        top = max((g[2] for g in self._grids), default=0)
+        back = np.zeros((self._lines, top + 1), dtype=np.int64)
+        #: Per line, what turns its periods' summed power into the mean power of
+        #: its periods' means.
+        self._scale = np.ones(self._lines)
+        self._starts = []
+        for _b, period, periods, ks, start in self._grids:
+            step = period // self._sub
+            ends = (np.arange(top + 1) - periods).clip(max=0) * step
+            back[start:start + len(ks)] = ends
+            self._scale[start:start + len(ks)] = 1.0 / (period * period * periods)
+            self._starts.append(start)
+        self._back = back
+        self._rows = np.arange(self._lines)[:, None]
         self._ring = np.zeros(self.win, dtype=np.float64)
         self._filled = 0
         self._pending = np.zeros(0, dtype=np.float64)
@@ -161,19 +205,25 @@ class InputGuard:
             x = np.concatenate((self._pending, x))
         n_hops = x.size // self.hop
         self._pending = x[n_hops * self.hop:].copy()
-        for i in range(n_hops):
-            self._hop(x[i * self.hop:(i + 1) * self.hop])
+        for j in range(0, n_hops, self._batch):
+            hops = min(self._batch, n_hops - j)
+            chunk = x[j * self.hop:(j + hops) * self.hop]
+            n0 = self._demodulate(chunk)
+            per = self.hop // self._sub
+            for i in range(hops):
+                self._hop(chunk[i * self.hop:(i + 1) * self.hop], n0 + (i + 1) * per)
         return self._news()
 
     # -- one hop
 
-    def _hop(self, h: np.ndarray) -> None:
+    def _hop(self, h: np.ndarray, end: int) -> None:
+        """One hop, whose last sample ends sub-block ``end``."""
         n = h.size
         self._ring[:-n] = self._ring[n:]
         self._ring[-n:] = h
         self._filled = min(self.win, self._filled + n)
         db = 10.0 * math.log10(float(np.mean(h * h)) + 1e-12)
-        hum = self._filled >= self.win and self._is_hum()
+        hum = self._filled >= self.win and self._is_hum(end)
         self._run = self._run + 1 if hum else 0
         self._recent.append(hum)
         self._since_hum = 0.0 if hum else self._since_hum + HOP_S
@@ -195,7 +245,33 @@ class InputGuard:
             self._played_s += HOP_S
         self._silence(db)
 
-    def _is_hum(self) -> bool:
+    def _demodulate(self, x: np.ndarray) -> int:
+        """Turn whole hops of input by every grid line and add them onto the running
+        sums.  Returns the sub-block they start at."""
+        n0 = self._n
+        blocks = x.size // self._sub
+        xs = x.reshape(blocks, self._sub)
+        part = np.empty((blocks, 2 * self._lines), dtype=np.float64)
+        done = 0
+        while done < blocks:                # the table read as views, wrapping round
+            c = (n0 + done) % self._cycle
+            take = min(blocks - done, self._cycle - c)
+            part[done:done + take] = np.matmul(xs[done:done + take, None, :],
+                                               self._osc[c:c + take])[:, 0, :]
+            done += take
+        run = np.cumsum(part.view(np.complex128), axis=0)
+        run += self._total
+        self._sums[(n0 + 1 + np.arange(blocks)) % self._span] = run
+        self._total = run[-1].copy()
+        self._n = n0 + blocks
+        # Keep the sums near zero: only their differences are read, and those must
+        # not lose digits to a total that has grown over a long take.
+        if self._n // 4096 != n0 // 4096:
+            self._sums -= self._total
+            self._total[:] = 0.0
+        return n0
+
+    def _is_hum(self, end: int) -> bool:
         """Whether the window is a steady buzz on a mains grid.
 
         Demodulate every line of a grid over one period of its fundamental at a time:
@@ -206,11 +282,22 @@ class InputGuard:
         """
         w = self._ring
         energy = float(np.mean(w * w))
-        if energy <= 10.0 ** (HUM_FLOOR_DB / 10.0):
+        if energy <= 10.0 ** (HUM_FLOOR_DB / 10.0) or not self._grids:
             return False
-        for b, period, periods, ks, osc in self._grids:
-            seg = w[-periods * period:]
-            z = (osc * seg).reshape(len(ks), periods, period).mean(axis=2)
+        # Every line's demodulated mean over each period of its grid, the take's
+        # first sample its phase's zero (which turns each line by one constant, so no
+        # power or turn moves).  Most input carries little on any grid: one look at
+        # every grid's share of the energy settles that.
+        at = self._sums[(end + self._back) % self._span, self._rows]
+        sums = np.diff(at, axis=1)                       # [line, period], then empty
+        powers = np.abs(sums) ** 2
+        shares = 2.0 * np.add.reduceat(powers.sum(axis=1) * self._scale, self._starts)
+        for (b, period, periods, ks, start), share in zip(self._grids, shares):
+            # (a hair of slack: the exact test is the one below)
+            if float(share) < LINE_SHARE * energy * (1.0 - 1e-9):
+                continue
+            rows = slice(start, start + len(ks))
+            z = sums[rows, :periods] / period
             power = np.abs(z) ** 2                       # [line, period]
             line_power = power.mean(axis=1)
             if 2.0 * float(line_power.sum()) < LINE_SHARE * energy:

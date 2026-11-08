@@ -340,19 +340,67 @@ def test_a_sparse_bass_stays_one_whole_note(name, density):
     assert len(plain) == 1 and plain[0][1] > 3.0
 
 
-@pytest.mark.parametrize("name", list_styles())
-@pytest.mark.parametrize("density", (0.05, 0.3, 0.45, 0.65, 0.9))
-def test_the_plain_bass_only_drops_pushed_sixteenths_and_rings_over_them(name, density):
-    own, plain = _bass(name, density, None), _bass(name, density, 0.0)
+ALL_DENSITIES = (0.05, 0.3, 0.45, 0.65, 0.9)
+
+
+def _bass_cases():
+    out = [(n, d, False) for n in list_styles() for d in ALL_DENSITIES]
+    return out + [(n, d, True) for n in list_styles() if load_style(n).get("slow_drum_patterns")
+                  for d in ALL_DENSITIES]
+
+
+def _bass_at(name, density, feel, *, slow=False, bar=0):
+    bpm = SLOW if slow else BPM
+    duet = DuetEngine(style=name, seed=0)
+    duet.render_bar(_plan(bar, {"bass": 1.0}, density),
+                    realtime.machine_beat_state(bar, bar * 240.0 / bpm, bpm),
+                    realtime.machine_harmony_state(bar * 240.0 / bpm, "D major", "D"),
+                    entry_feel=feel)
+    beat = 60.0 / bpm
+    return duet, [(e["onset_s"] / beat, e["dur_s"] / beat)
+                  for e in duet.last_events if e["role"] == "bass"]
+
+
+@pytest.mark.parametrize("name,density,slow", _bass_cases())
+def test_no_plain_bass_note_sits_on_a_kick_the_plain_phrase_took_away(name, density, slow):
+    for bar in range(4):
+        duet, plain = _bass_at(name, density, bar / 4, slow=slow, bar=bar)
+        removed = duet.kicks_removed(density, slow=slow, bar=bar)
+        _, own = _bass_at(name, density, None, slow=slow, bar=bar)
+        if len(own) == 8:                # straight eighths are a pulse, kept as they are
+            assert _shape(plain) == _shape(own)
+            continue
+        for b, _ in plain:
+            assert all(abs(b - k) > 0.06 for k in removed), (bar, b, removed)
+
+
+@pytest.mark.parametrize("name,density,slow", _bass_cases())
+def test_the_plain_bass_drops_hits_or_falls_back_to_roots_and_leaves_no_gap(name, density,
+                                                                            slow):
+    _, own = _bass_at(name, density, None, slow=slow)
+    _, plain = _bass_at(name, density, 0.0, slow=slow)
     assert plain, "the bass never goes silent"
-    own_at = [round(b * 4) for b, _ in own]
-    assert all(round(b * 4) in own_at for b, _ in plain), "nothing added"
-    if len(plain) < len(own):
-        assert all(_on_grid(b, 0.5) for b, _ in plain), "the kept notes are on eighths"
-        for (b, d), (nxt, _) in zip(plain, plain[1:]):
-            assert d >= 0.9 * (nxt - b), f"a gap after the note at {b:.2f}"
-    else:
-        assert _shape(plain) == _shape(own)
+    if _shape(plain) == _shape(own):
+        return
+    roots = [(0, 1.9), (8, 1.6)]
+    own_at = {round(b * 4) for b, _ in own}
+    assert (_shape(plain) == roots
+            or ({round(b * 4) for b, _ in plain} <= own_at and len(plain) >= 2))
+    for (b, d), (nxt, _) in zip(plain, plain[1:]):
+        assert d >= 0.9 * (nxt - b) or _shape(plain) == roots, f"a gap after {b:.2f}"
+
+
+def test_which_styles_bass_changes_in_the_plain_phrase():
+    changed = set()
+    for name, density, slow in _bass_cases():
+        _, own = _bass_at(name, density, None, slow=slow)
+        _, plain = _bass_at(name, density, 0.0, slow=slow)
+        if _shape(plain) != _shape(own):
+            assert _shape(plain) == [(0, 1.9), (8, 1.6)], (name, density, slow)
+            changed.add((name, density, slow))
+    assert changed == {*(("hiphop", d, False) for d in (0.3, 0.45, 0.65, 0.9)),
+                       *(("trap", d, False) for d in (0.65, 0.9)),
+                       *(("midwest", d, s) for d in (0.65, 0.9) for s in (False, True))}
 
 
 @pytest.mark.parametrize("name", ("lofi", "synthwave"))
@@ -368,10 +416,8 @@ def test_house_keeps_its_off_beat_bass(density):
     assert any(not _on_grid(b, 1.0) for b, _ in plain), "off the kick, as house is"
 
 
-def test_hiphop_s_pushed_bass_waits_for_the_phrase_to_end():
+def test_hiphop_s_boom_bap_bass_waits_for_the_phrase_to_end():
     plain = _bass("hiphop", 0.45, 0.0)
-    assert all(_on_grid(b, 0.5) for b, _ in plain)
-    assert plain[0][0] == pytest.approx(0.0, abs=0.06)
-    assert plain[0][1] >= 0.9 * (plain[1][0] - plain[0][0]), "the root rings over the gap"
+    assert _shape(plain) == [(0, 1.9), (8, 1.6)], "roots on 1 and 3, with the plain kick"
     after = _bass("hiphop", 0.45, None, bar=4)
     assert any(not _on_grid(b, 0.5) for b, _ in after), "its own pushed sixteenth again"

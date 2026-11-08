@@ -471,6 +471,11 @@ def plain_entry_grids(grids: dict[str, list[list]],
     return out
 
 
+def _straight_eighths(events: list[tuple]) -> bool:
+    """A bass figure of straight eighths: a hit on every half beat of the bar."""
+    return sorted(round(e[2] * 2.0, 6) for e in events) == [float(k) for k in range(8)]
+
+
 class _PlanEcho:
     """Duck-typed stand-in for the PREVIOUS bar's texture at the CURRENT bar.
 
@@ -1273,15 +1278,17 @@ class DuetEngine:
                                    key=key, bar=bar)
         if self._entry_feel is None:
             return events
-        # The plain first phrase: where the plain kick straightened the style's own,
-        # the bass drops its hits off the eighth grid (the pushed sixteenths), and
-        # what it keeps rings on to its next note.  Straight eighths stay: a steady
-        # pulse was never the problem.  A style whose kick is on the beat already
-        # (house, synthwave, jazz) keeps its bass as written.
-        if not self._kick_straightened(density, slow=60.0 / spb < float(
-                self._style.get("slow_below_bpm", 0.0))):
+        # The plain first phrase: the bass leaves out every hit that sat on a kick
+        # the plain phrase took away, since a kick-locked bass would carry the same
+        # jump on its own.  What it keeps rings on to its next note, and a figure
+        # left with fewer than two plays roots on 1 and 3.  A straight-eighth bass is
+        # a steady pulse, never the problem, and keeps its eighths; a style whose kick
+        # was on the beat already (house, synthwave, jazz) loses nothing.
+        slow = 60.0 / spb < float(self._style.get("slow_below_bpm", 0.0))
+        removed = self._kicks_removed(density, slow=slow, bar=bar)
+        if not removed or _straight_eighths(events):
             return events
-        kept = [e for e in events if abs(e[2] * 2.0 - round(e[2] * 2.0)) < 1e-6]
+        kept = [e for e in events if all(abs(e[2] - k) > 1e-6 for k in removed)]
         if len(kept) == len(events):
             return events
         if len(kept) < 2:
@@ -1294,15 +1301,24 @@ class DuetEngine:
             out.append((role, pre, ob, max(dur, _BASS_RING * (nxt - ob) * spb), hz, v))
         return out
 
-    def _kick_straightened(self, density: float, *, slow: bool) -> bool:
-        """Did the plain phrase change the kick from the style's own at ``density``?"""
+    def kicks_removed(self, density: float, *, slow: bool = False,
+                      bar: int = 0) -> tuple[float, ...]:
+        """Beats (from the bar line) where any of the style's own kicks hits on
+        ``bar`` and the plain phrase's kick at ``density`` does not.  Any of them, not
+        only the density's pick: a style's bass figure locks to its kick in general
+        (trap's sits on a sixteenth only its busier kick plays)."""
+        return self._kicks_removed(density, slow=slow, bar=bar)
+
+    def _kicks_removed(self, density: float, *, slow: bool, bar: int) -> tuple[float, ...]:
         grids = {**self._grids, **self._slow_grids} if slow else self._grids
-        if "kick" not in grids or not grids["kick"]:
-            return False
-        own = grids["kick"][density_index(len(grids["kick"]), density)]
-        plain = self.plain_grids(density, slow=slow).get("kick", own)
-        return ([(x.start, x.token, x.cycle_alts) for x in plain]
-                != [(x.start, x.token, x.cycle_alts) for x in own])
+        variants = grids.get("kick") or []
+        if not variants:
+            return ()
+        plain = self.plain_grids(density, slow=slow).get("kick", variants[0])
+        at = lambda steps: {round(x.start * 4.0, 6)  # noqa: E731
+                            for x in self._notation.steps_for_cycle(steps, int(bar))}
+        own = set().union(*(at(v) for v in variants))
+        return tuple(sorted(own - at(plain)))
 
     def _bass_figure(self, preset: str, density: float, spb: float,
                      root_pc: int, *, chord: str | None = None,

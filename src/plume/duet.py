@@ -131,7 +131,7 @@ from plume.theory import (
     parse_key,
     voice_chord,
 )
-from plume.voices import render_note
+from plume.voices import is_stereo, render_note, render_note_stereo
 
 if TYPE_CHECKING:  # contracts only; never imported at runtime
     from plume.listen.beat import BeatState
@@ -1082,7 +1082,7 @@ class DuetEngine:
             preset = voices.get(role) or voices.get(_ROLE_ALIASES.get(role, ""))
             if preset is None:
                 continue
-            preset = str(preset)
+            preset = self._variant(role, str(preset), int(getattr(plan, "bar", 0)))
             if role in self._grids:
                 events += self._drum_events(role, preset, density, bar_s,
                                             tonic_pc, plan, root_pc=root_pc,
@@ -1119,8 +1119,12 @@ class DuetEngine:
                 onset_beats, role=role, bpm=bpm, g=self._groove_at(bpm), rng=rng,
                 velocity=base_vel)
             onset_s = max(0.0, onset_s)
-            y = render_note(preset, sr=sr, dur_s=dur_s, freq_hz=freq,
-                            velocity=vel, rng=rng, params={}).astype(np.float64)
+            # Stereo voices (plume.synths) keep their own image; the pan law
+            # then acts as a balance, so a centred one sums to the same mono
+            # level as a mono voice would.
+            render = render_note_stereo if is_stereo(preset) else render_note
+            y = render(preset, sr=sr, dur_s=dur_s, freq_hz=freq,
+                       velocity=vel, rng=rng, params={}).astype(np.float64)
             fxd = fx_defaults.get(role, {})
             if float(fxd.get("hpf_hz", 0.0)) > 0.0:
                 y = _fx.svf_highpass(y, sr, float(fxd["hpf_hz"])).astype(np.float64)
@@ -1135,9 +1139,15 @@ class DuetEngine:
             y *= gain * level
             pan = float(np.clip(_ROLE_PAN.get(role, 0.0), -1.0, 1.0))
             theta = (pan + 1.0) * (np.pi / 4.0)
-            spread = (_chorus(y, sr, float(lfx["chorus"]),
-                              int(getattr(plan, "bar", 0)) * bar_s + onset_s)
-                      if float(lfx.get("chorus", 0.0)) > 0.0 else y[:, None])
+            # A stereo voice (plume.synths) brings its own image and chorus; the
+            # pan law then acts as a balance on it.
+            if y.ndim == 2:
+                spread = y
+            elif float(lfx.get("chorus", 0.0)) > 0.0:
+                spread = _chorus(y, sr, float(lfx["chorus"]),
+                                 int(getattr(plan, "bar", 0)) * bar_s + onset_s)
+            else:
+                spread = y[:, None]
             st = spread * np.array([np.cos(theta), np.sin(theta)])[None, :]
             i0 = int(round(onset_s * sr))
             placed.append((i0, st))
@@ -1194,6 +1204,19 @@ class DuetEngine:
         if key not in self._entry_cache:
             self._entry_cache[key] = plain_entry_grids(grids, self._entry_over, density)
         return self._entry_cache[key]
+
+    def _variant(self, role: str, preset: str, bar: int) -> str:
+        """The preset for ``role`` in this stretch of the take.
+
+        A style may list ``voice_variants[role]``: the role then moves through
+        those presets every ``variant_bars`` bars (16 by default), so a long
+        take changes colour between sections instead of holding one patch.
+        """
+        options = (self._style.get("voice_variants") or {}).get(role)
+        if not options:
+            return preset
+        every = max(1, int(self._style.get("variant_bars", 16)))
+        return str(options[(max(0, int(bar)) // every) % len(options)])
 
     def _groove_at(self, bpm: float) -> GrooveParams:
         """The style's feel, or its slow-tempo feel below ``slow_below_bpm``; in the

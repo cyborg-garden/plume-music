@@ -52,6 +52,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
+from . import inputfx as _inputfx
 from . import oscompat
 from .compose import parse_prompt
 from .inputguard import BUZZ_LINE, SILENT_LINE
@@ -164,7 +165,7 @@ PLUME_CHILD = (sys.executable, "-P", "-m", "plume")
 _TYPED_TONIC = re.compile(r"[A-Ga-g][#sb]?")
 #: No word about headphones: a page can be hours old, on other gear.  That is said to setup, and
 #: saved there, where a change in what is plugged in can take it back.
-_FIELDS = frozenset({"device", "channel", "key", "style", "hear_me"})
+_FIELDS = frozenset({"device", "channel", "key", "style", "hear_me", "sound"})
 #: A row may carry more than a page needs.  Only these fields leave the bridge.
 _ROW_FIELDS = ("bar", "t_s", "bpm", "section", "stage", "key", "chord", "style", "style_guess",
                "key_guess", "you_db", "band_db", "you_busy", "you_notes", "you_source", "input",
@@ -746,6 +747,20 @@ def canonical_style(text: str) -> str | None:
     return styles[0]
 
 
+#: Her sound on Hear me, in the order the page offers them (plume.inputfx).
+SOUND_CHOICES = (*_inputfx.LABELS.items(), (_inputfx.MATCH, "Match the style"))
+
+
+def _sound_field(body: dict) -> str | None:
+    value = body.get("sound")
+    if value is None:
+        return None
+    name = _inputfx.canonical_sound(value) if isinstance(value, str) else None
+    if name is None:
+        raise Refused(400, "Plume does not have that sound.")
+    return name
+
+
 def _text_field(body: dict, name: str) -> str:
     value = body.get(name)
     if value is None:
@@ -756,7 +771,7 @@ def _text_field(body: dict, name: str) -> str:
 
 
 def build_argv(route: Route, folder: Path, *, key: str | None, style: str | None,
-               seed: int) -> list[str]:
+               seed: int, sound: str | None = None) -> list[str]:
     """Every value is one token, glued to its flag, so none can read as a flag of its own.
 
     No ``--max-minutes``: the take keeps the session cap.  After ``--`` a prompt is only
@@ -774,6 +789,9 @@ def build_argv(route: Route, folder: Path, *, key: str | None, style: str | None
         argv.append(f"--output-device={route.output}")
     if route.hear_me:
         argv.append("--monitor")
+        # Her sound is only ever on what she hears, so it goes with Hear me or not at all.
+        if sound and sound != "off":
+            argv.append(f"--sound={sound}")
     words = [w for w in (style, f"in {key}" if key else None) if w]
     if words:
         argv += ["--", " ".join(words)]
@@ -996,6 +1014,7 @@ class TakeRunner:
             **self._output_view(chosen, saved, outputs),
             "folder": pretty_path(self.root),
             "styles": list_styles(),
+            "sounds": [{"id": name, "label": label} for name, label in SOUND_CHOICES],
             "problem": problem,
             "setup": self._setup_doc(chosen, rows, mark, output),
         }
@@ -1503,6 +1522,7 @@ class TakeRunner:
             raise Refused(409, TERMINAL_TAKE, live=self._elsewhere(others))
         key = canonical_key(_text_field(body, "key"))
         style = canonical_style(_text_field(body, "style"))
+        sound = _sound_field(body)
         try:
             devices, rows, mark = self._look()
         except TakeError as e:
@@ -1515,7 +1535,8 @@ class TakeRunner:
             folder = make_take_folder(self.root, self._now())
         except OSError:
             return self._failed(f"Could not make a folder in {pretty_path(self.root)}.")
-        argv = build_argv(route, folder, key=key, style=style, seed=secrets.randbelow(100000))
+        argv = build_argv(route, folder, key=key, style=style, seed=secrets.randbelow(100000),
+                          sound=sound)
         with self._lock:
             if self._cancelled:          # Stop was clicked while the devices were being listed
                 self._preparing = False

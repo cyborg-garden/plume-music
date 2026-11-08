@@ -650,6 +650,7 @@ function drawHear() {
   $('hear-direct').hidden = !direct;
   $('hear-direct').textContent = DIRECT_LINE;
   $('hear-delay').textContent = delayLine(device && device.reported_ms);
+  drawSound();
   /* On another output a yes about headphones means nothing. An instrument takes its own opt-in. */
   const offer = elsewhere && direct && !gone, sends = offer && device.send_channel === channelNow();
   $('send-row').hidden = !offer;
@@ -658,6 +659,14 @@ function drawHear() {
   $('send-words').textContent = SEND_LINE;
   $('room-output').hidden = !(elsewhere && !direct);
   $('room-output').textContent = ROOM_OUTPUT_LINE;
+}
+/* Her sound on Hear me. Kept by this browser, and sent with Start only while Hear me is on. */
+function soundNow() { return load('plume-sound') || 'off'; }
+function drawSound() {
+  const sounds = (S.home && S.home.sounds) || [];
+  $('sound-more').hidden = !sounds.length;
+  const now = sounds.some(function (o) { return o.id === soundNow(); }) ? soundNow() : 'off';
+  drawOptions($('set-sound'), sounds.map(function (o) { return { value: o.id, label: o.label }; }), now);
 }
 async function sendHear(on) {
   const box = $('hear-me'), note = $('hear-note'), asked = chosenDevice(), body = { step: 'hear_me', answer: on ? 'on' : 'off' };
@@ -846,6 +855,7 @@ function startBody(heard) {
   if (device) body.device = device;
   /* The rows here are from before setup heard her, so only a channel she changed is sent. */
   if (changed && shown && shown.id === device) body.channel = S.form.channel;
+  if (hearOn() && soundNow() !== 'off') body.sound = soundNow();
   return body;
 }
 /* inSettings: the message is about something chosen there, so it is said where it can be fixed. */
@@ -1291,6 +1301,7 @@ $('nav-takes').addEventListener('click', goShelf);
   $('settings-terminal').addEventListener('click', function () { goGuide('terminal'); });
   $('nav-live').addEventListener('click', goLive);
   $('start').addEventListener('click', pressStart);
+  $('set-sound').addEventListener('change', function () { save('plume-sound', $('set-sound').value); });
   $('rec-again').addEventListener('click', function (ev) { if (!(ev && ev.detail > 1)) pressStart(); });
   $('setup-leave').addEventListener('click', goHome);
   $('set-again').addEventListener('click', resetSetup);

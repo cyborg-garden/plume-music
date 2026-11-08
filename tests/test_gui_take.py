@@ -1973,3 +1973,29 @@ def test_the_words_about_the_ending_get_what_the_engine_decided(rig):
     runner.tick()
     row = runner.live()["row"]
     assert row["playing"] is False and row["playing_trusted"] is True and row["fade_db"] == -3.0
+
+
+# ------------------------------------------------------------------ her sound on Hear me
+
+def test_her_sound_goes_with_hear_me_and_only_with_it(tmp_path):
+    on = guitake.Route("Audio Interface 4x4", "direct", 2, True)
+    off = guitake.Route("Audio Interface 4x4", "direct", 2, False)
+    args = _parsed(guitake.build_argv(on, tmp_path / "t", key=None, style=None, seed=1, sound="dreamy"))
+    assert args.sound == "dreamy" and args.monitor is True
+    args = _parsed(guitake.build_argv(off, tmp_path / "t", key=None, style=None, seed=1, sound="dreamy"))
+    assert args.sound is None and args.monitor is False
+    args = _parsed(guitake.build_argv(on, tmp_path / "t", key=None, style=None, seed=1, sound="off"))
+    assert args.sound is None
+
+
+def test_start_refuses_a_sound_plume_does_not_have(rig, runner):
+    with pytest.raises(guitake.Refused) as e:
+        runner.start({"sound": "wobbly"})
+    assert e.value.status == 400
+    assert rig.spawned == []
+
+
+def test_the_page_is_offered_every_sound_with_off_first(runner):
+    sounds = runner.home()["sounds"]
+    assert sounds[0] == {"id": "off", "label": "Off"}
+    assert {s["id"] for s in sounds} == {"off", "clean", "dreamy", "lofi", "crunch", "match"}

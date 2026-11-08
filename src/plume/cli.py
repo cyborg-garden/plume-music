@@ -2601,6 +2601,11 @@ def _route_kwargs(args) -> dict:
             extra[name] = getattr(args, name)
     if getattr(args, "direct", False):
         extra["direct"] = True
+    sound = getattr(args, "sound", None)
+    if sound is None and getattr(args, "monitor", False):
+        sound = os.environ.get("PLUME_SOUND") or None
+    if sound is not None:
+        extra["sound"] = sound
     return extra
 
 
@@ -3296,6 +3301,10 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="audio device name substring (default: system default)")
     p.add_argument("--monitor", action="store_true", default=False,
                    help="mix the mic into the output (headphones recommended)")
+    p.add_argument("--sound", default=None, metavar="NAME",
+                   help="your sound on --monitor: off, clean, dreamy, lofi, crunch, or match "
+                        "(picked from the style). Only what you hear: the recording stays "
+                        "dry (default: $PLUME_SOUND, else off)")
     _add_route_flags(p, voice=False)
     # v2 (additive): absent = the v1 sideman, byte for byte.
     p.add_argument("--role", default=None, metavar="R",
@@ -3440,6 +3449,10 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="audio device name substring (default: system default)")
     p.add_argument("--monitor", action="store_true", default=False,
                    help="mix the mic into the output (headphones recommended)")
+    p.add_argument("--sound", default=None, metavar="NAME",
+                   help="your sound on --monitor: off, clean, dreamy, lofi, crunch, or match "
+                        "(picked from the style). Only what you hear: the recording stays "
+                        "dry (default: $PLUME_SOUND, else off)")
     p.add_argument("--socket", default=None, metavar="PATH",
                    help="cue socket path (default: $PLUME_SOCKET or "
                         "<tmpdir>/plume-live.sock)")

@@ -42,8 +42,16 @@ FORBIDDEN_NAME = re.compile(
 FORBIDDEN_CALL = {"sleep", "acquire", "release", "wait", "join", "acquire_lock", "select"}
 #: The C functions a callback may call: its rings, and nothing else.
 ALLOWED_CALLS = {"asarray", "min", "setprofile"}
+#: The plume files whose code may run in the callback: the transport, and her sound on
+#: Hear me (plume.inputfx), which is held to the same rules.
+CALLBACK_FILES = {"realtime.py", "inputfx.py"}
 #: The most lines of Python one callback may run.  A loop goes past this at once.
 MAX_LINES_PER_BLOCK = 120
+#: Her sound's own lines, counted apart: a fixed amount of work per buffer, whatever its
+#: length (test_inputfx checks that the count does not grow with the buffer), so a
+#: per-sample loop would still go past this at once.
+MAX_SOUND_LINES_PER_BLOCK = 160
+SOUND_FILE = os.sep + "inputfx.py"
 WITH_OPS = {"BEFORE_WITH", "SETUP_WITH", "BEFORE_ASYNC_WITH", "LOAD_SPECIAL"}
 
 
@@ -54,10 +62,13 @@ class Watcher:
         self.blocks = 0
         self.lines = 0
         self.most_lines = 0
+        self.sound_lines = 0
+        self.most_sound_lines = 0
 
     def wrap(self, callback):
         def watched(*args):
             self.lines = 0
+            self.sound_lines = 0
             sys.settrace(self._trace)
             sys.setprofile(self._profile)
             try:
@@ -66,12 +77,16 @@ class Watcher:
                 sys.setprofile(None)
                 sys.settrace(None)
             self.most_lines = max(self.most_lines, self.lines)
+            self.most_sound_lines = max(self.most_sound_lines, self.sound_lines)
             self.blocks += 1
         return watched
 
     def _trace(self, frame, event, arg):
         if event == "line":
-            self.lines += 1
+            if frame.f_code.co_filename.endswith(SOUND_FILE):
+                self.sound_lines += 1
+            else:
+                self.lines += 1
         return self._trace
 
     def _profile(self, frame, event, arg):
@@ -88,6 +103,8 @@ class Watcher:
         out += sorted(f"called {c}, which is not on the list" for c in self.calls - ALLOWED_CALLS)
         if self.most_lines > MAX_LINES_PER_BLOCK:
             out.append(f"ran {self.most_lines} lines in one block")
+        if self.most_sound_lines > MAX_SOUND_LINES_PER_BLOCK:
+            out.append(f"ran {self.most_sound_lines} lines of her sound in one block")
         for code in self.entered:
             where = os.path.abspath(code.co_filename)
             if where == THIS_FILE or where.startswith(NUMPY_DIR):
@@ -95,7 +112,7 @@ class Watcher:
             if not where.startswith(PLUME_DIR):
                 out.append(f"entered {where}:{code.co_name}")
                 continue
-            if os.path.basename(where) != "realtime.py":
+            if os.path.basename(where) not in CALLBACK_FILES:
                 out.append(f"entered {os.path.basename(where)}:{code.co_name}")
             names = (*code.co_names, *code.co_freevars, *code.co_varnames)
             out += [f"{code.co_name} names {n}" for n in names if FORBIDDEN_NAME.search(n)]
@@ -149,6 +166,21 @@ def test_the_callback_only_copies_rings(env, run, extra, midi):
             input_channel=1, **extra, **kw)
     assert watcher.blocks > 50, "the callback barely ran, so this proves nothing"
     assert {"callback", "write", "read_into"} <= watcher.names_entered()
+    assert watcher.problems() == []
+
+
+@pytest.mark.parametrize("sound", ["clean", "dreamy", "lofi", "crunch"])
+@pytest.mark.parametrize("run,extra", [
+    (run_lead, {"voice_channel": 2}),
+    (run_jam, {}),
+], ids=["lead", "jam"])
+def test_her_sound_on_hear_me_keeps_the_callback_pure(env, run, extra, sound):
+    sd, watcher = watched_device()
+    with patched_module("sounddevice", sd), patched_module("mido", FakeMido()):
+        run(env, short_socket_path("snd"), monitor=True, input_device="audio interface",
+            input_channel=1, sound=sound, **extra)
+    assert watcher.blocks > 50, "the callback barely ran, so this proves nothing"
+    assert "process" in watcher.names_entered(), "the sound never ran"
     assert watcher.problems() == []
 
 

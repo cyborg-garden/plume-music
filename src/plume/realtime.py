@@ -4697,7 +4697,6 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
                                              if masker.coupling_measured else None))
     cues = CueServer(socket_path, kind="lead")
     cues.intercept = looper.handle_cue
-    cues.start()
     # v2.2 — discoverable and stoppable.  Lead already owns a socket, so the
     # stop verb rides it; only the registry entry is new.
     started_mono = time.monotonic()
@@ -4705,10 +4704,6 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
     shown_style = "detect" if style_pick is not None else style
     sess_name = None if detect else getattr(sess, "name", None)
     cues.info = {"style": shown_style, "role": role.role, "name": sess_name}
-    register_session(kind="lead", style=shown_style, role=role.role,
-                     session_name=sess_name,
-                     socket_path=cues.path, max_minutes=max_minutes,
-                     record_dir=record_dir)
     # v1.3 — streamed from here on: manifest first, then a flushed line per bar.
     if recorder is not None:
         recorder.open(session_manifest(
@@ -4730,6 +4725,20 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
                 doc["loop"] = item["loop"]
             recorder.cue_soon(doc)
         cues.on_received = log_cue
+    # Listening only now, with the take open and its cue log hooked up: a cue sent
+    # the moment the socket appears is answered, so it must also be on the record.
+    # (The looper answers one at once, before any bar; when the socket came first,
+    # a slow disk opening the take was enough to lose it from the log.)
+    try:
+        cues.start()
+    except BaseException:
+        if recorder is not None:
+            recorder.close()
+        raise
+    register_session(kind="lead", style=shown_style, role=role.role,
+                     session_name=sess_name,
+                     socket_path=cues.path, max_minutes=max_minutes,
+                     record_dir=record_dir)
     stop_deadline = session_deadline(started_mono, max_minutes)
 
     def callback(indata, outdata, frames, time_info, status_flags):  # noqa: ARG001

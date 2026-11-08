@@ -47,11 +47,13 @@
     "kick": "808kick",
     "snare": "snare",
     "hat": "hat",
-    "bass": "808sub",
-    "pad": "pad",
-    "arp": "pluck",
-    "lead": "lead"
+    "bass": "synthbass",
+    "pad": "warmpad",
+    "arp": "junopoly",
+    "lead": "synthlead"
   },
+  "voice_variants": {"pad": ["warmpad", "warmpad", "strings"]},
+  "arp_style": "arp16",
   "fx_defaults": {
     "snare": {"reverb": 0.55},
     "pad": {"lpf_hz": 2400, "chorus": 0.6, "reverb": 0.4, "duck": 0.3},

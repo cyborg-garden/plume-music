@@ -202,3 +202,10 @@ def test_voice_variants_change_colour_between_sections():
     seen = [_duet_bar("synthwave", b * every, {"pad": 1.0})[1][0]["preset"]
             for b in range(3)]
     assert seen == ["warmpad", "warmpad", "strings"]
+
+
+@pytest.mark.parametrize("name", NEW)
+def test_no_dc_offset(name):
+    """1:1 FM makes a DC term; a voice must not carry it into the mix."""
+    y = _st(name, dur=1.0)
+    assert abs(float(y.mean())) < 0.01 * float(np.sqrt((y ** 2).mean()))

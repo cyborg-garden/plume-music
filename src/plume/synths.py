@@ -21,7 +21,8 @@ how the classic machine builds it rather than a textbook waveform:
 ``tapekeys``    Lofi keys: a mellow tine piano with tape wow and flutter.
 ``organ``       House organ: M1-style drawbar partials with a percussive
                 upper register and key click; short notes make stabs.
-``bell``        Trap bell: an inharmonic FM bell over a sine body.
+``bell``        Trap bell: a 1:1 FM bell over a sine body.  Kept harmonic: an
+                inharmonic ratio pulls the key tracker toward the fifth.
 ==============  ============================================================
 
 Every renderer returns a stereo ``(n, 2)`` float64 buffer; plume.voices folds
@@ -344,7 +345,7 @@ PRESETS: dict[str, dict] = {
                  "decay_ms": 1700.0, "release_ms": 300.0, "default_hz": 440.0},
     "organ": {"percussion": 0.5, "click": 0.3, "decay_ms": 3000.0,
               "release_ms": 60.0, "default_hz": 220.0},
-    "bell": {"ratio": 3.5, "index": 2.4, "decay_ms": 650.0, "body": 0.6,
+    "bell": {"ratio": 1.0, "index": 2.4, "decay_ms": 450.0, "body": 0.6,
              "release_ms": 200.0, "default_hz": 523.25},
 }
 
@@ -358,7 +359,7 @@ DESCRIPTIONS = {
     "synthbass": "Synthwave bass: saw + square, snappy 4-pole filter envelope, mono.",
     "tapekeys": "Lofi keys: mellow tine piano with tape wow and flutter.",
     "organ": "House organ: M1-style drawbars with percussive top and key click; short notes stab.",
-    "bell": "Trap bell: inharmonic FM bell over a sine body, short ring.",
+    "bell": "Trap bell: harmonic 1:1 FM bell over a sine body, short ring.",
 }
 
 PARAM_RANGES = {
@@ -379,7 +380,7 @@ PARAM_RANGES = {
 # note does not hit the per-note peak limit.  Applied before velocity.
 _TRIM = {
     "warmpad": 1.617, "strings": 1.581, "breathpad": 2.854, "tapekeys": 1.518,
-    "glasskeys": 2.6, "junopoly": 2.432, "organ": 1.437, "bell": 0.936,
+    "glasskeys": 2.6, "junopoly": 2.432, "organ": 1.437, "bell": 1.123,
     "synthlead": 1.204, "synthbass": 1.3,
 }
 
@@ -511,7 +512,7 @@ def _glasskeys(sr, dur_s, freq_hz, vel, rng, p, glide_from_hz):
     env = amp * adsr(n, sr, dur_s, 0.002, 1.0, 1.0, rel)
     st[:, 0] *= env * trem
     st[:, 1] *= env * (2.0 - trem)                 # auto-pan tremolo, Rhodes-style
-    st = peak_eq(st, sr, 320.0, -2.5)
+    st = highpass(peak_eq(st, sr, 320.0, -2.5), sr, 25.0)   # 1:1 FM makes DC
     return width(st, 0.6) * 0.42
 
 
@@ -613,7 +614,7 @@ def _tapekeys(sr, dur_s, freq_hz, vel, rng, p, glide_from_hz):
     st *= env[:, None]
     st = np.tanh(st * 1.4) / np.tanh(1.4)                 # tape saturation
     st = onepole_lp(onepole_lp(st, sr, p["cutoff_hz"]), sr, p["cutoff_hz"] * 1.6)
-    st = peak_eq(st, sr, 300.0, -2.0)
+    st = highpass(peak_eq(st, sr, 300.0, -2.0), sr, 25.0)   # 1:1 FM makes DC
     return width(st, 0.7) * 0.62
 
 
@@ -668,6 +669,7 @@ def _bell(sr, dur_s, freq_hz, vel, rng, p, glide_from_hz):
                    + p["body"] * body * np.exp(-t / dec))
     st = np.stack(out, axis=1)
     env = adsr(n, sr, dur_s + 3.0 * dec, 0.0015, 1.0, 1.0, rel)
+    st = highpass(st, sr, 25.0)                   # 1:1 FM makes DC
     return width(st, 0.6) * env[:, None] * 0.7
 
 

@@ -13,7 +13,8 @@ from conftest import fake_audio, patched_module, playhead_rate, short_socket_pat
 
 from plume import cli, governor, realtime
 from plume import roles as roles_mod
-from plume.bandentry import DETECT_KEY_FALLBACK_BARS, BandEntry, StylePick, detect_style
+from plume.bandentry import (DETECT_KEY_FALLBACK_BARS, FOLK_CONFIDENCE, BandEntry,
+                              FolkEar, StylePick, detect_style)
 from plume.listen.harmony import HarmonyState
 from plume.watch import Listener
 
@@ -179,7 +180,9 @@ def _every_guess():
     for bpm in np.arange(40.0, 260.0, 0.5):
         for mode in (None, "major", "minor"):
             for busy in (None, 0.2, 0.7, 2.0):
-                seen.setdefault(detect_style(float(bpm), mode, busy), set()).add(float(bpm))
+                for folk in (None, 0.5, 0.9):
+                    seen.setdefault(detect_style(float(bpm), mode, busy, folk=folk),
+                                    set()).add(float(bpm))
     return seen
 
 
@@ -193,7 +196,7 @@ def test_every_bundled_style_can_be_guessed_at_somewhere_in_its_own_range():
         assert any(lo <= t <= hi for t in tempi), style
 
 
-@pytest.mark.parametrize("style", ["jazz", "house", "hiphop", "rnb"])
+@pytest.mark.parametrize("style", ["jazz", "house", "hiphop", "rnb", "folk"])
 def test_a_new_genre_is_never_guessed_outside_its_own_range(style):
     """lofi and midwest stay the catch-alls past every range, as they always were.  The
     four new styles are claims about a tempo, so they never answer outside it."""
@@ -224,6 +227,114 @@ def test_a_settled_pick_says_so():
     assert not pick.settled
     pick.at_entry(100.0, "A minor")
     assert pick.settled
+
+
+# --------------------------------------------------------------------- folk
+#
+# Folk is a claim about how the guitar is played, never about tempo alone.  The one
+# signal measured to separate is the strum: a pick dragged across the strings keeps the
+# attack up for 30 ms or more, where a picked note, a drum or a synth is over in one or
+# two hops.  Measured on synthetic strums and picking (tests/folk_fixtures.py) and, locally
+# and never committed, on 15 real direct-input takes: those takes' strum share was
+# 0.09-0.29, a slowly raked strum's 0.49-0.64.
+
+def test_folk_answers_only_above_its_confidence_and_inside_its_range():
+    assert detect_style(96.0, "major", 0.5, folk=FOLK_CONFIDENCE) == "folk"
+    assert detect_style(96.0, "major", 0.5, folk=FOLK_CONFIDENCE - 0.01) == "midwest"
+    assert detect_style(96.0, "major", 0.5) == "midwest"
+    assert detect_style(150.0, "major", 0.1, folk=1.0) == "trap"
+    assert detect_style(59.0, "major", 0.1, folk=1.0) == "lofi"
+
+
+def _ear(audio, *, bars=None):
+    """``audio`` through the real feature extractor, a bar at a time, into a FolkEar."""
+    from plume.listen.features import FeatureExtractor
+    fe = FeatureExtractor(sr=SR)
+    frames = []
+    for i in range(0, len(audio), 4800):
+        frames.extend(fe.process(audio[i:i + 4800]))
+    ear = FolkEar()
+    per = max(1, len(frames) // (bars or 12))
+    for i in range(0, len(frames), per):
+        ear.bar(frames[i:i + per])
+    return ear
+
+
+@pytest.fixture(scope="module")
+def takes():
+    import folk_fixtures as ff
+    return {
+        "strum": ff.make_take("strum"),
+        "strum_minor": ff.make_take("strum", key="E minor", numerals=("i", "VII", "VI", "VII")),
+        "strum_slow": ff.make_take("strum", bpm=66.0),
+        "strum_fast_rake": ff.make_take("strum", rake_ms=(8.0, 18.0)),
+        "pick": ff.make_take("pick"),
+    }
+
+
+def test_a_slowly_strummed_major_guitar_is_heard_as_folk(takes):
+    ear = _ear(takes["strum"])
+    assert ear.confidence("major") >= FOLK_CONFIDENCE
+    assert "strummed" in ear.why("major")
+
+
+def test_a_strummed_minor_folk_tune_needs_the_acoustic_sound_as_well(takes):
+    ear = _ear(takes["strum_minor"])
+    assert ear.acoustic
+    assert ear.confidence("minor") >= FOLK_CONFIDENCE
+
+
+@pytest.mark.parametrize("name", ["pick", "strum_fast_rake"])
+def test_what_it_cannot_hear_as_a_strum_is_not_folk(takes, name):
+    """Fingerpicking, however folky, is not claimed: nothing measured tells it from a
+    twinkly midwest line.  Nor is a strum so quick it lands inside two hops."""
+    assert _ear(takes[name]).confidence("major") < FOLK_CONFIDENCE
+
+
+def test_too_little_heard_is_no_evidence(takes):
+    ear = _ear(takes["strum"][: SR * 3], bars=2)
+    assert ear.confidence("major") is None
+
+
+def test_a_direct_input_strumming_gets_folk_at_the_entry(takes):
+    from plume.listen.features import FeatureExtractor
+    fe = FeatureExtractor(sr=SR)
+    frames = []
+    for i in range(0, len(takes["strum"]), 4800):
+        frames.extend(fe.process(takes["strum"][i:i + 4800]))
+    pick = StylePick(trust_busy=True, hear_technique=True)
+    per = len(frames) // 12
+    for i in range(12):
+        bar = frames[i * per:(i + 1) * per]
+        pick.heard_bar(sum(f.onset for f in bar), frames=bar)
+    assert pick.at_count(96.0) == "midwest"      # nothing heard yet at the count
+    assert pick.at_entry(96.0, "G major") == "folk"
+
+
+def test_a_room_mic_never_guesses_folk(takes):
+    """It hears plume's own click and drums as well as her, so her strum is not hers alone."""
+    pick = StylePick(trust_busy=False, hear_technique=False)
+    from plume.listen.features import FeatureExtractor
+    fe = FeatureExtractor(sr=SR)
+    frames = fe.process(takes["strum"])
+    pick.heard_bar(40, frames=frames)
+    assert pick.at_entry(96.0, "G major") == "midwest"
+
+
+def test_the_folk_ear_keeps_a_bounded_memory(takes):
+    from plume.listen.features import FeatureExtractor
+    fe = FeatureExtractor(sr=SR)
+    frames = fe.process(takes["strum"])
+    ear = FolkEar()
+    for _ in range(50):
+        ear.bar(frames[:400])
+    assert ear.memory_items() < 200
+
+
+def test_folk_s_range_is_the_style_s_own():
+    from plume.bandentry import FOLK_BPM
+    from plume.styles_lib import load_style
+    assert list(FOLK_BPM) == load_style("folk")["bpm_range"]
 
 
 # ---------------------------------------------------- a key that never settles
@@ -487,6 +598,39 @@ def test_the_same_playing_on_a_room_mic_stays_lofi(tmp_path, consent):
     rows = _rows(rec)
     assert {r["style"] for r in rows} == {"lofi"}, "room mode took a reading it can't trust"
     assert any(r["entry"] != "drums" for r in rows), "the band never came in"
+
+
+def _folk_take(bpm, *, bars=28, kind="strum"):
+    """Four knocks on the body, two bars of drums alone, then a strummed G major."""
+    import folk_fixtures as ff
+    rng = np.random.default_rng(4)
+    period = 60.0 / bpm
+    lead_in = 2.0 + 12 * period
+    guitar = ff.make_take(kind, bpm=bpm, bars=bars)
+    x = rng.standard_normal(int(lead_in * SR) + guitar.shape[0]).astype(np.float32) * 3e-4
+    for i in range(4):
+        at = int((2.0 + i * period) * SR)
+        n = int(0.004 * SR)
+        x[at:at + n] += rng.standard_normal(n).astype(np.float32) * 0.8
+    x[int(lead_in * SR):] += guitar
+    return x
+
+
+def test_a_strummed_folk_tune_on_a_direct_input_brings_in_the_folk_band(tmp_path, consent):
+    rec = _detect_take(tmp_path, _folk_take(96.0), max_minutes=0.6)
+    rows = _rows(rec)
+    band = [r for r in rows if r["entry"] != "drums"]
+    assert band, "the band never came in"
+    assert {r["style"] for r in band} == {"folk"}
+    assert all(r["style_guess"] for r in rows)
+    assert "strummed" in band[0]["style_why"]
+
+
+def test_the_same_tune_fingerpicked_is_not_called_folk(tmp_path, consent):
+    rec = _detect_take(tmp_path, _folk_take(96.0, kind="pick"), max_minutes=0.6)
+    band = [r for r in _rows(rec) if r["entry"] != "drums"]
+    assert band, "the band never came in"
+    assert "folk" not in {r["style"] for r in band}
 
 
 def test_a_style_she_named_is_not_a_guess(tmp_path, consent):

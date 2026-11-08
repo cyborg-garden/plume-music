@@ -407,6 +407,24 @@ needs_laptop_speed = pytest.mark.skipif(
     os.environ.get("PLUME_SKIP_MACHINE_SPEED") == "1",
     reason="needs a laptop-speed CPU to keep up with a fast fake playhead (skipped in CI)")
 
+#: The fastest a fake playhead runs on a shared runner, for the live-path tests that
+#: check what the band did rather than how fast the planner did it.
+SHARED_RUNNER_RATE_X = 3.0
+
+
+def playhead_rate(rate_x: float) -> float:
+    """``rate_x`` for a live-path test, slowed to SHARED_RUNNER_RATE_X on a shared runner.
+
+    Starve a runner of CPU and the planner falls a whole bar behind a 12x playhead, so
+    every bar lands in the past, or the ear never catches up with the player.  The take
+    comes out silent, or with no band, which reads as a broken band.
+    These tests still run there, just slower: a band that really is broken is silent at
+    any speed.  Keeping up at full speed stays a local check (needs_laptop_speed).
+    """
+    if os.environ.get("PLUME_SKIP_MACHINE_SPEED") == "1":
+        return min(float(rate_x), SHARED_RUNNER_RATE_X)
+    return float(rate_x)
+
 
 def signal_self(sig) -> None:
     """Deliver ``sig`` to this process, the way another process would.

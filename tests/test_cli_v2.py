@@ -38,7 +38,7 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
-from conftest import needs_laptop_speed, needs_unix_sockets  # noqa: E402
+from conftest import needs_laptop_speed, needs_unix_sockets, playhead_rate  # noqa: E402
 import soundfile as sf
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -1617,7 +1617,7 @@ class TestLeadPlannerOnRealMaterial:
         m = material["lofi80"]
         human, sr = sf.read(str(m["loud"]), dtype="float32", always_2d=True)
         fake = _FakeSdStream(_DUPLEX, human.mean(axis=1).astype(np.float32),
-                             rate_x=12.0)
+                             rate_x=playhead_rate(12.0))
         rec = tmp_path / "rec"
         path = sock_path("live")
         with _patched_module("sounddevice", fake):

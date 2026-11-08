@@ -362,7 +362,8 @@ def test_a_busy_player_at_85_starts_lofi_and_the_band_arrives_as_midwest(tmp_pat
     # and in a key it heard
     assert band[0]["key"] in ("C major", "A minor")
     prog = governor.progression_symbols("midwest", band[0]["key"])
-    assert band[0]["chord"] in prog and band[1]["chord"] in prog
+    # The style's own cycle, which her held chord may set aside (plume.herchords).
+    assert band[0]["chords"]["template"] in prog and band[1]["chords"]["template"] in prog
     # There is no bar gap: every bar follows the last, and none of them went quiet.
     ts = [r["t_s"] for r in rows]
     bar_s = 240.0 / rows[0]["bpm"]
@@ -385,8 +386,10 @@ def test_a_change_of_style_changes_the_chords_in_that_very_bar(tmp_path, consent
     assert {r["style"] for r in drums} == {"synthwave"}, "the count's pick, heard from bar 0"
     assert {r["style"] for r in band} == {"midwest"}
     midwest = governor.progression_symbols("midwest", "A minor")
-    # A named key commits on the bar the band comes in, so the cycle starts there.
-    assert [r["chord"] for r in band[:4]] == midwest
+    # A named key commits on the bar the band comes in, so the cycle starts there.  The
+    # take holds one chord, so the band plays hers (plume.herchords); the cycle it set
+    # aside is the new style's.
+    assert [r["chords"]["template"] for r in band[:4]] == midwest
 
 
 def test_a_style_that_stays_keeps_its_own_chords(tmp_path, consent):
@@ -395,7 +398,8 @@ def test_a_style_that_stays_keeps_its_own_chords(tmp_path, consent):
                        max_minutes=0.5)
     band = [r for r in _rows(rec) if r["entry"] != "drums"]
     assert band and {r["style"] for r in band} == {"synthwave"}
-    assert [r["chord"] for r in band[:4]] == governor.progression_symbols("synthwave", "A minor")
+    assert ([r["chords"]["template"] for r in band[:4]]
+            == governor.progression_symbols("synthwave", "A minor"))
 
 
 @needs_laptop_speed

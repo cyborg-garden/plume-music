@@ -79,6 +79,7 @@ _ROLES = {
     "clap": "clap", "snare": "snare", "pad": "pad", "pluck": "pluck",
     "epiano": "epiano", "lead": "lead", "crackle": "crackle",
     "housekick": "kick", "boomkick": "kick", "offhat": "hat", "brush": "snare",
+    "cajon_bass": "kick", "cajon_slap": "snare",
     "upright": "bass", "roundbass": "bass",
 }
 

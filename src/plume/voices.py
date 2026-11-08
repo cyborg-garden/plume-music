@@ -580,6 +580,8 @@ _KIT_DESCRIPTIONS = {
     "kit_htom": "Recorded high tom.",
     "kit_ltom": "Recorded low tom.",
     "brush": "Recorded brush on a snare.",
+    "cajon_bass": "Recorded cajon, the low tone from the middle of the face.",
+    "cajon_slap": "Recorded cajon, the bright slap near the top edge.",
 }
 
 PRESETS.update({name: {} for name in (*_KIT_DESCRIPTIONS, *_TUNED_DESCRIPTIONS)})

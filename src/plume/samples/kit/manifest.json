@@ -145,5 +145,33 @@
    "brush_5_1.flac",
    "brush_5_2.flac"
   ]
+ ],
+ "cajon_bass": [
+  [
+   "cajon_bass_0_0.flac",
+   "cajon_bass_0_1.flac"
+  ],
+  [
+   "cajon_bass_1_0.flac",
+   "cajon_bass_1_1.flac"
+  ],
+  [
+   "cajon_bass_2_0.flac",
+   "cajon_bass_2_1.flac"
+  ]
+ ],
+ "cajon_slap": [
+  [
+   "cajon_slap_0_0.flac",
+   "cajon_slap_0_1.flac"
+  ],
+  [
+   "cajon_slap_1_0.flac",
+   "cajon_slap_1_1.flac"
+  ],
+  [
+   "cajon_slap_2_0.flac",
+   "cajon_slap_2_1.flac"
+  ]
  ]
 }

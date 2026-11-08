@@ -52,7 +52,8 @@ _EXTRA_PARAM_KEYS = {"voicing"}   # engine hints that are not voice params
 
 # Presets whose tracks default to kind="drum" when --kind is not given.
 _DRUM_PRESETS = {"808kick", "hat", "openhat", "clap", "snare", "crackle",
-                 "housekick", "boomkick", "offhat", "brush"}
+                 "housekick", "boomkick", "offhat", "brush",
+                 "cajon_bass", "cajon_slap"}
 
 
 class CliError(Exception):
@@ -3002,7 +3003,8 @@ human.wav + machine.wav + decisions.ndjson. Ctrl-C ends gracefully.
 
 --tap-start --detect needs no PROMPT at all: whatever the prompt does not name,
 plume works out as you play. The key comes from what it hears, and the style
-from your tempo, then your key and how busy you are. Both are guesses.
+from your tempo, then your key and how busy you are, or folk if a direct input
+hears you strumming. Both are guesses.
 
 Needs sounddevice + a duplex-capable audio device; without one it errors
 cleanly — use 'plume simlead' for the offline twin. Run 'plume roles' for the

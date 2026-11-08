@@ -16,9 +16,9 @@ The tests:
 * buzz -- the last 80 ms are hum when (1) the lines of a mains grid (50 or 60 Hz and
   its harmonics up to ~500 Hz) carry a good share of their energy, (2) the
   strongest of them sits on its grid, turning evenly, and (3) it holds a steady
-  level across the window.  Led by the fundamental, the grid may drift up to
-  0.6 Hz (generators and inverters run a little off; beyond 0.3 Hz the drift must
-  also be even).  Led by a harmonic, the lines must sit on the grid within half a
+  level across the window.  Led by the fundamental, a 50/60 Hz grid may drift up
+  to 0.45 Hz (generators and inverters run a little off; beyond 0.3 Hz the drift
+  must also be even).  Led by a harmonic, the lines must sit on the grid within half a
   hertz and a second line sharing no factor with the leader must drift in step:
   one held note's partials can sit on grid lines by chance, but they are all
   multiples of that note.  A rectifier's all-even buzz (100/120 Hz and up) counts
@@ -52,7 +52,8 @@ WINDOW_S = 0.080
 #: other lines exactly.
 MAINS_BASES_HZ = (50.0, 60.0)
 #: A full-wave rectifier buzz is all even lines (100 or 120 Hz and up, no 50/60): its
-#: own grid, led by its own fundamental.
+#: own grid, led by its own fundamental, and held to GRID_TOL_HZ (a sharp G2 sits
+#: just under 100 Hz).
 RECTIFIED_BASES_HZ = (100.0, 120.0)
 GRID_TOP_HZ = 500.0
 #: How far a fundamental-led buzz may drift, period by period: within GRID_TOL_HZ
@@ -61,7 +62,7 @@ GRID_TOP_HZ = 500.0
 #: beating near mains are not.  The nearest A440 notes (G1 at 49.0 Hz, A#1 58.27,
 #: B1 61.74 ...) all sit further off.
 GRID_TOL_HZ = 0.3
-FUNDAMENTAL_TOL_HZ = 0.6
+FUNDAMENTAL_TOL_HZ = 0.45
 EVEN_HZ = 0.1
 #: A buzz led by a harmonic must sit on the grid itself: each of its lines within this
 #: many hertz, period by period.  Off-grid (generator) buzz led by a harmonic is not
@@ -228,6 +229,8 @@ class InputGuard:
             if k == 1:
                 if float(worst[i]) <= GRID_TOL_HZ:
                     return True
+                if b in RECTIFIED_BASES_HZ:
+                    continue
                 # Off the grid (a generator, an inverter) the drift must also be even:
                 # two notes beating near mains swing it about.
                 if (float(worst[i]) <= FUNDAMENTAL_TOL_HZ

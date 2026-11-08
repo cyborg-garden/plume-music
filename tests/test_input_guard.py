@@ -179,8 +179,8 @@ BUZZES = {
     "120hz-led-at--12-dbfs": dict(base=60.0, amps=(0.3, 1.0), level=0.25),
     "pulse-10pc": dict(base=60.0, pulse_duty=0.10),
     "pulse-5pc": dict(base=50.0, pulse_duty=0.05),
-    "generator-50.5hz": dict(base=50.0, amps=(1.0, 0.0, 0.3), offset_hz=0.5),
-    "generator-59.5hz": dict(base=60.0, amps=(1.0, 0.4), offset_hz=-0.5),
+    "generator-50.4hz": dict(base=50.0, amps=(1.0, 0.0, 0.3), offset_hz=0.4),
+    "generator-59.6hz": dict(base=60.0, amps=(1.0, 0.4), offset_hz=-0.4),
 }
 
 

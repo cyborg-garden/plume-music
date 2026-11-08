@@ -173,6 +173,10 @@ class InputGuard:
             self._scale[start:start + len(ks)] = 1.0 / (period * period * periods)
             self._starts.append(start)
         self._back = back
+        #: +inf on a line's empty periods, so they never count as its quietest.
+        self._pad = np.where(np.arange(top)[None, :] < np.array(
+            [g[2] for g in self._grids for _k in g[3]], dtype=np.int64)[:, None]
+            if self._grids else np.zeros((0, top), dtype=bool), 0.0, np.inf)
         self._rows = np.arange(self._lines)[:, None]
         self._ring = np.zeros(self.win, dtype=np.float64)
         self._filled = 0
@@ -184,8 +188,10 @@ class InputGuard:
         self.silent = False
         self._run = 0
         self._recent: collections.deque = collections.deque(maxlen=SAY_OF)
+        self._recent_n = 0            # how many of _recent were hum (and _long_n)
         self._since_hum = math.inf
         self._long: collections.deque = collections.deque(maxlen=SAY_LONG_OF)
+        self._long_n = 0
         self._muted_s = 0.0
         self._quiet_s = 0.0
         self._played_s = 0.0
@@ -222,15 +228,21 @@ class InputGuard:
         self._ring[:-n] = self._ring[n:]
         self._ring[-n:] = h
         self._filled = min(self.win, self._filled + n)
-        db = 10.0 * math.log10(float(np.mean(h * h)) + 1e-12)
+        db = 10.0 * math.log10(float(np.dot(h, h)) / n + 1e-12)
         hum = self._filled >= self.win and self._is_hum(end)
         self._run = self._run + 1 if hum else 0
+        if len(self._recent) == SAY_OF:
+            self._recent_n -= self._recent[0]
         self._recent.append(hum)
+        self._recent_n += hum
         self._since_hum = 0.0 if hum else self._since_hum + HOP_S
         clean = self._since_hum >= CLEAN_S
+        if len(self._long) == SAY_LONG_OF:
+            self._long_n -= self._long[0]
         self._long.append(hum)
+        self._long_n += hum
         self._muted_s = self._muted_s + HOP_S if self.slot[0] > 0.5 else 0.0
-        if (sum(self._recent) >= SAY_HOPS or sum(self._long) >= SAY_LONG_HOPS
+        if (self._recent_n >= SAY_HOPS or self._long_n >= SAY_LONG_HOPS
                 or self._muted_s >= SAY_MUTED_S):
             self.buzz = True
         elif self.buzz and clean:
@@ -281,7 +293,7 @@ class InputGuard:
         a cycle every period, which is plain to see in 80 ms where a spectrum cannot.
         """
         w = self._ring
-        energy = float(np.mean(w * w))
+        energy = float(np.dot(w, w)) / w.size
         if energy <= 10.0 ** (HUM_FLOOR_DB / 10.0) or not self._grids:
             return False
         # Every line's demodulated mean over each period of its grid, the take's
@@ -290,13 +302,25 @@ class InputGuard:
         # every grid's share of the energy settles that.
         at = self._sums[(end + self._back) % self._span, self._rows]
         sums = np.diff(at, axis=1)                       # [line, period], then empty
-        powers = np.abs(sums) ** 2
-        shares = 2.0 * np.add.reduceat(powers.sum(axis=1) * self._scale, self._starts)
+        powers = sums.real ** 2 + sums.imag ** 2
+        means = powers.sum(axis=1) * self._scale     # each line's mean power
+        shares = (2.0 * np.add.reduceat(means, self._starts)).tolist()
+        # Each line's loudest and quietest period, for the steady test of the leader.
+        loud = powers.max(axis=1).tolist()
+        quiet = (powers + self._pad).min(axis=1).tolist()
+        means = means.tolist()
+        floor = LINE_SHARE * energy
         for (b, period, periods, ks, start), share in zip(self._grids, shares):
-            # (a hair of slack: the exact test is the one below)
-            if float(share) < LINE_SHARE * energy * (1.0 - 1e-9):
+            # A first look with a hair of slack; the exact tests are the ones below.
+            if share < floor * (1.0 - 1e-9):
                 continue
-            rows = slice(start, start + len(ks))
+            n = len(ks)
+            lead = max(range(start, start + n), key=means.__getitem__)
+            q = quiet[lead] / (period * period)
+            if 10.0 * math.log10(loud[lead] / (period * period) / (q + 1e-30)) \
+                    > STEADY_DB + 1e-6:
+                continue
+            rows = slice(start, start + n)
             z = sums[rows, :periods] / period
             power = np.abs(z) ** 2                       # [line, period]
             line_power = power.mean(axis=1)

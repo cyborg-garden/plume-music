@@ -363,10 +363,11 @@ RIG = [{"name": "Audio Interface 4x4", "max_input_channels": 4, "max_output_chan
 
 
 def _live_rows(tmp_path, monkeypatch, run, human, **kw):
-    from conftest import FakeMido, fake_audio, patched_module, short_socket_path
+    from conftest import (FakeMido, fake_audio, patched_module, playhead_rate,
+                          short_socket_path)
     monkeypatch.setenv("PLUME_CALIBRATION_FILE", str(tmp_path / "none.json"))
     monkeypatch.setenv(realtime.AUDIO_CONSENT_ENV, "1")   # the FAKE device only
-    sd = fake_audio(human, devices=RIG, rate_x=6.0)
+    sd = fake_audio(human, devices=RIG, rate_x=playhead_rate(6.0))
     with patched_module("sounddevice", sd), patched_module("mido", FakeMido()):
         run(tmp_path, short_socket_path("guard"), **kw)
     return [json.loads(line) for line in

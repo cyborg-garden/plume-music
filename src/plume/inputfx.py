@@ -339,14 +339,24 @@ class InputFx:
         self.slot[1] = float(echo_samples(bpm, self.sr))
 
     def handle_cue(self, text) -> dict | None:
-        """The reply to a sound cue ("sound dreamy"), or None if it is not one."""
-        name = parse_sound_cue(text)
-        if name is None:
-            if _sound_words(text) is not None:
-                return {"ok": False, "op": "sound",
-                        "error": "plume knows these sounds: " + ", ".join(SOUNDS)
-                                 + ", and match (picked from the style)"}
+        """The reply to a sound cue ("sound dreamy"), or None if it is not one.
+
+        A cue that names one of her sounds outright is hers.  Anything else that says
+        "sound" ("darker sound", "sound like jazz", "sound dry") goes on to the band when
+        the band understands it; only a cue nobody understands gets the list of sounds.
+        """
+        rest = _sound_words(text)
+        if rest is None:
             return None
+        name = parse_sound_cue(text)
+        if " ".join(rest) not in (*SOUNDS, MATCH):
+            from .mind import parse_cue  # noqa: PLC0415 (a cue thread, never the callback)
+            if parse_cue(text)["kind"] != "unknown":
+                return None
+        if name is None:
+            return {"ok": False, "op": "sound",
+                    "error": "plume knows these sounds: " + ", ".join(SOUNDS)
+                             + ", and match (picked from the style)"}
         now = self.choose(name)
         return {"ok": True, "op": "sound", "sound": now, "said": f"your sound: {LABELS[now]}"}
 

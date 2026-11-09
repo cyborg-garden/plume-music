@@ -120,6 +120,21 @@ def test_a_cue_needs_the_word_sound():
     assert fx.playing == "lofi"
 
 
+@pytest.mark.parametrize("text", [
+    "darker sound", "sound brighter", "a warmer sound", "bigger sound", "sound louder",
+    "softer sound", "busier sound", "sound sparser", "sound like jazz", "sound like house",
+    "my sound darker", "dry sound", "sound dry", "wetter sound", "sound wet", "sound lo-fi",
+])
+def test_a_band_cue_that_says_sound_still_reaches_the_band(text):
+    """The band understands these.  Her sound takes a cue only when it names one of
+    her sounds outright, or when the band would not have understood it anyway."""
+    from plume.mind import parse_cue
+    assert parse_cue(text)["kind"] != "unknown", "pick a cue the band knows"
+    fx = InputFx(SR, N, "clean")
+    assert fx.handle_cue(text) is None
+    assert fx.playing == "clean"
+
+
 def test_the_echo_is_a_dotted_eighth_on_the_tempo():
     assert inputfx.echo_samples(120, SR) == round(0.75 * 0.5 * SR)
     assert inputfx.echo_samples(40, SR) <= 0.8 * SR       # slow: the dotted sixteenth

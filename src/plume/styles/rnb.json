@@ -143,11 +143,12 @@
     "snare": "kit_snare",
     "hat": "kit_hat",
     "bass": "roundbass",
-    "pad": "airpad",
+    "pad": "breathpad",
     "keys": "wurli",
     "lead": "wurli",
     "crash": "kit_crash"
   },
+  "voice_variants": {"pad": ["breathpad", "breathpad", "warmpad"]},
   "live_only_roles": [
     "crash"
   ],

@@ -172,22 +172,36 @@ def test_no_sound_is_late(sound):
     assert (inputfx.added_latency_ms(sound, SR) == 0.0) == (sound != "lofi")
 
 
+_ALLOC_PROBE = """
+import sys, tracemalloc
+import numpy as np
+from plume.inputfx import InputFx
+n = 1024
+fx = InputFx(48000, n, sys.argv[1])
+x = (np.random.default_rng(0).standard_normal(n * 40) * 0.05).astype(np.float32)
+for i in range(12):
+    fx.process(x[i * n:(i + 1) * n], False)
+worst = 0
+for i in range(12, 40):
+    tracemalloc.start()
+    fx.process(x[i * n:(i + 1) * n], False)
+    worst = max(worst, tracemalloc.get_traced_memory()[1])
+    tracemalloc.stop()
+print(worst)
+"""
+
+
 @pytest.mark.parametrize("sound", PLAYED)
 def test_it_allocates_nothing_in_the_callback(sound):
     """Buffers are made up front: what a buffer of it costs is a few Python objects,
-    never an array (one buffer of float32 is 1 KiB)."""
-    fx = InputFx(SR, N, sound)
-    x = playing(1.0)
-    for i in range(12):
-        fx.process(x[i * N:(i + 1) * N], False)
-    worst = 0
-    for i in range(12, 40):
-        piece = x[i * N:(i + 1) * N]
-        tracemalloc.start()
-        fx.process(piece, False)
-        worst = max(worst, tracemalloc.get_traced_memory()[1])
-        tracemalloc.stop()
-    assert worst < 1024
+    never an array (at 1024 frames, one float32 buffer is 4 KiB).  Measured in a fresh process:
+    tracemalloc counts every thread, and threads other tests left behind would count."""
+    import os
+    import subprocess
+    env = {**os.environ, "PYTHONPATH": os.path.dirname(os.path.dirname(inputfx.__file__))}
+    done = subprocess.run([sys.executable, "-c", _ALLOC_PROBE, sound], env=env,
+                          capture_output=True, text=True, timeout=120, check=True)
+    assert int(done.stdout.strip()) < 4096
 
 
 @pytest.mark.parametrize("sound", PLAYED)

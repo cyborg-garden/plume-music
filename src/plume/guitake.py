@@ -748,7 +748,7 @@ def canonical_style(text: str) -> str | None:
 
 
 #: Her sound on Hear me, in the order the page offers them (plume.inputfx).
-SOUND_CHOICES = (*_inputfx.LABELS.items(), (_inputfx.MATCH, "Match the style"))
+SOUND_CHOICES = (*_inputfx.LABELS.items(), (_inputfx.MATCH, _inputfx.MATCH_LABEL))
 
 
 def _sound_field(body: dict) -> str | None:

@@ -46,9 +46,16 @@ STYLE_SOUNDS = {"lofi": "lofi", "hiphop": "lofi", "trap": "lofi",
                 "jazz": "clean", "rnb": "clean", "folk": "clean",
                 "midwest": "dreamy", "synthwave": "dreamy", "house": "dreamy"}
 MATCH = "match"
-_ALIASES = {"clean room": "clean", "room": "clean", "dream": "dreamy", "lo-fi": "lofi",
-            "lo fi": "lofi", "tape": "lofi", "drive": "crunch", "amp": "crunch",
-            "none": "off", "dry": "off", "plain": "off", "style": MATCH, "auto": MATCH}
+MATCH_LABEL = "Match the style"
+#: A sound's own name as she may type it: its label on the page, and "lo-fi" for lofi.
+#: Hyphens are read as spaces.  A cue with one of these is hers as surely as the name.
+_SPELLINGS = {**{label.lower(): name for name, label in LABELS.items()},
+              MATCH_LABEL.lower(): MATCH, "lo fi": "lofi", "lo fi tape": "lofi"}
+#: Looser words for a sound.  In a cue these give way to the band when the band knows
+#: the word ("sound dry" is the band's tone).
+_ALIASES = {"room": "clean", "dream": "dreamy", "tape": "lofi", "drive": "crunch",
+            "amp": "crunch", "none": "off", "dry": "off", "plain": "off", "style": MATCH,
+            "auto": MATCH}
 
 _F32 = np.float32
 #: A switch fades the old sound to dry over one buffer, then the new one in over this many.
@@ -66,14 +73,23 @@ _MATCH_FLOOR = 1e-7
 _MATCH_MOST = 4.0
 
 
-def canonical_sound(text) -> str | None:
-    """A sound's name from what someone typed, or None.  ``match`` is allowed."""
+def _typed(text) -> str | None:
     if not isinstance(text, str):
         return None
-    t = " ".join(text.lower().replace("_", " ").split())
+    return " ".join(text.lower().replace("_", " ").replace("-", " ").split())
+
+
+def _own_name(text) -> str | None:
+    """The sound this names outright (its name, or a spelling of it), or None."""
+    t = _typed(text)
     if t in SOUNDS or t == MATCH:
         return t
-    return _ALIASES.get(t)
+    return _SPELLINGS.get(t)
+
+
+def canonical_sound(text) -> str | None:
+    """A sound's name from what someone typed, or None.  ``match`` is allowed."""
+    return _own_name(text) or _ALIASES.get(_typed(text))
 
 
 def sound_for_style(style) -> str:
@@ -352,16 +368,23 @@ class InputFx:
     def handle_cue(self, text) -> dict | None:
         """The reply to a sound cue ("sound dreamy"), or None if it is not one.
 
-        A cue that names one of her sounds outright is hers.  Anything else that says
-        "sound" ("darker sound", "sound like jazz", "sound dry") goes on to the band when
-        the band understands it; only a cue nobody understands gets the list of sounds.
+        A loop cue is the looper's, whatever else it says ("loop this sound").  A cue
+        that names one of her sounds outright ("sound lofi", "sound lo-fi", "lofi tape
+        sound") is hers.  Anything else that says "sound" ("darker sound", "sound like
+        jazz", "sound dry") goes on to the band when the band understands it; only a cue
+        nobody understands gets the list of sounds.
         """
         rest = _sound_words(text)
         if rest is None:
             return None
+        # Imported here: a cue thread, never the callback, and looper and mind are not
+        # this module's to load.
+        from .looper import parse_loop_cue  # noqa: PLC0415
+        if parse_loop_cue(text) is not None:
+            return None
         name = parse_sound_cue(text)
-        if " ".join(rest) not in (*SOUNDS, MATCH):
-            from .mind import parse_cue  # noqa: PLC0415 (a cue thread, never the callback)
+        if _own_name(" ".join(rest)) is None:
+            from .mind import parse_cue  # noqa: PLC0415
             if parse_cue(text)["kind"] != "unknown":
                 return None
         if name is None:

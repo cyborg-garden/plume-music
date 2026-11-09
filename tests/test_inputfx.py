@@ -123,7 +123,7 @@ def test_a_cue_needs_the_word_sound():
 @pytest.mark.parametrize("text", [
     "darker sound", "sound brighter", "a warmer sound", "bigger sound", "sound louder",
     "softer sound", "busier sound", "sound sparser", "sound like jazz", "sound like house",
-    "my sound darker", "dry sound", "sound dry", "wetter sound", "sound wet", "sound lo-fi",
+    "my sound darker", "dry sound", "sound dry", "wetter sound", "sound wet",
 ])
 def test_a_band_cue_that_says_sound_still_reaches_the_band(text):
     """The band understands these.  Her sound takes a cue only when it names one of
@@ -133,6 +133,50 @@ def test_a_band_cue_that_says_sound_still_reaches_the_band(text):
     fx = InputFx(SR, N, "clean")
     assert fx.handle_cue(text) is None
     assert fx.playing == "clean"
+
+
+@pytest.mark.parametrize("text", [
+    "sound lo-fi", "my sound lo-fi", "lo-fi sound", "sound: lo-fi", "sound lo fi", "lo fi sound",
+    "sound lofi tape", "lofi tape sound", "sound Lofi Tape", "sound lo-fi tape",
+])
+def test_another_spelling_of_her_sound_is_still_hers(text):
+    """"lo-fi" is a spelling of her lofi sound and "Lofi tape" is its name on the page.
+    The band reads both as a style, and one hyphen must not change who acts."""
+    from plume.mind import parse_cue
+    assert parse_cue(text)["kind"] == "style", "pick a spelling the band would take"
+    fx = InputFx(SR, N, "crunch")
+    reply = fx.handle_cue(text)
+    assert reply is not None and reply["ok"] is True and reply["sound"] == "lofi"
+    assert fx.playing == "lofi"
+
+
+def test_every_label_on_the_page_names_its_sound():
+    from plume import guitake
+    for name, label in guitake.SOUND_CHOICES:
+        assert inputfx.canonical_sound(label) == name
+        fx = InputFx(SR, N, "crunch" if name != "crunch" else "clean")
+        reply = fx.handle_cue(f"sound {label}")
+        assert reply is not None and reply["ok"] is True, label
+        assert fx.asked == name
+
+
+@pytest.mark.parametrize("text,op", [
+    ("loop this sound", "record"), ("loop that sound", "record"), ("sound: loop this", "record"),
+    ("mute loop sound", "mute"), ("sound mute loop1", "mute"), ("list loops sound", "list"),
+    ("sound loop off", "stop"),
+])
+def test_a_loop_cue_that_says_sound_reaches_the_looper(text, op):
+    """lead asks her sound first and the looper second, so her sound has to leave a
+    loop cue alone: its list of sounds would otherwise be the answer, and no loop."""
+    from plume.looper import Looper, parse_loop_cue
+    assert parse_loop_cue(text)["op"] == op, "pick a cue the looper knows"
+    fx = InputFx(SR, N, "clean")
+    assert fx.handle_cue(text) is None
+    assert fx.playing == "clean"
+    looper = Looper(SR)
+    alone = Looper(SR).handle_cue(text)
+    reply = fx.handle_cue(text) or looper.handle_cue(text)        # as realtime.lead wires it
+    assert reply["op"] == op and reply["ok"] == alone["ok"]
 
 
 def test_the_echo_is_a_dotted_eighth_on_the_tempo():

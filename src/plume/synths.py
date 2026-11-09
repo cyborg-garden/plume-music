@@ -5,7 +5,7 @@ place where code-made sound is the real instrument, so each voice here copies
 how the classic machine builds it rather than a textbook waveform:
 
 ==============  ============================================================
-``warmpad``     JP-8000 style supersaw: seven band-limited saws on an uneven
+``warmpad``     JP-8000 style supersaw: seven polyBLEP saws on an uneven
                 detune curve, a slow filter swell and a BBD-style chorus.
 ``strings``     String-ensemble pad: two saw registers through a three-phase
                 ensemble chorus, the Solina recipe.
@@ -26,10 +26,14 @@ how the classic machine builds it rather than a textbook waveform:
 ==============  ============================================================
 
 Every renderer returns a stereo ``(n, 2)`` float64 buffer; plume.voices folds
-it to mono for callers that want mono.  Oscillators are polyBLEP band-limited
-or additive below Nyquist, the filter is a zero-delay-feedback (TPT) four-pole
-ladder solved in closed form, and nothing loops per sample in Python: the only
-loop is per filter block.  Each voice drifts slowly so a held chord moves.
+it to mono for callers that want mono.  Oscillators are polyBLEP (alias
+suppressed, not strictly band-limited: -44 dB or better at the top of the
+range, the supersaw pad being the worst; tests/test_synths.py holds every
+voice under -40 dB) or additive below Nyquist.  The filter is the bilinear
+(TPT) four-pole ladder in closed form, which matches a zero-delay-feedback
+solve for a fixed cutoff; under a moving cutoff it is stepped, not a ZDF
+topology.  Nothing loops per sample in Python: the only loop is per filter
+step.  Each voice drifts slowly so a held chord moves.
 """
 from __future__ import annotations
 
@@ -138,7 +142,7 @@ def _blep(p: np.ndarray, dt: np.ndarray) -> np.ndarray:
 
 
 def saw(phase_cycles: np.ndarray, freq, sr: int) -> np.ndarray:
-    """Band-limited (polyBLEP) sawtooth, -1..1."""
+    """polyBLEP sawtooth, -1..1: aliasing suppressed, not removed."""
     p = phase_cycles - np.floor(phase_cycles)     # mod 1, ~25x cheaper than np.mod
     f = np.asarray(freq, dtype=np.float64)
     if f.ndim == 0:
@@ -156,7 +160,7 @@ def saw(phase_cycles: np.ndarray, freq, sr: int) -> np.ndarray:
 
 
 def pulse(phase_cycles: np.ndarray, freq, sr: int, width) -> np.ndarray:
-    """Band-limited pulse: the difference of two BLEP saws (zero mean)."""
+    """polyBLEP pulse: the difference of two BLEP saws (zero mean)."""
     w = np.clip(np.asarray(width, dtype=np.float64), 0.05, 0.95)
     return saw(phase_cycles, freq, sr) - saw(phase_cycles + w, freq, sr)
 
@@ -168,15 +172,17 @@ _LADDER_STEP_OCT = 1.0 / 96.0
 
 def ladder(x: np.ndarray, sr: int, cutoff, res: float, block: int = 64,
            drive: float = 0.0) -> np.ndarray:
-    """Four-pole ZDF ladder lowpass, ``res`` 0..1 (1 is near self-oscillation).
+    """Four-pole TPT ladder lowpass, ``res`` 0..1 (1 is near self-oscillation).
 
     The linear TPT ladder has a closed-form transfer function: four bilinear
     one-poles ``G`` in a loop with feedback ``k`` give ``G^4 / (1 + k G^4)``,
-    which is exactly what the zero-delay-feedback solve computes.  Its
-    coefficients are evaluated per block, vectorized, and run through lfilter
-    with state carried across blocks.  ``drive`` adds tanh saturation at the
-    input, where a transistor ladder clips.  Passband loss from feedback is
-    half made up, the way most hardware does it.
+    which is what the zero-delay-feedback solve computes for a fixed cutoff.
+    Its coefficients are evaluated per step, vectorized, and run through
+    lfilter with state carried across steps; a moving cutoff is therefore
+    stepped (1/96 octave), not solved sample by sample as a ZDF filter is.
+    ``drive`` adds tanh saturation at the input, where a transistor ladder
+    clips.  Passband loss from feedback is half made up, the way most
+    hardware does it.
     """
     x = np.asarray(x, dtype=np.float64)
     if drive > 0.0:

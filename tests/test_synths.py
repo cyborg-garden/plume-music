@@ -1,4 +1,4 @@
-"""The curated synths and pads (plume.synths): stereo, band-limited, moving,
+"""The curated synths and pads (plume.synths): stereo, alias-suppressed, moving,
 velocity-aware, loudness-matched, and cheap enough for the live planner."""
 import sys
 import time

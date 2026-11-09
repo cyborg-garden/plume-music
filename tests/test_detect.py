@@ -236,7 +236,7 @@ def test_a_settled_pick_says_so():
 # attack up for 30 ms or more, where a picked note, a drum or a synth is over in one or
 # two hops.  Measured on synthetic strums and picking (tests/folk_fixtures.py) and, locally
 # and never committed, on 15 real direct-input takes: those takes' strum share was
-# 0.09-0.29, a slowly raked strum's 0.49-0.64.
+# 0.04-0.21, a slowly raked strum's 0.31-0.42.
 
 def test_folk_answers_only_above_its_confidence_and_inside_its_range():
     assert detect_style(96.0, "major", 0.5, folk=FOLK_CONFIDENCE) == "folk"
@@ -269,6 +269,8 @@ def takes():
         "strum_slow": ff.make_take("strum", bpm=66.0),
         "strum_fast_rake": ff.make_take("strum", rake_ms=(8.0, 18.0)),
         "pick": ff.make_take("pick"),
+        "tremolo_40": ff.make_tremolo(ioi_ms=40.0),
+        "tremolo_80": ff.make_tremolo(ioi_ms=80.0),
     }
 
 
@@ -284,10 +286,11 @@ def test_a_strummed_minor_folk_tune_needs_the_acoustic_sound_as_well(takes):
     assert ear.confidence("minor") >= FOLK_CONFIDENCE
 
 
-@pytest.mark.parametrize("name", ["pick", "strum_fast_rake"])
+@pytest.mark.parametrize("name", ["pick", "strum_fast_rake", "tremolo_40", "tremolo_80"])
 def test_what_it_cannot_hear_as_a_strum_is_not_folk(takes, name):
     """Fingerpicking, however folky, is not claimed: nothing measured tells it from a
-    twinkly midwest line.  Nor is a strum so quick it lands inside two hops."""
+    twinkly midwest line.  Nor is a strum so quick it lands inside two hops, nor
+    tremolo picking, whose next pick lands inside the onset's reading window."""
     assert _ear(takes[name]).confidence("major") < FOLK_CONFIDENCE
 
 

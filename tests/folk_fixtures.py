@@ -72,3 +72,27 @@ def make_take(kind: str = "strum", *, key: str = "G major", bpm: float = 96.0,
                                   tau_s=1.8), t)
     peak = float(np.max(np.abs(buf))) or 1.0
     return (buf * (10.0 ** (gain_db / 20.0)) / peak).astype(np.float32)
+
+
+def make_tremolo(*, key: str = "D major", bpm: float = 96.0, bars: int = 12,
+                 ioi_ms: float = 60.0, seed: int = 3, gain_db: float = -18.0) -> np.ndarray:
+    """Tremolo picking: one string picked every ``ioi_ms``, the root of each chord.
+
+    Midwest and post-rock, never a strum.  The picks land closer together than an onset's
+    reading window, so the attack rises, dips and rises again inside it, where a strum's
+    stays up through one gesture.
+    """
+    rng = np.random.default_rng(seed)
+    k = parse_key(key)
+    beat = 60.0 / float(bpm)
+    end = bars * 4 * beat
+    buf = np.zeros(int(round((end + 3.0) * SR)), dtype=np.float64)
+    t = 0.0
+    while t < end:
+        chord = roman_to_chord(FOLK_NUMERALS[int(t // (4 * beat)) % len(FOLK_NUMERALS)], k)
+        _add(buf, _string(62 + (chord.root - 62) % 12, dur_s=0.6,
+                          velocity=float(rng.uniform(0.6, 0.8)), rng=rng, attack_ms=4.0,
+                          tau_s=0.8), t)
+        t += ioi_ms / 1000.0
+    peak = float(np.max(np.abs(buf))) or 1.0
+    return (buf * (10.0 ** (gain_db / 20.0)) / peak).astype(np.float32)

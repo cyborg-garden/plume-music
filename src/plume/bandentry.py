@@ -197,11 +197,14 @@ def plain_phrase_feel(bars_in: int, phrase_bars: int) -> float | None:
 #: (32 ms at 48 kHz): a pick dragged across the strings.  A picked note, a drum hit or
 #: a synth is over in one or two.
 _RAKE_HOPS = 3
-#: Strum share at which the strum's evidence starts, and where it is full.  Measured
-#: (2026-11-09) on 15 real direct-input takes, which were never strummed folk: 0.09 to
-#: 0.29.  Slowly raked synthetic strums: 0.49 to 0.64.  A strum quicker than about
-#: 20 ms reads 0.22 and is not heard as one.
-_RAKE_NONE, _RAKE_FULL = 0.30, 0.50
+#: Strum share at which the strum's evidence starts, and where it is full.  The hops
+#: counted are one unbroken run around the peak: tremolo picking puts the next pick
+#: inside the reading window, so its attack rises again after dipping, and counting from
+#: the first hop above half to the last called it a strum (0.88 to 0.96).  Measured that
+#: way (2026-11-09): 15 real direct-input takes, which were never strummed folk, 0.04 to
+#: 0.21; slowly raked synthetic strums 0.31 to 0.42; tremolo and sextuplet picking 0.00
+#: to 0.01.  A strum quicker than about 20 ms reads 0.16 and is not heard as one.
+_RAKE_NONE, _RAKE_FULL = 0.22, 0.36
 #: Before this much is heard there is no folk evidence either way.
 _FOLK_MIN_BARS, _FOLK_MIN_ONSETS = 6, 32
 #: What each sign is worth.  Only the strum separates on its own; the acoustic sound
@@ -266,9 +269,14 @@ class FolkEar:
             peak = float(w.max())
             if peak < strong_at:
                 continue
-            above = np.flatnonzero(w >= 0.5 * peak)
+            above = w >= 0.5 * peak
+            lo = hi = int(np.argmax(w))
+            while lo > 0 and above[lo - 1]:
+                lo -= 1
+            while hi < len(w) - 1 and above[hi + 1]:
+                hi += 1
             self._onsets += 1
-            self._raked += int(above[-1] - above[0] + 1 >= _RAKE_HOPS)
+            self._raked += int(hi - lo + 1 >= _RAKE_HOPS)
         self._tail = seen[-9:]
 
     @property

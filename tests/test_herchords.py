@@ -293,6 +293,112 @@ def test_a_chord_missing_its_third_names_no_chord():
     assert r.sym is None and r.best == "Am7" and "barely sounds" in r.why
 
 
+def test_a_quiet_minor_third_still_names_the_chord_and_a_major_one_does_not():
+    """Six strings double the root and fifth and leave one third, a fifth of the
+    loudest.  No overtone of the other chord tones lands on a minor third, so that is
+    a real string; a major third at the same level could be the root's own fifth
+    harmonic, and stays unsure."""
+    cands = hc.candidates(KEY, STYLE)
+    minor = hc.read_bar(pcs_chroma((4, 11, 7), weights=(1.0, 0.55, 0.2)), cands)
+    assert minor.sym == "Em7", minor
+    major = hc.read_bar(pcs_chroma((0, 7, 4), weights=(1.0, 0.55, 0.2)), cands)
+    assert major.sym is None and major.best == "Cmaj7" and "barely sounds" in major.why
+
+
+OPEN_STRINGS = (40, 45, 50, 55, 59, 64)
+
+
+def _frets(shape):
+    """A guitar chord shape, low string first ("022000"; x: string not played)."""
+    return tuple(o + int(f) for o, f in zip(OPEN_STRINGS, shape) if f != "x")
+
+
+def _held(midis, key, *, bars=8, harmonics=5, rolloff=1.5):
+    """She strikes one voicing once a bar and lets it ring; the decisions for the
+    bars planned once two of hers are heard."""
+    bar_s = 2.0
+    t = np.arange(int(bar_s * SR)) / SR
+    one = sum(np.sin(2 * np.pi * 440.0 * 2 ** ((m - 69) / 12) * h * t) / h ** rolloff
+              for m in midis for h in range(1, harmonics + 1)) * np.exp(-t * 1.2)
+    f = hc.ChordFollower()
+    out = []
+    for heard, frames in enumerate(_bars_of(np.tile(0.05 * one, bars), bar_s)):
+        f.hear(heard, hc.clean_bar(frames), playing=True)
+        if heard >= 1:
+            out.append(f.decide(heard + 2, key, STYLE, TEMPLATE[(heard + 2) % 4]))
+    return out
+
+
+@pytest.mark.parametrize("shape, key, sym", [
+    ("022000", KEY, "Em"), ("022000", "E minor", "Em"), ("244222", "F# minor", "F#m"),
+    ("799777", "D major", "Bm"), ("x02210", KEY, "Am")])
+@pytest.mark.parametrize("harmonics, rolloff", [(5, 1.5), (3, 2.0), (12, 1.0)])
+def test_a_full_minor_chord_with_one_third_among_six_strings_is_followed(
+        shape, key, sym, harmonics, rolloff):
+    """Open Em and the barre minors have one third among five or six strings, and
+    measured 0.20-0.28 of the loudest tone: under the quarter a major third needs."""
+    got = _held(_frets(shape), key, harmonics=harmonics, rolloff=rolloff)
+    assert got and all(d["source"] == "her_hold" for d in got), got[0]
+    assert all(d["chord"].startswith(sym) for d in got), got[0]
+
+
+@pytest.mark.parametrize("shape, key", [("022100", "E major"), ("320033", "G major")])
+def test_a_full_major_chord_with_one_quiet_third_keeps_the_template_and_says_why(
+        shape, key):
+    """A known limit, kept on the safe side: with one major third among six strings
+    (0.16-0.24 of the loudest on a plain tone) the bar looks like a bright single
+    note, whose fifth harmonic is that same third.  The band keeps the template
+    rather than claim a chord it can't tell from one note."""
+    got = _held(_frets(shape), key)
+    assert got and all(d["source"] == "template" for d in got), got[0]
+    assert all("barely sounds" in d["reason"] for d in got[1:]), got[1]
+
+
+@pytest.mark.parametrize("root", [40, 45, 47, 52])
+@pytest.mark.parametrize("key", [KEY, "E minor", "A minor", "D major"])
+def test_a_bright_power_chord_is_not_a_minor_chord(root, key):
+    """Root, fifth and octave with no third: the minor chord on that root has no
+    third in it at all, however bright the tone."""
+    got = _held((root, root + 7, root + 12), key, harmonics=20, rolloff=0.7)
+    assert got
+    for d in got:
+        assert d["source"] == "template" or "m" not in d["chord"][1:3], d
+
+
+def test_a_minor_third_that_another_note_overtones_is_not_her_string():
+    """F# with the D above it, in C# minor: D's third harmonic is an A, and F# A C#
+    then looks like F# minor with a quiet third.  The A is D's, not a string."""
+    cands = hc.candidates("C# minor", STYLE)
+    bar = pcs_chroma((6, 2, 1, 9), weights=(1.0, 0.65, 0.25, 0.2))
+    r = hc.read_bar(bar, cands)
+    assert r.sym is None and r.best == "F#m7" and "barely sounds" in r.why, r
+    # the same third with no D under it is a string of its own
+    assert hc.read_bar(pcs_chroma((6, 1, 9), weights=(1.0, 0.55, 0.2)), cands).sym == "F#m7"
+    got = _held((54, 62), "C# minor", harmonics=20, rolloff=1.0)
+    assert got and all(d["source"] == "template" for d in got), got[-1]
+
+
+def test_a_drone_with_the_minor_third_on_one_beat_in_four_is_still_a_drone():
+    """Root and fifth ringing, a melody over them that touches the third once a bar:
+    the third is a trace (0.06-0.12 of the root), and the band keeps the template."""
+    bar_s, n = 2.0, 8
+    audio = np.zeros(int((n + 1) * bar_s * SR))
+    for b in range(n):
+        for half in range(2):
+            s = int((b + half / 2) * bar_s * SR)
+            y = 0.05 * _pluck((40, 47, 52), 1.6)
+            audio[s:s + y.size] += y
+        for q, note in enumerate((55, 57, 59, 62)):          # G once, then A B D
+            s = int((b + q / 4) * bar_s * SR)
+            y = 0.05 * _pluck((note,), 0.5)
+            audio[s:s + y.size] += y
+    f = hc.ChordFollower()
+    for heard, frames in enumerate(_bars_of(audio[:int(n * bar_s * SR)], bar_s)):
+        f.hear(heard, hc.clean_bar(frames), playing=True)
+        d = f.decide(heard + 2, "E minor", STYLE, "Am7")
+        assert d["source"] == "template", (heard, d)
+
+
 # ------------------------------------------------------------- the live loop
 
 def _strums(midis, *, bpm=75.0, every_beats=2, seconds=135.0, level=0.08, notes=None):

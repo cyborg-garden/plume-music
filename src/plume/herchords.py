@@ -63,11 +63,23 @@ BASS_WEIGHT = 0.25
 #: bright or ringing single note reaches 2-3, which is why :data:`BALANCE_MIN` exists.
 NOTES_MIN = 2.0
 #: Every note of the chord must sound: its weakest triad tone holds at least this
-#: share of its strongest.  One bright note carries its own fifth and third in its
-#: overtones, so a lone E reads as E minor at fit 0.9 with no G in it at all, and a
-#: low C as C major.  Measured on rendered tones: single notes 0.0-0.20 (dull or
-#: bright, short or ringing), strummed triads 0.30-0.43.  Not tuned on any take.
+#: share of its strongest.  One bright note carries its own fifth and major third in
+#: its overtones (harmonics 3 and 5), so a low C reads as C major, and a lone E as E
+#: minor at fit 0.9 with no G in it at all.  Measured on rendered tones: single notes
+#: 0.0-0.20 (dull or bright, short or ringing; a very bright low one reaches 0.4),
+#: chords of four or five strings 0.30-0.66.  Six strings double the root and fifth
+#: and leave one third: 0.16-0.26 on a plain tone.  With a major third that is where
+#: a single note sits too, so those voicings (open E, a full G) keep the template on
+#: a plain tone.  Not tuned on any take.
 BALANCE_MIN = 0.25
+#: The same floor when the weakest tone is a minor third.  That is the one chord
+#: tone the others' overtones cannot fake (the first harmonic near it is the 19th),
+#: so above a trace it is a string of its own.  Measured on rendered tones: single
+#: notes and power chords 0.0-0.04, a full Em, F#m or Bm barre 0.20-0.31.  A note
+#: outside the chord can still put it there (the third harmonic of the note a fifth
+#: below it, the fifth harmonic of the one a major third below), so this floor holds
+#: only while neither of those sounds half as loud as the third itself.
+MINOR_THIRD_MIN = 0.15
 #: Her loop lengths in bars, longest first: an established longer loop knows more
 #: than the hold inside it.
 LOOP_PERIODS = (8, 4, 2, 1)
@@ -204,11 +216,16 @@ def read_bar(chroma, cands, bass=None, notes=None) -> Reading | None:
                     key=lambda s: s[0], reverse=True)
     (s1, fit, best), s2 = scored[0], scored[1][0] if len(scored) > 1 else 0.0
     margin = s1 - s2
-    tri = sorted(float(c[p]) for p in best.triad)
-    balance = tri[0] / tri[-1] if tri[-1] > 0.0 else 0.0
+    tri = sorted((float(c[p]), p) for p in best.triad)
+    (weakest, weak_pc), loudest = tri[0], tri[-1][0]
+    balance = weakest / loudest if loudest > 0.0 else 0.0
+    own_string = ((weak_pc - best.root) % 12 == 3 and
+                  2.0 * max(float(c[(weak_pc - 7) % 12]), float(c[(weak_pc - 4) % 12]))
+                  < weakest)
+    floor = MINOR_THIRD_MIN if own_string else BALANCE_MIN
     if notes is not None and notes < NOTES_MIN:
         why = f"single notes ({notes:.1f} at once)"
-    elif balance < BALANCE_MIN:
+    elif balance < floor:
         why = f"one note of {best.sym} barely sounds ({balance:.2f} of the loudest)"
     elif fit < FIT_MIN:
         why = f"fit {fit:.2f} under {FIT_MIN:.2f}"

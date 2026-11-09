@@ -822,7 +822,17 @@ RENDERERS = {
 }
 
 
+#: Every note's buffer ends on a short half-cosine fade.  The release curves
+#: are cut off where they are still 27 to 42 dB down, and a step that size at
+#: the end of every pad note is an audible tick.
+_END_FADE_S = 0.02
+
+
 def render(name: str, sr: int, dur_s: float, freq_hz, velocity: float,
            rng: np.random.Generator, p: dict, glide_from_hz=None) -> np.ndarray:
     st = RENDERERS[name](sr, dur_s, freq_hz, velocity, rng, p, glide_from_hz)
-    return st * _TRIM[name]
+    st = st * _TRIM[name]
+    m = min(st.shape[0] // 4, _n(sr, _END_FADE_S))
+    if m > 1:
+        st[-m:] *= (0.5 + 0.5 * np.cos(np.linspace(0.0, np.pi, m)))[:, None]
+    return st

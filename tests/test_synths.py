@@ -162,6 +162,19 @@ def test_a_held_pad_bar_renders_well_inside_real_time():
 
 
 @pytest.mark.parametrize("name", NEW)
+@pytest.mark.parametrize("dur", [0.08, 1.0])
+def test_a_note_ends_at_silence_not_with_a_click(name, dur):
+    """The buffer ends while the release is still audible; cutting it there
+    is a tick at the end of every note.  The last sample must be silent and
+    the last 2 ms nearly so."""
+    y = _st(name, dur=dur, vel=0.9)
+    peak = np.abs(y).max()
+    assert np.abs(y[-1]).max() < 1e-4 * peak, name
+    tail = np.abs(y[-int(0.002 * SR):]).max()
+    assert tail < 0.01 * peak, (name, tail / peak)
+
+
+@pytest.mark.parametrize("name", NEW)
 def test_section_energy_brightens_every_new_voice_offline(name):
     """Offline compose dims a tonal voice in low-energy sections through its
     brightness params (engine._energy_params).  The FM keys, the bell and the

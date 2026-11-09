@@ -252,6 +252,25 @@ def test_the_tail_dies_away(sound):
     assert np.sqrt(np.mean(y[-SR:] ** 2)) < 1e-4
 
 
+@pytest.mark.parametrize("sound", PLAYED)
+def test_a_dying_tail_never_turns_subnormal(sound):
+    """On x86 (most Windows and Linux machines) arithmetic on subnormal floats is many
+    times slower, and a feedback tail decaying in exact digital silence reaches them
+    within seconds.  The tails are kept out of that range, so a quiet input never makes
+    the callback slow."""
+    fx = InputFx(SR, N, sound)
+    noise = (np.random.default_rng(0).standard_normal(SR) * 0.2).astype(np.float32)
+    for i in range(0, SR, N):
+        fx.process(noise[i:i + N], False)
+    quiet = np.zeros(N, dtype=np.float32)
+    tiny = np.finfo(np.float32).tiny
+    for b in range(int(60 * SR / N)):
+        fx.process(quiet, False)
+        if b % 25 == 0:
+            m = fx.mem
+            assert not np.any((m != 0) & (np.abs(m) < tiny)), f"subnormal at {b * N / SR:.1f} s"
+
+
 def test_switching_sounds_has_no_jump():
     fx = InputFx(SR, N, "clean")
     t = np.arange(4 * SR) / SR

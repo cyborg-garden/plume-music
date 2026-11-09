@@ -55,6 +55,10 @@ _F32 = np.float32
 _FADE_IN_BUFFERS = 4
 #: The echo never runs longer than this; slower tempos echo on the dotted sixteenth.
 _MAX_ECHO_S = 0.8
+#: Added to every feedback loop each time round: far below hearing (-360 dB), far above
+#: the subnormal floats a tail decaying in digital silence would otherwise reach, which
+#: x86 processors handle many times slower.
+_NO_SUBNORMAL = 1e-18
 
 
 def canonical_sound(text) -> str | None:
@@ -431,6 +435,7 @@ class InputFx:
         np.matmul(fdn.mix, fdn.f, out=fdn.tmp)
         np.matmul(fdn.inject, src[None, :], out=fdn.f)
         fdn.f += fdn.tmp
+        fdn.f += _NO_SUBNORMAL
         ring.buf[:, w:w + n] = fdn.f
         ring.buf[:, w + c:w + c + n] = fdn.f
         ring.w = (w + n) % c
@@ -498,6 +503,7 @@ class InputFx:
         np.multiply(e[:-1], 0.16, out=self.r)
         m += self.r
         m += self.x
+        m += _NO_SUBNORMAL
         e[0] = e[n]
         self._write(er, m)
         er.w = (w + n) % cc

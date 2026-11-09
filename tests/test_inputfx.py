@@ -241,6 +241,82 @@ def test_nothing_jumps_in_loudness(sound, peak_db):
     assert abs(lufs(through(fx, x)) - lufs(dry)) <= 1.5
 
 
+@pytest.mark.parametrize("first,then", [(-3.0, -30.0), (-3.0, -24.0), (-30.0, -3.0)],
+                         ids=["hot-to-soft", "hot-to-softer", "soft-to-hot"])
+@pytest.mark.parametrize("sound", ["clean", "crunch"])
+def test_the_level_match_follows_a_change_in_how_hard_she_plays(sound, first, then):
+    """Eight seconds at one level, then eight at another.  The gain learned on the first
+    must not sit on the second: two seconds in, her sound is as loud as her dry input
+    again.  (A match that averages power keeps the loud passage's gain for many seconds
+    of quiet playing, because the loud passage outweighs the quiet one hundreds to one.)"""
+    x = np.concatenate([playing(8.0, first), playing(8.0, then)])
+    dry = np.repeat(x[:x.size // N * N, None], 2, axis=1)
+    fx = InputFx(SR, N, sound)
+    out = through(fx, x)
+    a, b = 10 * SR, 16 * SR
+    assert abs(lufs(out[a:b]) - lufs(dry[a:b])) <= 1.5
+    a, b = 2 * SR, 8 * SR                       # and the first passage was matched too
+    assert abs(lufs(out[a:b]) - lufs(dry[a:b])) <= 1.5
+
+
+def steady(seconds: float, peak: float, every: float = 0.25) -> np.ndarray:
+    """A note every quarter second at one level, with no rest for a level to hide in."""
+    x = np.zeros(int(seconds * SR))
+    notes = (196.0, 246.9, 293.7, 392.0, 329.6, 220.0)
+    for k in range(int(seconds / every)):
+        at = int(k * every * SR)
+        y = pluck(notes[k % len(notes)], 1.0, seed=k)[:x.size - at]
+        x[at:at + y.size] += y
+    return (x * peak / np.max(np.abs(x))).astype(np.float32)
+
+
+@pytest.mark.parametrize("hard,soft", [(0.9, 0.02), (0.7, 0.045)], ids=["33 dB", "24 dB"])
+@pytest.mark.parametrize("sound", ["clean", "crunch"])
+def test_quieter_playing_is_matched_in_seconds_whatever_the_drop(sound, hard, soft):
+    """She plays hard, then softly, without a break.  The hard passage's gain may stay
+    for as long as plume needs to tell a quieter passage from a note dying away
+    (_MATCH_HOLD_S), and no longer: after that her sound is as loud as her dry input."""
+    x = np.concatenate([steady(8.0, hard), steady(10.0, soft)])
+    dry = np.repeat(x[:x.size // N * N, None], 2, axis=1)
+    out = through(InputFx(SR, N, sound), x)
+    a, b = int((8.0 + inputfx._MATCH_HOLD_S + 1.0) * SR), 18 * SR
+    assert abs(lufs(out[a:b]) - lufs(dry[a:b])) <= 1.5
+    a, b = 4 * SR, 8 * SR
+    assert abs(lufs(out[a:b]) - lufs(dry[a:b])) <= 1.5
+
+
+@pytest.mark.parametrize("sound", ["clean", "crunch"])
+def test_harder_playing_is_matched_at_once(sound):
+    x = np.concatenate([steady(8.0, 0.02), steady(4.0, 0.9)])
+    dry = np.repeat(x[:x.size // N * N, None], 2, axis=1)
+    out = through(InputFx(SR, N, sound), x)
+    a, b = 8 * SR, 10 * SR
+    assert abs(lufs(out[a:b]) - lufs(dry[a:b])) <= 1.5
+
+
+@pytest.mark.parametrize("sound", ["clean", "crunch"])
+def test_a_rest_between_strums_is_not_a_quieter_passage(sound):
+    """Strums a few seconds apart, each dying away before the next.  The level match must
+    not take the dying strum for quieter playing: it would turn her down in every rest
+    and step back up on every strum.  (This is what holds _MATCH_HOLD_S up.)"""
+    x = np.zeros(20 * SR)
+    for k in range(8):
+        for j, f in enumerate((98.0, 146.8, 196.0, 246.9, 293.7, 392.0)):
+            at = int((2.5 * k + 0.012 * j) * SR)
+            y = 0.7 * pluck(f, 2.4, seed=10 + j + k)
+            y *= np.exp(-np.arange(y.size) / (0.6 * SR))
+            x[at:at + y.size] += y
+    x = (x * 0.35 / np.max(np.abs(x))).astype(np.float32)
+    fx = InputFx(SR, N, sound)
+    gain = []
+    for i in range(0, x.size - N + 1, N):
+        fx.process(x[i:i + N], False)
+        gain.append(fx.mg)
+    db = 20 * np.log10(np.array(gain[int(6 * SR / N):]))
+    assert np.abs(np.diff(db)).max() < 1.0            # no step on a strum
+    assert np.ptp(db) < 4.0                           # and no drift in a rest
+
+
 @pytest.mark.parametrize("sound", PLAYED)
 def test_no_sound_is_late(sound):
     """The response starts on the sample that came in, bar the tape wobble's floor."""

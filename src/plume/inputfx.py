@@ -67,10 +67,14 @@ _MAX_ECHO_S = 0.8
 #: x86 processors handle many times slower.
 _NO_SUBNORMAL = 1e-18
 #: The level match on the compressing sounds: how fast it follows her playing (per buffer,
-#: about a second), the quietest input it learns from (-70 dBFS), and how far it may go.
+#: about a second), the quietest input it learns from (-70 dBFS), how far it may go, and
+#: how long her loudest buffer stays the measure of how hard she is playing.  Shorter than
+#: this and a rest between two strums reads as a quieter passage: the gain then drifts in
+#: the rest and steps back on the next strum.
 _MATCH_RATE = 0.005
 _MATCH_FLOOR = 1e-7
 _MATCH_MOST = 4.0
+_MATCH_HOLD_S = 4.0
 #: A buffer whose mean power is not below this is not her playing (full scale is 1): a
 #: NaN or an inf from the driver, which every feedback loop would keep for the whole take.
 _NOT_AUDIO = 1e4
@@ -328,6 +332,13 @@ class InputFx:
         self.p = 0.0                  # her input's power in this buffer (summed, not mean)
         self.pin = self.pout = 0.0    # level match: her input's power, and the sound's
         self.mg = 1.0                 # level match: gain at the end of the last buffer
+        # Level match: her loudest buffer of the last _MATCH_HOLD_S or so (the loudest of
+        # this quarter of it so far and of the three before), and what it was when the
+        # match last learned.
+        self.pk0 = self.pk1 = self.pk2 = self.pk3 = 0.0
+        self.pkn = 0
+        self.pk_every = max(1, int(round(0.25 * _MATCH_HOLD_S * self.sr / n)))
+        self.top = 0.0
         self.lfo_c, self.lfo_s = 1.0, 0.0        # chorus / wow oscillator (cos, sin)
         self.fl_c, self.fl_s = 1.0, 0.0          # flutter
         self.echo_d = int(self.slot[1])
@@ -414,6 +425,7 @@ class InputFx:
             self.mem[:] = 0.0              # the new sound starts from silence
             self.cur = want
             self.pin = self.pout = 0.0
+            self.pk0 = self.pk1 = self.pk2 = self.pk3 = self.top = 0.0
             self.mg = 1.0
         if self.cur == 0:
             return None
@@ -456,15 +468,38 @@ class InputFx:
         self.cg = g
 
     def _match(self, y):
-        """Bring ``y`` (in place) to her input's loudness, over about a second.
+        """Bring ``y`` (in place) to her input's loudness.
 
         A compressor or an amp with a fixed makeup gain is as loud as her dry input at
         one playing level only: quieter playing comes out louder, harder playing quieter.
-        This follows her own level slowly, so a strum still gets evened out but a switch
-        between sounds does not jump at any playing level.  It learns only while she plays.
+        This learns the gain from her own playing, averaged over about a second, so a
+        strum still gets evened out but a switch between sounds does not jump.  It
+        learns only while she plays.
+
+        Harder playing is followed at once: the averages are of power, and the louder
+        buffers outweigh what came before.  That is also why quieter playing would not
+        be, left alone: a loud passage outweighs the quiet one after it hundreds to one,
+        and its gain would sit on the quiet playing for many seconds, the longer the
+        bigger the drop.  So when her loudest buffer of the last ``_MATCH_HOLD_S`` is
+        quieter than it was, both averages are scaled down to it (their ratio, the gain,
+        is kept) and the quieter playing counts in full from then on.  After a drop the
+        louder passage's gain therefore stays for up to ``_MATCH_HOLD_S``, during which
+        her sound is louder than her dry input by as much as the two gains differ, and
+        is right about a second after that, whatever the size of the drop.
         """
         p = self.p
+        if p > self.pk0:
+            self.pk0 = p
+        self.pkn += 1
+        if self.pkn >= self.pk_every:
+            self.pk3, self.pk2, self.pk1, self.pk0, self.pkn = self.pk2, self.pk1, self.pk0, p, 0
         if p > _MATCH_FLOOR * self.n:
+            top = max(self.pk0, self.pk1, self.pk2, self.pk3)
+            if top < self.top:
+                down = top / self.top
+                self.pin *= down
+                self.pout *= down
+            self.top = top
             self.pin += _MATCH_RATE * (p - self.pin)
             self.pout += _MATCH_RATE * (float(np.matmul(y, y)) - self.pout)
         g = (self.pin / self.pout) ** 0.5 if self.pout > 0.0 else 1.0

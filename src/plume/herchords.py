@@ -59,9 +59,15 @@ ROOT_WEIGHT = 0.25
 BASS_WEIGHT = 0.25
 #: Notes sounding at once (the bar's median, per frame, of exp(entropy) of the
 #: chroma) below which a bar is single-note melody, not a chord.  Measured: plucked
-#: single notes 1.3-1.6 whether one or four to a bar, plucked triads 3.5-3.7, her
-#: takes 2.1-7 (she rings open strings under everything).
+#: single notes 1.3-1.6 whether one or four to a bar, plucked triads 3.5-3.7.  A
+#: bright or ringing single note reaches 2-3, which is why :data:`BALANCE_MIN` exists.
 NOTES_MIN = 2.0
+#: Every note of the chord must sound: its weakest triad tone holds at least this
+#: share of its strongest.  One bright note carries its own fifth and third in its
+#: overtones, so a lone E reads as E minor at fit 0.9 with no G in it at all, and a
+#: low C as C major.  Measured on rendered tones: single notes 0.0-0.20 (dull or
+#: bright, short or ringing), strummed triads 0.30-0.43.  Not tuned on any take.
+BALANCE_MIN = 0.25
 #: A bar where the band is more than this share of the mic tells us nothing of hers.
 LEAK_MAX = 0.6
 #: Her loop lengths in bars, longest first: an established longer loop knows more
@@ -201,8 +207,12 @@ def read_bar(chroma, cands, bass=None, notes=None) -> Reading | None:
                     key=lambda s: s[0], reverse=True)
     (s1, fit, best), s2 = scored[0], scored[1][0] if len(scored) > 1 else 0.0
     margin = s1 - s2
+    tri = sorted(float(c[p]) for p in best.triad)
+    balance = tri[0] / tri[-1] if tri[-1] > 0.0 else 0.0
     if notes is not None and notes < NOTES_MIN:
         why = f"single notes ({notes:.1f} at once)"
+    elif balance < BALANCE_MIN:
+        why = f"one note of {best.sym} barely sounds ({balance:.2f} of the loudest)"
     elif fit < FIT_MIN:
         why = f"fit {fit:.2f} under {FIT_MIN:.2f}"
     elif margin < MARGIN:

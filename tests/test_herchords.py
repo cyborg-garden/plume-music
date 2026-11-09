@@ -310,6 +310,38 @@ def test_on_a_room_mic_the_band_never_takes_a_chord_for_hers():
         assert "room mic" in d["reason"]
 
 
+@pytest.mark.parametrize("midi,harmonics,ring", [
+    (64, 12, 1.0), (64, 12, 4.0), (45, 12, 1.0), (45, 20, 2.0), (48, 6, 1.0), (55, 6, 1.0),
+    (64, 5, 1.0)])
+def test_one_bright_note_held_is_not_a_chord(midi, harmonics, ring):
+    """A lone note carries its own fifth and third in its overtones: a bright E
+    read as E minor at fit 0.9 with no G in it.  Held or repeated, it is still
+    one note, and the band keeps the template."""
+    bar_s = 2.0
+    t = np.arange(int(bar_s / 4 * ring * SR)) / SR
+    f0 = 440.0 * 2 ** ((midi - 69) / 12)
+    note = sum(np.sin(2 * np.pi * f0 * h * t) / h for h in range(1, harmonics + 1)
+               if f0 * h < SR / 2) * np.exp(-t * 1.2)
+    audio = np.zeros(int(12 * bar_s * SR) + note.size)
+    for i in range(48):
+        s = int(i * bar_s / 4 * SR)
+        audio[s:s + note.size] += 0.05 * note
+    bars = _bars_of(audio[:int(12 * bar_s * SR)], bar_s)
+    f = hc.ChordFollower()
+    for heard, frames in enumerate(bars):
+        f.hear(heard, hc.clean_bar(frames), playing=True)
+        d = f.decide(heard + 2, KEY, STYLE, TEMPLATE[(heard + 2) % 4])
+        assert d["source"] == "template", (heard, d)
+
+
+def test_a_chord_missing_its_third_names_no_chord():
+    """Root and fifth loud, the third a trace: a drone or a power chord, not a chord
+    whose quality was heard."""
+    c = pcs_chroma((9, 4, 0), weights=(1.0, 0.6, 0.1))
+    r = hc.read_bar(c, hc.candidates(KEY, STYLE))
+    assert r.sym is None and r.best == "Am7" and "barely sounds" in r.why
+
+
 # ------------------------------------------------------------- the live loop
 
 def _strums(midis, *, bpm=75.0, every_beats=2, seconds=135.0, level=0.08, notes=None):

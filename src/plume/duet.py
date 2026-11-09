@@ -1159,6 +1159,9 @@ class DuetEngine:
                 y = _saturate(y, float(lfx["drive"]))
             role_db = self._style.get("role_gain_db", {}).get(
                 role, _ROLE_GAIN_DB.get(role, -6.0))
+            # voice_gain_db: a voice's own offset in this style, so a
+            # voice_variants stretch sits at the level of the voice it follows.
+            role_db += float((self._style.get("voice_gain_db") or {}).get(preset, 0.0))
             gain = 10.0 ** ((role_db + gain_db) / 20.0)
             pan = float(np.clip(_ROLE_PAN.get(role, 0.0), -1.0, 1.0))
             theta = (pan + 1.0) * (np.pi / 4.0)

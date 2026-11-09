@@ -60,6 +60,7 @@
     "crackle": "crackle"
   },
   "voice_variants": {"pad": ["tapekeys", "tapekeys", "breathpad"]},
+  "voice_gain_db": {"breathpad": -3.5},
   "fx_defaults": {
     "pad": {"lpf_hz": 1800, "reverb": 0.4, "chorus": 0.5},
     "hat": {"lpf_hz": 8000},
@@ -96,6 +97,6 @@
   },
   "role_gain_db": {
     "pad": -4.0,
-    "lead": -2.0
+    "lead": -4.2
   }
 }

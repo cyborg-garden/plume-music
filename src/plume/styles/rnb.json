@@ -149,6 +149,7 @@
     "crash": "kit_crash"
   },
   "voice_variants": {"pad": ["breathpad", "breathpad", "warmpad"]},
+  "voice_gain_db": {"warmpad": 4.8},
   "live_only_roles": [
     "crash"
   ],

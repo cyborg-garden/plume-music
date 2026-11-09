@@ -92,7 +92,8 @@
   "role_gain_db": {
     "kick": -2.0,
     "pad": -3.0,
-    "arp": -5.0,
-    "lead": -2.0
+    "arp": -2.7,
+    "lead": -1.2,
+    "bass": 3.8
   }
 }

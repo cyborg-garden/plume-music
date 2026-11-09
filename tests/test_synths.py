@@ -223,6 +223,7 @@ _OLD_PALETTE = {
     "midwest": {"pad": "airpad", "shimmer": "airpad"},
     "rnb": {"pad": "airpad"},
     "house": {"pad": "housestab", "lead": "pluck"},
+    "hiphop": {"pad": "piano"},
 }
 
 
@@ -269,6 +270,66 @@ def test_the_new_palette_costs_the_planner_about_what_the_old_one_did(style):
         new = min(new, _bar_seconds(style, None, bars))
         old = min(old, _bar_seconds(style, _OLD_PALETTE[style], bars))
     assert new < 1.4 * old, (style, round(new / old, 2))
+
+
+#: The role gains those old voices played at, where the style changed them.
+_OLD_ROLE_DB = {
+    "lofi": {"lead": -2.0},
+    "synthwave": {"arp": -5.0, "lead": -2.0, "bass": -1.0},
+    "house": {"pad": -1.0, "lead": -2.0},
+}
+_K1 = ([1.53512485958697, -2.69169618940638, 1.19839281085285],
+       [1.0, -1.69065929318241, 0.73248077421585])
+_K2 = ([1.0, -2.0, 1.0], [1.0, -1.99004745483398, 0.99007225036621])
+
+
+def _role_lufs(style, role, preset, role_db=None, bars=8, bpm=100.0):
+    """K-weighted loudness of one role alone, on ``preset``, in the style's
+    own pattern for that role."""
+    import copy
+
+    from scipy.signal import lfilter
+
+    from plume.duet import DuetEngine
+    from plume.listen.beat import BeatState
+    from plume.listen.harmony import HarmonyState
+    from plume.mind import BarPlan
+    eng = DuetEngine(style=style, seed=5)
+    eng._style = copy.deepcopy(eng._style)
+    eng._style["voices"][role] = preset
+    eng._style.pop("voice_variants", None)
+    if role_db is not None:
+        eng._style["role_gain_db"][role] = role_db
+        eng._style.pop("voice_gain_db", None)
+    iv = 60.0 / bpm
+    out = []
+    for b in range(bars):
+        plan = BarPlan(bar=b, state="comping", roles={role: 1.0}, gain_db=0.0,
+                       density=0.7, register_ceiling_midi=None, reason="level")
+        beat = BeatState(t_s=0.0, bpm=bpm, confidence=0.9, locked=True, bar=b,
+                         beat_in_bar=0, phase_beats=0.0, next_beat_t_s=iv,
+                         next_downbeat_t_s=4 * iv, beat_interval_s=iv)
+        harm = HarmonyState(t_s=0.0, key="C major", key_conf=0.8,
+                            chord=["C", "Am", "F", "G"][b % 4], chord_conf=0.9,
+                            register_low_midi=None, register_high_midi=None)
+        out.append(eng.render_bar(plan, beat, harm)[: int(4 * iv * SR)])
+    z = lfilter(*_K2, lfilter(*_K1, np.concatenate(out), axis=0), axis=0)
+    return -0.691 + 10.0 * np.log10(float(np.sum(np.mean(z ** 2, axis=0))) + 1e-20)
+
+
+@pytest.mark.parametrize("style,role", [(s, r) for s in sorted(_OLD_PALETTE)
+                                        for r in sorted(_OLD_PALETTE[s])])
+def test_every_new_voice_and_variant_plays_at_the_old_voices_level(style, role):
+    """A variant must not jump: before voice_gain_db, hiphop's tape keys came
+    in 6.9 dB over the piano, and midwest's strings 4.8 dB under the pad they
+    took over from.  Each voice a role can play, at its own gain, must sit
+    within 1.5 dB of the old voice at the old gain."""
+    s = load_style(style)
+    old_db = _OLD_ROLE_DB.get(style, {}).get(role, s["role_gain_db"].get(role))
+    ref = _role_lufs(style, role, _OLD_PALETTE[style][role], role_db=old_db)
+    for preset in dict.fromkeys((s.get("voice_variants") or {}).get(role, [s["voices"][role]])):
+        got = _role_lufs(style, role, preset)
+        assert abs(got - ref) < 1.5, (style, role, preset, round(got - ref, 1))
 
 
 # ---------------------------------------------------------------------------

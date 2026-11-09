@@ -139,6 +139,7 @@
     "crash": "kit_crash"
   },
   "voice_variants": {"pad": ["piano", "piano", "tapekeys"]},
+  "voice_gain_db": {"tapekeys": -6.9},
   "live_only_roles": [
     "crash"
   ],

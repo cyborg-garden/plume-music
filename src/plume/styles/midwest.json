@@ -243,6 +243,7 @@
     "crash": "kit_crash"
   },
   "voice_variants": {"pad": ["breathpad", "strings"]},
+  "voice_gain_db": {"strings": 4.8},
   "fx_defaults": {
     "bass": {
       "lpf_hz": 2500

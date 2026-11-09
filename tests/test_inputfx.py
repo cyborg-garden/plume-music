@@ -401,6 +401,30 @@ def test_the_ceiling_holds_after_any_sound(sound):
     assert np.all(np.isfinite(out))
 
 
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")], ids=["nan", "inf", "-inf"])
+@pytest.mark.parametrize("sound", PLAYED)
+def test_one_bad_sample_does_not_ring_on(sound, bad):
+    """A driver glitch: one sample that is not a number.  Every feedback loop would keep
+    it for the rest of the take, and the band's output with it.  It must cost no more
+    than the buffer it came in."""
+    t = np.arange(400 * N) / SR
+    band = (0.2 * np.sin(2 * np.pi * 220 * t)).astype(np.float32)
+    x = playing(400 * N / SR + 0.1)[:400 * N].copy()
+    x[20 * N + 7] = bad
+    fx = InputFx(SR, N, sound)
+    slot = inputguard.monitor_slot()
+    out = np.zeros((400 * N, 2), dtype=np.float32)
+    for i in range(0, out.shape[0], N):
+        out[i:i + N, 0] = band[i:i + N]
+        out[i:i + N, 1] = band[i:i + N]
+        realtime.mix_monitor(out[i:i + N], x[i:i + N], slot, fx)
+    assert np.all(np.isfinite(out[21 * N:])), "the bad sample rang on"
+    assert np.all(np.isfinite(out)), "her sound passed the bad sample on"
+    assert np.all(np.isfinite(fx.mem))
+    assert all(np.isfinite(v) for v in (fx.env, fx.cg, fx.mg))
+    assert np.abs(out[30 * N:]).max() > 0.05      # and her sound is still there after it
+
+
 def test_mix_monitor_without_a_sound_is_as_it_was():
     t = np.arange(N) / SR
     band = (0.2 * np.sin(2 * np.pi * 220 * t)).astype(np.float32)

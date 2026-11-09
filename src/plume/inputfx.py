@@ -71,6 +71,9 @@ _NO_SUBNORMAL = 1e-18
 _MATCH_RATE = 0.005
 _MATCH_FLOOR = 1e-7
 _MATCH_MOST = 4.0
+#: A buffer whose mean power is not below this is not her playing (full scale is 1): a
+#: NaN or an inf from the driver, which every feedback loop would keep for the whole take.
+_NOT_AUDIO = 1e4
 
 
 def _typed(text) -> str | None:
@@ -322,6 +325,7 @@ class InputFx:
         self.ducked = False
         self.env = 0.0                # compressor: smoothed power
         self.cg = 1.0                 # compressor: gain at the end of the last buffer
+        self.p = 0.0                  # her input's power in this buffer (summed, not mean)
         self.pin = self.pout = 0.0    # level match: her input's power, and the sound's
         self.mg = 1.0                 # level match: gain at the end of the last buffer
         self.lfo_c, self.lfo_s = 1.0, 0.0        # chorus / wow oscillator (cos, sin)
@@ -414,7 +418,15 @@ class InputFx:
         if self.cur == 0:
             return None
         self.x2[0] = x
-        self.x2[1] = x
+        p = float(np.matmul(self.x, self.x))
+        if not p < _NOT_AUDIO * n:
+            # Not a number, or nothing an input can be.  One such sample would go round
+            # every loop here for the rest of the take, and into the band's output with
+            # it: this buffer of her is silence instead, and the tails carry on.
+            self.x2[0] = 0.0
+            p = 0.0
+        self.x2[1] = self.x
+        self.p = p
         f0 = self.fade
         f1 = 0.0 if want != self.cur else min(1.0, f0 + 1.0 / _FADE_IN_BUFFERS)
         self._run[self.cur]()
@@ -451,7 +463,7 @@ class InputFx:
         This follows her own level slowly, so a strum still gets evened out but a switch
         between sounds does not jump at any playing level.  It learns only while she plays.
         """
-        p = float(np.matmul(self.x, self.x))
+        p = self.p
         if p > _MATCH_FLOOR * self.n:
             self.pin += _MATCH_RATE * (p - self.pin)
             self.pout += _MATCH_RATE * (float(np.matmul(y, y)) - self.pout)

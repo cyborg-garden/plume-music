@@ -349,9 +349,14 @@ def make_motif(key: Key, chords: list[Chord], style_melody: dict,
     """1-bar motif on scale tones (chord tones on strong beats, range <= 1.5
     octaves, leaps > 6 st resolve stepwise opposite), then per-chord diatonic
     transposition across the progression. One mini-notation string per bar;
-    all bars share the motif's rhythm."""
+    all bars share the motif's rhythm.
+
+    ``run`` (0..1, default 0) is how often a step keeps going the way the last one
+    went, so the line travels instead of circling the note it started on; it turns
+    back at the edge of the window.  At 0 every step's direction is a coin toss."""
     grid = int(str(style_melody.get("rhythm_grid", "8")))
     density = float(style_melody.get("density", 0.4))
+    run = float(style_melody.get("run", 0.0))
     octave = int(style_melody.get("octave", 5))
     scale = key.scale()
     center = 12 * (octave + 1) + key.tonic
@@ -369,6 +374,7 @@ def make_motif(key: Key, chords: list[Chord], style_melody: dict,
     cur = _nearest_in(_scale_midis(base_pcs, lo, hi), center)
     pitches: list[int] = []
     prev_leap = 0
+    heading = 0
     for idx, s in enumerate(onsets):
         if idx == 0:
             p = cur
@@ -377,12 +383,19 @@ def make_motif(key: Key, chords: list[Chord], style_melody: dict,
         else:
             leap = float(rng.random()) < 0.15
             mag = int(rng.integers(3, 5)) if leap else int(rng.integers(1, 3))
-            sign = 1 if float(rng.random()) < 0.5 else -1
+            coin = float(rng.random())
+            sign = 1 if coin < 0.5 else -1
+            if run > 0.0 and heading:
+                sign = heading if coin < run else -heading
             p = _scale_step(cur, sign * mag, scale, lo, hi)
+            if run > 0.0 and not lo <= p <= hi:
+                p = _scale_step(cur, -sign * mag, scale, lo, hi)
         p = max(lo, min(hi, p))
         if s in strong:
             p = _nearest_in(_scale_midis(base_pcs, lo, hi), p)
         prev_leap = p - cur if idx else 0
+        if prev_leap:
+            heading = 1 if prev_leap > 0 else -1
         pitches.append(p)
         cur = p
 

@@ -164,9 +164,12 @@ def test_off_is_her_input_untouched():
         assert fx.process(x[i:i + N], False) is None
 
 
+@pytest.mark.parametrize("peak_db", [-24.0, -9.0, -3.0], ids=["soft", "normal", "hot"])
 @pytest.mark.parametrize("sound", PLAYED)
-def test_nothing_jumps_in_loudness(sound):
-    x = playing()
+def test_nothing_jumps_in_loudness(sound, peak_db):
+    """At any playing level: a compressor with a fixed makeup gain is as loud as her dry
+    input at one level only, so switching to it at another would jump."""
+    x = playing(peak_db=peak_db)
     dry = np.repeat(x[:x.size // N * N, None], 2, axis=1)
     fx = InputFx(SR, N, sound)
     fx.set_bpm(92)

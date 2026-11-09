@@ -59,6 +59,11 @@ _MAX_ECHO_S = 0.8
 #: the subnormal floats a tail decaying in digital silence would otherwise reach, which
 #: x86 processors handle many times slower.
 _NO_SUBNORMAL = 1e-18
+#: The level match on the compressing sounds: how fast it follows her playing (per buffer,
+#: about a second), the quietest input it learns from (-70 dBFS), and how far it may go.
+_MATCH_RATE = 0.005
+_MATCH_FLOOR = 1e-7
+_MATCH_MOST = 4.0
 
 
 def canonical_sound(text) -> str | None:
@@ -301,6 +306,8 @@ class InputFx:
         self.ducked = False
         self.env = 0.0                # compressor: smoothed power
         self.cg = 1.0                 # compressor: gain at the end of the last buffer
+        self.pin = self.pout = 0.0    # level match: her input's power, and the sound's
+        self.mg = 1.0                 # level match: gain at the end of the last buffer
         self.lfo_c, self.lfo_s = 1.0, 0.0        # chorus / wow oscillator (cos, sin)
         self.fl_c, self.fl_s = 1.0, 0.0          # flutter
         self.echo_d = int(self.slot[1])
@@ -379,6 +386,8 @@ class InputFx:
         if self.fade == 0.0 and self.cur != want:
             self.mem[:] = 0.0              # the new sound starts from silence
             self.cur = want
+            self.pin = self.pout = 0.0
+            self.mg = 1.0
         if self.cur == 0:
             return None
         self.x2[0] = x
@@ -410,6 +419,25 @@ class InputFx:
         self.r += self.cg
         m *= self.r
         self.cg = g
+
+    def _match(self, y):
+        """Bring ``y`` (in place) to her input's loudness, over about a second.
+
+        A compressor or an amp with a fixed makeup gain is as loud as her dry input at
+        one playing level only: quieter playing comes out louder, harder playing quieter.
+        This follows her own level slowly, so a strum still gets evened out but a switch
+        between sounds does not jump at any playing level.  It learns only while she plays.
+        """
+        p = float(np.matmul(self.x, self.x))
+        if p > _MATCH_FLOOR * self.n:
+            self.pin += _MATCH_RATE * (p - self.pin)
+            self.pout += _MATCH_RATE * (float(np.matmul(y, y)) - self.pout)
+        g = (self.pin / self.pout) ** 0.5 if self.pout > 0.0 else 1.0
+        g = _MATCH_MOST if g > _MATCH_MOST else (1.0 / _MATCH_MOST if g < 1.0 / _MATCH_MOST else g)
+        np.multiply(self.steps, g - self.mg, out=self.r)
+        self.r += self.mg
+        y *= self.r
+        self.mg = g
 
     def _fir(self, fir: _Fir, src, dst):
         L1 = fir.L - 1
@@ -467,7 +495,8 @@ class InputFx:
     def _clean(self):
         self.m[:] = self.x
         self._compress(-26.0, 2.5, 0.45, 0.04)
-        self.m *= 1.29
+        self._match(self.m)
+        self.m *= 1.02
         self._reverb(self.room, self.m)
         np.multiply(self.wet, 0.55, out=self.out)
         self.out[0] += self.m
@@ -572,7 +601,8 @@ class InputFx:
         np.tanh(m, out=m)
         m -= 0.11943                                       # tanh(0.12)
         self._fir(self.cab, m, self.m2)
-        self.m2 *= 0.50
+        self._match(self.m2)
+        self.m2 *= 0.94
         self._reverb(self.room, self.m2)
         self.out[0] = self.m2
         self.out[1] = self.m2

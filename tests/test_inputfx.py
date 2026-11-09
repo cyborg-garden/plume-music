@@ -155,6 +155,27 @@ def test_the_echo_lands_where_the_tempo_says():
     assert on > 2.0 * before
 
 
+@pytest.mark.parametrize("before,after", [(120, 80), (80, 140)])
+def test_the_echo_follows_a_tempo_change(before, after):
+    """The band moves tempo mid-take: the next echo lands on the new tempo, not the old."""
+    fx = InputFx(SR, N, "dreamy")
+    fx.set_bpm(before)
+    x = np.zeros(5 * SR, dtype=np.float32)
+    at = 2 * SR + 77
+    x[at:at + 200] = 0.3 * np.hanning(200).astype(np.float32)
+    out = np.zeros((x.size // N * N, 2), dtype=np.float32)
+    for i in range(0, out.shape[0], N):
+        if i == 188 * N:                        # about a second in, before she plays
+            fx.set_bpm(after)
+        y = fx.process(x[i:i + N], False)
+        out[i:i + N] = x[i:i + N, None] if y is None else y
+    env = np.abs(out.sum(axis=1))
+    new, old = inputfx.echo_samples(after, SR), inputfx.echo_samples(before, SR)
+    on_new = env[at + new - 50:at + new + 400].max()
+    on_old = env[at + old - 50:at + old + 400].max()
+    assert on_new > 4.0 * on_old
+
+
 # ------------------------------------------------------------------ the promises
 
 def test_off_is_her_input_untouched():

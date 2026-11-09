@@ -251,49 +251,45 @@ def clean_bar(frames, band_pcs=(), band_root=None) -> HerBar:
     of each frame that is the band comes out as the band's own chord tones (its
     root, ``band_root``, from the bass), and the frame counts by her share.  Chroma
     is None when the bar is mostly band, or empty; bass is None when not given."""
-    acc = np.zeros(12)
-    per_frame = []
-    low = np.zeros(12)
-    leaks = []
+    # One array pass, not a loop per frame: this runs on the planner every bar.
+    kept = [f for f in frames if float(np.sum(f[0])) > 0.0]
+    if not kept:
+        return HerBar(None, 0.0)
+    c = np.asarray([f[0] for f in kept], dtype=float)
+    c /= c.sum(axis=1, keepdims=True)
+    leak = np.clip(np.asarray([float(f[1] or 0.0) for f in kept]), 0.0, 1.0)
     tones = list(band_pcs)
-    template = np.zeros(12)
     if tones:
+        template = np.zeros(12)
         template[tones] = 1.0 / len(tones)
-    root = np.zeros(12)
-    if band_root is not None:
-        root[int(band_root) % 12] = 1.0
-    has_low = False
-    for frame in frames:
-        chroma, leak = frame[0], frame[1]
-        c = np.asarray(chroma, dtype=float)
-        s = float(c.sum())
-        if s <= 0.0:
-            continue
-        leak = min(1.0, max(0.0, float(leak or 0.0)))
-        leaks.append(leak)
-        c = c / s
-        if leak > 0.0 and tones:
-            c = np.maximum(0.0, c - leak * template)
-        acc += (1.0 - leak) * c
-        cs = float(c.sum())
-        if cs > 1e-9 and leak <= LEAK_MAX:
-            q = c[c > 0.0] / cs
-            per_frame.append(float(np.exp(-np.sum(q * np.log(q)))))
-        if len(frame) > 2 and frame[2] is not None:
-            has_low = True
-            b = np.asarray(frame[2], dtype=float)
-            bs = float(b.sum())
-            if bs > 0.0:
-                b = b / bs
-                if leak > 0.0 and band_root is not None:
-                    b = np.maximum(0.0, b - leak * root)
-                low += (1.0 - leak) * bs * b
-    share = float(np.mean(leaks)) if leaks else 0.0
-    bass = (low / float(low.sum())) if has_low and float(low.sum()) > 1e-9 else None
+        c = np.maximum(0.0, c - leak[:, None] * template)
+    acc = ((1.0 - leak)[:, None] * c).sum(axis=0)
+    cs = c.sum(axis=1)
+    ok = (cs > 1e-9) & (leak <= LEAK_MAX)
+    q = c[ok] / cs[ok, None]
+    with np.errstate(divide="ignore", invalid="ignore"):
+        per_frame = np.exp(-np.sum(np.where(q > 0.0, q * np.log(q), 0.0), axis=1))
+    lows = [(i, f[2]) for i, f in enumerate(kept) if len(f) > 2 and f[2] is not None]
+    bass = None
+    if lows:
+        b = np.asarray([lo for _, lo in lows], dtype=float)
+        lk = leak[[i for i, _ in lows]]
+        bs = b.sum(axis=1)
+        live = bs > 0.0
+        b, bs, lk = b[live], bs[live], lk[live]
+        b /= bs[:, None]
+        if band_root is not None:
+            root = np.zeros(12)
+            root[int(band_root) % 12] = 1.0
+            b = np.maximum(0.0, b - lk[:, None] * root)
+        low = ((1.0 - lk) * bs)[:, None] * b
+        low = low.sum(axis=0) if low.size else np.zeros(12)
+        bass = low / float(low.sum()) if float(low.sum()) > 1e-9 else None
+    share = float(leak.mean())
     if share > LEAK_MAX or float(acc.sum()) <= 1e-9:
         return HerBar(None, share)
     return HerBar(acc / float(acc.sum()), share, bass,
-                  float(np.median(per_frame)) if per_frame else None)
+                  float(np.median(per_frame)) if per_frame.size else None)
 
 
 def colour(sym: str, bar: int) -> str:

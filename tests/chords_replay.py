@@ -71,7 +71,7 @@ def replay(take, *, verbose=False):
         heard = bar - 2
         if heard in starts and heard + 1 in starts:
             w0, w1 = starts[heard], starts[heard + 1]
-            bar_frames = [(c, 0.0, lo) for t, c, lo in frames if w0 <= t < w1]
+            bar_frames = [(c, lo) for t, c, lo in frames if w0 <= t < w1]
             follower.hear(heard, hc.clean_bar(bar_frames), playing=bool(r.get("playing")))
         if not r.get("key") or not r.get("chord") or bar + 1 not in by_bar:
             continue

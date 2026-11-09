@@ -182,71 +182,22 @@ def test_every_decision_is_a_plain_logged_dict():
 
 # ------------------------------------------------------------- room mic bleed
 
-def test_clean_bar_on_direct_input_is_her_chroma():
-    frames = [(pcs_chroma(AM), 0.0)] * 10
-    h = hc.clean_bar(frames, hc.chord_tones("G7"))
-    assert h.share == 0.0 and np.allclose(h.chroma, pcs_chroma(AM))
+def test_clean_bar_is_her_chroma_and_bass():
+    frames = [(pcs_chroma(AM), pcs_chroma([9]))] * 5 + [(pcs_chroma(AM), None)] * 5
+    h = hc.clean_bar(frames)
+    assert np.allclose(h.chroma, pcs_chroma(AM)) and np.allclose(h.bass, pcs_chroma([9]))
+    assert h.notes == pytest.approx(3.0)
+    assert hc.clean_bar([(pcs_chroma(AM),)] * 3).bass is None
 
 
-def test_clean_bar_takes_the_bands_own_chord_out():
-    """Her Am under the band's G7 at 40% of the mic: her chord still wins."""
-    band = pcs_chroma(hc.chord_tones("G7"))
-    mixed = [(0.6 * pcs_chroma(AM) + 0.4 * band, 0.4)] * 10
-    raw = hc.read_bar(mixed[0][0], hc.candidates(KEY, STYLE))
-    clean = hc.read_bar(hc.clean_bar(mixed, hc.chord_tones("G7")).chroma,
-                        hc.candidates(KEY, STYLE))
-    assert clean.sym == "Am7"
-    assert clean.fit > raw.fit
-
-
-def test_a_bar_that_is_mostly_band_is_no_evidence():
-    frames = [(pcs_chroma(hc.chord_tones("Cmaj7")), 0.9)] * 10
-    h = hc.clean_bar(frames, hc.chord_tones("Cmaj7"))
-    assert h.chroma is None and h.share > hc.LEAK_MAX
-
-
-def test_melody_over_the_bands_bleed_does_not_hold_the_bands_chord():
-    """The feedback trap: she plays melody, the mic hears the band's chord, and the
-    band must not take its own chord for hers and stop moving."""
-    rng = np.random.default_rng(7)
+def test_a_bar_with_no_pitch_is_no_evidence_and_says_so():
+    """Heard by level but nothing pitched in it (a knock): no chord, and the log
+    does not blame the band, which a direct input cannot hear."""
+    assert hc.clean_bar([(np.zeros(12), None)] * 4).chroma is None
     f = hc.ChordFollower()
-    for heard in range(12):
-        band_sym = TEMPLATE[heard % 4]
-        band = pcs_chroma(hc.chord_tones(band_sym))
-        frames = [(0.55 * pcs_chroma([n]) + 0.45 * band, 0.45)
-                  for n in rng.choice(SCALE, 4, replace=False) for _ in range(3)]
-        f.hear(heard, hc.clean_bar(frames, hc.chord_tones(band_sym)), playing=True)
-        d = f.decide(heard + 2, KEY, STYLE, TEMPLATE[(heard + 2) % 4])
-        assert d["source"] == "template", (heard, d)
-
-
-def test_closed_loop_the_band_does_not_keep_hearing_its_own_chord():
-    """With a share it can trust (stated here, which nothing live can do; see the
-    room-mic tests): the band follows her Am, so the mic is full of Am;
-    then she moves to a stepwise melody.  Heard raw, the band's own Am would read as hers
-    and hold the band there for good.  With its share taken out, the template is
-    back within two bars of her melody."""
-    rng = np.random.default_rng(11)
-    f = hc.ChordFollower()
-    sounded = {}
-    melody_from = 10
-    for heard in range(24):
-        bar = heard + 2
-        band_sym = sounded.get(heard, TEMPLATE[heard % 4])
-        band = pcs_chroma(hc.chord_tones(band_sym))
-        if heard < melody_from:
-            mine = [pcs_chroma(AM)] * 12
-        else:                               # four notes up the scale, one at a time
-            start = int(rng.integers(7))
-            mine = [pcs_chroma([SCALE[(start + j) % 7]]) for j in range(4) for _ in range(3)]
-        frames = [(0.5 * m + 0.5 * band, 0.5) for m in mine]
-        f.hear(heard, hc.clean_bar(frames, hc.chord_tones(band_sym)), playing=True)
-        d = f.decide(bar, KEY, STYLE, TEMPLATE[bar % 4])
-        sounded[bar] = d["chord"]
-        if heard < melody_from and heard >= 2:
-            assert d["source"] == "her_hold"
-        if heard >= melody_from + 2:
-            assert d["source"] == "template", (heard, d)
+    f.hear(0, hc.clean_bar([(np.zeros(12), None)] * 4), playing=True)
+    d = f.decide(2, KEY, STYLE, TEMPLATE[2])
+    assert d["source"] == "template" and "pitch" in d["reason"]
 
 
 # ------------------------------------------------------------- through the ear
@@ -265,17 +216,17 @@ VOICINGS = {"C": (48, 55, 60, 64, 67), "Am": (45, 52, 57, 60, 64),
             "F": (41, 48, 53, 57, 60), "G": (43, 50, 55, 59, 62)}
 
 
-def _bars_of(audio, bar_s, sr=SR, leaks=None):
+def _bars_of(audio, bar_s, sr=SR):
     fe = FeatureExtractor(sr=sr)
     frames = []
     for i in range(0, audio.size, 2048):
         frames.extend(fe.process(audio[i:i + 2048].astype(np.float32)))
     n = int(audio.size / sr / bar_s)
     bars = [[] for _ in range(n)]
-    for k, fr in enumerate(frames):
+    for fr in frames:
         b = int(fr.t_s // bar_s)
         if b < n:
-            bars[b].append((fr.chroma, 0.0 if leaks is None else leaks[k], fr.chroma_low))
+            bars[b].append((fr.chroma, fr.chroma_low))
     return bars
 
 
@@ -304,7 +255,7 @@ def test_on_a_room_mic_the_band_never_takes_a_chord_for_hers():
     tell her held Am from the band's own: the template plays, and says why."""
     f = hc.ChordFollower(band_in_mic=True)
     for heard in range(12):
-        f.hear(heard, hc.clean_bar([(pcs_chroma(AM), 0.0)] * 10), playing=True)
+        f.hear(heard, hc.clean_bar([(pcs_chroma(AM),)] * 10), playing=True)
         d = f.decide(heard + 2, KEY, STYLE, TEMPLATE[(heard + 2) % 4])
         assert d["source"] == "template" and d["chord"] == TEMPLATE[(heard + 2) % 4]
         assert "room mic" in d["reason"]

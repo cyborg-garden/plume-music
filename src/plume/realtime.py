@@ -4871,7 +4871,7 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
             later_evs = list(shared["events"]) if entry is not None else []
             onsets = [t for t in shared["onsets"] if w_start <= t < w_end]
             shared["onsets"] = [t for t in shared["onsets"] if t >= w_end]
-            bar_frames = [(c, 0.0, low) for t, c, low in shared["chroma"]
+            bar_frames = [(c, low) for t, c, low in shared["chroma"]
                           if w_start <= t < w_end]
             bar_chroma = [e[0] for e in bar_frames]
             shared["chroma"] = [e for e in shared["chroma"] if e[0] >= w_end]

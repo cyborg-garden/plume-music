@@ -26,8 +26,8 @@ room (speakers 6 dB down) it put the band at under half the mic while she was
 silent and the band was all it heard, and at a fifth of it with no bleed at all.
 Taking that share of the band's chord out leaves the band's chord standing, and
 it read as hers: a held Em from the band's own Cmaj7.  So a follower made with
-``band_in_mic`` (any input but a direct one) keeps the template and says why.
-:func:`clean_bar` can still take a stated share out, for an input that knows it.
+``band_in_mic`` (any input but a direct one or MIDI) keeps the template and says
+why.
 
 Pure: plain numbers in, a plain dict out, no clock, no device, no rng.
 """
@@ -68,8 +68,6 @@ NOTES_MIN = 2.0
 #: low C as C major.  Measured on rendered tones: single notes 0.0-0.20 (dull or
 #: bright, short or ringing), strummed triads 0.30-0.43.  Not tuned on any take.
 BALANCE_MIN = 0.25
-#: A bar where the band is more than this share of the mic tells us nothing of hers.
-LEAK_MAX = 0.6
 #: Her loop lengths in bars, longest first: an established longer loop knows more
 #: than the hold inside it.
 LOOP_PERIODS = (8, 4, 2, 1)
@@ -114,10 +112,9 @@ class Reading:
 
 @dataclass(frozen=True)
 class HerBar:
-    """One bar of hers as heard: chroma (None when the mic was mostly band), the
-    band's share of the mic, her bass chroma, and how many notes sound at once."""
+    """One bar of hers as heard: chroma (None when nothing had pitch), her bass
+    chroma, and how many notes sound at once."""
     chroma: np.ndarray | None
-    share: float = 0.0
     bass: np.ndarray | None = None
     notes: float | None = None
 
@@ -223,73 +220,26 @@ def read_bar(chroma, cands, bass=None, notes=None) -> Reading | None:
                    why)
 
 
-def chord_tones(sym: str | None) -> tuple[int, ...]:
-    """Pitch classes of a chord symbol; empty when there is none or it won't parse."""
-    if not sym:
-        return ()
-    try:
-        ch = parse_chord(sym)
-    except ValueError:
-        return ()
-    return tuple(sorted({(ch.root + i) % 12 for i in ch.intervals}))
-
-
-def chord_root(sym: str | None) -> int | None:
-    """Root pitch class of a chord symbol, or None."""
-    if not sym:
-        return None
-    try:
-        return parse_chord(sym).root % 12
-    except ValueError:
-        return None
-
-
-def clean_bar(frames, band_pcs=(), band_root=None) -> HerBar:
-    """Her share of one bar.
-
-    ``frames``: (chroma, band share of the mic[, bass chroma]) per frame.  The share
-    of each frame that is the band comes out as the band's own chord tones (its
-    root, ``band_root``, from the bass), and the frame counts by her share.  Chroma
-    is None when the bar is mostly band, or empty; bass is None when not given."""
+def clean_bar(frames) -> HerBar:
+    """Her bar from its frames: ``(chroma[, bass chroma])`` each, as heard on an input
+    the band cannot reach.  Chroma is None when nothing in the bar has pitch; bass
+    is None when no frame carries one."""
     # One array pass, not a loop per frame: this runs on the planner every bar.
     kept = [f for f in frames if float(np.sum(f[0])) > 0.0]
     if not kept:
-        return HerBar(None, 0.0)
+        return HerBar(None)
     c = np.asarray([f[0] for f in kept], dtype=float)
     c /= c.sum(axis=1, keepdims=True)
-    leak = np.clip(np.asarray([float(f[1] or 0.0) for f in kept]), 0.0, 1.0)
-    tones = list(band_pcs)
-    if tones:
-        template = np.zeros(12)
-        template[tones] = 1.0 / len(tones)
-        c = np.maximum(0.0, c - leak[:, None] * template)
-    acc = ((1.0 - leak)[:, None] * c).sum(axis=0)
-    cs = c.sum(axis=1)
-    ok = (cs > 1e-9) & (leak <= LEAK_MAX)
-    q = c[ok] / cs[ok, None]
+    acc = c.sum(axis=0)
     with np.errstate(divide="ignore", invalid="ignore"):
-        per_frame = np.exp(-np.sum(np.where(q > 0.0, q * np.log(q), 0.0), axis=1))
-    lows = [(i, f[2]) for i, f in enumerate(kept) if len(f) > 2 and f[2] is not None]
+        per_frame = np.exp(-np.sum(np.where(c > 0.0, c * np.log(c), 0.0), axis=1))
+    lows = [f[1] for f in kept if len(f) > 1 and f[1] is not None]
     bass = None
     if lows:
-        b = np.asarray([lo for _, lo in lows], dtype=float)
-        lk = leak[[i for i, _ in lows]]
-        bs = b.sum(axis=1)
-        live = bs > 0.0
-        b, bs, lk = b[live], bs[live], lk[live]
-        b /= bs[:, None]
-        if band_root is not None:
-            root = np.zeros(12)
-            root[int(band_root) % 12] = 1.0
-            b = np.maximum(0.0, b - lk[:, None] * root)
-        low = ((1.0 - lk) * bs)[:, None] * b
-        low = low.sum(axis=0) if low.size else np.zeros(12)
-        bass = low / float(low.sum()) if float(low.sum()) > 1e-9 else None
-    share = float(leak.mean())
-    if share > LEAK_MAX or float(acc.sum()) <= 1e-9:
-        return HerBar(None, share)
-    return HerBar(acc / float(acc.sum()), share, bass,
-                  float(np.median(per_frame)) if per_frame.size else None)
+        b = np.asarray(lows, dtype=float)
+        low = b[b.sum(axis=1) > 0.0].sum(axis=0) if b.size else np.zeros(12)
+        bass = low / float(low.sum()) if float(np.sum(low)) > 1e-9 else None
+    return HerBar(acc / float(acc.sum()), bass, float(np.median(per_frame)))
 
 
 def colour(sym: str, bar: int) -> str:
@@ -321,7 +271,7 @@ class ChordFollower:
 
     def hear(self, bar: int, her, *, playing: bool) -> None:
         """``her``: her bar, a :class:`HerBar` from :func:`clean_bar` (or a bare
-        chroma).  No chroma while ``playing`` means the mic was mostly band."""
+        chroma).  No chroma while ``playing``: she was heard but nothing had pitch."""
         b = int(bar)
         if not isinstance(her, HerBar):
             her = HerBar(None if her is None else np.asarray(her, dtype=float))
@@ -371,7 +321,7 @@ class ChordFollower:
         last = reads.get(heard_bar)
         evidence = [b for b, r in reads.items() if isinstance(r, Reading)]
         if not evidence:
-            why = ("she is too far under the band to hear" if last == _DEAF
+            why = ("nothing she played had a pitch to read" if last == _DEAF
                    else "she has not played a bar yet")
             return out(template, "template", f"template: {why}", last=last)
         if heard_bar - evidence[-1] >= STALE_BARS:

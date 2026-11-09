@@ -175,6 +175,28 @@ def test_a_note_ends_at_silence_not_with_a_click(name, dur):
 
 
 @pytest.mark.parametrize("name", NEW)
+def test_darker_and_brighter_move_every_new_voice(name):
+    """The live tone cues run on the bus (plume.fx.BusTone), after the voices.
+    Each new voice must still carry a top end they can take off and add."""
+    from plume import fx
+    f = 55.0 if name == "synthbass" else 261.63
+    notes = [_st(name, f=f * 2 ** (k / 12), dur=0.45, seed=k) for k in (0, 4, 7, 12, 7, 4)]
+    y = np.concatenate([np.pad(x, ((0, max(0, SR // 2 - x.shape[0])), (0, 0)))[: SR // 2]
+                        for x in notes]).astype(np.float32)
+    bars = [y[i:i + SR] for i in range(0, y.shape[0] - SR + 1, SR)]
+
+    def top(x):
+        m = np.asarray(x, dtype=np.float64).mean(axis=1)
+        s = np.abs(np.fft.rfft(m)) ** 2
+        return s[np.fft.rfftfreq(m.size, 1 / SR) >= 4000.0].sum()
+    plain = top(np.concatenate(bars[1:]))
+    for tilt, check in ((-1.0, lambda r: r < 0.5), (1.0, lambda r: r > 1.5)):
+        tone = fx.BusTone(SR)
+        out = np.concatenate([tone.process(b, tilt=tilt, wet=0.0) for b in bars][1:])
+        assert plain > 0.0 and check(top(out) / plain), (name, tilt, top(out) / plain)
+
+
+@pytest.mark.parametrize("name", NEW)
 def test_section_energy_brightens_every_new_voice_offline(name):
     """Offline compose dims a tonal voice in low-energy sections through its
     brightness params (engine._energy_params).  The FM keys, the bell and the

@@ -138,6 +138,7 @@
     "crackle": "crackle",
     "crash": "kit_crash"
   },
+  "voice_variants": {"pad": ["piano", "piano", "tapekeys"]},
   "live_only_roles": [
     "crash"
   ],

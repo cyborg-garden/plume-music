@@ -12,6 +12,7 @@ import threading
 
 import numpy as np
 import pytest
+from conftest import needs_laptop_speed  # noqa: E402
 
 from plume import fx
 from plume.sim import _LeadCues
@@ -191,6 +192,7 @@ def _live_take(tmp_path, tag, cue=None):
     return fake.stream.output, [r for r in rows if isinstance(r.get("bar"), int)]
 
 
+@needs_laptop_speed
 def test_darker_in_a_live_take_darkens_what_the_band_plays(tmp_path, consent):
     base_out, _ = _live_take(tmp_path, "base")
     out, rows = _live_take(tmp_path, "dark", cue="darker")

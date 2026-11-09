@@ -2813,6 +2813,12 @@ SIGTERM does not land, the output says so and names the command to run:
 
   plume stop --pid 4212 --force    add SIGKILL as a fourth rung
 
+On Windows the signal rung is CTRL_BREAK_EVENT (the session ends gracefully on
+it, as on Ctrl-C), and --force ends the process with TerminateProcess.
+Ctrl-Break is only sent to a session the gui or plume voice started, which
+leads its own process group; one started from a terminal is reported as
+unreachable from here, not wedged.
+
 Forcing costs the tail and ending.json, not the recording — since v1.3 the
 take is streamed to disk as it happens, so everything up to the last flush
 survives.
@@ -3009,8 +3015,9 @@ the ground truth for the full arrangement."""
 
 _CUE_EPILOG = """\
 Send one cue to a running 'plume lead' / 'plume jam --role lead' session over
-a local AF_UNIX socket ($PLUME_SOCKET, else <tmpdir>/plume-live.sock; --socket
-overrides). The session queues it and applies it at --at; it lands in the
+a local socket ($PLUME_SOCKET, else <tmpdir>/plume-live.sock; --socket
+overrides). On Windows, which has no unix sockets, that path is a private file
+naming a loopback port and a secret instead; nothing else changes. The session queues it and applies it at --at; it lands in the
 decision log with its effect.
 
   plume cue "darker"
@@ -3487,7 +3494,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "voice", parents=[common],
         help="play a tap-start take you can talk to: 'plume, stop', 'plume, "
              "restart', 'plume, busier', 'plume, sparser' (plays sound; speech "
-             "is transcribed on this machine; needs mlx-whisper)",
+             "is transcribed on this machine; needs the voice extra)",
     )
     p.add_argument("prompt", help="what to play, e.g. 'lofi midwest emo in F major'")
     p.add_argument("--base", default=".", help="where takesN directories go")
@@ -3503,7 +3510,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser(
         "voice-replay", parents=[common],
         help="what the speech model hears in a recording, window by window, and whether "
-             "it would count as a command (no device, no sound; needs mlx-whisper)",
+             "it would count as a command (no device, no sound; needs the voice extra)",
     )
     p.add_argument("path", help="a WAV, e.g. a take's human.wav or voice.wav")
     p.set_defaults(func=cmd_voice_replay)

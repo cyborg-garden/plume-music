@@ -10,6 +10,7 @@ of it is testable without a device.
 import math
 
 import pytest
+from conftest import needs_laptop_speed  # noqa: E402
 
 from plume.bandentry import (FOLLOW, FOLLOW_CUE_HOLD_BARS, FOLLOW_DENSITY_MAX,
                              FOLLOW_DENSITY_MIN, FOLLOW_DENSITY_STEP, FOLLOW_GAIN_MAX_DB,
@@ -247,6 +248,7 @@ def consent(tmp_path, monkeypatch, plume_registry):
     monkeypatch.setenv(realtime.AUDIO_CONSENT_ENV, "1")   # the FAKE device only
 
 
+@needs_laptop_speed
 def test_a_direct_take_comes_down_when_she_plays_softly(tmp_path, consent):
     import json
 

@@ -57,6 +57,7 @@ import sys
 import tempfile
 import threading
 import time
+import weakref
 from pathlib import Path
 
 import numpy as np
@@ -73,6 +74,49 @@ SR = realtime.SR
 
 #: The longest ``hold`` can pause the fake device: a wedge must still fail the test.
 HOLD_MAX_S = 30.0
+#: On a shared runner the fake device waits while the ear is this far behind it: more
+#: than this much of the input not yet read by the analysis thread.
+EAR_BEHIND_S = 0.5
+#: ... unless nothing has read that ring for this long: its reader has finished (a
+#: take's tail plays on after the ear has stopped), and waiting would only stall.
+EAR_GONE_S = 1.0
+#: Every live ring the transports feed the ear through (in, machine, voice).
+_EAR_RINGS: "weakref.WeakSet" = weakref.WeakSet()
+
+
+def _watch_the_ear() -> None:
+    """Note each ring, and when its reader last read it."""
+    ring = realtime.RingBuffer
+    if getattr(ring, "_ear_watched", False):
+        return
+    real_init, real_read = ring.__init__, ring.read
+
+    def __init__(self, *a, **kw):
+        real_init(self, *a, **kw)
+        self._ear_read_at = time.perf_counter()
+        _EAR_RINGS.add(self)
+
+    def read(self, *a, **kw):
+        self._ear_read_at = time.perf_counter()
+        return real_read(self, *a, **kw)
+
+    ring.__init__, ring.read, ring._ear_watched = __init__, read, True
+
+
+def ear_behind() -> bool:
+    """Whether the analysis thread has fallen behind a fake device's input."""
+    now = time.perf_counter()
+    for ring in list(_EAR_RINGS):
+        if (ring.available > EAR_BEHIND_S * SR
+                and now - getattr(ring, "_ear_read_at", now) < EAR_GONE_S):
+            return True
+    return False
+
+
+# Before any transport builds its rings, so every one of them is watched.
+if os.environ.get("PLUME_SKIP_MACHINE_SPEED") == "1":
+    _watch_the_ear()
+
 #: A device table that satisfies ``_resolve_device``: one duplex device.
 DUPLEX_DEVICES = [{"name": "Fake Duplex", "max_input_channels": 2,
                    "max_output_channels": 2}]
@@ -107,6 +151,14 @@ class FakeAudioStream:
         self._loop_human = bool(loop_human)
         #: while this says so, the device waits, as if the test had paused time.
         self._hold = hold
+        if os.environ.get("PLUME_SKIP_MACHINE_SPEED") == "1":
+            # A shared runner can starve the ear of CPU until it falls whole bars
+            # behind a fast fake playhead: no key settles, the band never comes in,
+            # and that reads as a broken band.  A real device at real time leaves
+            # the ear seconds to spare, so here the device waits for it instead.
+            # A fast machine never waits, so it still runs at full speed.
+            self._hold = (ear_behind if hold is None
+                          else (lambda: hold() or ear_behind()))
         #: speaker -> room -> mic path.  None = headphones (perfect isolation).
         self._bleed = (None if bleed_db is None
                        else float(10.0 ** (float(bleed_db) / 20.0)))
@@ -352,6 +404,100 @@ def short_socket_path(name: str) -> str:
     return str(p)
 
 
+# ------------------------------------------------------------------ other platforms
+#
+# Each mark says exactly which POSIX feature a test needs, so a Windows run skips
+# only that and the reason reads as a fact.  The Windows-side logic each one
+# guards is tested on every OS in tests/test_cross_platform.py.
+
+WINDOWS = sys.platform == "win32"
+#: POSIX file modes: Windows' os.chmod only toggles read-only.
+needs_posix_modes = pytest.mark.skipif(WINDOWS, reason="POSIX file modes")
+#: SIGINT/SIGTERM/SIGKILL sent with os.kill: on Windows that is TerminateProcess.
+needs_posix_signals = pytest.mark.skipif(WINDOWS, reason="POSIX signals")
+needs_fifo = pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="no FIFOs here")
+#: An endless device file: POSIX has one, Windows does not.
+DEV_ZERO = os.path.join(os.sep, "dev", "zero")
+needs_dev_zero = pytest.mark.skipif(not os.path.exists(DEV_ZERO), reason="no endless device file here")
+needs_unix_sockets = pytest.mark.skipif(not hasattr(__import__("socket"), "AF_UNIX"),
+                                        reason="no AF_UNIX here")
+
+
+def _can_symlink() -> bool:
+    probe = Path(tempfile.mkdtemp(prefix="plume-link-"))
+    try:
+        (probe / "l").symlink_to(probe, target_is_directory=True)
+        return True
+    except (OSError, NotImplementedError):
+        return False
+    finally:
+        try:
+            (probe / "l").unlink()
+        except OSError:
+            pass
+        probe.rmdir()
+
+
+#: Windows makes symlinks only for administrators or in developer mode.
+needs_symlinks = pytest.mark.skipif(not _can_symlink(), reason="cannot make symlinks here")
+
+
+def _has_dir_fds() -> bool:
+    from plume import oscompat
+    return oscompat.DIR_FDS
+
+
+#: A folder opened by handle, so a swap of its name after the check changes nothing.
+needs_dir_fds = pytest.mark.skipif(not _has_dir_fds(), reason="no dir_fd support here")
+
+
+#: A test that reads a fake device's output by the sample, or the planner's own
+#: lead time, at a fast playhead (up to 14x).  It proves the planner keeps up, which
+#: holds on a laptop and not on a shared 2-4 core CI runner, where it fails as if the
+#: music had regressed.  CI sets PLUME_SKIP_MACHINE_SPEED=1; every local run keeps them.
+needs_laptop_speed = pytest.mark.skipif(
+    os.environ.get("PLUME_SKIP_MACHINE_SPEED") == "1",
+    reason="needs a laptop-speed CPU to keep up with a fast fake playhead (skipped in CI)")
+
+#: The fastest a fake playhead runs on a shared runner, for the live-path tests that
+#: check what the band did rather than how fast the planner did it.
+SHARED_RUNNER_RATE_X = 3.0
+
+
+def playhead_rate(rate_x: float) -> float:
+    """``rate_x`` for a live-path test, slowed to SHARED_RUNNER_RATE_X on a shared runner.
+
+    Starve a runner of CPU and the planner falls a whole bar behind a 12x playhead, so
+    every bar lands in the past, or the ear never catches up with the player.  The take
+    comes out silent, or with no band, which reads as a broken band.
+    These tests still run there, just slower: a band that really is broken is silent at
+    any speed.  Keeping up at full speed stays a local check (needs_laptop_speed).
+    """
+    if os.environ.get("PLUME_SKIP_MACHINE_SPEED") == "1":
+        return min(float(rate_x), SHARED_RUNNER_RATE_X)
+    return float(rate_x)
+
+
+def signal_self(sig) -> None:
+    """Deliver ``sig`` to this process, the way another process would.
+
+    On POSIX that is ``os.kill``.  On Windows ``os.kill`` on our own pid would be
+    TerminateProcess, ending the test run, so the handler is invoked by raise_signal.
+    """
+    import signal as _signal
+    if WINDOWS:
+        _signal.raise_signal(sig)
+    else:
+        os.kill(os.getpid(), sig)
+
+
+def closing_signal_params() -> list:
+    """SIGTERM, plus SIGHUP or SIGBREAK where this platform has them."""
+    import signal as _signal
+    from plume import oscompat
+    return [getattr(_signal, n) for n in oscompat.closing_signals()]
+
+
 def wait_until(predicate, *, timeout: float = 5.0, poll: float = 0.01) -> bool:
     """Poll ``predicate`` until it is true or the timeout runs out."""
     until = time.monotonic() + float(timeout)
@@ -360,6 +506,61 @@ def wait_until(predicate, *, timeout: float = 5.0, poll: float = 0.01) -> bool:
             return True
         time.sleep(poll)
     return bool(predicate())
+
+
+# ------------------------------------------------------------------ CI shards
+#
+# The whole suite takes most of an hour on one core, and CI runs it on three
+# operating systems.  ``PLUME_TEST_SHARD=K/N`` keeps the tests whose node id hashes
+# to K of N, so N jobs together run every test exactly once.  Unset: everything.
+
+SHARD_ENV = "PLUME_TEST_SHARD"
+
+
+def _shard() -> tuple[int, int] | None:
+    raw = os.environ.get(SHARD_ENV, "").strip()
+    if not raw:
+        return None
+    k, _, n = raw.partition("/")
+    k, n = int(k), int(n)
+    if not 1 <= k <= n:
+        raise pytest.UsageError(f"{SHARD_ENV} must be K/N with 1 <= K <= N, got {raw!r}")
+    return k, n
+
+
+#: Tests whose failure is never a lost race: they check consent, file hardening and
+#: process safety, which a slow runner cannot make fail.  CI reruns a failed live-path
+#: test (``--reruns``) because a stalled shared runner can leave one behind its fake
+#: playhead; these never get that second chance, so a real regression cannot pass on
+#: a lucky retry.
+NEVER_RERUN_FILES = {"test_audio_consent.py", "test_cross_platform.py",
+                     "test_callback_purity.py"}
+NEVER_RERUN_WORDS = ("consent", "symlink", "secret", "token", "private", "refus")
+
+
+def _never_rerun(item) -> bool:
+    name = os.path.basename(str(item.fspath))
+    return name in NEVER_RERUN_FILES or any(w in item.name.lower() for w in NEVER_RERUN_WORDS)
+
+
+def pytest_collection_modifyitems(config, items):
+    if config.pluginmanager.hasplugin("rerunfailures"):
+        for item in items:
+            if _never_rerun(item):
+                item.add_marker(pytest.mark.flaky(reruns=0))
+    shard = _shard()
+    if shard is None:
+        return
+    import zlib
+    k, n = shard
+    kept, dropped = [], []
+    for item in items:
+        # The node id, with / separators on every OS, so a test lands in the same shard.
+        nodeid = item.nodeid.replace("\\", "/")
+        (kept if zlib.crc32(nodeid.encode()) % n == k - 1 else dropped).append(item)
+    if dropped:
+        config.hook.pytest_deselected(items=dropped)
+    items[:] = kept
 
 
 # ------------------------------------------------------------------ fixtures

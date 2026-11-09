@@ -1,0 +1,79 @@
+name: tests
+
+# The whole suite, on macOS, Linux and Windows, with Python 3.11 and 3.12.
+#
+# No runner has an audio device, and no test may open one: live paths run on the
+# fake device in tests/conftest.py, and PLUME_ALLOW_AUDIO is never set here.
+#
+# The suite takes most of an hour on one core, so each OS and Python runs it as
+# six shards (PLUME_TEST_SHARD, see tests/conftest.py).  Together the six run
+# every test once; none is a subset.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: ${{ matrix.os }} / py${{ matrix.python }} / ${{ matrix.shard }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python: ["3.11", "3.12"]
+        shard: ["1/6", "2/6", "3/6", "4/6", "5/6", "6/6"]
+    env:
+      PLUME_TEST_SHARD: ${{ matrix.shard }}
+      # A handful of tests prove the planner keeps up with a 12x fake playhead,
+      # which a shared runner cannot; they run locally (needs_laptop_speed).
+      PLUME_SKIP_MACHINE_SPEED: "1"
+      PYTHONUNBUFFERED: "1"
+      PYTHONUTF8: "1"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      # PortAudio and libsndfile, so sounddevice and soundfile import on Linux.
+      # macOS and Windows wheels bundle their own.  sounddevice is installed (the
+      # play extra) so its host-API and device-listing code is imported and run;
+      # PortAudio lists no devices on a runner and nothing opens a stream.
+      - name: System libraries (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libportaudio2 libsndfile1
+
+      # node runs the gui page's own logic tests; they skip without it.
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
+        with:
+          node-version: "22"
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[play,midi]" pytest "pytest-rerunfailures==16.7"
+
+      - name: Test
+        shell: bash
+        run: |
+          unset PLUME_ALLOW_AUDIO
+          # --reruns: a live-path test can lose a race against a fake playhead when
+          # a shared runner stalls; a rerun tells that from a real failure, and -rR
+          # lists every rerun so none is hidden.  Consent, hardening and process-safety
+          # tests are never rerun (NEVER_RERUN_FILES in tests/conftest.py).
+          python -m pytest -p no:cacheprovider -q -rfEsR --reruns 2 --reruns-delay 2

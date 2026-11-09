@@ -8,7 +8,8 @@ import json
 
 import numpy as np
 import pytest
-from conftest import fake_audio, patched_module, short_socket_path
+from conftest import needs_laptop_speed  # noqa: E402
+from conftest import fake_audio, patched_module, playhead_rate, short_socket_path
 
 from plume import cli, governor, realtime
 from plume import roles as roles_mod
@@ -334,10 +335,10 @@ def _rows(rec):
     return [r for r in rows if isinstance(r.get("bar"), int)]
 
 
-def _detect_take(tmp_path, human, *, name="rec", prompt=None, **kw):
+def _detect_take(tmp_path, human, *, name="rec", prompt=None, rate_x=12.0, **kw):
     route = {"direct": True, "input_device": "audio interface", "input_channel": 1}
     route.update(kw.pop("route", {}))
-    with patched_module("sounddevice", fake_audio(human, devices=RIG, rate_x=12.0)):
+    with patched_module("sounddevice", fake_audio(human, devices=RIG, rate_x=rate_x)):
         realtime.lead(prompt=prompt, seed=0, tap_start=True, detect=True,
                       role=roles_mod.RoleParams(role="lead"), record_dir=str(tmp_path / name),
                       status=False, socket_path=short_socket_path(name), **route, **kw)
@@ -397,6 +398,7 @@ def test_a_style_that_stays_keeps_its_own_chords(tmp_path, consent):
     assert [r["chord"] for r in band[:4]] == governor.progression_symbols("synthwave", "A minor")
 
 
+@needs_laptop_speed
 def test_the_style_never_moves_once_the_band_is_in(tmp_path, consent):
     """Sparse until the band is in, then busy enough that a second look would say midwest."""
     human = _strummed_take(85.0, seconds=110.0, strums_per_beat=0.5, busier_from_s=38.0)
@@ -457,6 +459,7 @@ class _Wandering:
         return self._last
 
 
+@needs_laptop_speed
 @pytest.mark.parametrize("detect,comes_in", [(True, True), (False, False)])
 def test_detect_cannot_strand_her_on_drums(tmp_path, consent, monkeypatch, detect, comes_in):
     import plume.listen.harmony as harmony_mod
@@ -475,7 +478,10 @@ def test_detect_cannot_strand_her_on_drums(tmp_path, consent, monkeypatch, detec
 
 def test_the_same_playing_on_a_room_mic_stays_lofi(tmp_path, consent):
     """The onsets are all there.  A room mic just isn't allowed to believe them."""
+    # A room mic masks the band out of what it hears, the costliest listening there is,
+    # so this is the take a starved runner leaves behind its playhead.
     rec = _detect_take(tmp_path, _strummed_take(85.0), max_minutes=0.5,
+                       rate_x=playhead_rate(12.0),
                        route={"direct": False, "input_device": "audio interface",
                               "input_channel": 1})
     rows = _rows(rec)

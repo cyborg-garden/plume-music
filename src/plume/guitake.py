@@ -36,6 +36,7 @@ and are never sent to the page.
 """
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import json
 import math
@@ -51,6 +52,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
+from . import oscompat
 from .compose import parse_prompt
 from .inputguard import BUZZ_LINE, SILENT_LINE
 from .realtime import (AUDIO_CONSENT_ENV, AUDIO_CONSENT_OFF, OPEN_TOGETHER_FAILED, REC_CUES,
@@ -181,8 +183,11 @@ _BUILT_IN = ("built-in", "builtin", "internal", "microphone array", "mic array",
              "macbook", "imac", "mac mini", "mac studio", "mac pro", "hda ", "hd-audio", "sof-", "bcm2835",
              "realtek", "conexant", "smart sound", "webcam", "camera", "facetime", "display", "hdmi", "dock",
              "iphone", "ipad")
-#: Not a card at all: the sound system's own names for whatever is current.
-_SYSTEM_NAMES = frozenset({"default", "sysdefault", "pulse", "pipewire", "jack"})
+#: Not a card at all: the sound system's own names for whatever is current.  The last four
+#: are Windows': MME's and DirectSound's stand-ins for the default device.
+_SYSTEM_NAMES = frozenset({"default", "sysdefault", "pulse", "pipewire", "jack",
+                           "microsoft sound mapper - input", "microsoft sound mapper - output",
+                           "primary sound capture driver", "primary sound driver"})
 #: Not a card either: ALSA's plugins, whole names, each one a software path to some other device.
 #: From what PortAudio usually lists there.  Nobody has run plume on Linux to capture a real list.
 _SOFTWARE_NAMES = re.compile(r"samplerate|speexrate|speex|lavrate|lavcrate|upmix|vdownmix|dmix|dsnoop|front|rear"
@@ -236,15 +241,15 @@ def default_spawner(argv: list[str], log_path: Path):
         raise SoundOff(SOUND_OFF)
     log_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     # O_NOFOLLOW: a planted symlink must not point stderr at something else.
-    log = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+    log = oscompat.open_private(log_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     try:
-        os.fchmod(log, 0o600)
+        oscompat.fchmod_private(log, 0o600)
         return subprocess.Popen(
             argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=log,
-            env={**os.environ, AUDIO_CONSENT_ENV: "1"},
+            env={**os.environ, AUDIO_CONSENT_ENV: "1", **oscompat.own_group_env()},
             # Its own session: a Ctrl-C in this terminal must not reach it as well as
             # us, or the band gets two interrupts, and a second one cuts its ending short.
-            start_new_session=True)
+            **oscompat.detached_kwargs())
     finally:
         os.close(log)
 
@@ -256,7 +261,7 @@ def default_lister() -> list[dict]:
     try:
         done = subprocess.run([*PLUME_CHILD, "inputs", "--json"],
                               stdin=subprocess.DEVNULL, capture_output=True, check=False,
-                              timeout=LIST_TIMEOUT_S, start_new_session=True)
+                              timeout=LIST_TIMEOUT_S, **oscompat.detached_kwargs())
         doc = json.loads(done.stdout)
     except (OSError, ValueError, subprocess.SubprocessError):
         raise TakeError(NO_LISTING) from None
@@ -287,7 +292,7 @@ def default_meter(name: str, seconds: float, cancelled: threading.Event) -> dict
             # Glued to its flag, so a name cannot read as a flag of its own.
             [*PLUME_CHILD, "inputs", f"--meter={name}", f"--seconds={seconds}", "--json"],
             stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            env={**os.environ, AUDIO_CONSENT_ENV: "1"}, start_new_session=True)
+            env={**os.environ, AUDIO_CONSENT_ENV: "1"}, **oscompat.detached_kwargs())
     except OSError:
         raise TakeError(NO_READING) from None
     until = time.monotonic() + float(seconds) + METER_GRACE_S
@@ -564,7 +569,7 @@ class SetupStore:
             return empty
         try:
             # O_NOFOLLOW and O_NONBLOCK: a planted symlink or a FIFO is not this file.
-            fd = os.open(self._path_of(), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            fd = oscompat.open_private(self._path_of(), oscompat.read_flags())
         except OSError:
             return empty
         try:
@@ -595,15 +600,15 @@ class SetupStore:
         try:
             path = Path(self._path_of())
             path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-            os.chmod(path.parent, 0o700)
+            oscompat.chmod_private(path.parent, 0o700)
             # A name nobody could have planted, and a rename that replaces a symlink rather
             # than writing through it.
             tmp = path.with_name(f".{path.name}.{secrets.token_hex(8)}.tmp")
-            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+            fd = oscompat.open_private(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
             try:
                 with os.fdopen(fd, "w", encoding="utf-8") as f:
                     f.write(json.dumps({"version": SETUP_VERSION, **self._doc}))
-                os.replace(tmp, path)
+                oscompat.replace(tmp, path)   # retried while the page reads it
             except OSError:
                 try:
                     os.unlink(tmp)
@@ -916,6 +921,16 @@ class _Take:
     listener: object = None
 
 
+def _same_dir(a, b) -> bool:
+    return os.path.normcase(os.path.abspath(a)) == os.path.normcase(os.path.abspath(b))
+
+
+def _is_take(rec, take: _Take) -> bool:
+    """Whether a session record is this take: by its pid, or by the folder it records to."""
+    return rec.pid == take.proc.pid or (rec.record_dir is not None
+                                        and _same_dir(rec.record_dir, take.folder))
+
+
 class TakeRunner:
     """The state of the one take this bridge may be running, for every page that asks."""
 
@@ -1091,9 +1106,9 @@ class TakeRunner:
 
     def _others(self) -> list:
         with self._lock:
-            mine = None if self._take is None else self._take.proc.pid
+            take = self._take
         try:
-            return [r for r in self._sessions() if r.pid != mine]
+            return [r for r in self._sessions() if take is None or not _is_take(r, take)]
         except OSError:
             return []
 
@@ -1571,17 +1586,28 @@ class TakeRunner:
         threading.Thread(target=self._stop_child, args=(take,), name="plume-gui-stop",
                          daemon=True).start()
 
-    def _record_of(self, pid: int):
+    def _record_of(self, take: _Take):
+        """This take's session record, aimed at the process this bridge started.
+
+        On Windows a venv's python.exe is a launcher that runs the real interpreter as
+        its own child, so the session registers a pid that is not ``take.proc.pid``.
+        The take's folder names it either way.  The pid that gets signalled stays the
+        one started here: it leads the process group, so Ctrl-Break reaches both.
+        """
         try:
-            return next((r for r in self._sessions() if r.pid == pid), None)
+            rec = next((r for r in self._sessions() if _is_take(r, take)), None)
         except OSError:
             return None
+        if rec is None or rec.pid == take.proc.pid:
+            return rec
+        return dataclasses.replace(rec, pid=take.proc.pid, own_group=True)
 
     def _stop_child(self, take: _Take) -> None:
         # No record yet means it is still starting: the ladder goes straight to SIGINT,
         # and the pid is safe to signal, because an unreaped child's pid cannot be reused.
-        rec = self._record_of(take.proc.pid) or LiveSession(
-            pid=take.proc.pid, kind="lead", record_dir=str(take.folder))
+        rec = self._record_of(take) or LiveSession(
+            pid=take.proc.pid, kind="lead", record_dir=str(take.folder),
+            own_group=True)                     # started with detached_kwargs, above
         try:
             self._stopper(rec)
         except Exception:  # noqa: BLE001 - the page says "still stopping" from the clock
@@ -1642,7 +1668,7 @@ class TakeRunner:
             doc = self._doc()
         if not ok:
             raise Refused(409, "No take is playing.", live=doc)
-        rec = self._record_of(take.proc.pid)
+        rec = self._record_of(take)
         if rec is None or not rec.socket:
             raise Refused(409, "The band did not answer that cue.", live=doc)
         try:

@@ -15,7 +15,7 @@ speakers.
 ## Your first take
 
 ```bash
-.venv/bin/pip install -e '.[play,voice]'
+.venv/bin/pip install -e '.[play,voice]'   # voice: mlx-whisper on Apple Silicon, faster-whisper elsewhere
 plume calibrate        # plays clicks; skip this on Bluetooth (see below)
 plume lead --tap-start "lofi midwest emo in F major" --input acoustic --record takes1/
 ```
@@ -537,8 +537,12 @@ Chromium with the sound muted. It has never started a real take, so follow
 [the direct input test](DIRECT-INPUT-TEST.md#7-the-start-button-5-minutes) the first time.
 Only one Mac and one interface have been tried with plume at all, so other computers and
 other gear are untested. The names it uses to recognise software and laptop devices on
-Linux come from what those systems usually list, not from a real machine. `plume gui`
-refuses to run where there are no unix sockets, such as Windows.
+Linux and Windows come from what those systems usually list, not from a real machine. On
+Windows each device is listed once, from the default sound system (MME), so names can be
+cut short and the delay is longer than it needs to be. Nobody has played through plume on
+Windows yet. There, closing the window a take runs in gives plume about five seconds
+before Windows ends it, too short for its usual ending, so the tail is cut. The recording
+up to then is safe. End a take with Ctrl-C or `plume stop` instead.
 
 ### Another output
 
@@ -585,6 +589,7 @@ Every cue that reaches a session goes in `cues.ndjson`, including what the loope
 | Band never joins | Plume hasn't heard steady notes | Play sustained notes over the drums |
 | Doesn't fade when you stop | The band is in, and a room mic can't tell you stopped | Say "plume, stop" or run `plume stop`; a direct input or `--midi` fixes it |
 | A spoken command does nothing | Look at `voice.ndjson` in the take | `DIRECT-INPUT-TEST.md` says what each line means |
+| `plume voice` quits at once on an NVIDIA machine | The GPU libraries are only half there | Set `PLUME_WHISPER_DEVICE=cpu` |
 | `live MIDI needs mido` | The `midi` extra isn't installed | `pip install -e '.[midi]'` |
 | `more than one MIDI port` | `--midi auto` won't guess | Run `plume midi` and name one |
 | Band sticks to the wrong tempo over MIDI | `--midi-clock` is on and your gear's clock isn't what you're playing | Drop `--midi-clock` |

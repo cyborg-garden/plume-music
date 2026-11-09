@@ -17,7 +17,13 @@ dependencies = [
 
 [project.optional-dependencies]
 play = ["sounddevice"]
-voice = ["sounddevice", "mlx-whisper"]
+# The speech model for 'plume voice': mlx-whisper on Apple Silicon, faster-whisper
+# everywhere else.  Both run whisper-large-v3-turbo on this machine.
+voice = [
+    "sounddevice",
+    "mlx-whisper; sys_platform == 'darwin' and platform_machine == 'arm64'",
+    "faster-whisper>=1.1; sys_platform != 'darwin' or platform_machine != 'arm64'",
+]
 midi = ["mido", "python-rtmidi"]
 
 [project.scripts]

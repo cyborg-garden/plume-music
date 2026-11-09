@@ -24,7 +24,8 @@ import pytest
 import soundfile as sf
 
 from conftest import fake_audio, patched_module, short_socket_path, wait_until
-from plume import cli, gui, guitake, realtime
+from conftest import WINDOWS, closing_signal_params, needs_symlinks, signal_self  # noqa: E402
+from plume import cli, gui, guitake, oscompat, realtime
 from test_gui_bridge import Client
 
 SR = 48000
@@ -69,6 +70,9 @@ class Rig:
         self.child_writes = None
         self.list_error = None
         self.human = None
+        #: Set to stand in for a venv launcher on Windows: the session registers the
+        #: real interpreter's pid, a child of the one the bridge started.
+        self.launcher = False
 
     def spawner(self, argv, log_path):
         if self.spawn_error is not None:
@@ -86,7 +90,13 @@ class Rig:
     def sessions(self):
         recs = list(self.others)
         if self.proc is not None and self.proc.code is None:
-            recs.append(realtime.LiveSession(pid=self.proc.pid, kind="lead", socket="/nowhere/sock"))
+            if self.launcher:
+                recs.append(realtime.LiveSession(pid=self.proc.pid + 5000, kind="lead",
+                                                 socket="/nowhere/sock",
+                                                 record_dir=str(self.folder) + "/"))
+            else:
+                recs.append(realtime.LiveSession(pid=self.proc.pid, kind="lead",
+                                                 socket="/nowhere/sock"))
         return recs
 
     def stopper(self, rec):
@@ -305,7 +315,7 @@ def test_the_default_argv_exactly(rig, runner, monkeypatch):
     runner.start({})
     assert rig.spawned == [[
         sys.executable, "-P", "-m", "plume", "lead", "--tap-start", "--detect",
-        f"--record={rig.root}/2031-02-03-040506/", "--seed=4242",
+        f"--record={rig.root / '2031-02-03-040506'}/", "--seed=4242",
         f"--device={AUDIO_BOX['name']}", "--input-channel=1", "--direct"]]
 
 
@@ -496,6 +506,7 @@ def test_a_used_folder_is_never_used_again(rig, runner):
     assert (used / "human.wav").read_bytes() == b"hers"
 
 
+@needs_symlinks
 def test_a_symlink_at_that_name_is_not_used_either(rig, runner, tmp_path):
     rig.root.mkdir()
     (rig.root / "2031-02-03-040506").symlink_to(tmp_path / "elsewhere")
@@ -506,14 +517,16 @@ def test_a_symlink_at_that_name_is_not_used_either(rig, runner, tmp_path):
 def test_a_folder_that_cannot_be_made_is_said_plainly(rig, runner):
     rig.root.write_text("a file, not a folder")
     doc = runner.start({})
-    assert doc == {"state": "failed", "message": f"Could not make a folder in {rig.root}."}
+    # pretty_path: on Windows the temp folder is under home, so it reads as ~\...
+    assert doc == {"state": "failed",
+                   "message": f"Could not make a folder in {guitake.pretty_path(rig.root)}."}
     assert rig.spawned == []
 
 
 def test_home_shows_the_folder_with_a_tilde(rig):
     runner = rig.runner()
     runner.root = Path.home() / "Music" / "Plume"
-    assert runner.home()["folder"] == "~/Music/Plume"
+    assert runner.home()["folder"] == os.path.join("~", "Music", "Plume")
 
 
 # ----------------------------------------------------------------- one take at a time
@@ -1006,6 +1019,7 @@ def test_a_failed_start_removes_only_its_own_empty_files(rig, runner):
     assert sorted(p.name for p in folder.iterdir()) == ["hers.txt"]
 
 
+@needs_symlinks
 def test_a_failed_start_leaves_a_symlink_alone(rig, runner, tmp_path):
     other = tmp_path / "other.json"
     other.write_text("hers")
@@ -1274,6 +1288,30 @@ def test_a_cue_goes_to_this_takes_socket_marked_as_the_page(rig, runner, cue):
     assert rig.cues == [(cue, "/nowhere/sock", "gui")]
 
 
+def test_a_cue_finds_its_take_when_a_launcher_started_the_interpreter(rig, runner):
+    """A Windows venv's python.exe runs the real one as a child, so the pids differ."""
+    rig.launcher = True
+    _to_playing(rig, runner)
+    assert runner.cue({"cue": "busier"}) == {"ok": True, "cue": "busier"}
+    assert rig.cues == [("busier", "/nowhere/sock", "gui")]
+
+
+def test_stop_uses_the_takes_record_but_signals_the_process_it_started(rig, runner):
+    rig.launcher = True
+    _to_playing(rig, runner)
+    runner.stop()
+    assert wait_until(lambda: rig.stopped)
+    rec = rig.stopped[0]
+    assert (rec.pid, rec.socket, rec.own_group) == (rig.proc.pid, "/nowhere/sock", True)
+
+
+def test_a_launched_take_is_never_counted_as_another_session(rig, runner):
+    rig.launcher = True
+    _to_playing(rig, runner)
+    rig.others = [realtime.LiveSession(pid=77, kind="lead", record_dir="/elsewhere/take")]
+    assert [r.pid for r in runner._others()] == [77]
+
+
 @pytest.mark.parametrize("cue", ["darker", "go to the chorus", "", None, 7, ["busier"]])
 def test_only_the_offered_cues_get_through(rig, runner, cue):
     _to_playing(rig, runner)
@@ -1363,18 +1401,18 @@ def plumed_home(tmp_path, monkeypatch, plume_registry):
     monkeypatch.setenv(gui.STATE_DIR_ENV, str(tmp_path / "state"))
 
 
-@pytest.mark.parametrize("how", ["ctrl-c", signal.SIGTERM, signal.SIGHUP])
+@pytest.mark.parametrize("how", ["ctrl-c", *closing_signal_params()])
 def test_closing_the_bridge_stops_the_take_it_started(rig, how, plumed_home, capsys):
     def wait(server):
         server.takes.start({})
         assert rig.proc.code is None
         if how == "ctrl-c":
             raise KeyboardInterrupt
-        os.kill(os.getpid(), how)
+        signal_self(how)
         time.sleep(5.0)
         pytest.fail("the signal did not arrive")
 
-    before = {s: signal.getsignal(s) for s in (signal.SIGTERM, signal.SIGHUP)}
+    before = {s: signal.getsignal(s) for s in closing_signal_params()}
     gui.serve(takes=rig.root, open_browser=False, wait=wait, spawner=rig.spawner, lister=rig.lister,
               sessions=rig.sessions, stopper=rig.stopper)
     assert rig.proc.code == 0
@@ -1411,15 +1449,18 @@ def test_a_second_ctrl_c_leaves_and_says_how_to_stop_it(rig, plumed_home, capsys
 def test_stopping_a_real_child_reaps_it(rig, tmp_path, plume_registry):
     """A sleeping Python child, not plume.  stop_session waits for the pid to go, and an
     unreaped child still has one, so this hangs if nothing is reaping it."""
+    # SIGBREAK is what plume stop's CTRL_BREAK_EVENT arrives as, on Windows.
     code = ("import signal,sys,time\n"
-            "signal.signal(signal.SIGINT, lambda *a: sys.exit(0))\n"
+            "for n in ('SIGINT', 'SIGBREAK'):\n"
+            "    if hasattr(signal, n): signal.signal(getattr(signal, n), lambda *a: sys.exit(0))\n"
             "print('up', flush=True)\n"
-            "time.sleep(30)\n")
+            # Short sleeps: on Windows a handler only runs between them.
+            "for _ in range(300): time.sleep(0.1)\n")
     children = []
 
     def inert(argv, log_path):
         child = subprocess.Popen([sys.executable, "-c", code], stdin=subprocess.DEVNULL,
-                                 stdout=subprocess.PIPE, start_new_session=True)
+                                 stdout=subprocess.PIPE, **oscompat.detached_kwargs())
         child.stdout.readline()
         children.append(child)
         return child
@@ -1551,8 +1592,10 @@ def test_the_click_is_the_consent(monkeypatch, tmp_path):
     assert guitake.default_spawner(["x", "--y"], tmp_path / "state" / "take.log").pid == 5
     assert seen["argv"] == ["x", "--y"]
     assert seen["env"][realtime.AUDIO_CONSENT_ENV] == "1"
-    assert seen["stdin"] == subprocess.DEVNULL and seen["start_new_session"] is True
-    assert seen["log_mode"] == 0o600
+    assert seen["stdin"] == subprocess.DEVNULL
+    assert all(seen[k] == v for k, v in oscompat.detached_kwargs().items())
+    if not WINDOWS:                     # Windows: the folder's ACL, not a mode
+        assert seen["log_mode"] == 0o600
     assert "shell" not in seen
     assert realtime.AUDIO_CONSENT_ENV not in os.environ
 
@@ -1566,6 +1609,7 @@ def test_an_explicit_no_beats_the_click(monkeypatch, tmp_path, off):
     assert seen == {}
 
 
+@needs_symlinks
 def test_a_symlink_at_the_log_is_not_followed(monkeypatch, tmp_path):
     monkeypatch.delenv(realtime.AUDIO_CONSENT_ENV, raising=False)
     _fake_popen(monkeypatch)
@@ -1852,7 +1896,7 @@ def test_home_over_http_has_what_the_page_needs(page, rig):
     assert resp.status == 200
     assert {"devices", "device", "mode", "channel", "hear_me", "folder", "styles", "problem"} <= set(doc)
     assert doc["styles"] == ["hiphop", "house", "jazz", "lofi", "midwest", "rnb", "synthwave", "trap"]
-    assert doc["folder"] == str(rig.root)
+    assert doc["folder"] == guitake.pretty_path(rig.root)
 
 
 def test_a_new_take_lands_on_the_shelf_and_its_record(rig, served, page):

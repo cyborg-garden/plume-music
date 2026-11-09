@@ -829,6 +829,19 @@ still green.
    (v1's approach). Both paths are tested.
 8. **`plume cue` speaks line-delimited JSON over AF_UNIX**
    (`$PLUME_SOCKET`, else `<tmpdir>/plume-live.sock`; `--socket` overrides).
+   **Where there is no AF_UNIX (Windows), the same path holds a TCP endpoint
+   instead** (v2.6): the session listens on `127.0.0.1` on a port the kernel
+   picks and writes `{"port", "token", "pid"}` to the path, created exclusively
+   and 0600 (on Windows, private by its folder: the user's own temp folder).
+   Every request on that transport carries `"auth": token`, compared in constant
+   time; one without it is answered `{"ok": false, "error": "not authorised for
+   this session"}` and does nothing else. That keeps the unix socket's property:
+   only someone who can read the file can reach the session. A client reads the
+   transport off the path (a regular file is an endpoint), so `plume cue`,
+   `plume stop` and the gui need no flag. `$PLUME_CUE_TRANSPORT=unix|tcp` forces
+   one, which is how the TCP path is tested on macOS and Linux too. A stale
+   endpoint is reclaimed only after a status request with its token goes
+   unanswered: after a crash its port can belong to another program.
    One socket per machine: a second live session **refuses to bind** rather
    than silently stealing the first one's cues, but a leftover file from a
    crashed session is reclaimed after proving nobody is listening on it.
@@ -965,21 +978,34 @@ find the PID. A guard on the door and none on the room is half a fix.
     session with no record is still stoppable by signal.
 22. **`plume stop` — graceful first, over the socket the cue system already
     uses.** `CueServer` gained two control verbs, `{"op": "stop"}` and
-    `{"op": "status"}`, checked before the cue path and never touching the cue
-    queue. `stop` sets an event the transport's status loop polls, which turns
-    into its ordinary graceful ending: finish the bar, flush the tail, write
-    the records. The ladder is socket → SIGINT → SIGTERM, stopping as soon as
-    the process is gone. **SIGKILL is deliberately absent**: it would cut the
-    tail and discard the records, so a wedged session is reported, with the
-    command a human can run, rather than killed silently. The socket handshake
-    doubles as identity proof, and a record whose pid is this very process
-    gets the socket rung only — plume is a library, and `stop` must not
-    SIGTERM its own caller. `--timeout` (default `DEFAULT_STOP_TIMEOUT`, 45s)
-    is the budget for the two *graceful* rungs **together**, not per rung, and
-    it is an upper bound rather than a delay: every wait ends the instant the
-    process does. It is deliberately longer than the transports' own graceful
-    ending, which is internally bounded at ~40s (a 10s planner join plus a 30s
-    tail drain) — see item 28.
+    `{"op": "status"}`, checked before the cue path and never touching the cue queue.
+    `stop` sets an event the transport's status loop polls, which turns into its
+    ordinary graceful ending: finish the bar, flush the tail, write the records.
+    The ladder is socket → SIGINT → SIGTERM, stopping as soon as the process is
+    gone. **On Windows it is socket → CTRL_BREAK_EVENT** (v2.6): there `os.kill`
+    with anything but a console event is TerminateProcess, which runs no
+    handler, so the only graceful signal is Ctrl-Break (sessions catch it as
+    SIGBREAK) and termination waits for `--force`, as SIGKILL does. Ctrl-Break
+    is only sent to a session whose record says it leads its own process group
+    (`own_group`, set when the gui or `plume voice` started it): aimed at any
+    other pid, Windows sends it to the whole console, `plume stop` and its shell
+    included. A session started from a terminal is reported as unreachable from
+    here, not wedged. `play` and `calibrate`, with nothing to lose, get
+    TerminateProcess after the short grace. The liveness probe never signals: on
+    Windows `os.kill(pid, 0)` is a Ctrl-C, so it asks the OS for the process's
+    exit code instead. Closing the console a session runs in delivers SIGBREAK
+    too, but Windows ends the process about 5s later, so the tail is cut; the
+    take is streamed to disk, so the recording up to then is kept. **SIGKILL is
+    deliberately absent**: it would cut the tail and discard the records, so a
+    wedged session is reported, with the command a human can run, rather than
+    killed silently. The socket handshake doubles as identity proof, and a
+    record whose pid is this very process gets the socket rung only — plume is a
+    library, and `stop` must not SIGTERM its own caller. `--timeout` (default
+    `DEFAULT_STOP_TIMEOUT`, 45s) is the budget for the two *graceful* rungs
+    **together**, not per rung, and it is an upper bound rather than a delay:
+    every wait ends the instant the process does. It is deliberately longer than
+    the transports' own graceful ending, which is internally bounded at ~40s (a
+    10s planner join plus a 30s tail drain) — see item 28.
 23. **`plume jam` gets a control socket; `plume cue`'s contract is
     unchanged.** The v1 sideman has no form cursor for a cue to move, so it
     binds a *private* control-only path (`<session_dir>/<pid>.sock`) instead

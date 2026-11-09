@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 from pathlib import Path
 from unittest import mock
 
@@ -357,6 +358,26 @@ class TestLoopSetsTheTempo:
         # bar 0 is the top of the loop, so its first note is on the bar line
         t0 = rows[0]["t_s"]
         assert tone_db(out, t0, t0 + 0.3) > -20.0
+
+    def test_a_cue_sent_while_the_take_opens_is_on_the_record(self, live_env, monkeypatch):
+        """A slow disk opening the take (Windows CI) once lost the first cue from the
+        log: the socket listens before the take is open, and the looper answers a
+        cue at once.  Such a cue is now held until the take opens."""
+        real_open = realtime.SessionRecorder.open
+
+        def slow_open(recorder, *a, **kw):
+            time.sleep(1.0)
+            return real_open(recorder, *a, **kw)
+
+        monkeypatch.setattr(realtime.SessionRecorder, "open", slow_open)
+        rec, sock = live_env / "rec", short_socket_path("loopg")
+        th, replies = cue_when(sock, [(None, "make a loop of this"), (4, STOP)])
+        run_lead(self.human(), rec=rec, sock=sock, tap_start=True)
+        th.join(timeout=10.0)
+        assert replies["make a loop of this"]["ok"] is True
+        take = record.read_take(rec)
+        said = " ".join(e["sentence"] for e in take["events"])
+        assert "asked to record a loop before the first bar" in said
 
     def test_a_take_with_no_tempo_leaves_it_waiting_for_a_count(self, live_env):
         rec, sock = live_env / "rec", short_socket_path("loopf")

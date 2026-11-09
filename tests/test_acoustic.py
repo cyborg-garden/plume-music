@@ -839,6 +839,30 @@ def test_nonregression_joiners(kind):
     assert locked.mean() > 0.85
 
 
+#: synthwave's voices and levels on the day the ``--input auto`` discriminator
+#: was calibrated (2026-08-19, the table in sim.py).  The confusion matrix
+#: below IS that calibration, so its synthwave row keeps this material.  Every
+#: other test in this file hears the style as it plays today.
+_SYNTHWAVE_CALIBRATED = {
+    "voices": {"bass": "808sub", "pad": "pad", "arp": "pluck", "lead": "lead"},
+    "role_gain_db": {"arp": -5.0, "lead": -2.0, "bass": None},
+}
+
+
+def _calibrated_synthwave(name: str) -> dict:
+    """Today's synthwave style with the calibration day's palette put back."""
+    from plume.styles_lib import load_style
+    style = load_style(name)
+    if name == "synthwave":
+        style["voices"].update(_SYNTHWAVE_CALIBRATED["voices"])
+        for role, db in _SYNTHWAVE_CALIBRATED["role_gain_db"].items():
+            if db is None:
+                style["role_gain_db"].pop(role, None)
+            else:
+                style["role_gain_db"][role] = db
+    return style
+
+
 @pytest.fixture(scope="module")
 def renders(tmp_path_factory):
     """plume's own programmed material — the metric-alias axis the fixture
@@ -848,22 +872,34 @@ def renders(tmp_path_factory):
     ``lofi80_quiet`` (a full 32-bar arc, so the take has the thinning outro
     that 16 bars never reaches).  It costs one extra render and it is the only
     case in this file that would have caught the 93.0 bpm drift.
+
+    ``synthwave100_calibrated`` is synthwave on the palette the discriminator
+    was calibrated on (``_SYNTHWAVE_CALIBRATED``).  It costs one more render,
+    and it is what keeps a change of palette from quietly swapping the
+    material under the confusion matrix.
     """
+    import importlib
     from plume.compose import PromptSpec, compose
     from plume.engine import render
     import soundfile as sf
+    # the module, not the function plume re-exports under the same name
+    compose_mod = importlib.import_module("plume.compose")
     d = tmp_path_factory.mktemp("acoustic_renders")
     out = {}
     for style, bpm, key, bars, name in (
         ("lofi", 80.0, "C major", (0, 16), "lofi80"),
         ("trap", 140.0, "D minor", (0, 16), "trap140"),
         ("synthwave", 100.0, "C minor", (0, 16), "synthwave100"),
+        ("synthwave", 100.0, "C minor", (0, 16), "synthwave100_calibrated"),
         ("lofi", 80.0, "C major", (0, 32), "lofi80_32"),
     ):
         p = d / f"{name}.wav"
-        render(compose(PromptSpec(styles=[style], bpm=bpm, key=key, movements=1,
-                                  mood=[], name=p.stem), seed=7),
-               out_path=str(p), movement=0, bars=bars)
+        with pytest.MonkeyPatch.context() as mp:
+            if name.endswith("_calibrated"):
+                mp.setattr(compose_mod, "load_style", _calibrated_synthwave)
+            session = compose(PromptSpec(styles=[style], bpm=bpm, key=key,
+                                         movements=1, mood=[], name=p.stem), seed=7)
+        render(session, out_path=str(p), movement=0, bars=bars)
         x, _ = sf.read(str(p), dtype="float32", always_2d=True)
         out[name] = (x.mean(axis=1).astype(np.float32), bpm)
     return out
@@ -1148,7 +1184,10 @@ def _matrix_cases(renders, fingerpick, strum, drone):
     from fixtures_gen import make_human, make_joiner
     cases = {}
     for name in ("lofi80", "trap140", "synthwave100", "lofi80_32"):
-        audio, _bpm = renders[name]
+        # synthwave on the palette this table was measured on; today's palette
+        # has its own test below.
+        audio, _bpm = renders["synthwave100_calibrated" if name == "synthwave100"
+                              else name]
         cases[name] = (audio, "programmed")
         cases[f"{name}_q20"] = ((audio * 0.1).astype(np.float32), "programmed")
     for kind in ("steady", "stops", "busy_middle", "high_register",
@@ -1189,6 +1228,42 @@ def test_auto_discriminator_confusion_matrix(renders, fingerpick, strum,
             wrong.append(name)
     assert not wrong, ("auto misclassified " + ", ".join(wrong)
                        + " — full matrix:\n" + "\n".join(rows))
+
+
+def test_auto_hears_todays_synthwave_as_sustained_a_known_miss(renders):
+    """A MISS, PINNED SO IT IS NOT FORGOTTEN.  This asserts the wrong answer.
+
+    The synth palette (plume.synths) gave synthwave a supersaw pad, a Juno
+    arp, a ladder bass and lead in place of ``pad``, ``pluck``, ``808sub`` and
+    ``lead``.  Its render is still programmed material, but its transients
+    are softer, and the discriminator now reads it as sustained acoustic:
+
+      metric (first 12 s)                      calibrated    today
+      p75 of attack_breadth at strong attacks  0.500         0.417  (<= 0.44)
+      fraction of frames with breadth >= 0.55  0.024         0.006  (<= 0.018)
+
+    Today's numbers sit inside the acoustic cluster on the second axis and in
+    the calibration gap on the first, 0.042 from the strummed fixture.  No
+    threshold separates them with room to spare, and moving one toward real
+    guitars to fit a synth pad would risk the 167.9 bpm fault the
+    discriminator exists to prevent.  The fix is a feature that tells a
+    machine pad from a string, which is the follow lane's work.  Both front
+    ends still track this render (the tests above use today's palette).
+
+    When this fails, auto has changed its mind about today's synthwave.  If
+    it now says ``programmed``, delete this test and drop the calibrated
+    render from ``_matrix_cases``, so the matrix reads the live style again.
+    """
+    from plume.sim import classify_input
+    cal = classify_input(renders["synthwave100_calibrated"][0], SR)
+    assert cal.mode == "programmed"
+    assert cal.breadth_strong == pytest.approx(0.500, abs=0.011), (
+        "the calibrated render is not the material the table was measured on")
+    assert cal.broad_frac == pytest.approx(0.024, abs=0.002)
+    now = classify_input(renders["synthwave100"][0], SR)
+    assert now.mode == "acoustic", (
+        f"auto now reads today's synthwave as {now.mode} ({now.reason}); "
+        "see this test's docstring for what to change")
 
 
 def test_classifier_reads_only_the_probe_window(fingerpick):

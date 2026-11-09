@@ -161,6 +161,61 @@ def test_a_held_pad_bar_renders_well_inside_real_time():
     assert best < 0.25 * 4 * spb, best
 
 
+#: Each converted style's voices before plume.synths, to price the new ones.
+_OLD_PALETTE = {
+    "lofi": {"pad": "epiano", "lead": "pluck"},
+    "synthwave": {"bass": "808sub", "pad": "pad", "arp": "pluck", "lead": "lead"},
+    "midwest": {"pad": "airpad", "shimmer": "airpad"},
+    "rnb": {"pad": "airpad"},
+    "house": {"pad": "housestab", "lead": "pluck"},
+}
+
+
+def _bar_seconds(style, voices, bars, bpm=115.0):
+    import copy
+
+    from plume.duet import DuetEngine
+    from plume.listen.beat import BeatState
+    from plume.listen.harmony import HarmonyState
+    from plume.mind import BarPlan
+    eng = DuetEngine(style=style, seed=3)
+    if voices is not None:
+        eng._style = copy.deepcopy(eng._style)
+        eng._style["voices"].update(voices)
+        eng._style.pop("voice_variants", None)
+    roles = {r: 1.0 for r in eng._style["voices"] if r not in ("sub", "tick", "foot")}
+    iv = 60.0 / bpm
+    t0 = time.perf_counter()
+    for b in bars:
+        plan = BarPlan(bar=b, state="comping", roles=roles, gain_db=0.0,
+                       density=0.7, register_ceiling_midi=None, reason="cost")
+        beat = BeatState(t_s=0.0, bpm=bpm, confidence=0.9, locked=True, bar=b,
+                         beat_in_bar=0, phase_beats=0.0, next_beat_t_s=iv,
+                         next_downbeat_t_s=4 * iv, beat_interval_s=iv)
+        harm = HarmonyState(t_s=0.0, key="C major", key_conf=0.8,
+                            chord=["C", "Am", "F", "G"][b % 4], chord_conf=0.9,
+                            register_low_midi=None, register_high_midi=None)
+        eng.render_bar(plan, beat, harm)
+    return time.perf_counter() - t0
+
+
+@pytest.mark.parametrize("style", sorted(_OLD_PALETTE))
+def test_the_new_palette_costs_the_planner_about_what_the_old_one_did(style):
+    """A live take at a 12x fake playhead fell behind by whole bars when these
+    voices cost twice the old ones: the "darker" live test heard silence where
+    the band should have been.  So the price is relative, not absolute: a
+    style's bars, every voice variant included, must render within 1.4x the
+    same bars on its old voices.  Interleaved and best of five, so a busy CPU
+    slows both alike."""
+    every = int(load_style(style).get("variant_bars", 16))
+    bars = [k * every + 1 for k in range(3)]      # one bar of each variant
+    new, old = 1e9, 1e9
+    for _ in range(5):
+        new = min(new, _bar_seconds(style, None, bars))
+        old = min(old, _bar_seconds(style, _OLD_PALETTE[style], bars))
+    assert new < 1.4 * old, (style, round(new / old, 2))
+
+
 # ---------------------------------------------------------------------------
 # in the band (DuetEngine)
 # ---------------------------------------------------------------------------

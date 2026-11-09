@@ -118,6 +118,7 @@ from typing import TYPE_CHECKING
 import dataclasses
 
 import numpy as np
+from scipy.signal import sosfilt
 
 from plume import figures
 from plume import fx as _fx
@@ -499,6 +500,23 @@ class _PlanEcho:
         self.reason = "texture crossfade: previous texture, fading out"
         self.announce = False           # never re-announce on the echo
         self.announce_kind = ""
+
+
+def _stereo_role_filters(y: np.ndarray, sr: int, fxd: dict) -> np.ndarray:
+    """A role's ``hpf_hz`` / ``lpf_hz`` on an ``(n, 2)`` voice, as float64.
+
+    The same SVF biquads :func:`plume.fx.svf_highpass` and ``svf_lowpass``
+    use, run as one second-order-section cascade over both channels.
+    """
+    rows = []
+    for key, kind in (("hpf_hz", "hp"), ("lpf_hz", "lp")):
+        hz = float(fxd.get(key, 0.0))
+        if hz > 0.0:
+            b, a = _fx._svf_coeffs(sr, hz, 0.707, kind)
+            rows.append(np.concatenate([b, a]))
+    if not rows:
+        return y.astype(np.float64)
+    return sosfilt(np.vstack(rows), y, axis=0)
 
 
 class DuetEngine:
@@ -1119,36 +1137,45 @@ class DuetEngine:
                 onset_beats, role=role, bpm=bpm, g=self._groove_at(bpm), rng=rng,
                 velocity=base_vel)
             onset_s = max(0.0, onset_s)
-            # Stereo voices (plume.synths) keep their own image; the pan law
-            # then acts as a balance, so a centred one sums to the same mono
-            # level as a mono voice would.
-            render = render_note_stereo if is_stereo(preset) else render_note
-            y = render(preset, sr=sr, dur_s=dur_s, freq_hz=freq,
-                       velocity=vel, rng=rng, params={}).astype(np.float64)
             fxd = fx_defaults.get(role, {})
-            if float(fxd.get("hpf_hz", 0.0)) > 0.0:
-                y = _fx.svf_highpass(y, sr, float(fxd["hpf_hz"])).astype(np.float64)
-            if float(fxd.get("lpf_hz", 0.0)) > 0.0:
-                y = _fx.svf_lowpass(y, sr, float(fxd["lpf_hz"])).astype(np.float64)
+            if is_stereo(preset):
+                # Stereo voices (plume.synths) keep their own image; the pan
+                # law then acts as a balance, so a centred one sums to the
+                # same mono level as a mono voice would.  The role's fixed
+                # filters run as one cascade over both sides: these buffers
+                # are long, and the planner renders several every bar.
+                y = render_note_stereo(preset, sr=sr, dur_s=dur_s, freq_hz=freq,
+                                       velocity=vel, rng=rng, params={})
+                y = _stereo_role_filters(y, sr, fxd)
+            else:
+                y = render_note(preset, sr=sr, dur_s=dur_s, freq_hz=freq,
+                                velocity=vel, rng=rng, params={}).astype(np.float64)
+                if float(fxd.get("hpf_hz", 0.0)) > 0.0:
+                    y = _fx.svf_highpass(y, sr, float(fxd["hpf_hz"])).astype(np.float64)
+                if float(fxd.get("lpf_hz", 0.0)) > 0.0:
+                    y = _fx.svf_lowpass(y, sr, float(fxd["lpf_hz"])).astype(np.float64)
             lfx = live_fx.get(role, {})
             if float(lfx.get("drive", 0.0)) > 0.0:
                 y = _saturate(y, float(lfx["drive"]))
             role_db = self._style.get("role_gain_db", {}).get(
                 role, _ROLE_GAIN_DB.get(role, -6.0))
             gain = 10.0 ** ((role_db + gain_db) / 20.0)
-            y *= gain * level
             pan = float(np.clip(_ROLE_PAN.get(role, 0.0), -1.0, 1.0))
             theta = (pan + 1.0) * (np.pi / 4.0)
-            # A stereo voice (plume.synths) brings its own image and chorus; the
-            # pan law then acts as a balance on it.
             if y.ndim == 2:
-                spread = y
-            elif float(lfx.get("chorus", 0.0)) > 0.0:
-                spread = _chorus(y, sr, float(lfx["chorus"]),
-                                 int(getattr(plan, "bar", 0)) * bar_s + onset_s)
+                # A stereo voice (plume.synths) brings its own image and
+                # chorus; the pan law then acts as a balance on it.  Gain,
+                # level and pan go on in one pass over the long stereo buffer.
+                st = y * (gain * level
+                          * np.array([np.cos(theta), np.sin(theta)]))[None, :]
             else:
-                spread = y[:, None]
-            st = spread * np.array([np.cos(theta), np.sin(theta)])[None, :]
+                y *= gain * level
+                if float(lfx.get("chorus", 0.0)) > 0.0:
+                    spread = _chorus(y, sr, float(lfx["chorus"]),
+                                     int(getattr(plan, "bar", 0)) * bar_s + onset_s)
+                else:
+                    spread = y[:, None]
+                st = spread * np.array([np.cos(theta), np.sin(theta)])[None, :]
             i0 = int(round(onset_s * sr))
             placed.append((i0, st))
             if float(lfx.get("duck", 0.0)) > 0.0:

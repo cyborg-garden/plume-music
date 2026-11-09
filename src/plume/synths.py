@@ -34,7 +34,7 @@ loop is per filter block.  Each voice drifts slowly so a held chord moves.
 from __future__ import annotations
 
 import numpy as np
-from scipy.signal import lfilter
+from scipy.signal import freqz, lfilter, sosfilt, tf2sos
 
 _TWO_PI = 2.0 * np.pi
 
@@ -59,17 +59,56 @@ def _cents(c):
     return np.exp(np.asarray(c, dtype=np.float64) * _LN2_1200)
 
 
-def _drift(n: int, sr: int, rng: np.random.Generator, rate_hz: float) -> np.ndarray:
-    """A smooth random curve in [-1, 1], changing about ``rate_hz`` times a
-    second: analog oscillator drift, cheaply (a few control points, cosine
-    interpolated)."""
+#: Drift and other slow curves are evaluated every this many samples and
+#: interpolated: they move a few times a second, so the curve is unchanged to
+#: far below a cent, at a fraction of the cost.
+_CTRL = 32
+
+
+_CTRL_FRAC = np.arange(_CTRL, dtype=np.float64) / _CTRL
+
+
+def _upsample(v: np.ndarray, n: int) -> np.ndarray:
+    """Straight lines between control values (at ``_ctrl_idx`` positions) out
+    to ``n`` samples: ``np.interp`` on a uniform grid, about 4x cheaper."""
+    return (v[:-1, None] + (v[1:] - v[:-1])[:, None] * _CTRL_FRAC[None, :]).ravel()[:n]
+
+
+def _ctrl_idx(n: int) -> np.ndarray:
+    """The control-rate sample positions covering ``n`` samples."""
+    return np.arange(0, n + _CTRL, _CTRL, dtype=np.float64)
+
+
+def _drift_ctrl(idx: np.ndarray, n: int, sr: int, rng: np.random.Generator,
+                rate_hz: float) -> np.ndarray:
+    """:func:`_drift` at the control positions ``idx`` only."""
     k = int(n / sr * rate_hz) + 3
     pts = rng.uniform(-1.0, 1.0, k)
-    x = np.arange(n, dtype=np.float64) * (rate_hz / sr)
+    x = idx * (rate_hz / sr)
     i = np.minimum(x.astype(np.int64), k - 2)
     f = x - i
     w = 0.5 - 0.5 * np.cos(np.pi * f)
     return pts[i] * (1.0 - w) + pts[i + 1] * w
+
+
+def _drift(n: int, sr: int, rng: np.random.Generator, rate_hz: float) -> np.ndarray:
+    """A smooth random curve in [-1, 1], changing about ``rate_hz`` times a
+    second: analog oscillator drift, cheaply (a few control points, cosine
+    interpolated)."""
+    return _upsample(_drift_ctrl(_ctrl_idx(n), n, sr, rng, rate_hz), n)
+
+
+def _ctrl_phase(f_ctrl: np.ndarray, idx: np.ndarray, n: int, sr: int,
+                phi0: float) -> np.ndarray:
+    """Phase in cycles for a slowly moving frequency given at the control
+    positions ``idx``: integrated there, then interpolated, which is exact for
+    a frequency that is straight between control points and far below a cent
+    off for drift and vibrato."""
+    ph = np.empty(idx.shape[0])
+    ph[0] = phi0
+    np.cumsum(0.5 * (f_ctrl[1:] + f_ctrl[:-1]) * (_CTRL / sr), out=ph[1:])
+    ph[1:] += phi0
+    return _upsample(ph, n)
 
 
 def _phase(freq, n: int, sr: int, phi0: float) -> np.ndarray:
@@ -100,7 +139,7 @@ def _blep(p: np.ndarray, dt: np.ndarray) -> np.ndarray:
 
 def saw(phase_cycles: np.ndarray, freq, sr: int) -> np.ndarray:
     """Band-limited (polyBLEP) sawtooth, -1..1."""
-    p = np.mod(phase_cycles, 1.0)
+    p = phase_cycles - np.floor(phase_cycles)     # mod 1, ~25x cheaper than np.mod
     f = np.asarray(freq, dtype=np.float64)
     if f.ndim == 0:
         dt = float(np.clip(f / sr, 1e-9, 0.49))
@@ -120,6 +159,11 @@ def pulse(phase_cycles: np.ndarray, freq, sr: int, width) -> np.ndarray:
     """Band-limited pulse: the difference of two BLEP saws (zero mean)."""
     w = np.clip(np.asarray(width, dtype=np.float64), 0.05, 0.95)
     return saw(phase_cycles, freq, sr) - saw(phase_cycles + w, freq, sr)
+
+
+#: The smallest cutoff move the ladder follows: 1/96 octave (12.5 cents,
+#: 0.7%), well under what a filter sweep is heard to step by.
+_LADDER_STEP_OCT = 1.0 / 96.0
 
 
 def ladder(x: np.ndarray, sr: int, cutoff, res: float, block: int = 64,
@@ -144,6 +188,19 @@ def ladder(x: np.ndarray, sr: int, cutoff, res: float, block: int = 64,
     starts = np.arange(0, n, block)
     mids = np.minimum(starts + block // 2, n - 1)
     fc = np.clip(cut[mids], 15.0, 0.42 * sr)
+    if np.ptp(fc) < 1e-6:
+        starts, fc = starts[:1], fc[:1]
+    else:
+        # The cutoff is read every ``block`` samples, but the filter changes
+        # only once it has moved a step (_LADDER_STEP_OCT): one lfilter call
+        # per change rather than per block.  Per-block calls were most of a
+        # voice's render cost, and the live planner has to render a bar well
+        # inside the bar.
+        q = np.round(np.log2(fc) / _LADDER_STEP_OCT)
+        keep = np.concatenate([[0], np.flatnonzero(np.diff(q)) + 1])
+        starts = starts[keep]
+        fc = np.clip(2.0 ** (q[keep] * _LADDER_STEP_OCT), 15.0, 0.42 * sr)
+    ends = np.append(starts[1:], n)
     g = np.tan(np.pi * fc / sr)
     c = (g - 1.0) / (g + 1.0)                    # one-pole pole term
     gn = (g / (1.0 + g)) ** 4                    # one-pole zero gain, ^4
@@ -152,31 +209,61 @@ def ladder(x: np.ndarray, sr: int, cutoff, res: float, block: int = 64,
     num = gn[:, None] * binom[None, :]
     den = den + k * num
     num = num * (1.0 + 0.5 * k)
-    if np.ptp(fc) < 1e-6:                        # static cutoff: one call
+    if starts.shape[0] == 1:                     # static cutoff: one call
         return lfilter(num[0], den[0], x)
     out = np.empty(n)
     zi = np.zeros(4)
-    for bi, i in enumerate(starts):
-        j = min(i + block, n)
+    for bi, (i, j) in enumerate(zip(starts, ends)):
         out[i:j], zi = lfilter(num[bi], den[bi], x[i:j], zi=zi)
     return out
 
 
-def onepole_lp(x: np.ndarray, sr: int, cutoff_hz: float) -> np.ndarray:
-    """TPT (bilinear, prewarped) one-pole lowpass."""
+def _lf(b, a, x: np.ndarray) -> np.ndarray:
+    """``lfilter`` along time, one channel at a time.
+
+    The same numbers as ``lfilter(b, a, x, axis=0)``, but scipy filters a
+    strided ``(n, 2)`` column about twice as slowly as a contiguous one.
+    """
+    if x.ndim == 1:
+        return lfilter(b, a, x)
+    out = np.empty(x.shape)
+    for ch in range(x.shape[1]):
+        out[:, ch] = lfilter(b, a, np.ascontiguousarray(x[:, ch]))
+    return out
+
+
+def _onepole_sos(sr: int, cutoff_hz: float) -> np.ndarray:
     g = np.tan(np.pi * min(float(cutoff_hz), 0.45 * sr) / sr)
-    return lfilter([g / (1.0 + g), g / (1.0 + g)], [1.0, (g - 1.0) / (1.0 + g)],
-                   x, axis=0)
+    return np.array([g / (1.0 + g), g / (1.0 + g), 0.0, 1.0, (g - 1.0) / (1.0 + g), 0.0])
 
 
-def highpass(x: np.ndarray, sr: int, cutoff_hz: float) -> np.ndarray:
-    """Two-pole Butterworth-ish highpass (TPT SVF)."""
+def _hp_coeffs(sr: int, cutoff_hz: float):
     g = np.tan(np.pi * min(float(cutoff_hz), 0.45 * sr) / sr)
     k = 1.41421356
     a0 = 1.0 + g * k + g * g
     b = np.array([1.0, -2.0, 1.0]) / a0
     a = np.array([1.0, 2.0 * (g * g - 1.0) / a0, (1.0 - g * k + g * g) / a0])
-    return lfilter(b, a, x, axis=0)
+    return b, a
+
+
+def _chain(x: np.ndarray, *sections) -> np.ndarray:
+    """Several fixed filters in a row as one second-order-section cascade:
+    one pass over the note instead of one per filter, same response.  Each
+    section is a ``(b, a)`` biquad or a ready sos row."""
+    rows = [np.asarray(sec, dtype=np.float64) if not isinstance(sec, tuple)
+            else np.concatenate([sec[0], sec[1]]) for sec in sections]
+    return sosfilt(np.vstack(rows), x, axis=0)
+
+
+def onepole_lp(x: np.ndarray, sr: int, cutoff_hz: float) -> np.ndarray:
+    """TPT (bilinear, prewarped) one-pole lowpass."""
+    g = np.tan(np.pi * min(float(cutoff_hz), 0.45 * sr) / sr)
+    return _lf([g / (1.0 + g), g / (1.0 + g)], [1.0, (g - 1.0) / (1.0 + g)], x)
+
+
+def highpass(x: np.ndarray, sr: int, cutoff_hz: float) -> np.ndarray:
+    """Two-pole Butterworth-ish highpass (TPT SVF)."""
+    return _lf(*_hp_coeffs(sr, cutoff_hz), x)
 
 
 def _bp_coeffs(sr: int, centre_hz: float, q: float):
@@ -189,7 +276,7 @@ def _bp_coeffs(sr: int, centre_hz: float, q: float):
 
 
 def bandpass(x: np.ndarray, sr: int, centre_hz: float, q: float) -> np.ndarray:
-    return lfilter(*_bp_coeffs(sr, centre_hz, q), x, axis=0)
+    return _lf(*_bp_coeffs(sr, centre_hz, q), x)
 
 
 def _tone_coeffs(sr: int, lp_hz: float, dip_hz: float, dip_db: float):
@@ -216,8 +303,9 @@ def juno_chorus(x: np.ndarray, sr: int, rate_hz: float, depth_ms: float,
     """One BBD line read with opposite modulation on each side, the Juno trick
     that makes width without moving the centre.  Mono in, stereo out."""
     n = x.shape[0]
-    t = np.arange(n, dtype=np.float64) / sr
-    lfo = 2.0 / np.pi * np.arcsin(np.sin(_TWO_PI * rate_hz * t + phase))  # triangle
+    t = _ctrl_idx(n) / sr                     # the LFO at the control rate
+    lfo = _upsample(2.0 / np.pi * np.arcsin(np.sin(_TWO_PI * rate_hz * t + phase)),
+                    n)                        # triangle
     base = 3.5e-3
     d = depth_ms * 1e-3
     left = _delay_tap(x, sr, base + d * lfo)
@@ -230,13 +318,13 @@ def ensemble(x: np.ndarray, sr: int, phase: float) -> np.ndarray:
     """Three delay lines on three-phase slow and fast LFOs (string ensemble).
     Mono in, stereo out."""
     n = x.shape[0]
-    t = np.arange(n, dtype=np.float64) / sr
+    t = _ctrl_idx(n) / sr                     # the LFOs at the control rate
     taps = []
     for k in range(3):
         ph = phase + k * _TWO_PI / 3.0
         d = (5.0e-3 + 1.6e-3 * np.sin(_TWO_PI * 0.63 * t + ph)
              + 0.25e-3 * np.sin(_TWO_PI * 6.1 * t + ph * 1.7))
-        taps.append(_delay_tap(x, sr, d))
+        taps.append(_delay_tap(x, sr, _upsample(d, n)))
     left = 0.4 * x + 0.45 * taps[0] + 0.3 * taps[1]
     right = 0.4 * x + 0.45 * taps[2] + 0.3 * taps[1]
     return np.stack([left, right], axis=1)
@@ -247,17 +335,19 @@ def adsr(n: int, sr: int, dur_s: float, a: float, d: float, s: float,
     """Exponential-segment ADSR: attack to 1 in ``a`` s, decay toward ``s``
     with time constant ``d``, release with time constant ``r/3`` after the
     gate.  The release starts from wherever the envelope is, so a short note
-    never clicks."""
+    never clicks.  Each segment is computed only where it sounds."""
     t = np.arange(n, dtype=np.float64) / sr
-    att = 1.0 - np.exp(-t / max(a / 3.0, 1e-4))
-    att = att / (1.0 - np.exp(-3.0))
-    rise = np.clip(att, 0.0, 1.0)
-    held = np.where(t < a, rise,
-                    s + (1.0 - s) * np.exp(-(t - a) / max(d, 1e-4)))
     gate = min(int(round(dur_s * sr)), n)
-    env = held.copy()
+    ia = min(int(np.searchsorted(t, a, side="left")), gate)   # first t >= a
+    env = np.empty(n)
+    att = 1.0 - np.exp(-t[:ia] / max(a / 3.0, 1e-4))
+    env[:ia] = np.clip(att / (1.0 - np.exp(-3.0)), 0.0, 1.0)
+    if s == 1.0:
+        env[ia:gate] = 1.0
+    else:
+        env[ia:gate] = s + (1.0 - s) * np.exp(-(t[ia:gate] - a) / max(d, 1e-4))
     if gate < n:
-        lvl = held[gate - 1] if gate > 0 else 0.0
+        lvl = env[gate - 1] if gate > 0 else 0.0
         env[gate:] = lvl * np.exp(-(t[gate:] - dur_s) / max(r / 3.0, 1e-4))
     return env
 
@@ -273,7 +363,7 @@ def peak_eq(x: np.ndarray, sr: int, f_hz: float, gain_db: float,
             q: float = 0.8) -> np.ndarray:
     """RBJ peaking EQ, used as a gentle low-mid dip so chords stay clear of
     the bass and the voice in the 200-500 Hz pile-up."""
-    return lfilter(*_peak_coeffs(sr, f_hz, gain_db, q), x, axis=0)
+    return _lf(*_peak_coeffs(sr, f_hz, gain_db, q), x)
 
 
 def _peak_coeffs(sr: int, f_hz: float, gain_db: float, q: float):
@@ -304,18 +394,39 @@ def _glide(f0: float, glide_from: float | None, glide_s: float, n: int,
     return glide_from * (f0 / glide_from) ** u
 
 
-def _sine_stack(f, n, sr, partials, rng, phase_jitter=True):
-    """Additive sines, each partial dropped once it would pass Nyquist."""
+def _wrap(phase_cycles: np.ndarray) -> np.ndarray:
+    """Phase in cycles to float32 radians in [0, 2 pi): the long running phase
+    stays exact in float64 and the sines are then taken in float32."""
+    return ((phase_cycles - np.floor(phase_cycles)) * _TWO_PI).astype(np.float32)
+
+
+def _sine_stack(f, n, sr, partials, rng, phase_jitter=True, phase=None):
+    """Additive sines, each partial dropped once it would pass Nyquist.
+
+    The running phase is kept in float64 and wrapped to whole cycles before
+    the sines are taken in float32: the sum is the same to about -120 dB and
+    costs about half."""
     f = np.asarray(f, dtype=np.float64)
     fmax = float(np.max(f)) if f.ndim else float(f)
-    y = np.zeros(n)
-    base = _phase(f, n, sr, 0.0)
+    y = np.zeros(n, dtype=np.float32)
+    base = _phase(f, n, sr, 0.0) if phase is None else phase
+    frac = (base - np.floor(base)).astype(np.float32)
+    arg = np.empty(n, dtype=np.float32)
     for ratio, level in partials:
         if ratio * fmax >= 0.45 * sr:
             continue
         ph0 = float(rng.uniform(0.0, 1.0)) if phase_jitter else 0.0
-        y += level * np.sin(_TWO_PI * (ratio * base + ph0))
-    return y
+        if float(ratio).is_integer():          # wrapping keeps whole cycles
+            np.multiply(frac, np.float32(_TWO_PI * ratio), out=arg)
+        else:                                  # e.g. the organ's 16' at 0.5
+            rb = ratio * base
+            np.multiply((rb - np.floor(rb)).astype(np.float32),
+                        np.float32(_TWO_PI), out=arg)
+        arg += np.float32(_TWO_PI * ph0)
+        np.sin(arg, out=arg)
+        arg *= np.float32(level)
+        y += arg
+    return y.astype(np.float64)
 
 
 # ---------------------------------------------------------------------------
@@ -397,11 +508,12 @@ def _warmpad(sr, dur_s, freq_hz, vel, rng, p, glide_from_hz):
     # Szabo: detune grows nonlinearly with the knob; ~0.35 is the classic spot
     amt = float(np.clip(p["detune"], 0.0, 1.0))
     spread = 12.0 * amt ** 1.5 + 0.6                       # semitone fraction
-    drift = _drift(n, sr, rng, 0.4)
+    idx = _ctrl_idx(n)
+    drift = _drift_ctrl(idx, n, sr, rng, 0.4)
     # Two drift directions, one per side; each saw's phase is its detune
-    # ratio times the shared running phase, so only two cumsums are needed.
-    base = {+1: _phase(f0 * np.exp(drift * (3.0 * np.log(2.0) / 1200.0)), n, sr, 0.0),
-            -1: _phase(f0 * np.exp(drift * (-3.0 * np.log(2.0) / 1200.0)), n, sr, 0.0)}
+    # ratio times the shared running phase, so only two phases are needed.
+    base = {+1: _ctrl_phase(f0 * _cents(3.0 * drift), idx, n, sr, 0.0),
+            -1: _ctrl_phase(f0 * _cents(-3.0 * drift), idx, n, sr, 0.0)}
     sides = (np.zeros(n), np.zeros(n))
     for i, off in enumerate(_SZABO):
         ratio = 2.0 ** (off * spread / 12.0)
@@ -419,10 +531,13 @@ def _warmpad(sr, dur_s, freq_hz, vel, rng, p, glide_from_hz):
     v = 0.55 + 0.45 * float(np.clip(vel, 0.0, 1.0))
     cut = p["cutoff_hz"] * v * (0.7 + 0.3 * swell * p["env_amount"]) * (1.0 + 0.12 * lfo)
     cut = np.minimum(cut, max(f0 * 9.0, 1400.0))           # keep the top sweet
-    for ch in sides:
-        y = highpass(ch, sr, f0 * 0.7)                     # Szabo: HPF at f0
-        out.append(ladder(y, sr, cut, p["res"], block=512))
-    st = peak_eq(np.stack(out, axis=1), sr, 300.0, -2.5) * 0.42
+    # Szabo's HPF at f0 and the low-mid dip are fixed, so they run first as
+    # one cascade over both sides; then the swelling ladder on each.
+    pre = _chain(np.stack(sides, axis=1), _hp_coeffs(sr, f0 * 0.7),
+                 _peak_coeffs(sr, 300.0, -2.5, 0.8))
+    for ch in range(2):
+        out.append(ladder(pre[:, ch], sr, cut, p["res"], block=512))
+    st = np.stack(out, axis=1) * 0.42
     env = adsr(n, sr, dur_s, p["attack_ms"] / 1000.0, 1.0, 1.0, rel)
     st *= env[:, None]
     ch = p["chorus"]
@@ -437,11 +552,13 @@ def _strings(sr, dur_s, freq_hz, vel, rng, p, glide_from_hz):
     f0 = _f0(freq_hz, p["default_hz"])
     rel = p["release_ms"] / 1000.0
     n = _n(sr, dur_s + rel)
-    drift = _drift(n, sr, rng, 0.3)
-    f = f0 * _cents(2.0 * drift)
-    y = saw(_phase(f, n, sr, float(rng.uniform())), f, sr)
+    idx = _ctrl_idx(n)
+    f = f0 * _cents(2.0 * _drift_ctrl(idx, n, sr, rng, 0.3))
+    # the BLEP width follows the nominal pitch; the drift is two cents
+    y = saw(_ctrl_phase(f, idx, n, sr, float(rng.uniform())), f0, sr)
     f8 = 2.0 * f * _cents(1.5)
-    y = y + p["octave_level"] * saw(_phase(f8, n, sr, float(rng.uniform())), f8, sr)
+    y = y + p["octave_level"] * saw(_ctrl_phase(f8, idx, n, sr, float(rng.uniform())),
+                                    2.0 * f0 * _cents(1.5), sr)
     y = highpass(y, sr, max(140.0, f0 * 0.8))
     # gentle two-pole-ish top roll (ladder with no resonance, static)
     v = 0.6 + 0.4 * float(np.clip(vel, 0.0, 1.0))
@@ -459,25 +576,37 @@ def _breathpad(sr, dur_s, freq_hz, vel, rng, p, glide_from_hz):
     rel = p["release_ms"] / 1000.0
     n = _n(sr, dur_s + rel)
     t = np.arange(n, dtype=np.float64) / sr
-    partials = ((1.0, 1.0), (2.0, 0.32), (3.0, 0.12), (4.0, 0.06))
+    # Tone: a gentle lowpass and a low-mid dip.  Both are linear and fixed,
+    # and the partials are steady sines with random phases, so on them the
+    # tone is just a gain per partial.  The breath keeps the real lowpass, so
+    # its skirts stay soft, and takes the dip as a gain on each narrow band.
+    bt, at = _tone_coeffs(sr, p["cutoff_hz"], 300.0, -3.0)
+    ratios, levels = (1.0, 2.0, 3.0, 4.0), (1.0, 0.32, 0.12, 0.06)
+    gain = np.abs(freqz(bt, at, worN=[min(r * f0, 0.49 * sr) for r in ratios],
+                        fs=sr)[1])
+    partials = tuple(zip(ratios, np.asarray(levels) * gain))
+    c2, c4 = min(2.0 * f0, 9000.0), min(4.0 * f0, 12000.0)
+    dip = np.abs(freqz(*_peak_coeffs(sr, 300.0, -3.0, 0.8), worN=[c2, c4], fs=sr)[1])
+    g = np.tan(np.pi * min(float(p["cutoff_hz"]), 0.45 * sr) / sr)
+    lp = np.array([[g / (1.0 + g), g / (1.0 + g), 0.0, 1.0, (g - 1.0) / (1.0 + g), 0.0]])
     sides = []
+    idx = _ctrl_idx(n)
     for c in (-6.0, 6.0):
-        drift = _drift(n, sr, rng, 0.25)
-        f = f0 * _cents(c + 3.0 * drift)
-        sides.append(_sine_stack(f, n, sr, partials, rng))
+        f = f0 * _cents(c + 3.0 * _drift_ctrl(idx, n, sr, rng, 0.25))
+        sides.append(_sine_stack(f, n, sr, partials, rng,
+                                 phase=_ctrl_phase(f, idx, n, sr, 0.0)))
     # breath: noise through resonant bands on the 2nd and 4th harmonics,
-    # swelling on a slow LFO.  The two bands are one 4th-order filter and the
-    # tone filter and low-mid dip one 3rd-order filter, to keep it cheap.
+    # swelling on a slow LFO.  The two bands are one 4th-order filter.
     breathe = 0.65 + 0.35 * np.sin(_TWO_PI * 0.17 * t + float(rng.uniform(0.0, _TWO_PI)))
     amt = float(np.clip(p["breath"], 0.0, 1.0))
-    b1, a1 = _bp_coeffs(sr, min(2.0 * f0, 9000.0), 9.0)
-    b2, a2 = _bp_coeffs(sr, min(4.0 * f0, 12000.0), 7.0)
-    bb = 0.9 * np.polymul(b1, a2) + 0.5 * np.polymul(b2, a1)
+    b1, a1 = _bp_coeffs(sr, c2, 9.0)
+    b2, a2 = _bp_coeffs(sr, c4, 7.0)
+    bb = 0.9 * dip[0] * np.polymul(b1, a2) + 0.5 * dip[1] * np.polymul(b2, a1)
     ab = np.polymul(a1, a2)
-    nz = lfilter(bb, ab, rng.standard_normal((n, 2)), axis=0)
+    nz = sosfilt(np.vstack([tf2sos(bb, ab), lp]),
+                 rng.standard_normal((n, 2), dtype=np.float32), axis=0)
     y = 0.55 * np.stack(sides, axis=1) + amt * nz * breathe[:, None]
-    bt, at = _tone_coeffs(sr, p["cutoff_hz"], 300.0, -3.0)
-    st = width(lfilter(bt, at, y, axis=0), 0.55)
+    st = width(y, 0.55)
     env = adsr(n, sr, dur_s, p["attack_ms"] / 1000.0, 1.0, 1.0, rel)
     return st * env[:, None] * 0.55
 
@@ -492,27 +621,33 @@ def _glasskeys(sr, dur_s, freq_hz, vel, rng, p, glide_from_hz):
     ks = _key_scale(f0, 520.0)
     out = []
     phi = float(rng.uniform())
-    for side, cents in ((0, -2.5), (1, 2.5)):
+    idx = (p["index"] * (0.3 + 0.7 * v) * ks
+           * (0.25 + 0.75 * np.exp(-t / 0.35))).astype(np.float32)
+    # The tine rings for tens of ms; by 0.9 s it is 130 dB down, so it is
+    # only computed that far.
+    m = min(n, _n(sr, 0.9))
+    t_idx = (1.2 * ks * np.exp(-t[:m] / 0.03)).astype(np.float32)
+    t_env = (p["tine_level"] * (0.4 + 0.6 * v) * np.exp(-t[:m] / 0.06)).astype(np.float32)
+    for cents in (-2.5, 2.5):
         f = f0 * _cents(cents)
-        ph = _TWO_PI * _phase(f, n, sr, phi)
-        idx = p["index"] * (0.3 + 0.7 * v) * ks * (0.25 + 0.75 * np.exp(-t / 0.35))
-        body = np.sin(ph + idx * np.sin(ph))
+        base = _phase(f, n, sr, phi)
+        ph = _wrap(base)
+        y = np.sin(ph + idx * np.sin(ph))
         # tine: 14:1 modulator rings briefly; dropped once its band would alias
-        tine = np.zeros(n)
         if 15.0 * f < 0.45 * sr:
-            ph_t = _TWO_PI * _phase(14.0 * f, n, sr, 0.0)
-            tine = np.sin(ph + 1.2 * ks * np.exp(-t / 0.03) * np.sin(ph_t))
-            tine = (tine - np.sin(ph)) * np.exp(-t / 0.06)
-        y = body + p["tine_level"] * (0.4 + 0.6 * v) * tine
+            ph_t = _wrap(14.0 * (base[:m] - phi))
+            tine = np.sin(ph[:m] + t_idx * np.sin(ph_t)) - np.sin(ph[:m])
+            y[:m] += t_env * tine
         out.append(y)
-    st = np.stack(out, axis=1)
+    st = np.stack(out, axis=1).astype(np.float64)
     # two-stage decay: a quick bloom, then a long ring
     amp = 0.35 * np.exp(-t / 0.18) + 0.65 * np.exp(-t / max(dec, 0.05))
     trem = 1.0 + p["tremolo"] * np.sin(_TWO_PI * 4.8 * t + float(rng.uniform(0, _TWO_PI)))
     env = amp * adsr(n, sr, dur_s, 0.002, 1.0, 1.0, rel)
     st[:, 0] *= env * trem
     st[:, 1] *= env * (2.0 - trem)                 # auto-pan tremolo, Rhodes-style
-    st = highpass(peak_eq(st, sr, 320.0, -2.5), sr, 25.0)   # 1:1 FM makes DC
+    st = _chain(st, _peak_coeffs(sr, 320.0, -2.5, 0.8),
+                _hp_coeffs(sr, 25.0))              # 1:1 FM makes DC
     return width(st, 0.6) * 0.42
 
 
@@ -521,12 +656,13 @@ def _junopoly(sr, dur_s, freq_hz, vel, rng, p, glide_from_hz):
     rel = p["release_ms"] / 1000.0
     n = _n(sr, dur_s + rel)
     t = np.arange(n, dtype=np.float64) / sr
-    drift = _drift(n, sr, rng, 0.5)
-    f = f0 * _cents(2.5 * drift)
-    ph = _phase(f, n, sr, float(rng.uniform()))
+    idx = _ctrl_idx(n)
+    f = f0 * _cents(2.5 * _drift_ctrl(idx, n, sr, rng, 0.5))
+    ph = _ctrl_phase(f, idx, n, sr, float(rng.uniform()))
     width = 0.5 + 0.35 * np.sin(_TWO_PI * 0.6 * t + float(rng.uniform(0.0, _TWO_PI)))
-    y = 0.55 * saw(ph, f, sr) + 0.45 * pulse(ph, f, sr, width)
-    sub = pulse(ph * 0.5, f * 0.5, sr, 0.5)
+    # the BLEP width follows the nominal pitch; the drift is 2.5 cents
+    y = 0.55 * saw(ph, f0, sr) + 0.45 * pulse(ph, f0, sr, width)
+    sub = pulse(ph * 0.5, f0 * 0.5, sr, 0.5)
     y = y + p["sub_level"] * sub
     v = float(np.clip(vel, 0.0, 1.0))
     fenv = adsr(n, sr, dur_s, 0.004, p["decay_ms"] / 1000.0, 0.25, rel)
@@ -595,26 +731,31 @@ def _tapekeys(sr, dur_s, freq_hz, vel, rng, p, glide_from_hz):
     n = _n(sr, dur_s + rel)
     t = np.arange(n, dtype=np.float64) / sr
     v = float(np.clip(vel, 0.0, 1.0))
-    # tape: slow wow and quick flutter, the same on both sides (one tape)
-    wow = p["wow_cents"] * (0.7 * np.sin(_TWO_PI * 0.55 * t + float(rng.uniform(0.0, _TWO_PI)))
-                            + 0.3 * _drift(n, sr, rng, 1.2))
-    flut = p["flutter_cents"] * np.sin(_TWO_PI * 7.3 * t + float(rng.uniform(0.0, _TWO_PI)))
+    # tape: slow wow and quick flutter, the same on both sides (one tape),
+    # at the control rate (they move at most 7.3 times a second)
+    ci = _ctrl_idx(n)
+    tc = ci / sr
+    wow = p["wow_cents"] * (0.7 * np.sin(_TWO_PI * 0.55 * tc + float(rng.uniform(0.0, _TWO_PI)))
+                            + 0.3 * _drift_ctrl(ci, n, sr, rng, 1.2))
+    flut = p["flutter_cents"] * np.sin(_TWO_PI * 7.3 * tc + float(rng.uniform(0.0, _TWO_PI)))
     out = []
     phi = float(rng.uniform())
+    idx = ((0.5 + 0.9 * v) * _key_scale(f0, 400.0) * np.exp(-t / 0.4)).astype(np.float32)
+    second = (0.08 * np.exp(-t / 0.5)).astype(np.float32)
     for cents in (-4.0, 4.0):
-        f = f0 * _cents(cents + wow + flut)
-        ph = _TWO_PI * _phase(f, n, sr, phi)
-        idx = (0.5 + 0.9 * v) * _key_scale(f0, 400.0) * np.exp(-t / 0.4)
+        ph = _wrap(_ctrl_phase(f0 * _cents(cents + wow + flut), ci, n, sr, phi))
         y = np.sin(ph + idx * np.sin(ph))                  # soft tine body
-        y = y + 0.08 * np.sin(2.0 * ph) * np.exp(-t / 0.5)
+        y += np.sin(2.0 * ph) * second
         out.append(y)
-    st = np.stack(out, axis=1)
+    st = np.stack(out, axis=1).astype(np.float64)
     amp = 0.3 * np.exp(-t / 0.15) + 0.7 * np.exp(-t / max(dec, 0.05))
     env = amp * adsr(n, sr, dur_s, 0.004, 1.0, 1.0, rel)
     st *= env[:, None]
     st = np.tanh(st * 1.4) / np.tanh(1.4)                 # tape saturation
-    st = onepole_lp(onepole_lp(st, sr, p["cutoff_hz"]), sr, p["cutoff_hz"] * 1.6)
-    st = highpass(peak_eq(st, sr, 300.0, -2.0), sr, 25.0)   # 1:1 FM makes DC
+    st = _chain(st, _onepole_sos(sr, p["cutoff_hz"]),
+                _onepole_sos(sr, p["cutoff_hz"] * 1.6),
+                _peak_coeffs(sr, 300.0, -2.0, 0.8),
+                _hp_coeffs(sr, 25.0))                     # 1:1 FM makes DC
     return width(st, 0.7) * 0.62
 
 

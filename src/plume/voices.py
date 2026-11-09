@@ -654,12 +654,18 @@ def render_note_stereo(preset: str, *, sr: int, dur_s: float,
     dur_s = max(float(dur_s), 1.0 / sr)
     st = synths.render(preset, sr, dur_s, freq_hz, float(velocity), rng, p,
                        glide_from_hz)
-    st = np.nan_to_num(st, nan=0.0, posinf=0.0, neginf=0.0)
-    st = st * float(np.clip(velocity, 0.0, 1.0))
-    peak = float(np.max(np.abs(st))) if st.size else 0.0
-    if peak > 1.0:
-        st = st / peak
-    return st.astype(_F32)
+    # The same guarantees as _finish (finite, velocity scaled, peak <= 1) in
+    # one scaling pass: these buffers are long and stereo, and the live
+    # planner renders several every bar.
+    peak = max(float(st.max()), -float(st.min())) if st.size else 0.0
+    if not np.isfinite(peak):
+        st = np.nan_to_num(st, nan=0.0, posinf=0.0, neginf=0.0)
+        peak = float(np.max(np.abs(st))) if st.size else 0.0
+    v = float(np.clip(velocity, 0.0, 1.0))
+    scale = 1.0 / peak if v * peak > 1.0 else v
+    out = np.empty(st.shape, dtype=_F32)
+    np.multiply(st, scale, out=out, casting="same_kind")
+    return out
 
 
 def render_note(preset: str, *, sr: int, dur_s: float, freq_hz: float | None,

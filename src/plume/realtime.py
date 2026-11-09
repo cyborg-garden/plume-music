@@ -794,8 +794,6 @@ class SelfMasker:
         #: False on a direct input.  Nothing of ours can reach it, and a mask with
         #: nothing to mask only punches holes at the machine's beat rate (v1.7).
         self._enabled = bool(enabled)
-        #: Per frame of the last ``mask`` call: the band's share of the mic power.
-        self.last_leak: list[float] = []
         self._margin = float(margin_db)
         self._alpha = float(human_alpha)
         self._floor = float(abs_floor_db)
@@ -915,12 +913,10 @@ class SelfMasker:
         """
         if not self._enabled:
             self.frames_seen += len(frames)
-            self.last_leak = [0.0] * len(frames)
             return list(frames), [False] * len(frames)
         self._delay.extend(float(v) for v in machine_rms_db)
         out = []
         flags = []
-        self.last_leak = []
         for f in frames:
             m_bus = self._delay.popleft() if self._delay else RMS_FLOOR_DB
             audible = m_bus > self._floor
@@ -928,10 +924,6 @@ class SelfMasker:
             # Judged against the coupling estimate as it stood BEFORE this
             # frame, so a frame cannot move the bar it has to clear.
             m_mic = m_bus + self.coupling_db
-            # The band's share of this frame's mic power, for herchords: how much
-            # of the pitch heard here is our own chord coming back.
-            self.last_leak.append(
-                min(1.0, 10.0 ** ((m_mic - float(f.rms_db)) / 10.0)) if audible else 0.0)
             loud = audible and m_mic > (self.human_rms_db - self._margin)
             # (b) the TRANSIENT rule.  A rise in the machine's own bus, held
             # for hold_s, i.e. exactly the frames our own attack lands in —
@@ -4586,10 +4578,10 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
         density_hold = PhraseHold(int(params.entry_boundary_bars))
         entry_ramp = EntryRamp(under_db=params.enter_under_db, ramp_bars=params.ramp_bars)
         guitar_ear = GuitarEar()
-        from .herchords import (ChordFollower, chord_root,  # noqa: PLC0415
-                                chord_tones, clean_bar)
-        chord_follow = ChordFollower()
-        sounded: dict[int, str | None] = {}     # bar -> the chord the band played
+        from .herchords import ChordFollower, clean_bar  # noqa: PLC0415
+        # A room mic hears the band's own chord, and nothing here can tell it from
+        # hers, so only an input the band cannot reach follows her chords.
+        chord_follow = ChordFollower(band_in_mic=not (is_direct or midi_port is not None))
         # The band follows how she plays.  FOLLOW is the only mode so far: the seam a
         # "plume leads" mode would come in by.  A room mic hears the band too, so it
         # follows more cautiously (see BandFollow).
@@ -4835,15 +4827,13 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
                 else:
                     # Still waiting: no bar will ever read these frames.
                     masked_frames = []
-            leaks = list(getattr(masker, "last_leak", None) or ())
-            leaks += [0.0] * (len(masked_frames) - len(leaks))
             with state_lock:
                 shared["beat"] = beat_state
                 shared["harmony"] = harm_state
-                for f, leak in zip(masked_frames, leaks):
+                for f in masked_frames:
                     if tap_start:
                         shared["chroma"].append(
-                            (f.t_s, f.chroma, leak, getattr(f, "chroma_low", None)))
+                            (f.t_s, f.chroma, getattr(f, "chroma_low", None)))
                     shared["events"].append((f.t_s, f.rms_db, f.onset))
                     if f.onset:
                         shared["onsets"].append(f.t_s)
@@ -4881,7 +4871,8 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
             later_evs = list(shared["events"]) if entry is not None else []
             onsets = [t for t in shared["onsets"] if w_start <= t < w_end]
             shared["onsets"] = [t for t in shared["onsets"] if t >= w_end]
-            bar_frames = [e[1:] for e in shared["chroma"] if w_start <= e[0] < w_end]
+            bar_frames = [(c, 0.0, low) for t, c, low in shared["chroma"]
+                          if w_start <= t < w_end]
             bar_chroma = [e[0] for e in bar_frames]
             shared["chroma"] = [e for e in shared["chroma"] if e[0] >= w_end]
         human = None
@@ -5000,12 +4991,10 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
                                           change_style(picked, bridge=plain_intro[0]))
                         entered = dataclasses.replace(
                             entered, chord=entry.chord_at(bar, harm_state))
-            # Her chords (herchords): what she played in the window bar, with the
-            # band's own chord on a room mic taken out, then the band's chord for this
-            # bar, hers when she holds or loops one clearly, the template otherwise.
-            was = sounded.get(bar - lag)
-            chord_follow.hear(bar - lag,
-                              clean_bar(bar_frames, chord_tones(was), chord_root(was)),
+            # Her chords (herchords): what she played in the window bar, then the
+            # band's chord for this bar, hers when she holds or loops one clearly, the
+            # template otherwise.
+            chord_follow.hear(bar - lag, clean_bar(bar_frames),
                               playing=bar >= first_heard_bar and (
                                   playing or (not entry.band_is_in
                                               and guitar_ear.last_bar_tonal)))
@@ -5013,9 +5002,6 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
             if entered.key is not None:
                 chords_doc = chord_follow.decide(bar, entered.key, style, entered.chord)
                 entered = dataclasses.replace(entered, chord=chords_doc["chord"])
-                sounded[bar] = chords_doc["chord"]
-                for gone in [b for b in sounded if b < bar - 8]:
-                    del sounded[gone]
             # Over a room mic with the band in, "not silent" mostly means the band.
             playing_trusted = is_direct or midi_port is not None or not entry.band_is_in
             if entry.band_is_in:

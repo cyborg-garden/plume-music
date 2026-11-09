@@ -20,11 +20,14 @@ single-note melody included, keeps the style's own progression.  Each bar's
 decision says which it was and why (``decide``'s ``reason``).
 
 ROOM MIC.  A room mic hears the band too, and the band's own chord must not come
-back as hers.  The masker knows, per frame, how much of the mic is the band
-(``SelfMasker`` level in the mic domain); :func:`clean_bar` takes that share of the
-band's own chord tones out of each frame and weights the frame by her share.  A bar
-that is mostly band is no evidence at all.  A direct input has no share, and
-nothing changes.
+back as hers.  Nothing live can say how much of a bar is the band: the self
+masker's coupling estimate is a bound for masking, not a measurement.  On the fake
+room (speakers 6 dB down) it put the band at under half the mic while she was
+silent and the band was all it heard, and at a fifth of it with no bleed at all.
+Taking that share of the band's chord out leaves the band's chord standing, and
+it read as hers: a held Em from the band's own Cmaj7.  So a follower made with
+``band_in_mic`` (any input but a direct one) keeps the template and says why.
+:func:`clean_bar` can still take a stated share out, for an input that knows it.
 
 Pure: plain numbers in, a plain dict out, no clock, no device, no rng.
 """
@@ -305,8 +308,10 @@ class ChordFollower:
     plans.  Her bars are kept as chroma, so a loop she played before the key was
     known is read in that key the moment it is."""
 
-    def __init__(self):
+    def __init__(self, *, band_in_mic: bool = False):
         self._bars: dict[int, object] = {}
+        #: The band can reach this input (a room mic): its chord can't be told from hers.
+        self.band_in_mic = bool(band_in_mic)
 
     def hear(self, bar: int, her, *, playing: bool) -> None:
         """``her``: her bar, a :class:`HerBar` from :func:`clean_bar` (or a bare
@@ -348,6 +353,9 @@ class ChordFollower:
                     "her_fit": None if r is None else r.fit}
 
         heard_bar = max(self._bars) if self._bars else None
+        if self.band_in_mic:
+            return out(template, "template",
+                       "template: on a room mic the band can't tell her chord from its own")
         if key is None or template is None or heard_bar is None:
             return out(template, "template", "template: nothing of hers heard yet")
         try:

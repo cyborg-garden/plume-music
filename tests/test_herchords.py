@@ -10,8 +10,6 @@ import pytest
 
 from plume import herchords as hc
 from plume.listen.features import FeatureExtractor
-from plume.realtime import HopRms, SelfMasker
-from plume.theory import parse_chord
 
 SR = 48000
 KEY, STYLE = "C major", "lofi"
@@ -223,7 +221,8 @@ def test_melody_over_the_bands_bleed_does_not_hold_the_bands_chord():
 
 
 def test_closed_loop_the_band_does_not_keep_hearing_its_own_chord():
-    """The trap that matters: the band follows her Am, so the mic is full of Am;
+    """With a share it can trust (stated here, which nothing live can do; see the
+    room-mic tests): the band follows her Am, so the mic is full of Am;
     then she moves to a stepwise melody.  Heard raw, the band's own Am would read as hers
     and hold the band there for good.  With its share taken out, the template is
     back within two bars of her melody."""
@@ -300,50 +299,15 @@ def test_a_rendered_chord_loop_is_followed_bar_for_bar(loop):
     assert hits == len([b for b in range(16) if 2 * len(loop) <= b - 2 < 14])
 
 
-def test_room_mic_through_the_masker_follows_her_not_the_band():
-    """Her Am-F loop with the band playing ITS template into the mic at room level:
-    the real SelfMasker gives each frame's band share, and the band follows her."""
-    bar_s = 2.0
-    nbars = 16
-    her = np.concatenate([0.05 * _pluck(VOICINGS[("Am", "F")[b % 2]], bar_s)
-                          for b in range(nbars)])
-    band_voice = {"Dm7": (50, 53, 57, 60), "G7": (43, 53, 59, 62),
-                  "Cmaj7": (48, 52, 55, 59)}
-    t = np.arange(int(bar_s * SR)) / SR
-    band = np.concatenate([
-        0.03 * sum(np.sin(2 * np.pi * 440.0 * 2 ** ((m - 69) / 12) * t)
-                   for m in band_voice[TEMPLATE[b % 4]])
-        for b in range(nbars)])
-    coupling = 10 ** (-8 / 20)
-    mic = her + coupling * band
-    masker = SelfMasker(latency_hops=0)
-    hop = HopRms()
-    fe = FeatureExtractor(sr=SR)
-    frames, leaks = [], []
-    for i in range(0, mic.size, 2048):
-        fr = fe.process(mic[i:i + 2048].astype(np.float32))
-        _, _ = masker.mask(fr, hop.process(band[i:i + 2048].astype(np.float32)))
-        frames.extend(fr)
-        leaks.extend(masker.last_leak)
-    assert max(leaks) > 0.05                      # the masker does hear the band
-    bars = [[] for _ in range(nbars)]
-    for fr, leak in zip(frames, leaks):
-        b = int(fr.t_s // bar_s)
-        if b < nbars:
-            bars[b].append((fr.chroma, leak, fr.chroma_low))
-    f = hc.ChordFollower()
-    got = []
-    for heard, fr in enumerate(bars):
-        band_sym = TEMPLATE[heard % 4]
-        f.hear(heard, hc.clean_bar(fr, hc.chord_tones(band_sym),
-                                   parse_chord(band_sym).root), playing=True)
-        bar = heard + 2
-        if 8 <= bar < nbars:
-            got.append((f.decide(bar, KEY, STYLE, TEMPLATE[bar % 4]), bar))
-    assert got
-    for d, bar in got:
-        assert d["source"] == "her_loop", (bar, d)
-        assert d["chord"] == ("Am7", "Fmaj7")[bar % 2]
+def test_on_a_room_mic_the_band_never_takes_a_chord_for_hers():
+    """The masker's band share is a bound, not a measurement, so a room mic can't
+    tell her held Am from the band's own: the template plays, and says why."""
+    f = hc.ChordFollower(band_in_mic=True)
+    for heard in range(12):
+        f.hear(heard, hc.clean_bar([(pcs_chroma(AM), 0.0)] * 10), playing=True)
+        d = f.decide(heard + 2, KEY, STYLE, TEMPLATE[(heard + 2) % 4])
+        assert d["source"] == "template" and d["chord"] == TEMPLATE[(heard + 2) % 4]
+        assert "room mic" in d["reason"]
 
 
 # ------------------------------------------------------------- the live loop
@@ -413,11 +377,15 @@ def _sits_on_am(band):
     assert any(r["chords"]["template"] != "Am7" for r in held)
 
 
-def test_live_room_mic_she_holds_am_over_the_bands_bleed(tmp_path, consent):
+def test_live_room_mic_she_holds_am_and_the_band_says_it_cannot_tell(tmp_path, consent):
+    """On a room mic the band hears its own chord; it keeps its template, and the
+    log says so rather than claiming her chord."""
     rows = _live(tmp_path, _strums(VOICINGS["Am"]), "hold-room", fake={"bleed_db": -6.0})
     band = [r for r in rows if r.get("entry") not in (None, "drums")]
     assert band, "the band never came in"
-    _sits_on_am(band)
+    assert all(r["chords"]["source"] == "template" for r in band)
+    assert all(r["chord"] == r["chords"]["template"] for r in band)
+    assert all("room mic" in r["chords"]["reason"] for r in band)
 
 
 def test_live_room_mic_melody_over_bleed_keeps_the_template(tmp_path, consent):

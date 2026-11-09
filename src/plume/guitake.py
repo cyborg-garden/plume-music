@@ -790,8 +790,9 @@ def build_argv(route: Route, folder: Path, *, key: str | None, style: str | None
     if route.hear_me:
         argv.append("--monitor")
         # Her sound is only ever on what she hears, so it goes with Hear me or not at all.
-        if sound and sound != "off":
-            argv.append(f"--sound={sound}")
+        # Off is said outright: left out, the take would fall back to $PLUME_SOUND, and
+        # she would hear a sound the page shows as Off.
+        argv.append(f"--sound={sound or 'off'}")
     words = [w for w in (style, f"in {key}" if key else None) if w]
     if words:
         argv += ["--", " ".join(words)]

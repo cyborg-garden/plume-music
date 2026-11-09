@@ -1985,7 +1985,21 @@ def test_her_sound_goes_with_hear_me_and_only_with_it(tmp_path):
     args = _parsed(guitake.build_argv(off, tmp_path / "t", key=None, style=None, seed=1, sound="dreamy"))
     assert args.sound is None and args.monitor is False
     args = _parsed(guitake.build_argv(on, tmp_path / "t", key=None, style=None, seed=1, sound="off"))
-    assert args.sound is None
+    assert args.sound == "off"
+
+
+@pytest.mark.parametrize("sound", ["off", None])
+def test_off_on_the_page_is_off_whatever_the_environment_says(tmp_path, monkeypatch, sound):
+    """The take inherits the environment, and the command line falls back to $PLUME_SOUND
+    when Hear me is on and no sound is named.  The page shows Off (it sends no sound for
+    Off), so the take has to be told off in so many words."""
+    monkeypatch.setenv("PLUME_SOUND", "dreamy")
+    on = guitake.Route("Audio Interface 4x4", "direct", 2, True)
+    args = _parsed(guitake.build_argv(on, tmp_path / "t", key=None, style=None, seed=1, sound=sound))
+    assert cli._route_kwargs(args)["sound"] == "off"
+    off = guitake.Route("Audio Interface 4x4", "direct", 2, False)
+    args = _parsed(guitake.build_argv(off, tmp_path / "t", key=None, style=None, seed=1, sound=sound))
+    assert "sound" not in cli._route_kwargs(args)          # no Hear me, no sound at all
 
 
 def test_start_refuses_a_sound_plume_does_not_have(rig, runner):

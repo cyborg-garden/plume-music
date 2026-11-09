@@ -571,6 +571,7 @@ class DuetEngine:
         #: plain first phrase, played with that fraction of the style's swing and
         #: push.  Set for one render by render_bar's ``entry_feel``.
         self._entry_feel: float | None = None
+        self._section: int | None = None
         # introspection: events chosen for the most recent render_bar
         self.last_events: list[dict] = []
         self._progressions: dict[str, list[str]] = {}
@@ -636,8 +637,13 @@ class DuetEngine:
     def render_bar(self, plan: "BarPlan", beat: "BeatState",
                    harmony: "HarmonyState", *,
                    continuation: bool = False,
-                   entry_feel: float | None = None) -> np.ndarray:
+                   entry_feel: float | None = None,
+                   section: int | None = None) -> np.ndarray:
         """Render exactly one bar at ``beat.bpm`` -> stereo float32 (n, 2).
+
+        ``section``: the form's section index for this bar, when a form is
+        running (lead mode).  ``voice_variants`` then change voice where the
+        sections change, not on a bar count that ignores the phrase.
 
         ``entry_feel``: this bar is in the plain first phrase after the band came
         in (:func:`plain_entry_grids`), its swing and push this fraction (0..1) of
@@ -669,6 +675,7 @@ class DuetEngine:
             raise ValueError(f"render_bar requires beat.bpm > 0, got {bpm}")
         self._entry_feel = (None if entry_feel is None
                             else float(min(1.0, max(0.0, entry_feel))))
+        self._section = None if section is None else int(section)
         bar_idx = int(getattr(plan, "bar", 0))
 
         # A revision of the bar we just rendered must not advance the
@@ -1239,14 +1246,22 @@ class DuetEngine:
         """The preset for ``role`` in this stretch of the take.
 
         A style may list ``voice_variants[role]``: the role then moves through
-        those presets every ``variant_bars`` bars (16 by default), so a long
-        take changes colour between sections instead of holding one patch.
+        those presets one section at a time, so a long take changes colour
+        between sections instead of holding one patch.  With a form running
+        (``render_bar(section=...)``) a section is the form's own, so the
+        change lands where the music changes and a section the form returns
+        to keeps its colour.  Without one (no ``section``, or the form's -1
+        for a session with nothing to play) it is every ``variant_bars`` bars
+        (16 by default) from the first bar.
         """
         options = (self._style.get("voice_variants") or {}).get(role)
         if not options:
             return preset
-        every = max(1, int(self._style.get("variant_bars", 16)))
-        return str(options[(max(0, int(bar)) // every) % len(options)])
+        section = getattr(self, "_section", None)
+        if section is None or section < 0:
+            every = max(1, int(self._style.get("variant_bars", 16)))
+            section = max(0, int(bar)) // every
+        return str(options[int(section) % len(options)])
 
     def _groove_at(self, bpm: float) -> GrooveParams:
         """The style's feel, or its slow-tempo feel below ``slow_below_bpm``; in the

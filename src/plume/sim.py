@@ -1690,7 +1690,8 @@ def simulate_lead(input_wav: str | None, *, session=None,
 
         # The tone cues' stage, bar by bar exactly as live runs it; bit-exact
         # pass-through until a cue moves it.
-        bar_audio = tone.process(duet.render_bar(plan, m_beat, m_harm),
+        bar_audio = tone.process(duet.render_bar(plan, m_beat, m_harm,
+                                                 section=fplan.section_idx),
                                  tilt=cues.tilt, wet=cues.wet)
         placements.append((cursor, bar_audio))
         cursor += bar_audio.shape[0]

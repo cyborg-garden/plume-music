@@ -336,7 +336,7 @@ def test_every_new_voice_and_variant_plays_at_the_old_voices_level(style, role):
 # in the band (DuetEngine)
 # ---------------------------------------------------------------------------
 
-def _duet_bar(style, bar, roles, bpm=100.0):
+def _duet_bar(style, bar, roles, bpm=100.0, section=None):
     from plume.duet import DuetEngine
     from plume.listen.beat import BeatState
     from plume.listen.harmony import HarmonyState
@@ -351,7 +351,7 @@ def _duet_bar(style, bar, roles, bpm=100.0):
     harm = HarmonyState(t_s=0.0, key="A minor", key_conf=0.8, chord="Am",
                         chord_conf=0.9, register_low_midi=None,
                         register_high_midi=None)
-    out = eng.render_bar(plan, beat, harm)
+    out = eng.render_bar(plan, beat, harm, section=section)
     return out, eng.last_events
 
 
@@ -373,6 +373,62 @@ def test_voice_variants_change_colour_between_sections():
     seen = [_duet_bar("synthwave", b * every, {"pad": 1.0})[1][0]["preset"]
             for b in range(3)]
     assert seen == ["warmpad", "warmpad", "strings"]
+
+
+def test_with_a_form_running_variants_change_with_its_sections():
+    """In lead mode the form's sections start wherever the band came in, so a
+    bar count would change the pad's voice a bar or more inside a section.
+    Given the section, the voice follows it: bar 40 of section 0 is still the
+    first voice, bar 5 of section 2 is already the third."""
+    opts = load_style("synthwave")["voice_variants"]["pad"]
+    assert _duet_bar("synthwave", 40, {"pad": 1.0}, section=0)[1][0]["preset"] == opts[0]
+    assert _duet_bar("synthwave", 5, {"pad": 1.0}, section=2)[1][0]["preset"] == opts[2]
+    assert _duet_bar("synthwave", 5, {"pad": 1.0}, section=5)[1][0]["preset"] == opts[5 % 3]
+
+
+def test_a_form_with_no_sections_falls_back_to_the_bar_count():
+    """The form answers -1 for a session with nothing to play.  That is no
+    section at all, so the voice still moves on the bar count instead of
+    holding the first one for the whole take."""
+    opts = load_style("synthwave")["voice_variants"]["pad"]
+    assert opts[2] != opts[0]
+    assert _duet_bar("synthwave", 40, {"pad": 1.0}, section=-1)[1][0]["preset"] == opts[2]
+    assert _duet_bar("synthwave", 0, {"pad": 1.0}, section=-1)[1][0]["preset"] == opts[0]
+
+
+def test_the_offline_lead_gives_the_band_the_forms_sections(tmp_path, monkeypatch):
+    """The whole path, not the engine alone: a composed take whose sections are
+    8 bars long.  A count of 16 bars would hold the first pad through bar 31;
+    following the form, the third section (bars 16 to 23) is the third voice
+    and the fourth is back on the first."""
+    from plume import sim
+    from plume.compose import PromptSpec, compose
+    from plume.duet import DuetEngine
+    from plume.mind import flatten_sections
+
+    session = compose(PromptSpec(styles=["synthwave"], bpm=110.0, key="A minor",
+                                 movements=1, mood=[], name="variants"), seed=7)
+    assert [sec.bars for sec in flatten_sections(session)] == [8, 8, 8, 8]
+    heard: dict[int, tuple] = {}
+
+    class Listening(DuetEngine):
+        def render_bar(self, plan, beat, harmony, **kw):
+            out = super().render_bar(plan, beat, harmony, **kw)
+            heard[int(plan.bar)] = (kw.get("section"), {
+                e["preset"] for e in self.last_events if e["role"] == "pad"})
+            return out
+
+    monkeypatch.setattr(sim, "DuetEngine", Listening)
+    res = sim.simulate_lead(None, session=session, seed=0,
+                            out_path=str(tmp_path / "lead.wav"))
+    opts = load_style("synthwave")["voice_variants"]["pad"]
+    assert len(res.form_plans) == 32
+    for fp in res.form_plans:
+        section, presets = heard[fp["bar"]]
+        assert section == fp["section_idx"] == fp["bar"] // 8
+        assert presets <= {opts[section % len(opts)]}, (fp["bar"], presets)
+    assert heard[16][1] == heard[23][1] == {"strings"}
+    assert heard[8][1] == heard[24][1] == {"warmpad"}
 
 
 @pytest.mark.parametrize("name", NEW)

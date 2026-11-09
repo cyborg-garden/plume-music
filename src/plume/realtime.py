@@ -5088,7 +5088,8 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
                          + (PLAIN_INTRO_GAIN_DB if plain_intro[0] else 0.0)),
                 reason=f"{entered.reason}{bridge_note}; {plan.reason}"
                        + (f"; {followed.reason}" if followed is not None else ""))
-        audio = lead_tone.process(duet.render_bar(plan, mbeat, mh, entry_feel=entry_feel),
+        audio = lead_tone.process(duet.render_bar(plan, mbeat, mh, entry_feel=entry_feel,
+                                                  section=form.section_idx),
                                   tilt=lead_cues.tilt, wet=lead_cues.wet)
         if entry is not None:
             audio = _fx.limiter(audio, TAP_START_CEILING_DB)

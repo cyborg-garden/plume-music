@@ -161,6 +161,26 @@ def test_a_held_pad_bar_renders_well_inside_real_time():
     assert best < 0.25 * 4 * spb, best
 
 
+@pytest.mark.parametrize("name", NEW)
+def test_section_energy_brightens_every_new_voice_offline(name):
+    """Offline compose dims a tonal voice in low-energy sections through its
+    brightness params (engine._energy_params).  The FM keys, the bell and the
+    organ have no cutoff, so they need their own brightness scaled too."""
+    from types import SimpleNamespace
+
+    from plume.engine import _energy_params
+    tr = SimpleNamespace(voice=name, kind="tonal", params={})
+    f = 55.0 if name == "synthbass" else 261.63
+
+    def upper(energy, k):            # share of the note above k x f0
+        y = _st(name, f=f, dur=1.0, params=_energy_params(tr, energy))
+        m = y.mean(axis=1)[: int(0.6 * SR)]
+        s = np.abs(np.fft.rfft(m)) ** 2
+        return s[np.fft.rfftfreq(m.size, 1 / SR) > k * f].sum() / s.sum()
+    gain = max(upper(1.0, k) / upper(0.0, k) for k in (2.5, 6.0))
+    assert gain > 1.1, (name, gain)
+
+
 #: Each converted style's voices before plume.synths, to price the new ones.
 _OLD_PALETTE = {
     "lofi": {"pad": "epiano", "lead": "pluck"},

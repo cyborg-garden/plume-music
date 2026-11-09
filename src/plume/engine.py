@@ -82,7 +82,10 @@ _ROLES = {
     "upright": "bass", "roundbass": "bass",
 }
 
-_BRIGHTNESS_KEYS = ("cutoff_hz", "cutoff_start_hz")
+#: What section energy scales to brighten a voice: a filter cutoff, or for the
+#: FM voices and the organ (plume.synths) the modulation index and the
+#: percussive upper drawbars, which are their brightness.
+_BRIGHTNESS_KEYS = ("cutoff_hz", "cutoff_start_hz", "index", "percussion")
 
 
 def _low_octave_hz(pc: int) -> float:

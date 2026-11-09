@@ -2013,20 +2013,25 @@ def _input_sound(sound, monitor: bool, style) -> "InputFx | None":
     """Her sound on Hear me, built before the stream opens, or None.
 
     It is only ever heard through Hear me, so without the monitor there is nothing to
-    build.  ``human.wav`` never has it: the input ring is written before it.
+    build.  With it there always is, even when no sound is on (which is how a take
+    starts unless she chose one): off plays her input as it comes in, and a cue in the
+    take ("sound dreamy") can then turn a sound on.  ``human.wav`` never has it: the
+    input ring is written before it.
     """
     from .inputfx import canonical_sound, resolve  # noqa: PLC0415
     name = canonical_sound(sound) if sound is not None else None
     if sound is not None and name is None:
         raise RealtimeError(f"plume has no sound called {sound!r}; try "
                             "off, clean, dreamy, lofi, crunch or match")
-    if name is None or name == "off":
-        return None
+    name = name or "off"
     if not monitor:
-        print("sound: only heard with Hear me (--monitor), so it is off",
-              file=sys.stderr, flush=True)
+        if name != "off":
+            print("sound: only heard with Hear me (--monitor), so it is off",
+                  file=sys.stderr, flush=True)
         return None
     fx = InputFx(SR, BLOCK, name, style)
+    if name == "off":
+        return fx
     now = resolve(name, style)
     ms = added_latency_ms(now, SR)
     more = f", adds {ms:g} ms" if ms else ", adds no delay"
@@ -2034,6 +2039,13 @@ def _input_sound(sound, monitor: bool, style) -> "InputFx | None":
     print(f"sound: {which} on Hear me{more}; your recording stays dry",
           file=sys.stderr, flush=True)
     return fx
+
+
+def _started_with(input_fx) -> str | None:
+    """The sound a take started with, for its record: None when none was on."""
+    if input_fx is None or input_fx.asked == "off":
+        return None
+    return input_fx.asked
 
 
 def heed_input(guard, x, ending: bool = False) -> None:
@@ -2466,7 +2478,7 @@ def jam(*, style: str, seed: int, params, device: str | None = None,
             max_minutes=max_minutes, record_dir=record_dir, device=device,
             params=params, started_at=time.time(), input_route=route,
             midi_port=midi_port,
-            sound=None if input_fx is None else input_fx.asked))
+            sound=_started_with(input_fx)))
     # Named stop_deadline, not deadline: planner_loop already has a local
     # `deadline` (the bar-revision cutoff) and the two must never be confused.
     stop_deadline = session_deadline(started_mono, max_minutes)
@@ -4795,7 +4807,7 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
             bpm=composed_bpm, params=params, role_params=role,
             started_at=time.time(), input_route=route, midi_port=midi_port,
             detect=detect, monitor=monitor,
-            sound=None if input_fx is None else input_fx.asked))
+            sound=_started_with(input_fx)))
         with cue_log_lock:
             for doc in held_cues:
                 recorder.cue_soon(doc)

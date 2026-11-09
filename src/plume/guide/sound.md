@@ -56,7 +56,7 @@ style picks one from the style. It is Off until you choose one. It changes only 
 hear: your recording stays clean, because that is what plume listens to. Lofi tape adds
 about 2 ms; the others add no delay. A buzzing cable is still muted.
 
-In a take you can say `sound dreamy`, `sound off` and so on.
+In a take with Hear me on, you can say `sound dreamy`, `sound off` and so on.
 
 ## Set up again
 

@@ -414,13 +414,28 @@ def test_mix_monitor_without_a_sound_is_as_it_was():
 def test_no_monitor_means_no_sound(capsys):
     assert realtime._input_sound("dreamy", False, "lofi") is None
     assert "Hear me" in capsys.readouterr().err
-    assert realtime._input_sound(None, True, "lofi") is None
-    assert realtime._input_sound("off", True, "lofi") is None
+    assert realtime._input_sound(None, False, "lofi") is None
+    assert realtime._input_sound("off", False, "lofi") is None
+    assert capsys.readouterr().err == ""
     with pytest.raises(realtime.RealtimeError):
         realtime._input_sound("wobbly", True, "lofi")
     fx = realtime._input_sound("match", True, "lofi")
     assert fx is not None and fx.playing == "lofi"
     assert "recording stays dry" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("sound", [None, "off"])
+def test_hear_me_with_sound_off_can_still_be_given_a_sound(sound, capsys):
+    """Off is where Sound starts, and the guide says a take can be told `sound dreamy`.
+    So Hear me always has her sound within reach, playing nothing until it is asked."""
+    fx = realtime._input_sound(sound, True, "lofi")
+    assert fx is not None and fx.playing == "off"
+    assert capsys.readouterr().err == ""                  # nothing is on: nothing to say
+    x = playing(0.5)
+    for i in range(0, x.size - N, N):
+        assert fx.process(x[i:i + N], False) is None      # her input as it comes in
+    reply = fx.handle_cue("sound dreamy")
+    assert reply["ok"] is True and fx.playing == "dreamy"
 
 
 # ------------------------------------------------------------------ a take, on the fake device
@@ -489,6 +504,47 @@ def test_a_sound_cue_reaches_a_running_take(tmp_path, consent):
         th.join(30.0)
     assert replies[-1]["ok"] is True and replies[-1]["sound"] == "lofi"
     assert loop.get("op") != "sound"                  # other cues still reach the looper
+
+
+@pytest.mark.parametrize("sound", [None, "off"])
+def test_a_take_started_with_sound_off_takes_a_sound_cue(tmp_path, consent, sound):
+    """The default take: Hear me on, Sound off.  `sound dreamy` has to change her sound,
+    not be queued for the band as a cue it will not understand.  A loop cue that says
+    "sound" is still the looper's."""
+    import json
+    import threading
+
+    from conftest import fake_audio, patched_module, short_socket_path, wait_until
+
+    from plume import roles as roles_mod
+    sock = short_socket_path("sndo")
+    fake = fake_audio(playing(2.0), devices=RIG, human_channel=1)
+    replies = []
+    extra = {} if sound is None else {"sound": sound}
+
+    def take():
+        realtime.lead(prompt="lofi", seed=0, role=roles_mod.RoleParams(role="lead"), status=False,
+                      max_minutes=0.08, monitor=True, tap_start=True, direct=True,
+                      record_dir=str(tmp_path / "rec"), socket_path=sock,
+                      input_device="audio interface", input_channel=2, **extra)
+    with patched_module("sounddevice", fake):
+        th = threading.Thread(target=take)
+        th.start()
+
+        def asked():
+            try:
+                replies.append(realtime.send_cue("sound dreamy", socket_path=sock))
+                return True
+            except realtime.RealtimeError:
+                return False
+        assert wait_until(asked, timeout=10.0)
+        loop = realtime.send_cue("loop this sound", socket_path=sock)
+        th.join(30.0)
+    assert replies[-1]["ok"] is True and replies[-1].get("op") == "sound"
+    assert replies[-1]["sound"] == "dreamy" and replies[-1]["queued"] == 0
+    assert loop["op"] == "record"
+    # the take's record says what it started with: no sound
+    assert json.loads((tmp_path / "rec" / "session.json").read_text())["sound"] is None
 
 
 def test_the_cli_flag_and_the_environment(monkeypatch):

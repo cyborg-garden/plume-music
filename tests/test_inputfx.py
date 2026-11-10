@@ -647,6 +647,36 @@ def test_a_take_started_with_sound_off_takes_a_sound_cue(tmp_path, consent, soun
     assert json.loads((tmp_path / "rec" / "session.json").read_text())["sound"] is None
 
 
+@pytest.mark.parametrize("sound", [None, "clean"])
+def test_the_record_keeps_what_the_take_started_with_however_early_a_cue_lands(
+        tmp_path, consent, monkeypatch, sound):
+    """A cue can land the moment the socket listens, before the take is open: a slow
+    disk is enough.  session.json's sound is what the take started with, whatever that
+    cue asked for.  Here the cue is sent in exactly that gap."""
+    import json
+
+    from conftest import fake_audio, patched_module, short_socket_path
+
+    from plume import roles as roles_mod
+    sock = short_socket_path("snde")
+    fake = fake_audio(playing(2.0), devices=RIG, human_channel=1)
+    replies = []
+    register = realtime.register_session
+
+    def early(**kw):                 # lead: the socket listens, the take is not open yet
+        replies.append(realtime.send_cue("sound dreamy", socket_path=sock))
+        return register(**kw)
+    monkeypatch.setattr(realtime, "register_session", early)
+    extra = {} if sound is None else {"sound": sound}
+    with patched_module("sounddevice", fake):
+        realtime.lead(prompt="lofi", seed=0, role=roles_mod.RoleParams(role="lead"), status=False,
+                      max_minutes=0.05, monitor=True, tap_start=True, direct=True,
+                      record_dir=str(tmp_path / "rec"), socket_path=sock,
+                      input_device="audio interface", input_channel=2, **extra)
+    assert len(replies) == 1 and replies[0]["ok"] is True and replies[0]["sound"] == "dreamy"
+    assert json.loads((tmp_path / "rec" / "session.json").read_text())["sound"] == sound
+
+
 def test_the_cli_flag_and_the_environment(monkeypatch):
     from plume import cli
     parse = cli._build_parser().parse_args

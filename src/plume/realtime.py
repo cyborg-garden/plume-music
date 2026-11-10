@@ -4739,6 +4739,9 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
     guard = InputGuard(SR, notices=midi_port is None)
     guard_slot = guard.slot
     input_fx = _input_sound(sound, monitor, None if detect else style)
+    # Read now, for the take's record: a cue can change her sound the moment the socket
+    # listens, which is before the record is opened.
+    started_sound = _started_with(input_fx)
     timeline = TimelineBuffer(SR * 30, channels=2)
 
     stop = threading.Event()
@@ -4807,7 +4810,7 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
             bpm=composed_bpm, params=params, role_params=role,
             started_at=time.time(), input_route=route, midi_port=midi_port,
             detect=detect, monitor=monitor,
-            sound=_started_with(input_fx)))
+            sound=started_sound))
         with cue_log_lock:
             for doc in held_cues:
                 recorder.cue_soon(doc)

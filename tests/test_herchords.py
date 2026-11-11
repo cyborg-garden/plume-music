@@ -30,7 +30,7 @@ C_, DM, EM, F_, G_, AM = (0, 4, 7), (2, 5, 9), (4, 7, 11), (5, 9, 0), (7, 11, 2)
 SCALE = (0, 2, 4, 5, 7, 9, 11)
 
 
-def follow(bars, *, lag=2, start=0, key=KEY, style=STYLE):
+def follow(bars, *, lag=2, start=0, key=KEY, style=STYLE, phrase_start=0):
     """Feed her bars (chroma, or None for a rest) through the live timing: bar N is
     planned after hearing bar N-lag.  Returns the decision per planned bar."""
     f = hc.ChordFollower()
@@ -39,8 +39,15 @@ def follow(bars, *, lag=2, start=0, key=KEY, style=STYLE):
         heard = start + i
         f.hear(heard, chroma, playing=chroma is not None)
         bar = heard + lag
-        out[bar] = f.decide(bar, key, style, TEMPLATE[bar % 4])
+        out[bar] = f.decide(bar, key, style, TEMPLATE[bar % 4], phrase_start=phrase_start)
     return out
+
+
+def hold_bars(bars):
+    """Of the planned bars, those on which the chord she opened with at bar 0 is
+    hers at lag 2: three bars heard first, then the two bars after the phrase line
+    at 4 waited out; bar 0 is a line too, so by bar 8 she has held through two."""
+    return [b for b in bars if b >= 6]
 
 
 # ------------------------------------------------------------- reading one bar
@@ -82,22 +89,100 @@ def test_silence_reads_nothing():
 # ------------------------------------------------------------- hold and loops
 
 def test_she_holds_one_chord_and_the_band_stays_on_it():
-    d = follow([pcs_chroma(AM, noise=0.05, seed=i) for i in range(10)])
-    held = [d[b] for b in sorted(d) if b >= 4]
+    d = follow([pcs_chroma(AM, noise=0.05, seed=i) for i in range(14)])
+    held = [d[b] for b in hold_bars(sorted(d))]
     assert all(x["source"] == "her_hold" for x in held)
     assert {x["chord"] for x in held} == {"Am7", "Am9"}        # gentle colour only
     assert "following her Am7" in held[0]["reason"]
+    assert all(d[b]["source"] == "her_hold" for b in range(10, 16))
 
 
 def test_the_held_chord_moves_gently_every_other_two_bars():
-    d = follow([pcs_chroma(AM, seed=i) for i in range(12)])
-    seq = [d[b]["chord"] for b in range(4, 12)]
-    assert seq == ["Am7", "Am7", "Am9", "Am9", "Am7", "Am7", "Am9", "Am9"]
+    d = follow([pcs_chroma(AM, seed=i) for i in range(16)])
+    seq = [d[b]["chord"] for b in range(10, 18)]
+    assert seq == ["Am9", "Am9", "Am7", "Am7", "Am9", "Am9", "Am7", "Am7"]
 
 
 def test_one_bar_of_hers_is_not_a_hold():
     d = follow([pcs_chroma(AM)])
     assert d[2]["source"] == "template" and d[2]["chord"] == TEMPLATE[2]
+
+
+def test_a_hold_commits_only_once_it_has_outlasted_the_lag():
+    """Two equal bars, heard two bars late, are as likely a chord of two bars she
+    has left as one she is on.  Three are a hold; heard one bar late, two are."""
+    bars = [pcs_chroma(AM, seed=i) for i in range(8)]
+    d = follow(bars)
+    assert d[3]["source"] == "template" and "no hold or loop yet" in d[3]["reason"]
+    assert d[6]["source"] == "her_hold" and "bars 0 to 4 read Am7" in d[6]["reason"]
+    d = follow(bars, lag=1)
+    assert d[2]["source"] == "her_hold" and d[3]["source"] == "her_hold"
+
+
+def test_a_young_hold_waits_out_the_bars_after_a_phrase_line():
+    """She changes chords on the phrase line more than anywhere else, and the band
+    has not heard the two bars before the one it plans.  Until she has held through
+    two phrase lines the band keeps the template on the two bars after one; from
+    then on the chord is hers on every bar."""
+    d = follow([pcs_chroma(C_, seed=i) for i in range(2)]
+               + [pcs_chroma(AM, seed=i) for i in range(20)])     # Am from bar 2
+    held = [b for b in sorted(d) if d[b]["source"] == "her_hold"]
+    assert held == [6, 7] + list(range(10, 24))
+    assert all("phrase line at bar 8" in d[b]["reason"] for b in (8, 9))
+    assert all(d[b]["chord"] == TEMPLATE[b % 4] for b in (8, 9))
+    assert all("no hold or loop yet" in d[b]["reason"] for b in (4, 5))
+
+
+def test_the_chord_she_opened_with_is_hers_once_held_through_the_next_line():
+    """Her phrases are counted from where she started, so her opening chord sits
+    on a phrase line; held through the next, the band comes in on it, and stays."""
+    d = follow([pcs_chroma(AM, seed=i) for i in range(20)])
+    assert [b for b in sorted(d) if d[b]["source"] == "her_hold"] == list(range(6, 22))
+    assert all("phrase line at bar 4" in d[b]["reason"] for b in (4, 5))
+    assert all(d[b]["chord"] == TEMPLATE[b % 4] for b in (2, 3, 4, 5))
+
+
+def test_phrase_lines_are_counted_from_where_the_band_came_in():
+    """The live loop counts the band's phrases from its first bar, not from bar 0."""
+    d = follow([pcs_chroma(AM, seed=i) for i in range(8)], phrase_start=1)
+    assert d[4]["source"] == "her_hold"                     # bar 4 is no phrase line here
+    assert d[5]["source"] == "template" and "phrase line at bar 5" in d[5]["reason"]
+    assert d[6]["source"] == "template" and d[7]["source"] == "her_hold"
+
+
+BLUES = (C_, C_, C_, C_, F_, F_, C_, C_, G_, F_, C_, C_)
+ROOTS = {C_: 0, DM: 2, EM: 4, F_: 5, G_: 7, AM: 9}
+
+
+def wrong_bars(d, seq):
+    """Planned bars the band committed to a chord she is not playing in that bar."""
+    return [b for b, x in sorted(d.items()) if x["source"] != "template"
+            and parse_chord(x["chord"]).root != ROOTS[seq[b % len(seq)]]]
+
+
+@pytest.mark.parametrize("seq", [
+    (C_, C_, F_, F_, G_, G_), BLUES, (C_, C_, AM, AM, F_, F_, G_, G_), (F_, F_, C_, C_),
+    (C_, C_, C_, C_, AM, AM, AM, AM, F_, F_, F_, F_, G_, G_, G_, G_), (C_, F_, G_),
+], ids=["3x2", "12-bar blues", "4x2", "2x2", "4x4", "3x1"])
+def test_the_band_never_plays_the_chord_she_has_left(seq):
+    """Two bars on each chord read as a hold to a band two bars behind, and it
+    committed to each chord as she left it, for the whole take when the loop was a
+    length it never predicts (six bars; twelve).  A wrong chord is worse than the
+    template: every committed bar plays what she plays in it, from the first bar,
+    and the loop is followed once it has been heard twice."""
+    bars = [pcs_chroma(seq[i % len(seq)], noise=0.04, seed=i) for i in range(48)]
+    d = follow(bars)
+    assert wrong_bars(d, seq) == []
+    looped = [b for b in sorted(d) if d[b]["source"] == "her_loop"]
+    assert looped and looped[0] <= 2 * len(seq) + 3, looped[:3]
+    assert all(d[b]["period"] == len(seq) for b in looped)
+    assert all(b in looped for b in range(looped[0], 50))
+
+
+def test_a_loop_of_a_length_the_follower_does_not_know_keeps_the_template():
+    seq = (C_, C_, F_, F_, G_)                                   # five bars: not a loop here
+    d = follow([pcs_chroma(seq[i % 5], noise=0.04, seed=i) for i in range(40)])
+    assert all(x["source"] == "template" for x in d.values())
 
 
 @pytest.mark.parametrize("loop", [(C_, AM), (C_, AM, F_, G_), (F_, F_, C_, C_)])
@@ -117,12 +202,15 @@ def test_a_repeating_loop_is_predicted_on_time(loop):
 
 
 def test_a_loop_of_two_bars_per_chord_is_one_loop_not_a_hold():
-    bars = [pcs_chroma((C_, AM, F_, G_)[(i // 2) % 4]) for i in range(24)]
+    seq = (C_, C_, AM, AM, F_, F_, G_, G_)
+    bars = [pcs_chroma(seq[i % 8]) for i in range(24)]
     d = follow(bars)
     names = ("Cmaj7", "Am7", "Fmaj7", "G7")
     for b in range(18, 24):
         assert d[b]["source"] == "her_loop" and d[b]["period"] == 8
         assert d[b]["chord"] == names[(b // 2) % 4]
+    assert not any(x["source"] == "her_hold" for x in d.values())
+    assert wrong_bars(d, seq) == []
 
 
 def test_a_rest_keeps_her_loop_going():
@@ -141,19 +229,41 @@ def test_single_note_melody_keeps_the_template():
 
 
 def test_when_she_changes_chord_the_band_does_not_keep_the_old_one():
-    bars = [pcs_chroma(AM)] * 6 + [pcs_chroma(F_)] * 4
+    bars = [pcs_chroma(AM)] * 6 + [pcs_chroma(F_)] * 5
     d = follow(bars)
     # Heard bar 6 is the first F; the band's bar 8 can no longer hold Am.
     assert d[8]["chord"] not in ("Am7", "Am9")
     assert d[8]["source"] == "template" and "reads Fmaj7" in d[8]["reason"]
-    assert d[9]["source"] == "her_hold" and d[9]["chord"].startswith("Fmaj")
+    assert d[9]["source"] == "template"           # two bars of F may be two bars of F
+    assert d[10]["source"] == "her_hold" and d[10]["chord"].startswith("Fmaj")
 
 
 def test_two_unsure_bars_hand_back_to_the_template():
-    bars = [pcs_chroma(AM)] * 6 + [pcs_chroma(SCALE)] * 2
+    bars = [pcs_chroma(AM)] * 8 + [pcs_chroma(SCALE)] * 2
     d = follow(bars)
-    assert d[8]["source"] == "her_hold"           # one fill bar is not a change
-    assert d[9]["source"] == "template" and "name no chord" in d[9]["reason"]
+    assert d[10]["source"] == "her_hold"          # one fill bar is not a change
+    assert d[11]["source"] == "template" and "name no chord" in d[11]["reason"]
+
+
+def test_a_fill_bar_inside_a_hold_does_not_start_it_over():
+    """One bar she fills over a long hold: the hold is still hers on the next bar,
+    sure as before.  Two bars off it hand back to the template; when she comes
+    back to the same chord it must outlast the lag again, and is then as sure as
+    before.  Another chord after the break is a new hold, to the full rule."""
+    am = [pcs_chroma(AM, seed=i) for i in range(16)]
+    d = follow(am[:10] + [pcs_chroma(SCALE)] + am[10:])
+    assert all(d[b]["source"] == "her_hold" for b in range(10, 19))
+    d = follow(am[:10] + [pcs_chroma(SCALE)] * 2 + am)
+    assert d[13]["source"] == "template" and "name no chord" in d[13]["reason"]
+    assert all(d[b]["source"] == "template" for b in (14, 15))       # two bars of Am again
+    assert all(d[b]["source"] == "her_hold" for b in range(16, 28))  # bar 16 is a line: sure
+    d = follow(am[:10] + [pcs_chroma(SCALE)] * 2 + [pcs_chroma(F_, seed=i) for i in range(12)])
+    assert all(d[b]["source"] == "template" for b in (14, 15))
+    assert "phrase line at bar 16" in d[16]["reason"] and "phrase line at bar 16" in d[17]["reason"]
+    assert d[18]["source"] == "her_hold" and d[19]["source"] == "her_hold"
+    assert "phrase line at bar 20" in d[20]["reason"] and "phrase line at bar 20" in d[21]["reason"]
+    assert all(d[b]["source"] == "her_hold" and d[b]["chord"].startswith("Fmaj")
+               for b in range(22, 26))
 
 
 def test_nothing_heard_for_long_hands_back_to_the_template():
@@ -232,6 +342,8 @@ def test_her_diatonic_chord_is_followed_in_a_style_that_borrows_on_that_degree(
             for i in range(12)]
     d = follow(bars, key=key, style=style)
     settled = [b for b in sorted(d) if 2 * len(loop) + 2 <= b < 12]
+    if len(loop) == 1:
+        settled = hold_bars(settled)
     assert settled
     for b in settled:
         assert d[b]["source"] != "template", (b, d[b])
@@ -246,9 +358,9 @@ def test_her_diatonic_chord_is_followed_in_a_style_that_borrows_on_that_degree(
     ("A minor", "trap", (4, 8, 11), "E")])
 def test_the_styles_borrowed_chord_is_still_followed_when_she_plays_it(
         key, style, triad, sym):
-    d = follow([pcs_chroma(triad, noise=0.04, seed=i) for i in range(8)],
+    d = follow([pcs_chroma(triad, noise=0.04, seed=i) for i in range(12)],
                key=key, style=style)
-    assert d[5]["source"] == "her_hold" and d[5]["chord"] == sym, d[5]
+    assert d[12]["source"] == "her_hold" and d[12]["chord"] == sym, d[12]
 
 
 def test_the_reason_names_the_chord_she_played_not_the_borrowed_one():
@@ -279,12 +391,12 @@ def test_a_held_iii_keeps_its_chord_and_a_held_vi_still_moves():
     assert hc.colour("Am7", 2, "C major") == "Am9"
     assert hc.colour("Am7", 0, "C major") == "Am7"
     d = follow([pcs_chroma(EM, seed=i) for i in range(12)])
-    held = [d[b] for b in range(4, 12)]
+    held = [d[b] for b in hold_bars(range(4, 14))]
     assert all(x["source"] == "her_hold" for x in held)
     assert {x["chord"] for x in held} == {"Em7"}
     d = follow([pcs_chroma((1, 4, 8), seed=i) for i in range(12)],
                key="F# minor", style="house")
-    assert {d[b]["chord"] for b in range(4, 12)} == {"C#m7"}
+    assert {d[b]["chord"] for b in hold_bars(range(4, 14))} == {"C#m7"}
 
 
 # ------------------------------------------------------------- room mic bleed
@@ -345,16 +457,17 @@ def test_a_rendered_chord_loop_is_followed_bar_for_bar(loop):
     bars = _bars_of(audio, bar_s)
     names = {"C": "Cmaj7", "Am": "Am7", "F": "Fmaj7", "G": "G7"}
     f = hc.ChordFollower()
-    hits = 0
+    hits = checked = 0
     for heard, frames in enumerate(bars):
         f.hear(heard, hc.clean_bar(frames), playing=True)
         bar = heard + 2
-        if bar >= 16 or heard < 2 * len(loop):
+        if bar >= 16 or heard < 2 * len(loop) or (len(loop) == 1 and not hold_bars([bar])):
             continue
         d = f.decide(bar, KEY, STYLE, TEMPLATE[bar % 4])
         assert d["source"] != "template", (bar, d)
         hits += d["chord"].startswith(names[loop[bar % len(loop)]][:-1])
-    assert hits == len([b for b in range(16) if 2 * len(loop) <= b - 2 < 14])
+        checked += 1
+    assert checked >= 6 and hits == checked
 
 
 def test_on_a_room_mic_the_band_never_takes_a_chord_for_hers():
@@ -420,9 +533,9 @@ def _frets(shape):
     return tuple(o + int(f) for o, f in zip(OPEN_STRINGS, shape) if f != "x")
 
 
-def _held(midis, key, *, bars=8, harmonics=5, rolloff=1.5, style=STYLE):
+def _held(midis, key, *, bars=12, harmonics=5, rolloff=1.5, style=STYLE):
     """She strikes one voicing once a bar and lets it ring; the decisions for the
-    bars planned once two of hers are heard."""
+    bars a hold is hers on (:func:`hold_bars`)."""
     bar_s = 2.0
     t = np.arange(int(bar_s * SR)) / SR
     one = sum(np.sin(2 * np.pi * 440.0 * 2 ** ((m - 69) / 12) * h * t) / h ** rolloff
@@ -431,7 +544,7 @@ def _held(midis, key, *, bars=8, harmonics=5, rolloff=1.5, style=STYLE):
     out = []
     for heard, frames in enumerate(_bars_of(np.tile(0.05 * one, bars), bar_s)):
         f.hear(heard, hc.clean_bar(frames), playing=True)
-        if heard >= 1:
+        if hold_bars([heard + 2]):
             out.append(f.decide(heard + 2, key, style, TEMPLATE[(heard + 2) % 4]))
     return out
 

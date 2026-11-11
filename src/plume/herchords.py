@@ -9,9 +9,22 @@ progression when you loop one.
 TIMING.  The live loop plans bar N a bar ahead and reads the last bar that has
 finished, N-2.  Following a changing progression two bars late would put every
 change in the wrong place twice, so a change is followed only once it repeats:
-her loop of 2, 4 or 8 bars, seen twice running, predicts bar N from bar N minus the
-loop.  A held chord needs no prediction, lag or not.  (ReaLJam, CHI EA 2025: the
-best moments were when the agent predicted the chord the player had in mind.)
+her loop of :data:`LOOP_PERIODS` bars, seen twice running, predicts bar N from bar
+N minus the loop.  (ReaLJam, CHI EA 2025: the best moments were when the agent
+predicted the chord the player had in mind.)  A held chord needs no prediction
+while it lasts, but the band cannot hear the two bars before the one it plans, so
+a chord she has left is still "held" to it for two bars.  Two bars on each chord
+is the commonest progression there is, and a hold of two bars is more often a
+chord she has just left than one she is sitting on; so a hold commits only once
+it has outlasted the lag (:meth:`ChordFollower._hold`).  Chords change on the
+phrase line more than anywhere else, so until she has held through
+:data:`HOLD_SURE_LINES` phrase lines the band keeps the template on the bars
+after one, where a change it has not heard yet would make the hold wrong: four
+bars on each chord, or a 12-bar blues, never plays the chord she has left.  The
+one chord read more kindly is the one she opened with: her phrases are counted
+from where she started, so it sits on a phrase line, and held through the next
+line it is the chord the band comes in on.  A player who opens eight bars on
+each chord pays two bars for that, once, as the band comes in.
 
 TRUTH.  A wrong chord is worse than the template, so this commits only when a bar
 fits one chord clearly: its triad holds at least :data:`FIT_MIN` of the bar's
@@ -84,10 +97,19 @@ BALANCE_MIN = 0.25
 #: only while neither of those sounds half as loud as the third itself.
 MINOR_THIRD_MIN = 0.15
 #: Her loop lengths in bars, longest first: an established longer loop knows more
-#: than the hold inside it.
-LOOP_PERIODS = (8, 4, 2, 1)
-#: Bars of her playing kept.
-MEMORY_BARS = 32
+#: than the hold inside it.  1 is the hold, which :meth:`ChordFollower._hold`
+#: reads; it stays here so a loop of equal bars is left to the hold.  A loop of
+#: any other length (five bars, say) keeps the template: a wrong guess is worse.
+LOOP_PERIODS = (16, 12, 8, 6, 4, 3, 2, 1)
+#: Bars of her playing kept: the longest loop, seen twice, with room for rests.
+MEMORY_BARS = 48
+#: The band's phrase, in bars: its progressions are four bars long, and she changes
+#: chords on the phrase line more than anywhere else.
+PHRASE_BARS = 4
+#: Phrase lines a hold must have lasted through before the band plays it on the
+#: bars after one, which the lag keeps it from hearing (see TIMING).  One is not
+#: enough: a 12-bar blues holds its I through the line between two choruses.
+HOLD_SURE_LINES = 2
 #: After this many bars with nothing heard from her, the band goes back to its own.
 STALE_BARS = 8
 
@@ -344,9 +366,11 @@ class ChordFollower:
         return out
 
     def decide(self, bar: int, key: str | None, style: str,
-               template: str | None) -> dict:
+               template: str | None, *, phrase_start: int = 0) -> dict:
         """The band's chord for ``bar``: hers when a hold or loop is sure, else
-        ``template``."""
+        ``template``.  ``phrase_start``: a bar the band's phrases are counted from
+        (the bar it came in on); every :data:`PHRASE_BARS` bars from it is a phrase
+        line."""
         def out(chord, source, reason, period=None, last=None):
             r = last if isinstance(last, Reading) else None
             return {"chord": chord, "source": source, "reason": reason,
@@ -382,26 +406,71 @@ class ChordFollower:
                        f"template: bars {recent[0]} and {recent[1]} name no chord "
                        f"({r.why}, best {r.best})", last=last)
         for period in LOOP_PERIODS:
+            if period == 1:
+                continue                # the hold, below
             pattern = self._loop(reads, heard_bar, period)
             if pattern is None:
                 continue
             k = (bar - heard_bar + period - 1) // period
             src_bar = bar - k * period
             sym = pattern[src_bar % period]
-            if period == 1:
-                seen = pattern["seen"]
-                return out(colour(sym, bar, key), "her_hold",
-                           f"following her {sym}: bars {seen[0]} and {seen[1]} "
-                           f"both read {sym}", period, last)
             seq = " ".join(pattern[(heard_bar - period + 1 + i) % period]
                            for i in range(period))
             return out(sym, "her_loop",
                        f"following her {period}-bar loop {seq}: bar {bar} plays "
                        f"bar {src_bar}'s {sym}", period, last)
+        held = self._hold(reads, heard_bar)
+        lag = max(bar - heard_bar, 0)
+        if held is not None and len(held[1]) >= max(2, lag + 1):
+            sym, run = held
+            # How long she has been on this chord: since the last bar that read
+            # another.  Bars that read nothing in between (a rest, a fill, a count)
+            # are not a change, so coming back to it after one she is as sure on it
+            # as before; only the run itself must outlast the lag again.  Her
+            # phrases are counted from where she started playing, so the chord she
+            # opened with sits on a phrase line by definition; held through the
+            # next, it is a phrase and a half of one chord, and the band comes in
+            # on it.  A later chord is heard starting, and holds to the full rule.
+            other = [b for b in evidence if reads[b].sym not in (None, sym)]
+            since = next(b for b in evidence
+                         if reads[b].sym == sym and (not other or b > other[-1]))
+            line = _line_ahead(since, heard_bar, bar, phrase_start, opening=not other)
+            if line is None:
+                return out(colour(sym, bar, key), "her_hold",
+                           f"following her {sym}: bars {run[0]} to {run[-1]} read {sym}",
+                           1, last)
+            return out(template, "template",
+                       f"template: her {sym} since bar {run[0]} may end on the phrase "
+                       f"line at bar {line}, which the band has not heard past",
+                       last=last)
         r = reads[evidence[-1]]
         why = (f"her bar {evidence[-1]} reads {r.sym}, no hold or loop yet" if r.sym
                else f"her bar {evidence[-1]} names no chord ({r.why}, best {r.best})")
         return out(template, "template", f"template: {why}", last=last)
+
+    @staticmethod
+    def _hold(reads, heard_bar: int):
+        """Her latest run of one chord: ``(sym, bars)``, the bars that read it oldest
+        first, or None.  Rests and bars with no pitch say nothing either way; a bar
+        that names no chord is a fill and is passed over, two in a row end the run,
+        and so does another chord."""
+        sym, bars, unsure = None, [], 0
+        for b in range(heard_bar, heard_bar - MEMORY_BARS, -1):
+            r = reads.get(b)
+            if not isinstance(r, Reading):
+                continue
+            if r.sym is None:
+                unsure += 1
+                if unsure >= 2:
+                    break
+                continue
+            unsure = 0
+            if sym is None:
+                sym = r.sym
+            elif r.sym != sym:
+                break
+            bars.append(b)
+        return None if sym is None else (sym, bars[::-1])
 
     @staticmethod
     def _loop(reads, heard_bar: int, period: int):
@@ -430,10 +499,22 @@ class ChordFollower:
             if len(slot) < 2 or slot[0][1] is None or slot[0][1] != slot[1][1]:
                 return None
             pattern[res] = slot[0][1]
-        if period > 1:
-            for sub in (p for p in LOOP_PERIODS if p < period and period % p == 0):
-                if all(pattern[r] == pattern[r % sub] for r in range(period)):
-                    return None
-        else:
-            pattern["seen"] = (seen[0][1][0], seen[0][0][0])
+        for sub in (p for p in LOOP_PERIODS if p < period and period % p == 0):
+            if all(pattern[r] == pattern[r % sub] for r in range(period)):
+                return None
         return pattern
+
+
+def _line_ahead(start: int, heard_bar: int, bar: int, phrase_start: int, *,
+                opening: bool = False) -> int | None:
+    """The phrase line among the bars the band has not heard (after ``heard_bar``,
+    up to ``bar``) on which her chord, held since ``start``, may have ended: None
+    when there is none, or when she has held through :data:`HOLD_SURE_LINES` lines
+    already.  ``opening``: the chord she started playing with, whose own first bar
+    counts as a line (see :meth:`ChordFollower.decide`)."""
+    def is_line(x: int) -> bool:
+        return (x - int(phrase_start)) % PHRASE_BARS == 0
+    since = start if opening else start + 1
+    if sum(1 for x in range(since, heard_bar + 1) if is_line(x)) >= HOLD_SURE_LINES:
+        return None
+    return next((x for x in range(heard_bar + 1, bar + 1) if is_line(x)), None)

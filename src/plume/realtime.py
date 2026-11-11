@@ -5000,7 +5000,9 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
                                               and guitar_ear.last_bar_tonal)))
             chords_doc = None
             if entered.key is not None:
-                chords_doc = chord_follow.decide(bar, entered.key, style, entered.chord)
+                # The band's phrases are counted from the bar it came in on.
+                chords_doc = chord_follow.decide(bar, entered.key, style, entered.chord,
+                                                 phrase_start=bar - entry.bars_in)
                 entered = dataclasses.replace(entered, chord=chords_doc["chord"])
             # Over a room mic with the band in, "not silent" mostly means the band.
             playing_trusted = is_direct or midi_port is not None or not entry.band_is_in

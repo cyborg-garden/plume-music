@@ -193,7 +193,14 @@ def plain_phrase_feel(bars_in: int, phrase_bars: int) -> float | None:
     return int(bars_in) / float(n)
 
 
-#: An onset is a strum when its attack stays above half its peak for this many hops
+#: A stroke is a peak of the attack at least this share of what the bar's strongest
+#: attacks reach (their 99th percentile), and no nearer the last one than _STROKE_SEP
+#: hops.  ``Frame.attack`` is a log ratio, so the strokes found barely move with the
+#: input level.  ``Frame.onset`` is picked against a fixed flux threshold and does: the
+#: same synthetic strum had 72 onsets in seven bars at -6 dBFS and 19 at -30, its strum
+#: share went from 0.29 to 0.63, and the guess changed with the gain knob.
+_STROKE_PCT, _STROKE_SHARE, _STROKE_SEP = 99.0, 0.5, 4
+#: A stroke is a strum when its attack stays above half its peak for this many hops
 #: (32 ms at 48 kHz): a pick dragged across the strings.  A picked note, a drum hit or
 #: a synth is over in one or two.
 _RAKE_HOPS = 3
@@ -201,12 +208,20 @@ _RAKE_HOPS = 3
 #: counted are one unbroken run around the peak: tremolo picking puts the next pick
 #: inside the reading window, so its attack rises again after dipping, and counting from
 #: the first hop above half to the last called it a strum (0.88 to 0.96).  Measured that
-#: way (2026-11-09): 15 real direct-input takes, which were never strummed folk, 0.04 to
-#: 0.21; slowly raked synthetic strums 0.31 to 0.42; tremolo and sextuplet picking 0.00
-#: to 0.01.  A strum quicker than about 20 ms reads 0.16 and is not heard as one.
-_RAKE_NONE, _RAKE_FULL = 0.22, 0.36
-#: Before this much is heard there is no folk evidence either way.
-_FOLK_MIN_BARS, _FOLK_MIN_ONSETS = 6, 32
+#: way (2026-11-10) over every seven bars of each take, at input levels up to 30 dB
+#: apart: slowly raked synthetic strums 0.22 to 0.57, nineteen in twenty over 0.29; a
+#: strum quicker than about 20 ms 0.09 to 0.20, which is not heard as one; fingerpicking
+#: 0.00 to 0.08; tremolo picking 0.00 to 0.03.  15 real direct-input takes, which were
+#: never strummed folk, read 0.03 in the middle and under 0.35 nineteen times in twenty;
+#: one of them has a strummed passage that reads up to 0.61.  Between those levels one
+#: take's share moves by 0.13 at most, where with the flux onsets it moved by 0.56.
+#: Full sits where those real takes reach it as often as they reached the old mark with
+#: the flux onsets, 27 of their 1129 windows, 26 of them in that one passage.  None sits
+#: where an acoustic sound in a major key needs a share of 0.30, as it did.
+_RAKE_NONE, _RAKE_FULL = 0.18, 0.40
+#: Before this much is heard there is no folk evidence either way: four strokes a bar.
+#: The strummed takes had 29 to 52 strokes in seven bars.  One real take read 0.50 on 14.
+_FOLK_MIN_BARS, _FOLK_MIN_ONSETS = 6, 24
 #: What each sign is worth.  Only the strum separates on its own; the acoustic sound
 #: (sim.classify_input's two measures) reads "programmed" for every one of those 15
 #: takes, a guitar through a pickup, so it only helps, and a major key only helps.  A
@@ -221,8 +236,9 @@ class FolkEar:
     """Is she strumming an acoustic guitar?  The evidence for a folk guess.
 
     Fed one bar of her frames at a time (``Frame`` or anything with ``rms_db``,
-    ``onset``, ``attack`` and ``attack_breadth``), only from an input that hears her
-    alone.  Memory stays bounded however long the take: counts and a histogram.
+    ``attack`` and ``attack_breadth``), only from an input that hears her alone.
+    Everything it measures comes from the attack, so how loud she arrives changes
+    little.  Memory stays bounded however long the take: counts and a histogram.
     """
 
     def __init__(self):
@@ -234,6 +250,7 @@ class FolkEar:
         self._strong_max, self._broad_max = (sim.INPUT_BREADTH_STRONG_MAX,
                                              sim.INPUT_BROAD_FRAC_MAX)
         self._tail: list = []            # the last frames, so a strum across a bar line counts
+        self._last_stroke = -_STROKE_SEP  # where the last stroke was, counted in the tail
         self._bars = 0
         self._onsets = 0
         self._raked = 0
@@ -251,7 +268,7 @@ class FolkEar:
         br = np.array([float(getattr(f, "attack_breadth", 0.0)) for f in seen])
         audible = rms > self._silent_db
         if not audible.any():
-            self._tail = seen[-9:]
+            self._keep_tail(seen, self._last_stroke)
             return
         self._bars += 1
         new = slice(len(self._tail), len(seen))
@@ -261,23 +278,30 @@ class FolkEar:
         strong = (att > strong_at) & audible
         idx = np.minimum((br[new][strong[new]] * _BREADTH_BINS).astype(int), _BREADTH_BINS - 1)
         np.add.at(self._strong_hist, idx, 1)
-        # An onset is read with 3 frames before it and 6 after; the last 6 wait a bar.
+        stroke_at = max(strong_at, _STROKE_SHARE
+                        * float(np.percentile(att[audible], _STROKE_PCT)))
+        # A stroke is read with 3 frames before it and 6 after; the last 6 wait a bar.
+        last = self._last_stroke
         for k in range(min(3, len(seen)), len(seen) - 6):
-            if not (seen[k].onset and audible[k]):
+            if not audible[k] or att[k] < stroke_at or k - last < _STROKE_SEP:
                 continue
             w = att[k - 3:k + 6]
-            peak = float(w.max())
-            if peak < strong_at:
-                continue
-            above = w >= 0.5 * peak
-            lo = hi = int(np.argmax(w))
+            if att[k] < float(w[:7].max()):
+                continue                 # not the peak: a hop either side is higher
+            last = k
+            above = w >= 0.5 * float(att[k])
+            lo = hi = 3
             while lo > 0 and above[lo - 1]:
                 lo -= 1
             while hi < len(w) - 1 and above[hi + 1]:
                 hi += 1
             self._onsets += 1
             self._raked += int(hi - lo + 1 >= _RAKE_HOPS)
+        self._keep_tail(seen, last)
+
+    def _keep_tail(self, seen: list, last: int) -> None:
         self._tail = seen[-9:]
+        self._last_stroke = max(last - (len(seen) - len(self._tail)), -_STROKE_SEP)
 
     @property
     def strum_share(self) -> float | None:

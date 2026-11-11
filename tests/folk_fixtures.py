@@ -23,6 +23,8 @@ from plume.theory import parse_key, roman_to_chord
 FOLK_NUMERALS = ("I", "IV", "I", "V")
 #: (beat in bar, down?) for the strum pattern: D D U U D U.
 _STRUMS = ((0.0, True), (1.0, True), (1.5, False), (2.5, False), (3.0, True), (3.5, False))
+#: Four downstrokes a bar, one on each beat: the plainest strum there is.
+QUARTER_STRUMS = ((0.0, True), (1.0, True), (2.0, True), (3.0, True))
 
 
 def _shape(chord, sevenths: bool) -> list[int]:
@@ -38,7 +40,7 @@ def _shape(chord, sevenths: bool) -> list[int]:
 def make_take(kind: str = "strum", *, key: str = "G major", bpm: float = 96.0,
               bars: int = 12, rake_ms: tuple[float, float] = (25.0, 45.0),
               sevenths: bool = False, numerals=FOLK_NUMERALS, seed: int = 5,
-              gain_db: float = -18.0) -> np.ndarray:
+              gain_db: float = -18.0, strums=_STRUMS) -> np.ndarray:
     if kind not in ("strum", "pick"):
         raise ValueError(f"unknown kind {kind!r}")
     rng = np.random.default_rng(seed)
@@ -49,7 +51,7 @@ def make_take(kind: str = "strum", *, key: str = "G major", bpm: float = 96.0,
         tones = _shape(roman_to_chord(numerals[b % len(numerals)], k), sevenths)
         t_bar = b * 4 * beat
         if kind == "strum":
-            for at, down in _STRUMS:
+            for at, down in strums:
                 t0 = t_bar + at * beat + float(rng.normal(0.0, 0.008))
                 rake = float(rng.uniform(*rake_ms)) / 1000.0
                 strings = list(range(6)) if down else [5, 4, 3]

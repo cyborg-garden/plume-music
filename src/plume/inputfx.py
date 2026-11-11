@@ -72,7 +72,8 @@ _NO_SUBNORMAL = 1e-18
 #: about a second), the quietest input it learns from (-70 dBFS), how far it may go, and
 #: how long her loudest buffer stays the measure of how hard she is playing.  Shorter than
 #: this and a rest between two strums reads as a quieter passage: the gain then drifts in
-#: the rest and steps back on the next strum.
+#: the rest and steps back on the next strum.  Longer and one loud note sits on the soft
+#: playing after it for longer (see ``InputFx._match``).
 _MATCH_RATE = 0.005
 _MATCH_FLOOR = 1e-7
 _MATCH_MOST = 4.0
@@ -478,7 +479,8 @@ class InputFx:
         one playing level only: quieter playing comes out louder, harder playing quieter.
         This learns the gain from her own playing, averaged over about a second, so a
         strum still gets evened out but a switch between sounds does not jump.  It
-        learns only while she plays.
+        learns from every buffer above ``_MATCH_FLOOR`` (-70 dBFS): her playing, and
+        also the hiss or hum of a real input, which is usually louder than that.
 
         Harder playing is followed at once: the averages are of power, and the louder
         buffers outweigh what came before.  That is also why quieter playing would not
@@ -490,6 +492,20 @@ class InputFx:
         louder passage's gain therefore stays for up to ``_MATCH_HOLD_S``, during which
         her sound is louder than her dry input by as much as the two gains differ, and
         is right about a second after that, whatever the size of the drop.
+
+        What that costs.  Her loudest buffer is one buffer.  A single hard note, a knock
+        on the body or a click in soft playing counts as a louder passage, and since
+        the averages are of power it outweighs the soft playing at once.  Her sound is
+        then louder than her dry input for the hold and matched again a second later.
+        Measured on a note every quarter second at a peak of 0.02 with one loud thing
+        in it: about 8 dB louder on clean, 11 on crunch, and 18 on crunch after a low
+        knock, which the cabinet removes, so it teaches a gain as large as
+        ``_MATCH_MOST`` allows.  Nothing here can tell that one note from the first of
+        a louder passage, and a shorter hold would turn her down in every rest between
+        strums.  A rest longer than the hold is a quieter passage too: over a noisy
+        input the gain becomes the noise's own, and the next strum sets it right within
+        a buffer or so, a step of up to about 3 dB on crunch at a -60 dBFS floor (under
+        1 dB when the rests are shorter than the hold).
         """
         p = self.p
         if p > self.pk0:

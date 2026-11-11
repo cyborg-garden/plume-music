@@ -351,6 +351,79 @@ def test_a_rest_between_strums_is_not_a_quieter_passage(sound):
     assert np.ptp(db) < 4.0                           # and no drift in a rest
 
 
+def _one_loud(kind: str) -> tuple[np.ndarray, float]:
+    """Soft steady playing with one loud thing in it at 6 s, and when that thing ends."""
+    x = steady(16.0, 0.02).copy()
+    a = 6 * SR
+    if kind == "note":
+        y = pluck(196.0, 0.25, seed=99)
+        x[a:a + y.size] += (y * 0.9 / np.max(np.abs(y))).astype(np.float32)
+        return x, 6.25
+    if kind == "click":                                  # shorter than one buffer
+        x[a:a + 64] = 0.95
+        return x, 6.0 + 64 / SR
+    t = np.arange(int(0.05 * SR)) / SR                   # a knock: 40 Hz, gone in 50 ms
+    x[a:a + t.size] += (0.9 * np.sin(2 * np.pi * 40.0 * t) * np.exp(-t / 0.02)).astype(np.float32)
+    return x, 6.05
+
+
+@pytest.mark.parametrize("kind", ["note", "click", "knock"])
+@pytest.mark.parametrize("sound", ["clean", "crunch"])
+def test_one_loud_buffer_costs_the_hold_and_no_more(sound, kind):
+    """What _match's docstring owns up to.  One hard note, a click or a knock in soft
+    playing is her loudest buffer for _MATCH_HOLD_S, and its gain sits on the soft
+    playing for that long: her sound is louder than her dry input by as much as the two
+    gains differ, and no more.  A second after the hold it is matched again."""
+    x, ends = _one_loud(kind)
+    dry = np.repeat(x[:x.size // N * N, None], 2, axis=1)
+    fx = InputFx(SR, N, sound)
+    out, gain = np.zeros_like(dry), []
+    for i in range(0, out.shape[0], N):
+        out[i:i + N] = fx.process(x[i:i + N], False)
+        gain.append(fx.mg)
+
+    def over(a: float, b: float) -> float:
+        a, b = int(a * SR), int(b * SR)
+        return lufs(out[a:b]) - lufs(dry[a:b])
+    hold = inputfx._MATCH_HOLD_S
+    before = over(3.0, 6.0)
+    assert abs(before) <= 1.5
+    assert abs(over(ends + hold + 1.0, 16.0)) <= 1.5                   # no longer than the hold
+    gains = 20 * np.log10(max(gain[6 * SR // N:]) / gain[6 * SR // N - 1])
+    assert over(6.3, 6.3 + hold - 1.0) - before <= gains + 1.0         # no louder than the gains differ
+    assert max(gain) <= inputfx._MATCH_MOST and min(gain[SR // N:]) >= 1.0 / inputfx._MATCH_MOST
+
+
+@pytest.mark.parametrize("sound", ["clean", "crunch"])
+def test_a_rest_longer_than_the_hold_over_a_noisy_input_still_ends_in_a_matched_strum(sound):
+    """Strums seven seconds apart on an input with hiss at -60 dBFS.  The match learns
+    from anything above -70, so in each rest the gain becomes the hiss's own.  The next
+    strum has to set it right at once: a step of a few dB in one buffer, and a strum
+    that is as loud as her dry input."""
+    gap = 7.0
+    assert gap > inputfx._MATCH_HOLD_S + 2.0
+    x = np.zeros(int((5 * gap + 2) * SR))
+    for k in range(5):
+        for j, f in enumerate((98.0, 146.8, 196.0, 246.9, 293.7, 392.0)):
+            at = int((gap * k + 0.012 * j) * SR)
+            y = 0.7 * pluck(f, 2.4, seed=10 + j + k)
+            y *= np.exp(-np.arange(y.size) / (0.6 * SR))
+            x[at:at + y.size] += y
+    x = x * 0.35 / np.max(np.abs(x)) + np.random.default_rng(1).standard_normal(x.size) * 1e-3
+    x = x.astype(np.float32)
+    dry = np.repeat(x[:x.size // N * N, None], 2, axis=1)
+    fx = InputFx(SR, N, sound)
+    out, gain = np.zeros_like(dry), []
+    for i in range(0, out.shape[0], N):
+        out[i:i + N] = fx.process(x[i:i + N], False)
+        gain.append(fx.mg)
+    db = 20 * np.log10(np.array(gain[int((gap + 1) * SR / N):]))
+    assert np.abs(np.diff(db)).max() < 4.0
+    for k in range(1, 5):
+        a, b = int(gap * k * SR), int((gap * k + 1.5) * SR)
+        assert abs(lufs(out[a:b]) - lufs(dry[a:b])) <= 3.0, k
+
+
 @pytest.mark.parametrize("sound", PLAYED)
 def test_no_sound_is_late(sound):
     """The response starts on the sample that came in, bar the tape wobble's floor."""

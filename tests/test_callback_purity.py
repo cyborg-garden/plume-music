@@ -42,8 +42,8 @@ FORBIDDEN_NAME = re.compile(
 FORBIDDEN_CALL = {"sleep", "acquire", "release", "wait", "join", "acquire_lock", "select"}
 #: The C functions a callback may call: its rings, and nothing else.
 ALLOWED_CALLS = {"asarray", "min", "setprofile"}
-#: The plume files whose code may run in the callback: the transport, and her sound on
-#: Hear me (plume.inputfx), which is held to the same rules.
+#: The plume files whose code may run in the callback: the transport, and the input sound
+#: plume.inputfx (the effect on the "Hear me" monitoring switch), held to the same rules.
 CALLBACK_FILES = {"realtime.py", "inputfx.py"}
 #: The most lines of Python one callback may run.  A loop goes past this at once.
 MAX_LINES_PER_BLOCK = 120

@@ -33,6 +33,7 @@
       "generic audio engineering: latency figures, sample rates, thresholds, and hardware classes or product names used generically, such as a laptop mic, projector, audio interface, or AirPods",
       "generic role nouns such as player, guitarist, drummer, or human, with no other named person attached",
       "library, tool, and research citations, including published authors and technical analyses such as Hurliman and Baratatronix, and public drum machines or software named as reference points",
+      "plume's own feature, setting, and control names, such as Hear me (the switch that lets the player hear her own input), Sound, and named sounds like dreamy or lofi: they are product vocabulary, not titles of anyone's repertoire",
       "plainly invented placeholder values",
       "references to this repo's own issues and pull requests"
     ],

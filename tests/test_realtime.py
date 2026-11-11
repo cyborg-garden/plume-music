@@ -2270,10 +2270,22 @@ class _CapturingStatus(realtime.StatusLine):
         super().update(text)
 
 
+#: With ``pace_planner``, the fake device waits while less than this much of the
+#: machine's audio is scheduled ahead of the playhead.  The planner places each bar a
+#: bar ahead (2 s at 120 BPM), so a planner that keeps up never trips it.
+PLANNER_MARGIN_S = 0.25
+
+
 def _run_jam_stubbed(monkeypatch, tmp_path, *, human, mind_cls, tracker_kw,
-                     stop_after_blocks=900, rate_x=12.0):
+                     stop_after_blocks=900, rate_x=12.0, pace_planner=False):
     """Run the REAL jam transport over the fake device with a stub mind and a
-    stub tracker; returns (fake_device, decision_rows, status_texts)."""
+    stub tracker; returns (fake_device, decision_rows, status_texts).
+
+    ``pace_planner`` paces the device by work done, not by the wall clock: it
+    waits while the planner has not yet scheduled the next stretch of the
+    machine's audio.  A shared runner can starve the planner until bars land in
+    the past and play as silence, which a test that reads the output's level
+    would take for a level that did not move."""
     import plume.listen.beat as beat_mod
     import plume.mind as mind_mod
 
@@ -2289,7 +2301,22 @@ def _run_jam_stubbed(monkeypatch, tmp_path, *, human, mind_cls, tracker_kw,
 
     sock = short_socket_path("rt-stub")
     rec = tmp_path / "take"
-    fake = fake_audio(human, rate_x=rate_x)
+    hold = None
+    if pace_planner:
+        timelines = []
+        real_init = realtime.TimelineBuffer.__init__
+
+        def init(self, *a, **kw):
+            real_init(self, *a, **kw)
+            timelines.append(self)
+
+        monkeypatch.setattr(realtime.TimelineBuffer, "__init__", init)
+
+        def hold():
+            # end == 0: nothing placed yet, the start is the warm-up's job.
+            return any(0 < tl.end < tl.playhead + PLANNER_MARGIN_S * realtime.SR
+                       for tl in timelines)
+    fake = fake_audio(human, rate_x=rate_x, hold=hold)
 
     def stop_later():
         wait_until(lambda: fake.stream is not None
@@ -2381,7 +2408,7 @@ class TestLiveBusCalibrationEndToEnd:
             mind_cls=_stub_mind_class("comping", gain_db=self.GAIN_DB),
             tracker_kw={"locked": True, "bpm": 120.0},
             stop_after_blocks=int(realtime.SR * (2 * half_s - 4) / 256),
-            rate_x=10.0)
+            rate_x=10.0, pace_planner=True)
         assert fake.stream.sounded()
         # cal_db must be in the log, and must MOVE when the human's level does
         cals = [r["cal_db"] for r in rows if r.get("cal_db") is not None]
@@ -2410,7 +2437,7 @@ class TestLiveBusCalibrationEndToEnd:
             mind_cls=_stub_mind_class("comping", gain_db=self.GAIN_DB),
             tracker_kw={"locked": True, "bpm": 120.0},
             stop_after_blocks=int(realtime.SR * 26 / 256),
-            rate_x=10.0)
+            rate_x=10.0, pace_planner=True)
         machine_db = _machine_channel_rms_db(fake, 0.5, 0.95)
         # the human's own RMS as the transport measured it: white noise at
         # -20 dBFS peak-scaled — measure it directly for the target

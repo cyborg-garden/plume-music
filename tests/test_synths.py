@@ -241,7 +241,10 @@ def _bar_seconds(style, voices, bars, bpm=115.0):
         eng._style.pop("voice_variants", None)
     roles = {r: 1.0 for r in eng._style["voices"] if r not in ("sub", "tick", "foot")}
     iv = 60.0 / bpm
-    t0 = time.perf_counter()
+    # This thread's CPU time, not the wall clock: a shared runner that takes the
+    # CPU away mid-render stretches the wall clock of one palette and not the
+    # other, but cannot add work to this thread.
+    t0 = time.thread_time()
     for b in bars:
         plan = BarPlan(bar=b, state="comping", roles=roles, gain_db=0.0,
                        density=0.7, register_ceiling_midi=None, reason="cost")
@@ -252,7 +255,7 @@ def _bar_seconds(style, voices, bars, bpm=115.0):
                             chord=["C", "Am", "F", "G"][b % 4], chord_conf=0.9,
                             register_low_midi=None, register_high_midi=None)
         eng.render_bar(plan, beat, harm)
-    return time.perf_counter() - t0
+    return time.thread_time() - t0
 
 
 @pytest.mark.parametrize("style", sorted(_OLD_PALETTE))
@@ -261,14 +264,20 @@ def test_the_new_palette_costs_the_planner_about_what_the_old_one_did(style):
     voices cost twice the old ones: the "darker" live test heard silence where
     the band should have been.  So the price is relative, not absolute: a
     style's bars, every voice variant included, must render within 1.4x the
-    same bars on its old voices.  Interleaved and best of five, so a busy CPU
-    slows both alike."""
+    same bars on its old voices, priced in the same process.  Timed by this
+    thread's CPU time, so a runner that is preempted mid-render does not charge
+    the wait to one palette; interleaved, order swapped each round, best of
+    seven, so a slow CPU slows both alike.  A Windows runner hit 1.45 with
+    wall-clock timing on code that passed there the run before."""
     every = int(load_style(style).get("variant_bars", 16))
     bars = [k * every + 1 for k in range(3)]      # one bar of each variant
     new, old = 1e9, 1e9
-    for _ in range(5):
+    for k in range(7):
+        if k % 2:
+            old = min(old, _bar_seconds(style, _OLD_PALETTE[style], bars))
         new = min(new, _bar_seconds(style, None, bars))
-        old = min(old, _bar_seconds(style, _OLD_PALETTE[style], bars))
+        if not k % 2:
+            old = min(old, _bar_seconds(style, _OLD_PALETTE[style], bars))
     assert new < 1.4 * old, (style, round(new / old, 2))
 
 

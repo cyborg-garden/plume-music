@@ -124,8 +124,13 @@ def _sound_words(text) -> list[str] | None:
         return words[2:]
     if words[:1] == ["sound"]:
         return words[1:]
-    if 2 <= len(words) <= 3 and words[-1] == "sound":
-        return words[:-1]
+    if len(words) >= 2 and words[-1] == "sound":
+        rest = words[:-1]
+        # One or two words before "sound" ("dreamy sound", "lofi tape sound"), or any
+        # spelling of a sound's own name however many words it splits into: "lo-fi
+        # tape sound" is three here, the hyphen gone with the other marks.
+        if len(rest) <= 2 or _own_name(" ".join(rest)) is not None:
+            return rest
     return None
 
 

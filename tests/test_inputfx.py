@@ -138,6 +138,7 @@ def test_a_band_cue_that_says_sound_still_reaches_the_band(text):
 @pytest.mark.parametrize("text", [
     "sound lo-fi", "my sound lo-fi", "lo-fi sound", "sound: lo-fi", "sound lo fi", "lo fi sound",
     "sound lofi tape", "lofi tape sound", "sound Lofi Tape", "sound lo-fi tape",
+    "lo-fi tape sound", "Lo-fi tape sound.", "lo fi tape sound",
 ])
 def test_another_spelling_of_her_sound_is_still_hers(text):
     """"lo-fi" is a spelling of her lofi sound and "Lofi tape" is its name on the page.

@@ -3356,9 +3356,13 @@ class CueServer:
             if reply is not None:
                 # Never queued, so no row will name it.  Who asked exists only here,
                 # refusals included: the sender saw the answer and the take did not.
-                self._tell_log({"text": text, "at": "now", "ttl_bars": 0,
-                                "loop": {"op": reply.get("op"), "ok": reply.get("ok") is True}},
-                               req)
+                # The key is "loop" because the looper was the first to answer at once.
+                # Her sound answers this way too: its op is "sound", and the sound it
+                # became (one of plume's names, never her words) goes with it.
+                answer = {"op": reply.get("op"), "ok": reply.get("ok") is True}
+                if answer["op"] == "sound" and answer["ok"]:
+                    answer["sound"] = reply.get("sound")
+                self._tell_log({"text": text, "at": "now", "ttl_bars": 0, "loop": answer}, req)
                 return {**reply, "queued": 0, "session": self.kind, "bar": self.bar}
         at = req.get("at", "next-phrase")
         ttl = req.get("ttl_bars", 16)

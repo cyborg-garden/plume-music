@@ -679,6 +679,9 @@ def test_a_take_started_with_sound_off_takes_a_sound_cue(tmp_path, consent, soun
     assert loop["op"] == "record"
     # the take's record says what it started with: no sound
     assert json.loads((tmp_path / "rec" / "session.json").read_text())["sound"] is None
+    # and its cue log says her sound answered, and with what
+    logged = [json.loads(ln) for ln in (tmp_path / "rec" / realtime.REC_CUES).read_text().splitlines()]
+    assert {"op": "sound", "ok": True, "sound": "dreamy"} in [d.get("loop") for d in logged]
 
 
 @pytest.mark.parametrize("sound", [None, "clean"])
@@ -764,6 +767,25 @@ def test_plume_cue_still_reports_a_band_cue_as_before(sound_server, capsys):
     said = capsys.readouterr().out
     assert "(texture)" in said and "1 queued" in said and "your sound" not in said
     assert [c["text"] for c in srv.drain()] == ["sound darker"]
+
+
+def test_the_take_logs_a_sound_cue_as_her_sound_and_the_record_reads_it_so(sound_server):
+    """The socket's log line for a sound cue, fed to the record as the take writes it."""
+    from plume import record
+    srv, fx, heard = sound_server
+    assert realtime.send_cue("sound dreamy", socket_path=srv.path, source="cli")["ok"] is True
+    with pytest.raises(realtime.RealtimeError):
+        realtime.send_cue("sound fat", socket_path=srv.path, source="cli")
+    realtime.send_cue("make a 4 bar loop", socket_path=srv.path, source="cli")
+    assert [h["loop"] for h in heard] == [{"op": "sound", "ok": True, "sound": "dreamy"},
+                                          {"op": "sound", "ok": False},
+                                          {"op": "record", "ok": True}]
+    log = [{"received_at": 1.0, "t_s": 3.0, "bar": None, "source": "cli", **h} for h in heard]
+    events = record.translate([], None, log)
+    assert [e["label"] for e in events[:3]] == ["sound cue", "sound cue, refused", "loop cue"]
+    assert "set your sound to Dreamy" in events[0]["sentence"]
+    assert "looper" not in events[0]["sentence"] + events[1]["sentence"]
+    assert "The looper said yes" in events[2]["sentence"]
 
 
 def test_the_cli_flag_and_the_environment(monkeypatch):

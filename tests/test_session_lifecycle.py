@@ -1742,11 +1742,59 @@ class TestTheTransportActuallyMasksItself:
 
     @needs_laptop_speed
     def test_the_sideman_masks_its_own_output_out_of_the_tracker(
-            self, material, isolated_registry, spy_masker):
+            self, material, isolated_registry, spy_masker, monkeypatch):
         sock = short_sock("mask-jam")
+        # A loaded machine lets the 14x device outrun the threads under test:
+        # the ear falls behind, a bar is rendered late, it lands in the past and
+        # plays as silence, and a machine that never sounds has nothing to mask.
+        # A real device at real time has seconds to spare, so the fake device
+        # waits while a bar is being rendered or the ear has unread input.
+        from plume import duet as duet_mod
+        rendering = threading.Event()
+        real_render = duet_mod.DuetEngine.render_bar
+        real_write_at = realtime.TimelineBuffer.write_at
+
+        def render_bar(duet, *a, **kw):
+            rendering.set()
+            audio = real_render(duet, *a, **kw)
+            if not audio.shape[0]:       # nothing to place: no write_at follows
+                rendering.clear()
+            return audio
+
+        def write_at(timeline, *a, **kw):
+            rendering.clear()
+            return real_write_at(timeline, *a, **kw)
+
+        monkeypatch.setattr(duet_mod.DuetEngine, "render_bar", render_bar)
+        monkeypatch.setattr(realtime.TimelineBuffer, "write_at", write_at)
+
+        def busy():
+            if rendering.is_set():
+                return True
+            if not spy_masker.made or fake.stream is None:
+                return False
+            pumped = fake.stream.blocks * fake.stream._n
+            return pumped - spy_masker.made[0].frames_seen * realtime.HOP > SR // 4
+
         fake = fake_audio(material["loud"], rate_x=14.0, bleed_db=-6.0,
-                          bleed_delay_s=0.020)
-        stop_when_running(sock, after=5.0)
+                          bleed_delay_s=0.020, hold=busy)
+        # Stop on what the ear has HEARD, not on a wall clock.  The band first
+        # sounds ~24 s into this stream and the mask first fires ~31 s in; five
+        # wall seconds at 14x is ~58 s idle, but a loaded machine pumps and
+        # analyses less in that time and stopped before the machine ever reached
+        # the mic, which read as "not one frame was masked".
+        heard_s = 55.0
+        heard = lambda: (spy_masker.made and spy_masker.made[0].frames_seen  # noqa: E731
+                         >= heard_s * SR / realtime.HOP)
+
+        def stop_once_heard():
+            wait_until(heard, timeout=120.0)   # and stop anyway: fail, never hang
+            try:
+                realtime.send_stop(socket_path=sock)
+            except realtime.RealtimeError:
+                pass
+
+        threading.Thread(target=stop_once_heard, daemon=True).start()
         run_jam(material["loud"], sock=sock, max_minutes=0, fake=fake)
 
         assert spy_masker.made, "jam did not build a SelfMasker at all"

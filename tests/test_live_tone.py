@@ -156,8 +156,13 @@ def consent(tmp_path, monkeypatch, plume_registry):
 
 
 def _live_take(tmp_path, tag, cue=None):
+    """One tap-start take over the fake device, with the device held while a bar
+    is being planned.  Without the hold a loaded machine lets the 12x playhead
+    outrun the planner: bars land in the past and play as silence, so the window
+    this test measures can be all zeros and the cue looks like it did nothing."""
     from conftest import fake_audio, patched_module, short_socket_path, wait_until
     from test_bandentry import _take
+    from test_looper_live import MAX_LATE_S, PlannerGate
 
     from plume import realtime
     from plume import roles as roles_mod
@@ -176,9 +181,12 @@ def _live_take(tmp_path, tag, cue=None):
         if wait_until(band_in, timeout=60.0):
             realtime.send_cue(cue, socket_path=sock, source="cli")
 
-    fake = fake_audio(human, devices=RIG, rate_x=12.0)
+    gate = PlannerGate()
+    fake = fake_audio(human, devices=RIG, rate_x=12.0, hold=gate.busy)
+    gate.stream_samples = lambda: (fake.stream.blocks * fake.stream._n
+                                   if fake.stream is not None else 0)
     t = threading.Thread(target=send_later, daemon=True) if cue else None
-    with patched_module("sounddevice", fake):
+    with patched_module("sounddevice", fake), gate:
         if t:
             t.start()
         realtime.lead(prompt="midwest emo in C major", seed=0, tap_start=True,
@@ -188,6 +196,8 @@ def _live_take(tmp_path, tag, cue=None):
                       input_channel=1)
     if t:
         t.join(timeout=5.0)
+    assert gate.late_s <= MAX_LATE_S, (
+        f"the planner fell behind the fake device by {gate.late_s:.2f} s")
     rows = [json.loads(x) for x in (rec / "decisions.ndjson").read_text().splitlines()]
     return fake.stream.output, [r for r in rows if isinstance(r.get("bar"), int)]
 
@@ -205,6 +215,10 @@ def test_darker_in_a_live_take_darkens_what_the_band_plays(tmp_path, consent):
         return x[int(a * SR):int(b * SR)]
     before, after = (t - 6.0, t - 0.5), (t + 1.5, t + 7.0)
     assert win(out, *after).shape[0] > SR, "the take ended before it could be heard"
+    for name, x in (("cued", out), ("uncued", base_out)):
+        for span in (before, after):
+            assert np.abs(win(x, *span)).max() > 1e-4, (
+                f"the {name} take was silent over {span[0]:.1f}-{span[1]:.1f} s")
     dark = _hf_share(win(out, *after)) / _hf_share(win(out, *before))
     plain = _hf_share(win(base_out, *after)) / _hf_share(win(base_out, *before))
     assert dark < plain * 0.75, (

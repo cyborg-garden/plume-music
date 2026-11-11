@@ -1262,6 +1262,64 @@ def test_a_loop_cue_before_the_first_bar_sits_at_the_start_not_the_end():
     assert event["bar"] == 0 and "before the first bar" in event["sentence"]
 
 
+def sound_line(text, bar, t_s, *, ok=True, sound=None, source="cli"):
+    """What the take's socket logs when her sound answers a cue (Hear me on)."""
+    answer = {"op": "sound", "ok": ok}
+    if sound is not None:
+        answer["sound"] = sound
+    return {**cue_line(text, bar, t_s, source), "at": "now", "ttl_bars": 0, "loop": answer}
+
+
+def test_a_sound_cue_is_about_her_sound_not_a_loop():
+    """Her sound answers a cue at once, as the looper does, and is logged the same way.
+    The record must not say she asked about a loop and the looper answered."""
+    rows = song(40)
+    events = record.translate(rows, ending_doc(),
+                              [sound_line("sound dreamy", 12, rows[12]["t_s"], sound="dreamy")])
+    event = by_label(events, "sound cue")
+    assert event["bar"] == 12 and not event["dashed"]
+    assert event["sentence"] == "Bar 12. Another terminal set your sound to Dreamy at bar 12."
+    assert not any("loop" in e["label"] or "looper" in e["sentence"] for e in events)
+
+
+def test_a_refused_sound_cue_says_so_and_changes_nothing():
+    rows = song(40)
+    events = record.translate(rows, ending_doc(),
+                              [sound_line("sound fat", 5, rows[5]["t_s"], ok=False, source="gui")])
+    event = by_label(events, "sound cue, refused")
+    assert event["sentence"] == "Bar 5. You asked for a sound I do not have at bar 5, so nothing changed."
+    assert event["dashed"] and not any("looper" in e["sentence"] for e in events)
+
+
+def test_a_sound_cue_with_no_bar_played_is_still_her_sound():
+    log = [sound_line("sound dreamy", None, 1.0, sound="dreamy"),
+           sound_line("sound fat", None, 2.0, ok=False)]
+    events = record.translate([], None, log)
+    assert [e["label"] for e in events[:2]] == ["sound cue", "sound cue, refused"]
+    assert events[0]["sentence"] == "Another terminal set your sound to Dreamy before the first bar."
+    assert "a sound I do not have before the first bar" in events[1]["sentence"]
+    assert not any("loop" in e["sentence"] for e in events[:2])
+
+
+@pytest.mark.parametrize("named", [None, "wobbly", "<b>dreamy</b>", 7, ["dreamy"]])
+def test_a_sound_the_log_does_not_name_is_not_made_up(named):
+    """Only one of plume's own sounds is echoed: a log can be written by anything."""
+    rows = song(40)
+    line = sound_line("sound dreamy", 12, rows[12]["t_s"])
+    if named is not None:
+        line["loop"]["sound"] = named
+    event = by_label(record.translate(rows, ending_doc(), [line]), "sound cue")
+    assert event["sentence"] == "Bar 12. Another terminal changed your sound at bar 12."
+
+
+def test_a_sound_cue_is_not_asking_for_a_loop():
+    """Silence after a loop was asked for reads differently.  A sound cue is no loop."""
+    log = [sound_line("sound dreamy", 2, 5.0, sound="dreamy", source="gui")]
+    rows = song(30, heard_bar=None, band_bar=None)
+    text = words(lines=record.roast(rows, ending_doc(realtime.END_SILENCE), log))
+    assert "You asked for a loop" not in text
+
+
 @pytest.mark.parametrize("planted", [
     {"op": "<img src=x>", "ok": True}, {"op": ["record"], "ok": True}, {"op": {}, "ok": "yes"}, {},
 ])

@@ -48,6 +48,18 @@ twice. Hear me never goes into the recording.
 With another Output chosen, Hear me is not offered, because plume treats that output as
 speakers.
 
+### Sound
+
+Under Hear me, **Sound** gives your instrument a finished sound: Clean room, Dreamy (chorus,
+an echo on the band's tempo, a long shimmering reverb), Lofi tape, or Crunch. Match the
+style picks one from the style. It is Off until you choose one. It changes only what you
+hear: your recording stays clean, because that is what plume listens to. Lofi tape adds
+about 2 ms; the others add no delay. A buzzing cable is still muted.
+
+To change it while a take is playing, type `plume cue "sound dreamy"` in a terminal, or
+`plume cue "sound off"` and so on. It needs Hear me on in that take, and it changes at
+once. The page has no button for this. See [From a terminal](#/guide/terminal).
+
 ## Set up again
 
 Plume remembers what setup learned for each device, so later Starts skip the questions.

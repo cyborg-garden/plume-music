@@ -580,7 +580,7 @@ on a take from a real mic or interface, or in Firefox or Safari.
 
 Once the band is in on a room mic plume cannot hear you, so the page says so and makes no claim about your playing. On a direct input or a `--midi` take it can still hear you, so the page drops that line, but it still makes no claim about your playing, because neither has been tried on real hardware. Takes recorded before `cues.ndjson` existed can only say "A cue landed", not who asked or when.
 
-Every cue that reaches a session goes in `cues.ndjson`, including what the looper answered, and refusals. The page reports the looper's answer and nothing more, even for a take that stopped before its first bar: a take it agreed to can still end with no loop. MIDI notes do not send cues; a cue sent during a `--midi` take is logged like any other. None of this has been run on a real interface, keyboard or speakers, only on the simulated device.
+Every cue that reaches a session goes in `cues.ndjson`, including what the looper answered, and refusals. The page reports the looper's answer and nothing more, even for a take that stopped before its first bar: a take it agreed to can still end with no loop. A cue that changes your own sound (`sound dreamy`, with Hear me on) is answered at once and logged the same way, and the page says what your sound became, or that plume has no such sound. MIDI notes do not send cues; a cue sent during a `--midi` take is logged like any other. None of this has been run on a real interface, keyboard or speakers, only on the simulated device.
 
 ## When it goes wrong
 

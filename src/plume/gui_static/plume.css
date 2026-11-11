@@ -104,6 +104,7 @@ header { display: flex; flex-wrap: wrap; align-items: center; gap: 0 16px; paddi
 #settings-body select option { background: var(--field); color: var(--text); }
 #set-folder { font: 400 13px var(--mono); overflow-wrap: anywhere; color: var(--text); }
 #hear-words { padding-top: 12px; }
+#sound-more summary { cursor: pointer; padding: 4px 0; }
 #again-row { margin: 0; color: var(--secondary); }
 #settings-done { align-self: flex-start; }
 .textlink { background: none; border: 0; padding: 6px 0; min-height: 32px; font-size: 14px; color: var(--secondary); text-decoration: underline; text-underline-offset: 3px; text-align: left; overflow-wrap: anywhere; }

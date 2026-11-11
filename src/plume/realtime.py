@@ -54,6 +54,7 @@ from .listen.features import HOP, RMS_FLOOR_DB, Frame  # noqa: F401 (Frame: typi
 # plans sim's unlocked tick selects or the twins diverge on which bars exist.
 from .sim import SILENCE_REL_DB, _SOUNDING_STATES
 from .inputguard import InputGuard
+from .inputfx import InputFx, LABELS as SOUND_LABELS, added_latency_ms
 
 SR = 48000
 BLOCK = 256
@@ -1911,7 +1912,7 @@ def session_manifest(*, kind: str, style: str, role: str, seed: int,
                      started_at: float | None = None,
                      input_route: "InputRoute | None" = None,
                      midi_port: str | None = None, detect: bool = False,
-                     monitor: bool = False) -> dict:
+                     monitor: bool = False, sound: str | None = None) -> dict:
     """What ``session.json`` says, written before the first bar is planned.
 
     Pure: everything except the pid and the clock is passed in, so the shape
@@ -1931,6 +1932,7 @@ def session_manifest(*, kind: str, style: str, role: str, seed: int,
         "midi_port": midi_port,
         "detect": bool(detect),
         "monitor": bool(monitor),
+        "sound": sound,
         "bpm": (None if bpm is None else float(bpm)),
         "sr": SR,
         "max_minutes": float(max_minutes),
@@ -1962,10 +1964,18 @@ MONITOR_UP_PER_SAMPLE = 1.0 / (0.2 * SR)    # back up over 200 ms; down within o
 _MONITOR_STEPS = np.arange(1, (1 << 16) + 1, dtype=np.float32)
 
 
-def mix_monitor(outdata, x, slot) -> None:
+def mix_monitor(outdata, x, slot, sound=None) -> None:
     """Add her input ``x`` onto ``outdata`` (both channels) at the guarded gain, then
-    soft-limit the sum to MONITOR_CEILING.  Called from the audio callback."""
+    soft-limit the sum to MONITOR_CEILING.  Called from the audio callback.
+
+    ``sound`` (a plume.inputfx.InputFx) turns ``x`` into her chosen sound first, in
+    stereo.  The duck and the ceiling come after it, so they still have the last word.
+    """
     n = x.shape[0]
+    if sound is not None:
+        y = sound.process(x, slot[0] > 0.5)
+        if y is not None:
+            x = y
     g0 = float(slot[1])
     target = 0.0 if slot[0] > 0.5 else 1.0
     g1 = target if target < g0 else min(target, g0 + MONITOR_UP_PER_SAMPLE * n)
@@ -1977,9 +1987,15 @@ def mix_monitor(outdata, x, slot) -> None:
     else:
         m = _MONITOR_STEPS[:n] * ((g1 - g0) / n)
         m += g0
-        m *= x
-    outdata[:, 0] += m
-    outdata[:, 1] += m
+        if x.ndim == 2:
+            m = m[:, None] * x
+        else:
+            m *= x
+    if m.ndim == 2:
+        outdata[:, :2] += m
+    else:
+        outdata[:, 0] += m
+        outdata[:, 1] += m
     # y = sign(v) * (knee + span * tanh((|v| - knee) / span)) over the knee, v below it:
     # take off what is over, then give back its rounded version.
     over = np.abs(outdata)
@@ -1991,6 +2007,45 @@ def mix_monitor(outdata, x, slot) -> None:
     over -= kept
     np.copysign(over, outdata, out=over)
     outdata -= over
+
+
+def _input_sound(sound, monitor: bool, style) -> "InputFx | None":
+    """Her sound on Hear me, built before the stream opens, or None.
+
+    It is only ever heard through Hear me, so without the monitor there is nothing to
+    build.  With it there always is, even when no sound is on (which is how a take
+    starts unless she chose one): off plays her input as it comes in, and a cue in the
+    take ("sound dreamy") can then turn a sound on.  ``human.wav`` never has it: the
+    input ring is written before it.
+    """
+    from .inputfx import canonical_sound, resolve  # noqa: PLC0415
+    name = canonical_sound(sound) if sound is not None else None
+    if sound is not None and name is None:
+        raise RealtimeError(f"plume has no sound called {sound!r}; try "
+                            "off, clean, dreamy, lofi, crunch or match")
+    name = name or "off"
+    if not monitor:
+        if name != "off":
+            print("sound: only heard with Hear me (--monitor), so it is off",
+                  file=sys.stderr, flush=True)
+        return None
+    fx = InputFx(SR, BLOCK, name, style)
+    if name == "off":
+        return fx
+    now = resolve(name, style)
+    ms = added_latency_ms(now, SR)
+    more = f", adds {ms:g} ms" if ms else ", adds no delay"
+    which = f"match: {SOUND_LABELS[now]} for now" if name == "match" else SOUND_LABELS[now]
+    print(f"sound: {which} on Hear me{more}; your recording stays dry",
+          file=sys.stderr, flush=True)
+    return fx
+
+
+def _started_with(input_fx) -> str | None:
+    """The sound a take started with, for its record: None when none was on."""
+    if input_fx is None or input_fx.asked == "off":
+        return None
+    return input_fx.asked
 
 
 def heed_input(guard, x, ending: bool = False) -> None:
@@ -2268,7 +2323,7 @@ def jam(*, style: str, seed: int, params, device: str | None = None,
         latency_comp_s: float | None = None,
         input_device: str | None = None, input_channel: int | None = None,
         direct: bool = False, midi: str | None = None,
-        midi_clock: bool = False) -> None:
+        midi_clock: bool = False, sound: str | None = None) -> None:
     """Run the live sideman until it is ended (SPEC-V1 section 7).
 
     ``params`` is a ``plume.mind.MindParams``.  ``tightness`` overrides the
@@ -2314,6 +2369,7 @@ def jam(*, style: str, seed: int, params, device: str | None = None,
                     input_mode=input_mode, count_in=count_in,
                     input_device=input_device, input_channel=input_channel,
                     direct=direct,
+                    **({} if sound is None else {"sound": sound}),
                     **({} if midi is None else {"midi": midi,
                                                 "midi_clock": midi_clock}))
     sd = _import_sounddevice()
@@ -2355,6 +2411,7 @@ def jam(*, style: str, seed: int, params, device: str | None = None,
     # still kept off the speakers if it buzzes, but nothing is said of it.
     guard = InputGuard(SR, notices=midi_port is None)
     guard_slot = guard.slot
+    input_fx = _input_sound(sound, monitor, style)
     machine_ring = RingBuffer(SR * 8)             # what we played (mono sum)
     timeline = TimelineBuffer(SR * 30, channels=2)
 
@@ -2420,7 +2477,8 @@ def jam(*, style: str, seed: int, params, device: str | None = None,
             socket_path=(cues.path if cues else None),
             max_minutes=max_minutes, record_dir=record_dir, device=device,
             params=params, started_at=time.time(), input_route=route,
-            midi_port=midi_port))
+            midi_port=midi_port,
+            sound=_started_with(input_fx)))
     # Named stop_deadline, not deadline: planner_loop already has a local
     # `deadline` (the bar-revision cutoff) and the two must never be confused.
     stop_deadline = session_deadline(started_mono, max_minutes)
@@ -2432,7 +2490,7 @@ def jam(*, style: str, seed: int, params, device: str | None = None,
         timeline.read_into(outdata)
         machine_ring.write(0.5 * (outdata[:, 0] + outdata[:, 1]))
         if monitor:
-            mix_monitor(outdata, indata[:, route.guitar], guard_slot)
+            mix_monitor(outdata, indata[:, route.guitar], guard_slot, input_fx)
 
     hop_rms = HopRms()
 
@@ -2507,6 +2565,8 @@ def jam(*, style: str, seed: int, params, device: str | None = None,
         }
         if beat_state.bpm and math.isfinite(beat_state.bpm) and beat_state.bpm > 0:
             guard.bar_s = 240.0 / beat_state.bpm
+            if input_fx is not None:
+                input_fx.set_bpm(beat_state.bpm)
         if math.isinf(beat_state.next_downbeat_t_s):
             doc["cal_db"] = None
             _log(doc)
@@ -3296,9 +3356,13 @@ class CueServer:
             if reply is not None:
                 # Never queued, so no row will name it.  Who asked exists only here,
                 # refusals included: the sender saw the answer and the take did not.
-                self._tell_log({"text": text, "at": "now", "ttl_bars": 0,
-                                "loop": {"op": reply.get("op"), "ok": reply.get("ok") is True}},
-                               req)
+                # The key is "loop" because the looper was the first to answer at once.
+                # Her sound answers this way too: its op is "sound", and the sound it
+                # became (one of plume's names, never her words) goes with it.
+                answer = {"op": reply.get("op"), "ok": reply.get("ok") is True}
+                if answer["op"] == "sound" and answer["ok"]:
+                    answer["sound"] = reply.get("sound")
+                self._tell_log({"text": text, "at": "now", "ttl_bars": 0, "loop": answer}, req)
                 return {**reply, "queued": 0, "session": self.kind, "bar": self.bar}
         at = req.get("at", "next-phrase")
         ttl = req.get("ttl_bars", 16)
@@ -4473,7 +4537,8 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
          input_device: str | None = None, input_channel: int | None = None,
          voice_channel: int | None = None, direct: bool = False,
          midi: str | None = None, midi_clock: bool = False,
-         detect: bool = False, output_device: str | None = None) -> None:
+         detect: bool = False, output_device: str | None = None,
+         sound: str | None = None) -> None:
     """The machine starts; you join (SPEC-V2 section 5).
 
     ``tap_start``: nothing plays until four knocks set the tempo, the drums then
@@ -4665,6 +4730,8 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
         machine_swing = 0.5 if plain else swing_of(name)
         entry.restyle(name)
         cues.info["style"] = name
+        if input_fx is not None and not plain:
+            input_fx.set_style(name)     # "match" follows the style plume settled on
         return old.flush_tail()
     from .sim import _LeadCues  # noqa: PLC0415
     lead_cues = _LeadCues()
@@ -4681,6 +4748,10 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
     # still kept off the speakers if it buzzes, but nothing is said of it.
     guard = InputGuard(SR, notices=midi_port is None)
     guard_slot = guard.slot
+    input_fx = _input_sound(sound, monitor, None if detect else style)
+    # Read now, for the take's record: a cue can change her sound the moment the socket
+    # listens, which is before the record is opened.
+    started_sound = _started_with(input_fx)
     timeline = TimelineBuffer(SR * 30, channels=2)
 
     stop = threading.Event()
@@ -4704,7 +4775,8 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
     looper = Looper(SR, bleed_probe=lambda: (masker.coupling_db
                                              if masker.coupling_measured else None))
     cues = CueServer(socket_path, kind="lead")
-    cues.intercept = looper.handle_cue
+    cues.intercept = (looper.handle_cue if input_fx is None
+                      else lambda text: input_fx.handle_cue(text) or looper.handle_cue(text))
     # A cue can arrive the moment the socket listens, and the looper answers one at
     # once, before any bar.  The take is not open yet then (its session.json must
     # not appear before the socket can take a stop), so such a cue is held and
@@ -4749,7 +4821,8 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
             max_minutes=max_minutes, record_dir=record_dir, device=device,
             bpm=composed_bpm, params=params, role_params=role,
             started_at=time.time(), input_route=route, midi_port=midi_port,
-            detect=detect, monitor=monitor))
+            detect=detect, monitor=monitor,
+            sound=started_sound))
         with cue_log_lock:
             for doc in held_cues:
                 recorder.cue_soon(doc)
@@ -4765,7 +4838,7 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
         timeline.read_into(outdata)
         machine_ring.write(0.5 * (outdata[:, 0] + outdata[:, 1]))
         if monitor:
-            mix_monitor(outdata, indata[:, route.guitar], guard_slot)
+            mix_monitor(outdata, indata[:, route.guitar], guard_slot, input_fx)
 
     hop_rms = HopRms()
 
@@ -4854,6 +4927,8 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
         bar, t_bar, _ = clock.commit(bpm)
         bar_len = clock.bar_len_s(bpm)
         guard.bar_s = bar_len
+        if input_fx is not None:
+            input_fx.set_bpm(bpm)        # her echoes on the band's tempo
         looper.note_bar(bar, int(round(t_bar * SR)) - comp_samples[0], bpm)
         # This bar is planned a bar ahead of the playhead, so the bar just
         # before it has barely started and holds almost no frames.  Read the

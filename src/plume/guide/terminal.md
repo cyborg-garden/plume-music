@@ -37,6 +37,10 @@ chosen when the take starts.
 Anything else is logged as not understood, and nothing changes. Add `--json` to see how
 plume read a cue.
 
+With Hear me on, `plume cue "sound dreamy"` changes your own sound at once, and so do
+`sound clean`, `sound lofi`, `sound crunch`, `sound match` and `sound off`. The reply says
+what your sound is now. See [Settings and sound](#/guide/sound).
+
 Loops are cues too, such as `make a loop of this`, `that's the loop`, `mute the bass loop`
 and `list loops`. They have only run against a simulated device so far.
 

@@ -177,6 +177,21 @@ def test_the_live_take_really_changes_only_what_the_guide_says():
     assert "lead_cues.tilt" in source and "BusTone" in source
 
 
+def test_the_guide_says_a_sound_cue_is_typed_in_a_terminal():
+    """The page has nowhere to type a cue, so "you can say `sound dreamy`" told nobody
+    how.  Each sound cue the guide names is one her sound takes, not the band."""
+    from plume import inputfx
+    assert '`plume cue "sound dreamy"`' in PAGES["sound"] and "terminal" in PAGES["sound"]
+    assert '`plume cue "sound dreamy"`' in PAGES["terminal"]
+    named = re.findall(r"`(?:plume cue \")?(sound [a-z]+)\"?`", PAGES["sound"] + PAGES["terminal"])
+    assert {"sound dreamy", "sound off", "sound clean", "sound lofi", "sound crunch",
+            "sound match"} <= set(named)
+    fx = inputfx.InputFx(48000, 256, "off", style="lofi")
+    for cue in named:
+        reply = fx.handle_cue(cue)
+        assert reply is not None and reply["ok"] is True, cue
+
+
 def test_the_page_offers_the_same_two_cues_the_guide_describes():
     from plume import guitake
     assert guitake.CUES == ("busier", "sparser")

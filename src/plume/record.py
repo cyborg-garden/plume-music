@@ -32,6 +32,7 @@ from bisect import bisect_right
 from pathlib import Path
 
 from . import oscompat
+from .inputfx import LABELS as _SOUND_LABELS
 from .mind import CUE_BOUNDARIES, cue_is_exact, parse_cue
 from .realtime import (DEFAULT_MAX_MINUTES, END_FORM, END_INTERRUPT, END_MAX_MINUTES, END_SILENCE,
                        END_SONG, END_STOPPED, END_TERMINATED, END_WEDGED,
@@ -99,6 +100,9 @@ _LOOP_ASKS = {"record": "to record a loop", "close": "to close a loop take",
               "mute": "to mute a loop", "unmute": "to bring a loop back",
               "drop": "to drop a loop", "swap": "to swap two loops",
               "list": "for the list of loops", "unclear": "for a loop"}
+#: The op of a cue her sound answered (Hear me on).  It is logged where the looper's
+#: answers are, and it is not about a loop.
+_SOUND_OP = "sound"
 #: Only a cue sent for the next phrase waited for one.  With no log, nobody can say.
 _END_CUE_LEAD = {"next-phrase": "A cue ended the take at a phrase line",
                  "next-section": "A cue ended the take at a section line",
@@ -426,13 +430,18 @@ def _boundary(at) -> str | None:
 
 
 def _loop_answer(doc: dict) -> dict | None:
-    """What the looper said to this cue, or None if it was a cue for the band."""
+    """What the looper said to this cue, or her sound did (op "sound"), or None if it
+    was a cue for the band."""
     loop = doc.get("loop")
     if not isinstance(loop, dict):
         return None
-    op = loop.get("op")
-    return {"op": op if isinstance(op, str) and op in _LOOP_ASKS else None,
-            "ok": loop.get("ok") is True}
+    op, ok = loop.get("op"), loop.get("ok") is True
+    if op == _SOUND_OP:
+        # Only one of plume's own names is ever shown, and only for a cue it took.
+        sound = loop.get("sound")
+        known = ok and isinstance(sound, str) and sound in _SOUND_LABELS
+        return {"op": _SOUND_OP, "ok": ok, "sound": sound if known else None}
+    return {"op": op if isinstance(op, str) and op in _LOOP_ASKS else None, "ok": ok}
 
 
 def _clean_cue_log(cue_log) -> list[dict] | None:
@@ -468,12 +477,32 @@ def _loop_sentence(cue: dict, at: str) -> str:
     """Only what the looper answered.  A take it agreed to can still fail to make a
     loop when it closes, and that is not in the cue log."""
     op, ok = cue["loop"]["op"], cue["loop"]["ok"]
+    if op == _SOUND_OP:
+        return _sound_sentence(cue, at)
     asked = f"{_who(cue['source'])} asked {_LOOP_ASKS.get(op, 'about a loop')} {at}."
     if not ok:
         return (f"{asked} The looper could not follow the words, so no take started."
                 if op == "unclear" else f"{asked} The looper said no, so nothing changed.")
     return f"{asked} The looper said yes" + (", though that does not promise a loop came out of it."
                                              if op == "record" else ".")
+
+
+def _sound_sentence(cue: dict, at: str) -> str:
+    """A cue her sound answered.  It changed at once, or plume had no such sound."""
+    who = _who(cue["source"])
+    if not cue["loop"]["ok"]:
+        return f"{who} asked for a sound I do not have {at}, so nothing changed."
+    label = _SOUND_LABELS.get(cue["loop"].get("sound"))
+    return f"{who} set your sound to {label} {at}." if label else f"{who} changed your sound {at}."
+
+
+def _answer_label(cue: dict) -> str:
+    what = "sound cue" if cue["loop"]["op"] == _SOUND_OP else "loop cue"
+    return what if cue["loop"]["ok"] else f"{what}, refused"
+
+
+def _answer_outcome(cue: dict) -> str:
+    return "sound" if cue["loop"]["op"] == _SOUND_OP else "loop"
 
 
 def _who(source) -> str:
@@ -892,9 +921,10 @@ def translate(rows: list[dict], ending: dict | None = None,
                 # Answered when it arrived, so "the take ended first" would be false,
                 # and one sent before the first bar belongs at the start, not the end.
                 add(rows[0] if bar is None else first_at.get(bar, rows[-1]), "cue",
-                    "loop cue" if cue["loop"]["ok"] else "loop cue, refused",
+                    _answer_label(cue),
                     _loop_sentence(cue, _asked_at(bar)), dashed=not cue["loop"]["ok"],
-                    cue_outcome="loop", asked={"who": _who(cue["source"]), "bar": bar, "name": None})
+                    cue_outcome=_answer_outcome(cue),
+                    asked={"who": _who(cue["source"]), "bar": bar, "name": None})
                 continue
             row = first_at.get(bar, rows[-1])
             name = cue_name(cue["text"])
@@ -917,15 +947,15 @@ def translate(rows: list[dict], ending: dict | None = None,
             + ("so far." if live else "in all."),
             dashed=not isinstance(ending, dict))
     else:
-        # The looper answers when a cue arrives, so it can have answered with no bar played.
+        # The looper and her sound answer when a cue arrives, so with no bar played too.
         # Unread rows may have held a first bar, so then "before" is not known.
         answered = [] if unread else [c for c in log or () if "loop" in c][:cues_left]
         for cue in answered:
             ok = cue["loop"]["ok"]
             events.append({"bar": 0, "t_s": 0.0, "tier": "cue",
-                           "label": "loop cue" if ok else "loop cue, refused",
+                           "label": _answer_label(cue),
                            "sentence": _loop_sentence(cue, _asked_at(None)), "note": "",
-                           "dashed": not ok, "row": None, "cue_outcome": "loop",
+                           "dashed": not ok, "row": None, "cue_outcome": _answer_outcome(cue),
                            "asked": {"who": _who(cue["source"]), "bar": None, "name": None}})
         events.append({"bar": 0, "t_s": 0.0, "tier": "end",
                        "label": "log too big" if unread else label,

@@ -1031,7 +1031,10 @@ def test_a_named_genre_plays_a_whole_tap_started_take(tmp_path, consent, prompt,
     in_band = [r for r in rows if r["entry"] != "drums"]
     assert in_band, "the band never came in"
     symbols = set(progression_symbols(style, "C major"))
-    assert {r["chord"] for r in in_band} <= symbols
+    # The style's own cycle; a chord she holds may set it aside (plume.herchords).
+    assert {r["chords"]["template"] for r in in_band} <= symbols
+    assert all(r["chord"] == r["chords"]["template"] or r["chords"]["source"] != "template"
+               for r in in_band)
     y, _ = sf.read(rec / "machine.wav")
     assert np.isfinite(y).all() and np.abs(y).max() > 0.01
 

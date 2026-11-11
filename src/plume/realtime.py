@@ -4578,6 +4578,10 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
         density_hold = PhraseHold(int(params.entry_boundary_bars))
         entry_ramp = EntryRamp(under_db=params.enter_under_db, ramp_bars=params.ramp_bars)
         guitar_ear = GuitarEar()
+        from .herchords import ChordFollower, clean_bar  # noqa: PLC0415
+        # A room mic hears the band's own chord, and nothing here can tell it from
+        # hers, so only an input the band cannot reach follows her chords.
+        chord_follow = ChordFollower(band_in_mic=not (is_direct or midi_port is not None))
         # The band follows how she plays.  FOLLOW is the only mode so far: the seam a
         # "plume leads" mode would come in by.  A room mic hears the band too, so it
         # follows more cautiously (see BandFollow).
@@ -4832,7 +4836,8 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
                 shared["harmony"] = harm_state
                 for f in masked_frames:
                     if tap_start:
-                        shared["chroma"].append((f.t_s, f.chroma))
+                        shared["chroma"].append(
+                            (f.t_s, f.chroma, getattr(f, "chroma_low", None)))
                     if want_technique and not style_pick.settled:
                         shared["technique"].append(f)
                     shared["events"].append((f.t_s, f.rms_db, f.onset))
@@ -4872,9 +4877,11 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
             later_evs = list(shared["events"]) if entry is not None else []
             onsets = [t for t in shared["onsets"] if w_start <= t < w_end]
             shared["onsets"] = [t for t in shared["onsets"] if t >= w_end]
-            bar_chroma = [c for t, c in shared["chroma"] if w_start <= t < w_end]
+            bar_frames = [(c, low) for t, c, low in shared["chroma"]
+                          if w_start <= t < w_end]
+            bar_chroma = [e[0] for e in bar_frames]
             shared["chroma"] = [e for e in shared["chroma"] if e[0] >= w_end]
-            bar_frames = [f for f in shared["technique"] if w_start <= f.t_s < w_end]
+            technique_frames = [f for f in shared["technique"] if w_start <= f.t_s < w_end]
             shared["technique"] = [f for f in shared["technique"] if f.t_s >= w_end]
         human = None
         if bar >= first_heard_bar and evs:
@@ -4980,7 +4987,7 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
             entered = entry.update(bar, harm_state, playing, heard_bar=heard_bar)
             if style_pick is not None and not style_pick.settled:
                 if playing:
-                    style_pick.heard_bar(len(onsets), frames=bar_frames)
+                    style_pick.heard_bar(len(onsets), frames=technique_frames)
                 if entry.band_is_in:
                     picked = style_pick.at_entry(bpm, entered.key)
                     # Style and key are both known now, so the plain beat gives way to
@@ -4992,6 +4999,19 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
                                           change_style(picked, bridge=plain_intro[0]))
                         entered = dataclasses.replace(
                             entered, chord=entry.chord_at(bar, harm_state))
+            # Her chords (herchords): what she played in the window bar, then the
+            # band's chord for this bar, hers when she holds or loops one clearly, the
+            # template otherwise.
+            chord_follow.hear(bar - lag, clean_bar(bar_frames),
+                              playing=bar >= first_heard_bar and (
+                                  playing or (not entry.band_is_in
+                                              and guitar_ear.last_bar_tonal)))
+            chords_doc = None
+            if entered.key is not None:
+                # The band's phrases are counted from the bar it came in on.
+                chords_doc = chord_follow.decide(bar, entered.key, style, entered.chord,
+                                                 phrase_start=bar - entry.bars_in)
+                entered = dataclasses.replace(entered, chord=chords_doc["chord"])
             # Over a room mic with the band in, "not silent" mostly means the band.
             playing_trusted = is_direct or midi_port is not None or not entry.band_is_in
             if entry.band_is_in:
@@ -5165,6 +5185,9 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
             doc["key"] = entered.key
             doc["chord"] = entered.chord
             doc["entry"] = entered.stage
+            # Which chord the band followed, and why: hers (a hold or a loop) or the
+            # style's template.  A "following your chords" line must read this.
+            doc["chords"] = chords_doc
             doc["entry_reason"] = entered.reason + bridge_note
             # Heard or worked out, rather than named by the player: a page must say so.
             doc["style"] = style

@@ -150,6 +150,40 @@ def test_another_spelling_of_her_sound_is_still_hers(text):
     assert fx.playing == "lofi"
 
 
+@pytest.mark.parametrize("text,sound", [
+    ("sound lofi.", "lofi"), ("Sound lo-fi.", "lofi"), ("sound lofi!", "lofi"),
+    ("sound 'lofi'", "lofi"), ('sound "lo-fi"', "lofi"), ("lofi sound.", "lofi"),
+    ("Sound dreamy.", "dreamy"), ("sound dreamy!", "dreamy"), ("dreamy sound.", "dreamy"),
+    ("my sound, dreamy", "dreamy"), ("sound, dreamy", "dreamy"), ("sound off.", "off"),
+    ("Sound: Clean room.", "clean"), ("sound (crunch)", "crunch"),
+])
+def test_a_typed_mark_does_not_hand_her_sound_to_the_band(text, sound):
+    """A full stop is not part of a sound's name.  The band's parser drops every mark
+    before it reads a cue, so "sound lofi." is the lofi style to it: her sound has to
+    read the same words, or the band is restyled and her sound stays as it was."""
+    fx = InputFx(SR, N, "clean" if sound == "crunch" else "crunch")
+    reply = fx.handle_cue(text)
+    assert reply is not None and reply["ok"] is True, text
+    assert reply["sound"] == sound and fx.playing == sound
+    assert inputfx.parse_sound_cue(text) == sound
+
+
+@pytest.mark.parametrize("text", ["sound darker.", "Sound: dry!", "sound like jazz.",
+                                  "a warmer sound?", "make it sound darker."])
+def test_a_typed_mark_does_not_take_a_band_cue_either(text):
+    from plume.mind import parse_cue
+    fx = InputFx(SR, N, "clean")
+    assert parse_cue(text)["kind"] != "unknown"
+    assert fx.handle_cue(text) is None and fx.playing == "clean"
+
+
+def test_a_loop_cue_with_a_mark_is_still_the_loopers():
+    from plume.looper import parse_loop_cue
+    fx = InputFx(SR, N, "clean")
+    assert parse_loop_cue("loop this sound.")["op"] == "record"
+    assert fx.handle_cue("loop this sound.") is None and fx.handle_cue("Sound: loop this!") is None
+
+
 def test_every_label_on_the_page_names_its_sound():
     from plume import guitake
     for name, label in guitake.SOUND_CHOICES:

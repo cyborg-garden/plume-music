@@ -34,6 +34,8 @@ always gets buffers of one size (``frames``); any other size passes her input dr
 """
 from __future__ import annotations
 
+import re
+
 import numpy as np
 from numpy.lib.stride_tricks import as_strided
 
@@ -114,7 +116,9 @@ def _sound_words(text) -> list[str] | None:
     "sound dreamy", "my sound off", "dreamy sound".  "make it sound darker" is not."""
     if not isinstance(text, str):
         return None
-    words = text.lower().replace(":", " ").split()
+    # Letters and digits only, as the band's parser reads a cue (mind._cue_words): were
+    # "lofi." not her sound's name here, the band would still read the lofi style in it.
+    words = re.findall(r"[a-z0-9]+", text.lower())
     if words[:2] == ["my", "sound"]:
         return words[2:]
     if words[:1] == ["sound"]:
@@ -385,7 +389,7 @@ class InputFx:
 
         A loop cue is the looper's, whatever else it says ("loop this sound").  A cue
         that names one of her sounds outright ("sound lofi", "sound lo-fi", "lofi tape
-        sound") is hers.  Anything else that says "sound" ("darker sound", "sound like
+        sound") is hers, with or without typed marks ("Sound: lo-fi.").  Anything else that says "sound" ("darker sound", "sound like
         jazz", "sound dry") goes on to the band when the band understands it; only a cue
         nobody understands gets the list of sounds.
         """

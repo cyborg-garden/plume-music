@@ -23,7 +23,7 @@ from plume.mind import BarPlan
 SR = 48000
 BARS = 8
 CHORDS = ["Am", "F", "C", "G"]
-STYLES = ["hiphop", "house", "jazz", "lofi", "midwest", "rnb", "synthwave", "trap"]
+STYLES = ["folk", "hiphop", "house", "jazz", "lofi", "midwest", "rnb", "synthwave", "trap"]
 #: How far under the drums the harmony and tune may sit.  Before: -10.5 (trap) to -7.8 (lofi).
 #: After: -5.0 at worst (house) over this take.
 MOST_UNDER_DRUMS_DB = -7.0

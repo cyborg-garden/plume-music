@@ -292,6 +292,45 @@ def test_make_motif_deterministic():
     assert a == b
 
 
+def _motif_lines(cfg, seeds=200):
+    import numpy as np
+    from plume.theory import parse_key, roman_to_chord
+    key = parse_key("G major")
+    chords = [roman_to_chord(n, key) for n in ("I", "IV", "I", "V")]
+    for seed in range(seeds):
+        bars = make_motif(key, chords, cfg, np.random.default_rng(seed))
+        yield [[note_to_midi(t.split(":")[0]) for t in b.split() if t != "~"] for b in bars]
+
+
+def _reversals(cfg):
+    import numpy as np
+    rev = []
+    for bars in _motif_lines(cfg):
+        for ps in bars:
+            d = np.sign(np.diff(ps))
+            d = d[d != 0]
+            if len(d) > 1:
+                rev.append(float(np.mean(d[1:] != d[:-1])))
+    return float(np.mean(rev))
+
+
+def test_a_motif_with_run_travels_instead_of_circling():
+    """``run`` keeps a step going the way the last one went (folk's line, which circled
+    three notes at a coin toss), and still never leaves the 1.5-octave window."""
+    base = {"density": 0.4, "octave": 5, "rhythm_grid": "8"}
+    assert _reversals({**base, "run": 0.75}) < _reversals(base) - 0.08
+    for bars in _motif_lines({**base, "run": 0.9}, seeds=60):
+        flat = [p for ps in bars for p in ps]
+        assert max(flat) - min(flat) <= 18
+
+
+def test_folk_s_melody_is_not_three_notes():
+    from plume.styles_lib import load_style
+    melody = load_style("folk")["melody"]
+    distinct = [len({p for ps in bars for p in ps}) for bars in _motif_lines(melody)]
+    assert sum(distinct) / len(distinct) >= 6.5
+
+
 # -- flat-key chord spelling -------------------------------------------------
 
 @pytest.mark.parametrize("seed", (1, 2, 3))

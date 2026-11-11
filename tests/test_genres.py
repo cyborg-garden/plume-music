@@ -31,7 +31,7 @@ from plume.styles_lib import list_styles, load_style  # noqa: E402
 from plume.theory import midi_to_hz, parse_chord, parse_key, roman_to_chord  # noqa: E402
 from plume.voices import render_note  # noqa: E402
 
-GENRES = ["jazz", "house", "hiphop", "rnb"]
+GENRES = ["jazz", "house", "hiphop", "rnb", "folk"]
 OLDER = ["lofi", "midwest", "synthwave", "trap"]
 SR = 48000
 PEAK_LIMIT_DB = -0.9      # the offline limiter's ceiling is -1 dB, with a little to spare

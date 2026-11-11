@@ -1364,6 +1364,9 @@ class DuetEngine:
         notes = list(voicing)
         if pad_style == "house_stabs":
             notes = [m + 12 for m in voicing]
+        elif pad_style in figures.OPEN_COMPS:
+            notes = (figures.open_voicing(parse_chord(chord)) if chord is not None
+                     else list(voicing))
         elif chord is not None:
             notes = figures.rootless_voicing(parse_chord(chord),
                                              shell=pad_style == "shell_comp")

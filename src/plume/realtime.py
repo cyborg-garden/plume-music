@@ -4600,7 +4600,9 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
             if not parse_prompt(prompt or "").styles:
                 # Until the count lands ``style`` is only compose's placeholder.
                 style_pick = StylePick(key=named_key,
-                                       trust_busy=is_direct or midi_port is not None)
+                                       trust_busy=is_direct or midi_port is not None,
+                                       # whether she strums: only an input of hers alone
+                                       hear_technique=is_direct)
         # A room mic cannot hear her stop over the band, so it keeps the long wait.
         silence_ending = (SilenceEnding(end_after_s=END_AFTER_S)
                           if is_direct or midi_port is not None else SilenceEnding())
@@ -4685,7 +4687,9 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
     ending = threading.Event()
     state_lock = threading.Lock()
     shared = {"beat": None, "harmony": None, "events": [], "onsets": [],
-              "taps": None, "chroma": []}
+              "taps": None, "chroma": [], "technique": []}
+    # Her own frames, for the folk guess, while it is still listening.
+    want_technique = style_pick is not None and style_pick.folk_ear is not None
     masker = SelfMasker(enabled=route.source != "direct")
     midi_in = None
     if midi_port is not None:
@@ -4834,6 +4838,8 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
                     if tap_start:
                         shared["chroma"].append(
                             (f.t_s, f.chroma, getattr(f, "chroma_low", None)))
+                    if want_technique and not style_pick.settled:
+                        shared["technique"].append(f)
                     shared["events"].append((f.t_s, f.rms_db, f.onset))
                     if f.onset:
                         shared["onsets"].append(f.t_s)
@@ -4875,6 +4881,8 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
                           if w_start <= t < w_end]
             bar_chroma = [e[0] for e in bar_frames]
             shared["chroma"] = [e for e in shared["chroma"] if e[0] >= w_end]
+            technique_frames = [f for f in shared["technique"] if w_start <= f.t_s < w_end]
+            shared["technique"] = [f for f in shared["technique"] if f.t_s >= w_end]
         human = None
         if bar >= first_heard_bar and evs:
             kwargs = bar_features_dict(
@@ -4979,7 +4987,7 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
             entered = entry.update(bar, harm_state, playing, heard_bar=heard_bar)
             if style_pick is not None and not style_pick.settled:
                 if playing:
-                    style_pick.heard_bar(len(onsets))
+                    style_pick.heard_bar(len(onsets), frames=technique_frames)
                 if entry.band_is_in:
                     picked = style_pick.at_entry(bpm, entered.key)
                     # Style and key are both known now, so the plain beat gives way to
@@ -5184,6 +5192,8 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
             # Heard or worked out, rather than named by the player: a page must say so.
             doc["style"] = style
             doc["style_guess"] = style_pick is not None
+            if style_pick is not None and style_pick.why:
+                doc["style_why"] = style_pick.why
             # plain until a detected take knows her style and key, else the style's own
             doc["intro_beat"] = "plain" if plain_intro[0] else "style"
             doc["key_guess"] = named_key is None

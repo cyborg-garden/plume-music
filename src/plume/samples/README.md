@@ -9,6 +9,11 @@ aligned to 1 ms before the attack, and normalised.
 (https://github.com/sfzinstruments/karoryfer.frankensnare). Top, bottom and
 overhead mics of one take are blended, then prepared the same way.
 
+`kit/cajon_*`: Cajon from the Versilian Community Sample Library, CC0-1.0
+(https://github.com/sgossner/VCSL). `cajon_bass` is its low tone (hit3, p/mp/f) and
+`cajon_slap` its slap (hit1, mp/f/fff), two round robins each, resampled to 48 kHz,
+aligned to 1 ms before the attack, cut to 600 ms with a fade, and normalised.
+
 `tuned/` holds pitched one-shots, trimmed and normalised:
 
 - `fingerbass_*`: Sneakybass by Karoryfer Samples, CC0-1.0

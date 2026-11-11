@@ -14,10 +14,13 @@ loop.  A held chord needs no prediction, lag or not.  (ReaLJam, CHI EA 2025: the
 best moments were when the agent predicted the chord the player had in mind.)
 
 TRUTH.  A wrong chord is worse than the template, so this commits only when a bar
-fits one diatonic chord clearly: its triad holds at least :data:`FIT_MIN` of the
-bar's pitch energy and beats the next chord by :data:`MARGIN`.  Anything else,
-single-note melody included, keeps the style's own progression.  Each bar's
-decision says which it was and why (``decide``'s ``reason``).
+fits one chord clearly: its triad holds at least :data:`FIT_MIN` of the bar's
+pitch energy and beats the next chord by :data:`MARGIN`.  The chords it can name
+are the key's seven diatonic ones, and beside them any chord the style borrows
+for a degree (the minor key's major V, jazz's iv7 and VI7): never the borrowed
+one in place of the key's own.  Anything else, single-note melody included, keeps
+the style's own progression.  Each bar's decision says which it was and why
+(``decide``'s ``reason``).
 
 ROOM MIC.  A room mic hears the band too, and the band's own chord must not come
 back as hers.  Nothing live can say how much of a bar is the band: the self
@@ -152,12 +155,22 @@ def _triad(chord) -> tuple[int, ...]:
 _CAND_CACHE: dict[tuple[str, str], tuple[Candidate, ...]] = {}
 
 
-def candidates(key_str: str, style: str) -> tuple[Candidate, ...]:
-    """The seven diatonic chords of ``key_str``, spelled as ``style`` spells them.
+def _spell(numeral: str, key) -> Candidate:
+    ch = roman_to_chord(numeral, key)
+    return Candidate(numeral, ch.sym, ch.root % 12, _triad(ch))
 
-    A degree the style's own progressions use takes its most-weighted numeral, so
-    the band's colour stays (lofi's ii7, not a bare ii); a degree it never uses
-    takes the plain diatonic seventh, or the triad in a style of triads."""
+
+def candidates(key_str: str, style: str) -> tuple[Candidate, ...]:
+    """The seven diatonic chords of ``key_str``, spelled as ``style`` spells them,
+    then the chords the style borrows.
+
+    A degree the style's own progressions use takes its most-weighted numeral that
+    stays in the key, so the band's colour stays (lofi's ii7, not a bare ii); a
+    degree it never uses, or only with a borrowed chord, takes the plain diatonic
+    seventh, or the triad in a style of triads.  Where the style's most-weighted
+    numeral on a degree leaves the key (the minor key's major V, jazz's iv7 and
+    VI7), that chord follows the seven: she may play either, and her minor v must
+    not be read as the band's V7."""
     hit = _CAND_CACHE.get((key_str, style))
     if hit is not None:
         return hit
@@ -182,19 +195,21 @@ def candidates(key_str: str, style: str) -> tuple[Candidate, ...]:
                 votes.setdefault(d, {})
                 votes[d][n] = votes[d].get(n, 0.0) + float(p.get("weight", 1))
     fallback = _FALLBACK[(mode, sevenths or not progs)]
-    out = []
+    scale = set(key.scale())
+    seven, borrowed = [], []
     for d in range(7):
-        numeral = (max(votes[d].items(), key=lambda kv: (kv[1], kv[0]))[0]
-                   if d in votes else fallback[d])
-        try:
-            ch = roman_to_chord(numeral, key)
-        except ValueError:
-            ch = roman_to_chord(fallback[d], key)
-            numeral = fallback[d]
-        out.append(Candidate(numeral, ch.sym, ch.root % 12, _triad(ch)))
-    # A style numeral that leaves the natural scale (the harmonic minor's major V)
-    # is still the style's chord, so it stays.
-    res = tuple(out)
+        own = []                         # the style's chords here, most-weighted first
+        for numeral, _ in sorted(votes.get(d, {}).items(),
+                                 key=lambda kv: (kv[1], kv[0]), reverse=True):
+            try:
+                own.append(_spell(numeral, key))
+            except ValueError:
+                continue
+        inside = next((k for k in own if scale.issuperset(k.triad)), None)
+        seven.append(inside if inside is not None else _spell(fallback[d], key))
+        if own and own[0].sym != seven[-1].sym:
+            borrowed.append(own[0])
+    res = tuple(seven + borrowed)
     _CAND_CACHE[(key_str, style)] = res
     return res
 

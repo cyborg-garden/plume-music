@@ -10,6 +10,7 @@ import pytest
 
 from plume import herchords as hc
 from plume.listen.features import FeatureExtractor
+from plume.theory import parse_chord, parse_key
 
 SR = 48000
 KEY, STYLE = "C major", "lofi"
@@ -180,6 +181,83 @@ def test_every_decision_is_a_plain_logged_dict():
         assert x["source"] in ("template", "her_hold", "her_loop")
 
 
+# ------------------------------------------------------------- borrowed chords
+
+STYLES = ("hiphop", "house", "jazz", "lofi", "midwest", "rnb", "synthwave", "trap")
+KEYS = ("C major", "D major", "A minor", "F# minor", "B minor")
+
+
+def _pcs(sym):
+    ch = parse_chord(sym)
+    return {(ch.root + i) % 12 for i in ch.intervals}
+
+
+def _triad_pcs(sym):
+    ch = parse_chord(sym)
+    return tuple((ch.root + i) % 12 for i in ch.intervals[:3])
+
+
+@pytest.mark.parametrize("style", STYLES)
+@pytest.mark.parametrize("key", KEYS)
+def test_every_degree_keeps_a_chord_inside_the_key(key, style):
+    """A style may borrow a chord for a degree (the minor key's major V, jazz's iv7
+    and VI7), but the seven chords that come first are the key's own."""
+    scale = set(parse_key(key).scale())
+    seven = hc.candidates(key, style)[:7]
+    assert [k.root for k in seven] == parse_key(key).scale()
+    for k in seven:
+        assert set(k.triad) <= scale, (key, style, k.sym)
+
+
+def test_a_borrowed_chord_is_kept_beside_the_diatonic_one():
+    lofi = [k.sym for k in hc.candidates("A minor", "lofi")]
+    assert lofi[4] == "Em7" and lofi[7:] == ["E7"]
+    jazz = [k.sym for k in hc.candidates("C major", "jazz")]
+    assert jazz[3] == "Fmaj7" and jazz[5] == "Am7" and sorted(jazz[7:]) == ["A7", "Fm7"]
+    assert [k.sym for k in hc.candidates("F# minor", "trap")][4] == "C#m"
+    # a style that borrows nothing has the seven and no more
+    assert len(hc.candidates(KEY, STYLE)) == 7
+
+
+@pytest.mark.parametrize("style", STYLES)
+@pytest.mark.parametrize("key, loop", [
+    ("A minor", ("Em",)), ("A minor", ("Am", "Em")), ("F# minor", ("F#m", "C#m")),
+    ("F# minor", ("C#m",)), ("C major", ("F",)), ("C major", ("Am",)),
+    ("C major", ("C", "F"))])
+def test_her_diatonic_chord_is_followed_in_a_style_that_borrows_on_that_degree(
+        key, loop, style):
+    """Her minor v in a minor key, her IV and vi in jazz: the style spells that
+    degree with a borrowed chord, and hers is still the one in the key."""
+    bars = [pcs_chroma(_triad_pcs(loop[i % len(loop)]), noise=0.04, seed=i)
+            for i in range(12)]
+    d = follow(bars, key=key, style=style)
+    settled = [b for b in sorted(d) if 2 * len(loop) + 2 <= b < 12]
+    assert settled
+    for b in settled:
+        assert d[b]["source"] != "template", (b, d[b])
+        got = parse_chord(d[b]["chord"])
+        want = parse_chord(loop[b % len(loop)])
+        assert got.root == want.root and set(want.intervals) <= set(got.intervals), d[b]
+
+
+@pytest.mark.parametrize("key, style, triad, sym", [
+    ("A minor", "lofi", (4, 8, 11), "E7"), ("F# minor", "lofi", (1, 5, 8), "C#7"),
+    ("C major", "jazz", (9, 1, 4), "A7"), ("C major", "jazz", (5, 8, 0), "Fm7"),
+    ("A minor", "trap", (4, 8, 11), "E")])
+def test_the_styles_borrowed_chord_is_still_followed_when_she_plays_it(
+        key, style, triad, sym):
+    d = follow([pcs_chroma(triad, noise=0.04, seed=i) for i in range(8)],
+               key=key, style=style)
+    assert d[5]["source"] == "her_hold" and d[5]["chord"] == sym, d[5]
+
+
+def test_the_reason_names_the_chord_she_played_not_the_borrowed_one():
+    """Am with a trace of a third, in jazz: unsure, and the log says Am, not A7."""
+    r = hc.read_bar(pcs_chroma((9, 4, 0), weights=(1.0, 0.6, 0.1)),
+                    hc.candidates("C major", "jazz"))
+    assert r.sym is None and r.best == "Am7" and "Am7" in r.why, r
+
+
 # ------------------------------------------------------------- room mic bleed
 
 def test_clean_bar_is_her_chroma_and_bass():
@@ -313,7 +391,7 @@ def _frets(shape):
     return tuple(o + int(f) for o, f in zip(OPEN_STRINGS, shape) if f != "x")
 
 
-def _held(midis, key, *, bars=8, harmonics=5, rolloff=1.5):
+def _held(midis, key, *, bars=8, harmonics=5, rolloff=1.5, style=STYLE):
     """She strikes one voicing once a bar and lets it ring; the decisions for the
     bars planned once two of hers are heard."""
     bar_s = 2.0
@@ -325,7 +403,7 @@ def _held(midis, key, *, bars=8, harmonics=5, rolloff=1.5):
     for heard, frames in enumerate(_bars_of(np.tile(0.05 * one, bars), bar_s)):
         f.hear(heard, hc.clean_bar(frames), playing=True)
         if heard >= 1:
-            out.append(f.decide(heard + 2, key, STYLE, TEMPLATE[(heard + 2) % 4]))
+            out.append(f.decide(heard + 2, key, style, TEMPLATE[(heard + 2) % 4]))
     return out
 
 
@@ -397,6 +475,28 @@ def test_a_drone_with_the_minor_third_on_one_beat_in_four_is_still_a_drone():
         f.hear(heard, hc.clean_bar(frames), playing=True)
         d = f.decide(heard + 2, "E minor", STYLE, "Am7")
         assert d["source"] == "template", (heard, d)
+
+
+@pytest.mark.parametrize("shape, key, style, sym", [
+    ("x02210", "C major", "jazz", "Am"), ("577555", "C major", "jazz", "Am"),
+    ("022000", "A minor", "lofi", "Em"), ("x46654", "F# minor", "lofi", "C#m"),
+    ("x46654", "F# minor", "jazz", "C#m"), ("022000", "A minor", "trap", "Em")])
+def test_a_rendered_diatonic_chord_is_followed_where_the_style_borrows(
+        shape, key, style, sym):
+    """Through the ear: the root's fifth harmonic sits on the borrowed chord's major
+    third, and her own minor third still wins."""
+    got = _held(_frets(shape), key, style=style)
+    assert got and all(d["source"] == "her_hold" for d in got), got[0]
+    assert all(d["chord"].startswith(sym) for d in got), got[0]
+
+
+@pytest.mark.parametrize("shape", ["133211", "xx3211"])
+def test_a_rendered_f_in_jazz_is_never_read_as_the_borrowed_f_minor(shape):
+    got = _held(_frets(shape), "C major", style="jazz")
+    assert got
+    for d in got:
+        assert d["her_best"] == "Fmaj7" and "Fm7" not in d["reason"], d
+        assert d["source"] == "template" or d["chord"] in ("Fmaj7", "Fmaj9"), d
 
 
 # ------------------------------------------------------------- the live loop

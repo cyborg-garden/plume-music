@@ -49,7 +49,10 @@ busyness are all it has, so a guess of `rnb`, `hiphop` or `house` only means a m
 with room in it at those tempos. Nothing it hears can tell jazz, so it only guesses `jazz`
 above 150 bpm, where no other style reaches, and only for a player a direct input knows is
 leaving a lot of room. Anyone else that fast gets `midwest`. To play jazz at other tempos or on
-a room mic, name it. So far this has only run on a simulated device, never with a real guitar.
+a room mic, name it. The one guess from how you play is `folk`: on a direct input, between 60
+and 132 bpm, it listens for strumming, an attack that lasts while the pick crosses the
+strings. An acoustic sound and a major key count for more. It only answers when it is
+confident, so fingerpicking, a very quick strum or a room mic stays with the tempo rule. So far this has only run on a simulated device, never with a real guitar.
 
 To stop from another terminal, run `plume stop` (`plume play` and `plume calibrate` too), or `plume sessions` to see what is
 running. A take also stops by itself after 60 minutes; `--max-minutes N` changes that.
@@ -68,10 +71,10 @@ six bars and ends, so you can wind down with it. At 52 bpm, the signal and fade 
 **Pick a tempo with your hands.** Plume plays exactly what you count. Below 70 bpm the
 `midwest` style plays a swung breakbeat with the snare on 2 and 4. At 70 and above it
 plays half-time trap with the snare on 3. The other styles are `lofi`, `trap`, `synthwave`,
-`jazz`, `house`, `hiphop` and `rnb`, and a new take with a new `--seed` gets a new melody. A
+`jazz`, `house`, `hiphop`, `rnb` and `folk` (4/4 only for now), and a new take with a new `--seed` gets a new melody. A
 prompt can say `boom bap` for `hiphop`, or `r&b` or `neo soul` for `rnb`. Plume plays what you
 count in any style, so a house take at 90 is slow house. Each style's usual range is `lofi`
-70 to 90, `rnb` 60 to 90, `hiphop` 80 to 100, `house` 118 to 130 and `jazz` 70 to 220.
+70 to 90, `rnb` 60 to 90, `hiphop` 80 to 100, `house` 118 to 130, `folk` 60 to 132 and `jazz` 70 to 220.
 
 The band you play with is drier than a `plume render` of the same style. `plume lead`, `plume
 jam` and `plume sim` use each part's filters and no reverb, delay or whole-mix drive or tape.

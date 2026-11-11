@@ -456,6 +456,7 @@ _STYLE_NAMES = {
     "rock": "rock", "ambient": "ambient", "bossa": "bossa",
     "reggae": "reggae", "disco": "disco", "dnb": "dnb",
     "drum and bass": "dnb", "neo soul": "rnb", "rnb": "rnb", "r b": "rnb",
+    "folk": "folk", "folky": "folk",
     "soul": "soul", "gospel": "gospel",
 }
 

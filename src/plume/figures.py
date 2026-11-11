@@ -1,4 +1,4 @@
-"""The bass lines and comping figures the jazz, house, hip hop and r&b styles play.
+"""The bass lines and comping figures the jazz, house, hip hop, r&b and folk styles play.
 
 Offline (:mod:`plume.compose`) and live (:mod:`plume.duet`) read the same figures
 here, so a genre is the same genre on either path.  Beats are quarter notes from the
@@ -21,6 +21,8 @@ BASS_FIGURES: dict[str, tuple[tuple[float, float, float, int], ...]] = {
     # A sung line: long root, then up through the chord and back down to it.
     "melodic": ((0.0, 1.4, 0.85, 1), (1.5, 0.45, 0.62, 5), (2.0, 0.9, 0.74, 3),
                 (3.0, 0.45, 0.6, 7), (3.5, 0.45, 0.68, 5)),
+    # Folk and country: the root on one, the fifth on three, each left ringing.
+    "root_fifth": ((0.0, 1.8, 0.85, 1), (2.0, 1.6, 0.74, 5)),
 }
 WALKING = "walking"
 #: Bass styles that keep their figure at any density above a whole note.
@@ -42,7 +44,16 @@ COMP_FIGURES: dict[str, tuple[tuple[tuple[float, float, float], ...], ...]] = {
         ((0.0, 1.5, 0.58), (1.75, 0.6, 0.42), (2.5, 1.2, 0.5)),
         ((0.0, 2.4, 0.55), (2.75, 1.0, 0.46)),
     ),
+    # Folk piano: light, on the beat, with the odd push on an "and", as a strummed
+    # guitar would.  Plain open chords (open_voicing), never a jazz voicing.
+    "folk_comp": (
+        ((0.0, 1.8, 0.5), (2.0, 1.8, 0.44)),
+        ((0.0, 1.4, 0.5), (1.5, 0.45, 0.32), (2.0, 1.4, 0.46), (3.5, 0.45, 0.32)),
+        ((0.0, 0.9, 0.48), (1.0, 0.9, 0.34), (2.0, 0.9, 0.46), (3.0, 0.9, 0.34)),
+    ),
 }
+#: Comps played as plain open chords rather than without their root.
+OPEN_COMPS = frozenset({"folk_comp"})
 
 
 def degree_semitones(intervals: tuple[int, ...], degree: int) -> int:
@@ -108,3 +119,25 @@ def rootless_voicing(chord: Chord, *, low: int = 52, shell: bool = False) -> lis
         upper = keep
     base = low + ((chord.root + third - low) % 12)
     return sorted(base + iv - third for iv in upper)
+
+
+def open_voicing(chord: Chord, *, low: int = 48) -> list[int]:
+    """A plain chord spread open: root, the fifth above it, and the third an octave up.
+
+    The sound of an open-position guitar chord or a folk pianist's left and right hands.
+    A seventh, when the chord has one, sits between the fifth and the high third.  The
+    root is placed in the octave from ``low``, so moving between chords stays small.
+    """
+    root = low + ((chord.root - low) % 12)
+    ivs = chord.intervals
+    third = next((iv for iv in ivs if iv in (3, 4, 2, 5)), None)
+    fifth = degree_semitones(ivs, 5)
+    seventh = degree_semitones(ivs, 7)
+    notes = [root]
+    if fifth:
+        notes.append(root + fifth)
+    if seventh:
+        notes.append(root + seventh)
+    if third is not None:
+        notes.append(root + third + 12)
+    return sorted(set(notes))

@@ -23,16 +23,27 @@ only a quiet click on each beat, a little stronger on the one, like a metronome.
 style's own drums come in with the bass and chords, at the start of a bar. A style you
 typed plays its own drums from the first bar.
 
-The styles are `lofi`, `midwest`, `trap`, `synthwave`, `jazz`, `house`, `hiphop` and `rnb`.
-You can also type `boom bap` for hiphop, or `r&b` or `neo soul` for rnb.
+The styles are `lofi`, `midwest`, `trap`, `synthwave`, `jazz`, `house`, `hiphop`, `rnb`
+and `folk`. You can also type `boom bap` for hiphop, or `r&b` or `neo soul` for rnb.
+
+Folk is a light acoustic band: brushes and a cajon, an upright bass on the root and fifth,
+and a piano playing plain open chords. It plays in 4/4 only for now, so a waltz is not
+there yet.
 
 A style plays at whatever tempo you count, so house at 90 is slow house. Each has a usual
-range: lofi 70 to 90, rnb 60 to 90, hiphop 80 to 100, house 118 to 130 and jazz 70 to 220.
+range: lofi 70 to 90, rnb 60 to 90, hiphop 80 to 100, house 118 to 130, folk 60 to 132
+and jazz 70 to 220.
 Midwest changes with tempo: below 70 it plays a swung breakbeat with the snare on 2 and 4,
 and from 70 up it plays half-time with the snare on 3.
 
 A guessed style is only a guess from your tempo, key and how busy you are. Plume never
 guesses jazz below 150 bpm, so name it if that is what you want.
+
+Plume guesses folk only when it hears you strumming, on a direct input, between 60 and 132
+bpm. A strum drags the pick across the strings, and plume hears the attack last longer
+than a picked note's. It counts more if the guitar sounds acoustic and the key is major.
+Fingerpicking and very quick strums are not heard as folk, and nor is anything on a room
+mic, which hears plume's own drums too. Name `folk` if you want it then.
 
 ## Busier and sparser
 

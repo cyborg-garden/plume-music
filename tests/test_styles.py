@@ -11,10 +11,10 @@ from plume.styles_lib import list_styles, load_style  # noqa: E402
 from plume.theory import parse_key, roman_to_chord  # noqa: E402
 from plume.voices import PRESETS  # noqa: E402
 
-STYLE_NAMES = ["lofi", "synthwave", "trap", "jazz", "house", "hiphop", "rnb"]
+STYLE_NAMES = ["lofi", "synthwave", "trap", "jazz", "house", "hiphop", "rnb", "folk"]
 BASS_STYLES = {"roots_eighths", "sub_hits", "pump_eighths", "walking", "house_off",
-               "boom_hits", "melodic"}
-PAD_STYLES = {"held", "stabs", "arp16", "shell_comp", "house_stabs"}
+               "boom_hits", "melodic", "root_fifth"}
+PAD_STYLES = {"held", "stabs", "arp16", "shell_comp", "house_stabs", "folk_comp"}
 
 
 def test_list_styles_contains_the_three():

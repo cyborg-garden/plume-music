@@ -1895,7 +1895,8 @@ def test_home_over_http_has_what_the_page_needs(page, rig):
     doc = json.loads(out)
     assert resp.status == 200
     assert {"devices", "device", "mode", "channel", "hear_me", "folder", "styles", "problem"} <= set(doc)
-    assert doc["styles"] == ["hiphop", "house", "jazz", "lofi", "midwest", "rnb", "synthwave", "trap"]
+    assert doc["styles"] == ["folk", "hiphop", "house", "jazz", "lofi", "midwest", "rnb", "synthwave",
+                             "trap"]
     assert doc["folder"] == guitake.pretty_path(rig.root)
 
 

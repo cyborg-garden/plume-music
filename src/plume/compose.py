@@ -68,6 +68,7 @@ _STYLE_PATTERNS = [
     (re.compile(_HOUSE_RE, re.I), "house"),
     (re.compile(r"\br\s*&\s*b\b|\brnb\b", re.I), "rnb"),
     (re.compile(r"\bneo[\s\-]?soul\b", re.I), "rnb"),
+    (re.compile(r"\bfolk(?:y)?\b", re.I), "folk"),
 ]
 #: The styles a prompt could always name.  A prompt naming one of them keeps the meaning
 #: it always had, whatever else it says: "lofi hip hop" is still lofi, at lofi's tempo.
@@ -116,16 +117,22 @@ def _style_text(text: str) -> str:
     return _NOT_HOUSE_RE.sub(blank, text)
 
 
+#: Genre words that only colour a noun: "jazzy house" is house, "folky jazz" is jazz.
+_ADJECTIVES = frozenset({"jazzy", "folky"})
+
+
 def _one_new_genre(text: str, hits: dict[str, re.Match]) -> str:
     """The one recipe a prompt naming several new genres plays.
 
     compose has no blend for these styles, so a second name could only pull the tempo out
     of the recipe's range.  The last of a run of adjacent names is the noun and the rest
-    colour it ("jazz house" is house), an adjective never leads ("jazzy" gives way to any
-    other genre), and with words between them the first one named is what was asked for.
+    colour it ("jazz house" is house), an adjective never leads ("jazzy" or "folky" gives
+    way to any other genre), and with words between them the first one named is what was
+    asked for.
     """
     order = sorted(hits, key=lambda c: (hits[c].end(), hits[c].start()))
-    nouns = [c for c in order if hits[c].group(0).lower() != "jazzy"] or order
+    nouns = [c for c in order
+             if hits[c].group(0).lower() not in _ADJECTIVES] or order
     head = nouns[0]
     for canon in nouns[1:]:
         if text[hits[head].end():hits[canon].start()].strip(" \t\r\n-"):
@@ -238,7 +245,8 @@ def describe_prompt(text: str) -> dict:
 _DRUM_PRESETS = {"808kick", "hat", "openhat", "clap", "snare", "crackle",
                  "kit_kick", "kit_snare", "kit_rim", "kit_hat", "kit_halfhat",
                  "kit_openhat", "kit_ride", "kit_crash", "kit_htom", "kit_ltom",
-                 "housekick", "boomkick", "offhat", "brush"}
+                 "housekick", "boomkick", "offhat", "brush",
+                 "cajon_bass", "cajon_slap"}
 _SAD_TONICS = (("F", 3.0), ("A", 3.0), ("C", 2.0), ("D", 2.0), ("G", 1.0), ("E", 1.0))
 _GAIN_DB = {"kick": 0.0, "snare": -2.0, "clap": -4.0, "hat": -8.0, "openhat": -9.0,
             "bass": -1.0, "pad": -7.0, "lead": -6.0, "arp": -9.0, "crackle": -18.0,
@@ -341,9 +349,14 @@ def make_motif(key: Key, chords: list[Chord], style_melody: dict,
     """1-bar motif on scale tones (chord tones on strong beats, range <= 1.5
     octaves, leaps > 6 st resolve stepwise opposite), then per-chord diatonic
     transposition across the progression. One mini-notation string per bar;
-    all bars share the motif's rhythm."""
+    all bars share the motif's rhythm.
+
+    ``run`` (0..1, default 0) is how often a step keeps going the way the last one
+    went, so the line travels instead of circling the note it started on; it turns
+    back at the edge of the window.  At 0 every step's direction is a coin toss."""
     grid = int(str(style_melody.get("rhythm_grid", "8")))
     density = float(style_melody.get("density", 0.4))
+    run = float(style_melody.get("run", 0.0))
     octave = int(style_melody.get("octave", 5))
     scale = key.scale()
     center = 12 * (octave + 1) + key.tonic
@@ -361,6 +374,7 @@ def make_motif(key: Key, chords: list[Chord], style_melody: dict,
     cur = _nearest_in(_scale_midis(base_pcs, lo, hi), center)
     pitches: list[int] = []
     prev_leap = 0
+    heading = 0
     for idx, s in enumerate(onsets):
         if idx == 0:
             p = cur
@@ -369,12 +383,19 @@ def make_motif(key: Key, chords: list[Chord], style_melody: dict,
         else:
             leap = float(rng.random()) < 0.15
             mag = int(rng.integers(3, 5)) if leap else int(rng.integers(1, 3))
-            sign = 1 if float(rng.random()) < 0.5 else -1
+            coin = float(rng.random())
+            sign = 1 if coin < 0.5 else -1
+            if run > 0.0 and heading:
+                sign = heading if coin < run else -heading
             p = _scale_step(cur, sign * mag, scale, lo, hi)
+            if run > 0.0 and not lo <= p <= hi:
+                p = _scale_step(cur, -sign * mag, scale, lo, hi)
         p = max(lo, min(hi, p))
         if s in strong:
             p = _nearest_in(_scale_midis(base_pcs, lo, hi), p)
         prev_leap = p - cur if idx else 0
+        if prev_leap:
+            heading = 1 if prev_leap > 0 else -1
         pitches.append(p)
         cur = p
 
@@ -458,11 +479,14 @@ def _comp_layers(figure, voicings: list[list[int]], slots: int) -> str:
 
 def _comp_pattern_set(pad_style: str, chords: list[Chord],
                       rng: np.random.Generator) -> dict[str, str]:
-    """Jazz shells, neo soul stacks and house stabs.  Jazz sits on a triplet grid."""
+    """Jazz shells, neo soul stacks, house stabs and folk's open chords.  Jazz sits on a
+    triplet grid."""
     comps = figures.COMP_FIGURES[pad_style]
     slots = 12 if pad_style == "shell_comp" else 16
     if pad_style == "house_stabs":
         voicings = [[m + 12 for m in voice_chord(ch, low_midi=48)] for ch in chords]
+    elif pad_style in figures.OPEN_COMPS:
+        voicings = [figures.open_voicing(ch) for ch in chords]
     else:
         voicings = [figures.rootless_voicing(ch, shell=pad_style == "shell_comp")
                     for ch in chords]

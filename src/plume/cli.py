@@ -2471,6 +2471,12 @@ def cmd_cue(args):
         payload["loop"] = {k: v for k, v in resp.items()
                            if k not in ("ok", "queued", "session", "bar")}
         return payload, f"loop: {resp.get('said', 'done')}", 0
+    if resp.get("op") == "sound":
+        # Her sound took it (Hear me is on in that take): answered at once, like a loop
+        # cue, and never queued.  The band did not read it, so its reading is left out.
+        payload.pop("parsed", None)
+        payload["sound"] = resp.get("sound")
+        return payload, str(resp.get("said") or f"your sound: {resp.get('sound')}"), 0
     kind = (parsed or {}).get("kind", "?")
     where = f" at bar {resp['bar']}" if resp.get("bar") is not None else ""
     human = (f"cued {args.text!r} ({kind}) for {args.at}{where} — "

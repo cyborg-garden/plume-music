@@ -711,6 +711,61 @@ def test_the_record_keeps_what_the_take_started_with_however_early_a_cue_lands(
     assert json.loads((tmp_path / "rec" / "session.json").read_text())["sound"] == sound
 
 
+@pytest.fixture
+def sound_server():
+    """A take's socket with no audio behind it, wired the way realtime.lead wires it."""
+    from conftest import short_socket_path
+
+    from plume.looper import Looper
+    fx, looper = InputFx(SR, N, "off"), Looper(SR)
+    srv = realtime.CueServer(short_socket_path("sndv"), kind="lead")
+    srv.intercept = lambda text: fx.handle_cue(text) or looper.handle_cue(text)
+    heard = []
+    srv.on_received = lambda item, source: heard.append(item)
+    srv.start()
+    yield srv, fx, heard
+    srv.close()
+
+
+@pytest.mark.parametrize("text,sound,label", [("sound dreamy", "dreamy", "Dreamy"),
+                                              ("lofi sound", "lofi", "Lofi tape"),
+                                              ("Sound: Crunch.", "crunch", "Crunch")])
+def test_plume_cue_says_what_her_sound_became(sound_server, capsys, text, sound, label):
+    """`plume cue` is the only way to send a sound cue, so it has to say what the take
+    answered: her sound changed, and nothing was queued for the band."""
+    import json
+
+    from plume import cli
+    srv, fx, _ = sound_server
+    assert cli.main(["cue", text, "--socket", srv.path]) == 0
+    said = capsys.readouterr().out
+    assert f"your sound: {label}" in said
+    assert "queued" not in said and "unknown" not in said and "style" not in said
+    assert fx.playing == sound and srv.drain() == []
+    fx.choose("off")
+    assert cli.main(["cue", text, "--socket", srv.path, "--json"]) == 0
+    got = json.loads(capsys.readouterr().out)
+    assert got["sound"] == sound and got["queued"] == 0
+    assert "parsed" not in got            # the band never read it, so no band reading
+
+
+def test_plume_cue_says_no_when_plume_has_no_such_sound(sound_server, capsys):
+    from plume import cli
+    srv, fx, _ = sound_server
+    assert cli.main(["cue", "sound fat", "--socket", srv.path]) != 0
+    assert "plume knows these sounds" in capsys.readouterr().err
+    assert fx.playing == "off" and srv.drain() == []
+
+
+def test_plume_cue_still_reports_a_band_cue_as_before(sound_server, capsys):
+    from plume import cli
+    srv, fx, _ = sound_server
+    assert cli.main(["cue", "sound darker", "--socket", srv.path]) == 0
+    said = capsys.readouterr().out
+    assert "(texture)" in said and "1 queued" in said and "your sound" not in said
+    assert [c["text"] for c in srv.drain()] == ["sound darker"]
+
+
 def test_the_cli_flag_and_the_environment(monkeypatch):
     from plume import cli
     parse = cli._build_parser().parse_args

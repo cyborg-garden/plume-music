@@ -258,6 +258,35 @@ def test_the_reason_names_the_chord_she_played_not_the_borrowed_one():
     assert r.sym is None and r.best == "Am7" and "Am7" in r.why, r
 
 
+# ------------------------------------------------------------- colour in key
+
+@pytest.mark.parametrize("style", STYLES)
+@pytest.mark.parametrize("key", KEYS)
+def test_the_colour_tone_on_a_held_chord_stays_in_the_key(key, style):
+    """The ninth over iii in a major key (F# over Em in C) is a semitone above the
+    key's fourth: the band must not add it for two bars in every four."""
+    scale = set(parse_key(key).scale())
+    for k in hc.candidates(key, style):
+        added = _pcs(hc.colour(k.sym, 2, key)) - _pcs(k.sym)
+        assert added <= scale, (key, style, k.sym, hc.colour(k.sym, 2, key))
+
+
+def test_a_held_iii_keeps_its_chord_and_a_held_vi_still_moves():
+    assert hc.colour("Em7", 2, "C major") == "Em7"
+    assert hc.colour("Em", 2, "C major") == "Em"
+    assert hc.colour("F#m7", 2, "D major") == "F#m7"
+    assert hc.colour("C#m7", 2, "F# minor") == "C#m7"
+    assert hc.colour("Am7", 2, "C major") == "Am9"
+    assert hc.colour("Am7", 0, "C major") == "Am7"
+    d = follow([pcs_chroma(EM, seed=i) for i in range(12)])
+    held = [d[b] for b in range(4, 12)]
+    assert all(x["source"] == "her_hold" for x in held)
+    assert {x["chord"] for x in held} == {"Em7"}
+    d = follow([pcs_chroma((1, 4, 8), seed=i) for i in range(12)],
+               key="F# minor", style="house")
+    assert {d[b]["chord"] for b in range(4, 12)} == {"C#m7"}
+
+
 # ------------------------------------------------------------- room mic bleed
 
 def test_clean_bar_is_her_chroma_and_bass():

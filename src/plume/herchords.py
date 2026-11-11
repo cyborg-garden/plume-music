@@ -92,7 +92,8 @@ MEMORY_BARS = 32
 STALE_BARS = 8
 
 #: Same root, same chord underneath, one colour tone more: the gentle motion on a
-#: held chord, every other two bars.
+#: held chord, every other two bars.  Every one of these adds the ninth, and
+#: :func:`colour` leaves it out where the key has no such note.
 _COLOUR = {"maj7": "maj9", "m7": "m9", "7": "9", "": "add9", "m": "madd9"}
 
 _FALLBACK = {
@@ -274,8 +275,12 @@ def clean_bar(frames) -> HerBar:
     return HerBar(acc / float(acc.sum()), bass, float(np.median(per_frame)))
 
 
-def colour(sym: str, bar: int) -> str:
-    """A held chord, with a colour tone on every other two bars."""
+def colour(sym: str, bar: int, key: str | None = None) -> str:
+    """A held chord, with a colour tone on every other two bars.
+
+    Given ``key``, a colour tone outside its scale is left out and the chord stays
+    as it is: the ninth over iii in a major key (F# over Em in C) or over the minor
+    key's v sits a semitone above a note of the key."""
     if (int(bar) // 2) % 2 == 0:
         return sym
     try:
@@ -283,7 +288,18 @@ def colour(sym: str, bar: int) -> str:
     except ValueError:
         return sym
     alt = _COLOUR.get(ch.quality)
-    return sym if alt is None else sym[: len(sym) - len(ch.quality)] + alt
+    if alt is None:
+        return sym
+    out = sym[: len(sym) - len(ch.quality)] + alt
+    if key is not None:
+        try:
+            scale = set(parse_key(key).scale())
+            added = set(parse_chord(out).intervals) - set(ch.intervals)
+        except ValueError:
+            return sym
+        if any((ch.root + i) % 12 not in scale for i in added):
+            return sym
+    return out
 
 
 _REST, _DEAF = "rest", "deaf"
@@ -374,7 +390,7 @@ class ChordFollower:
             sym = pattern[src_bar % period]
             if period == 1:
                 seen = pattern["seen"]
-                return out(colour(sym, bar), "her_hold",
+                return out(colour(sym, bar, key), "her_hold",
                            f"following her {sym}: bars {seen[0]} and {seen[1]} "
                            f"both read {sym}", period, last)
             seq = " ".join(pattern[(heard_bar - period + 1 + i) % period]

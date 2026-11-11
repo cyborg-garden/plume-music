@@ -95,6 +95,9 @@
       {"name": "dusk", "energy_curve": [0.4, 0.2], "bars": 32}
     ]
   },
+  "gain_db": {
+    "pad": -4.0
+  },
   "role_gain_db": {
     "pad": -4.0,
     "lead": -4.2

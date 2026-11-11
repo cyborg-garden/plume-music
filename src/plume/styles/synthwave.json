@@ -89,6 +89,12 @@
       {"name": "afterglow", "energy_curve": [0.5, 0.25], "bars": 32}
     ]
   },
+  "gain_db": {
+    "bass": 1.0,
+    "pad": -5.1,
+    "arp": -7.4,
+    "lead": -5.1
+  },
   "role_gain_db": {
     "kick": -2.0,
     "pad": -3.0,

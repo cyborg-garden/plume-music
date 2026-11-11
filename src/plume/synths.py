@@ -491,10 +491,11 @@ PARAM_RANGES = {
     "ratio": [0.5, 8.0], "body": [0.0, 1.0],
 }
 
-# Output trims so each voice, in its role pattern, sits at a K-weighted loudness
-# matched to the voice it replaces in its role (measured offline; see the
-# plan notes); glasskeys and synthbass sit ~3 dB under so a full-velocity
-# note does not hit the per-note peak limit.  Applied before velocity.
+# Output trims that bring each voice near the K-weighted loudness of the voice
+# it replaces; glasskeys and synthbass sit ~3 dB under so a full-velocity
+# note does not hit the per-note peak limit.  A trim is one number per voice,
+# so the match is finished in each style: role_gain_db and voice_gain_db for
+# the live band, gain_db for the offline render.  Applied before velocity.
 _TRIM = {
     "warmpad": 1.617, "strings": 1.581, "breathpad": 2.854, "tapekeys": 1.518,
     "glasskeys": 2.6, "junopoly": 2.432, "organ": 1.437, "bell": 1.123,

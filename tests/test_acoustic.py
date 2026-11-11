@@ -842,7 +842,10 @@ def test_nonregression_joiners(kind):
 #: synthwave's voices and levels on the day the ``--input auto`` discriminator
 #: was calibrated (2026-08-19, the table in sim.py).  The confusion matrix
 #: below IS that calibration, so its synthwave row keeps this material.  Every
-#: other test in this file hears the style as it plays today.
+#: other test in this file hears the style as it plays today.  The style named
+#: no offline ``gain_db`` that day (compose's defaults set every track), and
+#: the offline render is what the table heard, so the block it has since
+#: gained for the new voices comes out too.
 _SYNTHWAVE_CALIBRATED = {
     "voices": {"bass": "808sub", "pad": "pad", "arp": "pluck", "lead": "lead"},
     "role_gain_db": {"arp": -5.0, "lead": -2.0, "bass": None},
@@ -855,6 +858,7 @@ def _calibrated_synthwave(name: str) -> dict:
     style = load_style(name)
     if name == "synthwave":
         style["voices"].update(_SYNTHWAVE_CALIBRATED["voices"])
+        style.pop("gain_db", None)
         for role, db in _SYNTHWAVE_CALIBRATED["role_gain_db"].items():
             if db is None:
                 style["role_gain_db"].pop(role, None)

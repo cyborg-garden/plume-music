@@ -332,6 +332,88 @@ def test_every_new_voice_and_variant_plays_at_the_old_voices_level(style, role):
         assert abs(got - ref) < 1.5, (style, role, preset, round(got - ref, 1))
 
 
+#: The track gains those old voices rendered at offline (``plume render``):
+#: the style's ``gain_db``, or compose's default for the role where the style
+#: named none.
+_OLD_OFFLINE_DB = {
+    "lofi": {"pad": -7.0, "lead": -6.0},
+    "synthwave": {"bass": -1.0, "pad": -7.0, "arp": -9.0, "lead": -6.0},
+    "midwest": {"pad": -7.0, "shimmer": -6.0},
+    "rnb": {"pad": -14.0},
+    "house": {"pad": -5.0, "lead": -6.0},
+}
+
+
+#: Two different parts to measure a role on: (seed, key, bpm).
+_OFFLINE_PARTS = ((7, "A minor", 100.0), (11, "C major", 120.0))
+
+#: Where a new voice is held off the old level on purpose, by how much.
+#: synthwave's bass sits 2.7 dB under the 808 it replaced (it was 4.1 under).
+#: The 808 was a loud sine with no attack to speak of.  The ladder bass has a
+#: pluck and overtones, and its track drive adds more the harder it is pushed.
+#: Any closer to the old loudness and plume stops hearing its own render:
+#: from a track gain of +2 dB the key comes back G minor for C minor
+#: (tests/test_real_material.py, synth100), and from about +3 dB the tempo
+#: goes to the dotted alias, 66.6 for 100 bpm (tests/test_acoustic.py,
+#: synthwave100).  The gain is +1.
+_OFFLINE_HELD_DB = {("synthwave", "bass"): -2.7}
+
+
+def _offline_role_lufs(tmp_path, style, role, part, preset=None, gain_db=None):
+    """K-weighted loudness of one role alone through compose and the offline
+    engine: the composed pattern, the track's own gain and fx, the sections'
+    energy.  The role is made to play through the middle eight bars, so a
+    lead that waits for the peak is measured too.  The master is left clear
+    and turned down, so the limiter never touches the level."""
+    import soundfile as sf
+    from scipy.signal import lfilter
+
+    from plume import engine
+    from plume.compose import PromptSpec, compose
+    seed, key, bpm = part
+    s = compose(PromptSpec(styles=[style], bpm=bpm, key=key, movements=1),
+                seed=seed)
+    tr = next(t for t in s.tracks if t.name == role)
+    if preset is not None:
+        tr.voice, tr.gain_db = preset, gain_db
+    s.tracks = [tr]
+    for sec in s.movements[0].sections:
+        sec.plays = {role: "main"}
+    s.master = {"gain_db": -12.0, "limit_db": 0.0}
+    out = tmp_path / f"{seed}-{tr.voice}.wav"
+    man = engine.render(s, out_path=str(out), bars=(12, 20))
+    assert man["limiter_gain_reduction_db"] == 0.0
+    x, _ = sf.read(str(out))
+    z = lfilter(*_K2, lfilter(*_K1, x, axis=0), axis=0)
+    return -0.691 + 10.0 * np.log10(float(np.sum(np.mean(z ** 2, axis=0))) + 1e-20)
+
+
+@pytest.mark.parametrize("style,role", [(s, r) for s in sorted(_OLD_OFFLINE_DB)
+                                        for r in sorted(_OLD_OFFLINE_DB[s])])
+def test_every_new_voice_renders_offline_at_the_old_voices_level(tmp_path, style, role):
+    """role_gain_db and voice_gain_db only reach the live band.  ``plume
+    render`` takes a track's level from the style's ``gain_db``, and with that
+    left alone the new voices came out at the old gains: synthwave's bass
+    4.2 dB under the 808 it replaced, house's organ 4.5 dB over the stab.  So
+    the promise holds offline too, in the style's own composed part, against
+    the old voice at the old gain.  One gain cannot follow every melody (the
+    bell against the pluck moves 3 dB from one part to the next), so it is
+    held on the average of two parts, within 1 dB, with neither part more
+    than 2.5 dB off.  ``_OFFLINE_HELD_DB`` names the one voice kept off the
+    old level, and it is held to that offset the same way."""
+    old = _OLD_PALETTE[style][role]
+    assert load_style(style)["voices"][role] != old
+    want = _OFFLINE_HELD_DB.get((style, role), 0.0)
+    off = []
+    for part in _OFFLINE_PARTS:
+        ref = _offline_role_lufs(tmp_path, style, role, part, preset=old,
+                                 gain_db=_OLD_OFFLINE_DB[style][role])
+        off.append(_offline_role_lufs(tmp_path, style, role, part) - ref - want)
+    shown = (style, role, want, [round(float(d), 1) for d in off])
+    assert abs(float(np.mean(off))) < 1.0, shown
+    assert max(abs(d) for d in off) < 2.5, shown
+
+
 # ---------------------------------------------------------------------------
 # in the band (DuetEngine)
 # ---------------------------------------------------------------------------

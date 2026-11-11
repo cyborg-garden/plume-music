@@ -366,6 +366,10 @@
       }
     ]
   },
+  "gain_db": {
+    "pad": -5.4,
+    "shimmer": -4.3
+  },
   "role_gain_db": {
     "kick": 3.0,
     "snare": 3.0,

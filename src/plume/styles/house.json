@@ -141,10 +141,12 @@
     "hat": "offhat",
     "tick": "hat",
     "bass": "roundbass",
-    "pad": "housestab",
-    "lead": "pluck",
+    "pad": "organ",
+    "lead": "bell",
     "crash": "kit_crash"
   },
+  "voice_variants": {"pad": ["organ", "organ", "junopoly"]},
+  "voice_gain_db": {"junopoly": -0.8},
   "live_only_roles": [
     "crash"
   ],
@@ -284,8 +286,8 @@
     "hat": -6.0,
     "tick": -13.0,
     "bass": -5.0,
-    "pad": -5.0,
-    "lead": -6.0
+    "pad": -9.5,
+    "lead": -6.6
   },
   "role_gain_db": {
     "kick": -1.0,
@@ -293,8 +295,8 @@
     "hat": -5.0,
     "tick": -12.0,
     "bass": -3.0,
-    "pad": -1.0,
-    "lead": -2.0,
+    "pad": -5.6,
+    "lead": -4.0,
     "crash": -10.0
   }
 }

@@ -27,12 +27,13 @@ from __future__ import annotations
 
 import numpy as np
 
-from . import samplekit
+from . import samplekit, synths
 
 from plume.fx import _svf, _svf_bandpass, svf_highpass
 from scipy.signal import lfilter
 
-__all__ = ["render_note", "PRESETS", "preset_info"]
+__all__ = ["render_note", "render_note_stereo", "PRESETS", "preset_info",
+           "is_stereo"]
 
 _F32 = np.float32
 
@@ -588,6 +589,12 @@ PRESETS.update({name: {} for name in (*_KIT_DESCRIPTIONS, *_TUNED_DESCRIPTIONS)}
 _DESCRIPTIONS.update(_KIT_DESCRIPTIONS)
 _DESCRIPTIONS.update(_TUNED_DESCRIPTIONS)
 
+# The curated synths and pads (plume.synths) render in stereo.
+PRESETS.update({name: dict(d) for name, d in synths.PRESETS.items()})
+_DESCRIPTIONS.update(synths.DESCRIPTIONS)
+for _k, _r in synths.PARAM_RANGES.items():
+    _PARAM_RANGES.setdefault(_k, _r)
+
 _RENDERERS = {
     **{name: _v_kit(name) for name in _KIT_DESCRIPTIONS},
     "fingerbass": _v_tuned("fingerbass", 0.08),
@@ -615,6 +622,54 @@ _RENDERERS = {
 }
 
 
+def is_stereo(preset: str) -> bool:
+    """True for voices that render their own stereo image."""
+    return preset in synths.RENDERERS
+
+
+def _params(preset: str, params: dict | None) -> dict:
+    p = dict(PRESETS[preset])
+    for key, val in (params or {}).items():
+        if key in p:
+            p[key] = type(p[key])(val) if not isinstance(val, str) else val
+        else:
+            p[key] = val
+    return p
+
+
+def render_note_stereo(preset: str, *, sr: int, dur_s: float,
+                       freq_hz: float | None, velocity: float,
+                       rng: np.random.Generator, params: dict,
+                       glide_from_hz: float | None = None) -> np.ndarray:
+    """Like :func:`render_note`, but ``(n, 2)`` float32.
+
+    Stereo voices keep their own image; every other voice comes back as the
+    same mono signal on both sides.  Folding the result to mono, ``mean`` of
+    the two sides, gives exactly what ``render_note`` returns.
+    """
+    if preset not in synths.RENDERERS:
+        y = render_note(preset, sr=sr, dur_s=dur_s, freq_hz=freq_hz,
+                        velocity=velocity, rng=rng, params=params,
+                        glide_from_hz=glide_from_hz)
+        return np.repeat(y[:, None], 2, axis=1)
+    p = _params(preset, params)
+    dur_s = max(float(dur_s), 1.0 / sr)
+    st = synths.render(preset, sr, dur_s, freq_hz, float(velocity), rng, p,
+                       glide_from_hz)
+    # The same guarantees as _finish (finite, velocity scaled, peak <= 1) in
+    # one scaling pass: these buffers are long and stereo, and the live
+    # planner renders several every bar.
+    peak = max(float(st.max()), -float(st.min())) if st.size else 0.0
+    if not np.isfinite(peak):
+        st = np.nan_to_num(st, nan=0.0, posinf=0.0, neginf=0.0)
+        peak = float(np.max(np.abs(st))) if st.size else 0.0
+    v = float(np.clip(velocity, 0.0, 1.0))
+    scale = 1.0 / peak if v * peak > 1.0 else v
+    out = np.empty(st.shape, dtype=_F32)
+    np.multiply(st, scale, out=out, casting="same_kind")
+    return out
+
+
 def render_note(preset: str, *, sr: int, dur_s: float, freq_hz: float | None,
                 velocity: float, rng: np.random.Generator,
                 params: dict, glide_from_hz: float | None = None) -> np.ndarray:
@@ -623,14 +678,15 @@ def render_note(preset: str, *, sr: int, dur_s: float, freq_hz: float | None,
     ``params`` overrides the preset defaults (see PRESETS). Determinism
     comes entirely from the passed-in ``rng``.
     """
+    if preset in synths.RENDERERS:
+        st = render_note_stereo(preset, sr=sr, dur_s=dur_s, freq_hz=freq_hz,
+                                velocity=velocity, rng=rng, params=params,
+                                glide_from_hz=glide_from_hz)
+        return st.mean(axis=1, dtype=np.float64).astype(_F32)
     if preset not in _RENDERERS:
-        raise ValueError(f"unknown preset: {preset!r} (have: {sorted(_RENDERERS)})")
-    p = dict(PRESETS[preset])
-    for key, val in (params or {}).items():
-        if key in p:
-            p[key] = type(p[key])(val) if not isinstance(val, str) else val
-        else:
-            p[key] = val
+        raise ValueError(f"unknown preset: {preset!r} "
+                         f"(have: {sorted([*_RENDERERS, *synths.RENDERERS])})")
+    p = _params(preset, params)
     dur_s = max(float(dur_s), 1.0 / sr)
     y = _RENDERERS[preset](sr, dur_s, freq_hz, float(velocity), rng, p, glide_from_hz)
     return _finish(y, velocity)

@@ -252,12 +252,14 @@ def test_the_click_bridges_the_entry_and_the_first_phrase_is_plain(tmp_path, con
     """No bar where the click has stopped while the drums are still under full."""
     import plume.duet as duet_mod
     heard: list[tuple[int, set]] = []
+    sections: dict[int, int | None] = {}
 
     class Listening(duet_mod.DuetEngine):
         def render_bar(self, plan, beat, harmony, **kw):
             out = super().render_bar(plan, beat, harmony, **kw)
             heard.append((int(plan.bar), {e["role"] for e in self.last_events},
                           kw.get("entry_feel")))
+            sections[int(plan.bar)] = kw.get("section")
             return out
 
     monkeypatch.setattr(duet_mod, "DuetEngine", Listening)
@@ -293,6 +295,8 @@ def test_the_click_bridges_the_entry_and_the_first_phrase_is_plain(tmp_path, con
     # the click over the intro never went away before the bridge took it
     drums = [r for r in rows if r["entry"] == "drums"]
     assert all(CLICK_ROLE in r["roles"] for r in drums)
+    # the band is told which section of the form each bar is in (voice_variants)
+    assert all(sections[r["bar"]] == r["form"]["section_idx"] for r in band)
     # and the page says what happened, on the bar it did
     events = record.translate(rows, None)
     entry = next(e for e in events if e["label"] == "bass and chords")

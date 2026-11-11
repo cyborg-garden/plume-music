@@ -47,11 +47,13 @@
     "kick": "808kick",
     "snare": "snare",
     "hat": "hat",
-    "bass": "808sub",
-    "pad": "pad",
-    "arp": "pluck",
-    "lead": "lead"
+    "bass": "synthbass",
+    "pad": "warmpad",
+    "arp": "junopoly",
+    "lead": "synthlead"
   },
+  "voice_variants": {"pad": ["warmpad", "warmpad", "strings"]},
+  "arp_style": "arp16",
   "fx_defaults": {
     "snare": {"reverb": 0.55},
     "pad": {"lpf_hz": 2400, "chorus": 0.6, "reverb": 0.4, "duck": 0.3},
@@ -87,10 +89,17 @@
       {"name": "afterglow", "energy_curve": [0.5, 0.25], "bars": 32}
     ]
   },
+  "gain_db": {
+    "bass": 1.0,
+    "pad": -5.1,
+    "arp": -7.4,
+    "lead": -5.1
+  },
   "role_gain_db": {
     "kick": -2.0,
     "pad": -3.0,
-    "arp": -5.0,
-    "lead": -2.0
+    "arp": -2.7,
+    "lead": -1.2,
+    "bass": 3.8
   }
 }

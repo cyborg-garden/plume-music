@@ -118,6 +118,7 @@ from typing import TYPE_CHECKING
 import dataclasses
 
 import numpy as np
+from scipy.signal import sosfilt
 
 from plume import figures
 from plume import fx as _fx
@@ -131,7 +132,7 @@ from plume.theory import (
     parse_key,
     voice_chord,
 )
-from plume.voices import render_note
+from plume.voices import is_stereo, render_note, render_note_stereo
 
 if TYPE_CHECKING:  # contracts only; never imported at runtime
     from plume.listen.beat import BeatState
@@ -501,6 +502,23 @@ class _PlanEcho:
         self.announce_kind = ""
 
 
+def _stereo_role_filters(y: np.ndarray, sr: int, fxd: dict) -> np.ndarray:
+    """A role's ``hpf_hz`` / ``lpf_hz`` on an ``(n, 2)`` voice, as float64.
+
+    The same SVF biquads :func:`plume.fx.svf_highpass` and ``svf_lowpass``
+    use, run as one second-order-section cascade over both channels.
+    """
+    rows = []
+    for key, kind in (("hpf_hz", "hp"), ("lpf_hz", "lp")):
+        hz = float(fxd.get(key, 0.0))
+        if hz > 0.0:
+            b, a = _fx._svf_coeffs(sr, hz, 0.707, kind)
+            rows.append(np.concatenate([b, a]))
+    if not rows:
+        return y.astype(np.float64)
+    return sosfilt(np.vstack(rows), y, axis=0)
+
+
 class DuetEngine:
     """Bar-by-bar accompanist over one style (SPEC-V1 section 5)."""
 
@@ -553,6 +571,7 @@ class DuetEngine:
         #: plain first phrase, played with that fraction of the style's swing and
         #: push.  Set for one render by render_bar's ``entry_feel``.
         self._entry_feel: float | None = None
+        self._section: int | None = None
         # introspection: events chosen for the most recent render_bar
         self.last_events: list[dict] = []
         self._progressions: dict[str, list[str]] = {}
@@ -618,8 +637,13 @@ class DuetEngine:
     def render_bar(self, plan: "BarPlan", beat: "BeatState",
                    harmony: "HarmonyState", *,
                    continuation: bool = False,
-                   entry_feel: float | None = None) -> np.ndarray:
+                   entry_feel: float | None = None,
+                   section: int | None = None) -> np.ndarray:
         """Render exactly one bar at ``beat.bpm`` -> stereo float32 (n, 2).
+
+        ``section``: the form's section index for this bar, when a form is
+        running (lead mode).  ``voice_variants`` then change voice where the
+        sections change, not on a bar count that ignores the phrase.
 
         ``entry_feel``: this bar is in the plain first phrase after the band came
         in (:func:`plain_entry_grids`), its swing and push this fraction (0..1) of
@@ -651,6 +675,7 @@ class DuetEngine:
             raise ValueError(f"render_bar requires beat.bpm > 0, got {bpm}")
         self._entry_feel = (None if entry_feel is None
                             else float(min(1.0, max(0.0, entry_feel))))
+        self._section = None if section is None else int(section)
         bar_idx = int(getattr(plan, "bar", 0))
 
         # A revision of the bar we just rendered must not advance the
@@ -1082,7 +1107,7 @@ class DuetEngine:
             preset = voices.get(role) or voices.get(_ROLE_ALIASES.get(role, ""))
             if preset is None:
                 continue
-            preset = str(preset)
+            preset = self._variant(role, str(preset), int(getattr(plan, "bar", 0)))
             if role in self._grids:
                 events += self._drum_events(role, preset, density, bar_s,
                                             tonic_pc, plan, root_pc=root_pc,
@@ -1119,26 +1144,48 @@ class DuetEngine:
                 onset_beats, role=role, bpm=bpm, g=self._groove_at(bpm), rng=rng,
                 velocity=base_vel)
             onset_s = max(0.0, onset_s)
-            y = render_note(preset, sr=sr, dur_s=dur_s, freq_hz=freq,
-                            velocity=vel, rng=rng, params={}).astype(np.float64)
             fxd = fx_defaults.get(role, {})
-            if float(fxd.get("hpf_hz", 0.0)) > 0.0:
-                y = _fx.svf_highpass(y, sr, float(fxd["hpf_hz"])).astype(np.float64)
-            if float(fxd.get("lpf_hz", 0.0)) > 0.0:
-                y = _fx.svf_lowpass(y, sr, float(fxd["lpf_hz"])).astype(np.float64)
+            if is_stereo(preset):
+                # Stereo voices (plume.synths) keep their own image; the pan
+                # law then acts as a balance, so a centred one sums to the
+                # same mono level as a mono voice would.  The role's fixed
+                # filters run as one cascade over both sides: these buffers
+                # are long, and the planner renders several every bar.
+                y = render_note_stereo(preset, sr=sr, dur_s=dur_s, freq_hz=freq,
+                                       velocity=vel, rng=rng, params={})
+                y = _stereo_role_filters(y, sr, fxd)
+            else:
+                y = render_note(preset, sr=sr, dur_s=dur_s, freq_hz=freq,
+                                velocity=vel, rng=rng, params={}).astype(np.float64)
+                if float(fxd.get("hpf_hz", 0.0)) > 0.0:
+                    y = _fx.svf_highpass(y, sr, float(fxd["hpf_hz"])).astype(np.float64)
+                if float(fxd.get("lpf_hz", 0.0)) > 0.0:
+                    y = _fx.svf_lowpass(y, sr, float(fxd["lpf_hz"])).astype(np.float64)
             lfx = live_fx.get(role, {})
             if float(lfx.get("drive", 0.0)) > 0.0:
                 y = _saturate(y, float(lfx["drive"]))
             role_db = self._style.get("role_gain_db", {}).get(
                 role, _ROLE_GAIN_DB.get(role, -6.0))
+            # voice_gain_db: a voice's own offset in this style, so a
+            # voice_variants stretch sits at the level of the voice it follows.
+            role_db += float((self._style.get("voice_gain_db") or {}).get(preset, 0.0))
             gain = 10.0 ** ((role_db + gain_db) / 20.0)
-            y *= gain * level
             pan = float(np.clip(_ROLE_PAN.get(role, 0.0), -1.0, 1.0))
             theta = (pan + 1.0) * (np.pi / 4.0)
-            spread = (_chorus(y, sr, float(lfx["chorus"]),
-                              int(getattr(plan, "bar", 0)) * bar_s + onset_s)
-                      if float(lfx.get("chorus", 0.0)) > 0.0 else y[:, None])
-            st = spread * np.array([np.cos(theta), np.sin(theta)])[None, :]
+            if y.ndim == 2:
+                # A stereo voice (plume.synths) brings its own image and
+                # chorus; the pan law then acts as a balance on it.  Gain,
+                # level and pan go on in one pass over the long stereo buffer.
+                st = y * (gain * level
+                          * np.array([np.cos(theta), np.sin(theta)]))[None, :]
+            else:
+                y *= gain * level
+                if float(lfx.get("chorus", 0.0)) > 0.0:
+                    spread = _chorus(y, sr, float(lfx["chorus"]),
+                                     int(getattr(plan, "bar", 0)) * bar_s + onset_s)
+                else:
+                    spread = y[:, None]
+                st = spread * np.array([np.cos(theta), np.sin(theta)])[None, :]
             i0 = int(round(onset_s * sr))
             placed.append((i0, st))
             if float(lfx.get("duck", 0.0)) > 0.0:
@@ -1194,6 +1241,27 @@ class DuetEngine:
         if key not in self._entry_cache:
             self._entry_cache[key] = plain_entry_grids(grids, self._entry_over, density)
         return self._entry_cache[key]
+
+    def _variant(self, role: str, preset: str, bar: int) -> str:
+        """The preset for ``role`` in this stretch of the take.
+
+        A style may list ``voice_variants[role]``: the role then moves through
+        those presets one section at a time, so a long take changes colour
+        between sections instead of holding one patch.  With a form running
+        (``render_bar(section=...)``) a section is the form's own, so the
+        change lands where the music changes and a section the form returns
+        to keeps its colour.  Without one (no ``section``, or the form's -1
+        for a session with nothing to play) it is every ``variant_bars`` bars
+        (16 by default) from the first bar.
+        """
+        options = (self._style.get("voice_variants") or {}).get(role)
+        if not options:
+            return preset
+        section = getattr(self, "_section", None)
+        if section is None or section < 0:
+            every = max(1, int(self._style.get("variant_bars", 16)))
+            section = max(0, int(bar)) // every
+        return str(options[int(section) % len(options)])
 
     def _groove_at(self, bpm: float) -> GrooveParams:
         """The style's feel, or its slow-tempo feel below ``slow_below_bpm``; in the

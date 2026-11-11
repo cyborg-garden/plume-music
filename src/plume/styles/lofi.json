@@ -55,10 +55,12 @@
     "snare": "snare",
     "hat": "hat",
     "bass": "808sub",
-    "pad": "epiano",
-    "lead": "pluck",
+    "pad": "tapekeys",
+    "lead": "glasskeys",
     "crackle": "crackle"
   },
+  "voice_variants": {"pad": ["tapekeys", "tapekeys", "breathpad"]},
+  "voice_gain_db": {"breathpad": -3.5},
   "fx_defaults": {
     "pad": {"lpf_hz": 1800, "reverb": 0.4, "chorus": 0.5},
     "hat": {"lpf_hz": 8000},
@@ -93,8 +95,11 @@
       {"name": "dusk", "energy_curve": [0.4, 0.2], "bars": 32}
     ]
   },
+  "gain_db": {
+    "pad": -4.0
+  },
   "role_gain_db": {
     "pad": -4.0,
-    "lead": -2.0
+    "lead": -4.2
   }
 }

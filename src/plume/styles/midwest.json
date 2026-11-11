@@ -232,16 +232,18 @@
     "snare": "kit_snare",
     "hat": "kit_hat",
     "bass": "fingerbass",
-    "pad": "airpad",
+    "pad": "breathpad",
     "lead": "vibes",
     "crackle": "crackle",
     "keys": "wurli",
-    "shimmer": "airpad",
+    "shimmer": "breathpad",
     "sub": "808kick",
     "clap": "clap",
     "openhat": "kit_openhat",
     "crash": "kit_crash"
   },
+  "voice_variants": {"pad": ["breathpad", "strings"]},
+  "voice_gain_db": {"strings": 4.8},
   "fx_defaults": {
     "bass": {
       "lpf_hz": 2500
@@ -363,6 +365,10 @@
         "bars": 32
       }
     ]
+  },
+  "gain_db": {
+    "pad": -5.4,
+    "shimmer": -4.3
   },
   "role_gain_db": {
     "kick": 3.0,

@@ -451,8 +451,8 @@ def test_the_route_table_is_exactly_what_the_page_needs():
     assert gui.GET_ROUTES == ("/", "/auth", "/static/{name}", "/api/session", "/api/takes",
                               "/api/take/{id}", "/api/take/{id}/audio/{track}",
                               "/api/home", "/api/live", "/api/setup", "/api/guide")
-    assert sorted(gui.POST_OPS) == ["cue", "keep", "rename", "setup/answer", "setup/cancel", "setup/listen",
-                                    "setup/reset", "start", "stop"]
+    assert sorted(gui.POST_OPS) == ["cue", "keep", "rename", "reveal", "setup/answer", "setup/cancel",
+                                    "setup/listen", "setup/reset", "start", "stop"]
 
 
 @pytest.mark.parametrize("op", ["calibrate", "play", "lead", "jam", "voice", "delete", "record",

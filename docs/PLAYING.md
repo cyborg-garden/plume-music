@@ -574,6 +574,13 @@ Keep writes a small `keep.json` beside the take and deletes nothing, and `--reco
 refuses a folder holding a kept take. A name that fails to save says so on the next screen
 you land on, then clears.
 
+Show files opens the take's folder in your file manager and saves `mix.wav` there first:
+`human.wav` and `machine.wav` as one file, the player moved earlier by the round trip in
+`stream.json` (the measured one if there is one, else the one the device reported) and
+balanced the way Together plays them. It is written once and left alone until a recording
+changes. A take still being recorded gets no mix, and a room mic that heard the band from
+speakers has the band in its mix twice.
+
 This page has only been checked on made-up take folders, in headless Chromium with the
 sound muted. Play has not been pressed in a real browser, and the page has not been tried
 on a take from a real mic or interface, or in Firefox or Safari.

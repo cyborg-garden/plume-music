@@ -56,7 +56,7 @@ import soundfile as sf
 
 from . import fx as _fx
 from . import guitake, oscompat, record
-from .realtime import REC_HUMAN, REC_MACHINE, list_sessions
+from .realtime import REC_HUMAN, REC_MACHINE, REC_STREAM, list_sessions
 
 STATE_DIR_ENV = "PLUME_GUI_STATE_DIR"
 
@@ -64,7 +64,7 @@ GET_ROUTES = ("/", "/auth", "/static/{name}", "/api/session", "/api/takes",
               "/api/take/{id}", "/api/take/{id}/audio/{track}", "/api/home", "/api/live", "/api/setup",
               "/api/guide")
 POST_OPS = frozenset({"keep", "rename", "start", "stop", "cue", "setup/listen", "setup/answer",
-                      "setup/cancel", "setup/reset"})
+                      "setup/cancel", "setup/reset", "reveal"})
 
 _STATIC_DIR = Path(__file__).with_name("gui_static")
 #: Every file the page may load, and its type.  Nothing else under the folder is served.
@@ -98,6 +98,8 @@ _TOGETHER_BAND_DB = 3.0
 # limiter is untouched below 3 dB under it (0.71 of full scale).
 _TOGETHER_CEILING_DB = 0.0
 _TOGETHER_FRAMES = 65536
+#: Both recordings as one file, in the take's folder: what Together plays, saved.
+REC_MIX = "mix.wav"
 _WAV_HEADER = 44
 
 _CSP = ("default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; font-src 'self'; "
@@ -277,6 +279,7 @@ class Library:
         self._lock = threading.Lock()
         #: Held across disk work, so it is not the lock every reader needs.
         self._keep_lock = threading.Lock()
+        self._mix_lock = threading.Lock()
         self._paths: dict[str, Path] = {}
         self._cache: dict[str, tuple] = {}
 
@@ -397,6 +400,89 @@ class Library:
             finally:
                 _close_folder(folder)
         return doc
+
+    def write_mix(self, take_id: str) -> str | None:
+        """Save both recordings as one file in the take's folder, and say its name.
+
+        The same samples Together plays: the player moved earlier by the take's round
+        trip, the band lifted over her, the sum soft-limited.  None when there is nothing
+        to mix: one recording missing, two sample rates, or a take still being recorded,
+        whose folder belongs to the session writing it.  A room mic take gets one too;
+        if that mic also heard the band from speakers, the band is in it twice.
+
+        Written under another name and renamed, so ``mix.wav`` is whole or absent, and
+        skipped when the one there is newer than everything it is made from.
+        """
+        path = self.path_of(take_id)
+        if path is None or str(path) in _live_folders():
+            return None
+        with self._mix_lock:
+            try:
+                human_file = sf.SoundFile(_open_track(path, REC_HUMAN))
+            except (OSError, RuntimeError, ValueError):
+                return None
+            with human_file as human:
+                try:
+                    machine_file = sf.SoundFile(_open_track(path, REC_MACHINE))
+                except (OSError, RuntimeError, ValueError):
+                    return None
+                with machine_file as machine:
+                    if human.samplerate != machine.samplerate:
+                        return None
+                    shift = record.playing_delay_frames(path, human.samplerate)
+                    frames = max(human.frames - shift, machine.frames)
+                    if frames <= 0:
+                        return None
+                    if not _mix_is_current(path, _WAV_HEADER + frames * 2):
+                        self._save_mix(path, human, machine, shift, frames)
+        return REC_MIX
+
+    @staticmethod
+    def _save_mix(path: Path, human, machine, shift: int, frames: int) -> None:
+        folder = _open_folder(path)
+        # As for keep.json: a name nobody could have planted, and O_EXCL in case they did.
+        tmp = f".{REC_MIX}.{secrets.token_hex(8)}.tmp"
+        try:
+            fd = _open_in(folder, tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            try:
+                with os.fdopen(fd, "wb") as f:
+                    f.write(_wav_header(frames, human.samplerate))
+                    for frame in range(0, frames, _TOGETHER_FRAMES):
+                        count = min(_TOGETHER_FRAMES, frames - frame)
+                        f.write(_mixed_pcm(human, machine, shift, frame, count))
+                _replace_in(folder, tmp, REC_MIX)
+            except BaseException:
+                try:
+                    _unlink_in(folder, tmp)
+                except OSError:
+                    pass
+                raise
+        finally:
+            _close_folder(folder)
+
+
+def _mix_is_current(path: Path, size: int) -> bool:
+    """True when ``mix.wav`` is a whole file, newer than the recordings and their delay."""
+    try:
+        mix = os.lstat(path / REC_MIX)
+    except OSError:
+        return False
+    if not stat.S_ISREG(mix.st_mode) or mix.st_size != size:
+        return False
+    for name in (REC_HUMAN, REC_MACHINE, REC_STREAM):
+        try:
+            if os.lstat(path / name).st_mtime_ns > mix.st_mtime_ns:
+                return False
+        except OSError:
+            pass
+    return True
+
+
+def _reveal(folder: Path, select: str | None) -> None:
+    """Show a folder in the system's file manager.  Never under pytest: it opens a window."""
+    if "PYTEST_CURRENT_TEST" in os.environ or "pytest" in sys.modules:
+        raise GuiError("the real file manager does not open under pytest")
+    oscompat.reveal(folder, select)
 
 
 # ---------------------------------------------------------------------- the handler
@@ -674,6 +760,8 @@ class _Handler(BaseHTTPRequestHandler):
             raise _Refused(400, "body must be an object")
         if op in ("keep", "rename"):
             self._keep_or_rename(op, body)
+        elif op == "reveal":
+            self._show_files(body)
         else:
             self._take_op(op, body)
 
@@ -726,6 +814,27 @@ class _Handler(BaseHTTPRequestHandler):
         if doc is None:
             raise _Refused(404, "no such take")
         self._json(doc)
+
+    def _show_files(self, body: dict) -> None:
+        """Show the take's folder, with its mix in it if one can be made.
+
+        The body names a take by the ID this server gave out and nothing else, so the
+        only folder that can open is one the library listed.
+        """
+        if set(body) != {"take"} or not isinstance(body["take"], str):
+            raise _Refused(400, "body needs a take, and only a take")
+        folder = self.gui.library.path_of(body["take"])
+        if folder is None:
+            raise _Refused(404, "no such take")
+        try:
+            mix = self.gui.library.write_mix(body["take"])
+        except (OSError, RuntimeError, ValueError):
+            mix = None          # a folder that cannot be written in can still be shown
+        try:
+            self.gui.revealer(folder, mix)
+        except (OSError, GuiError):
+            raise _Refused(500, "could not open the folder") from None
+        self._json({"shown": True, "mix": mix is not None})
 
     # -- routes
 
@@ -933,8 +1042,11 @@ class GuiServer:
     """The bridge: an HTTP server on loopback, its session state, and its library."""
 
     def __init__(self, *, roots=(), pinned=None, log=None, write_state: bool = True,
-                 spawner=None, lister=None, sessions=None, stopper=None, **take_options):
+                 spawner=None, lister=None, sessions=None, stopper=None, revealer=None,
+                 **take_options):
         self.library = Library(roots, pinned)
+        #: ``(folder, file name or None)``: opens the system's file manager.  Tests pass a fake.
+        self.revealer = _reveal if revealer is None else revealer
         self.takes = guitake.TakeRunner(
             self.library.roots[0] if self.library.roots else default_library(),
             log_path=lambda: state_path().with_name("take.log"),

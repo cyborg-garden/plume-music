@@ -2636,3 +2636,35 @@ def test_a_guide_that_cannot_load_says_so_in_words(tmp_path, docs):
         $('nav-guide').click(); await page.settle();
         return { screen: page.screen(), text: $('guide-body').textContent };""")
     assert out["screen"] == "guide" and "did not load" in out["text"]
+
+
+# ---------------------------------------------------------------------- files
+
+def test_show_files_names_the_take_and_nothing_else(tmp_path, docs):
+    out = run_page(tmp_path, docs, """
+        await page.open(ids.tap);
+        page.replies.reveal = [200, { shown: true, mix: true }];
+        $('show-files').click();
+        await page.settle();
+        return { posts: page.posts('reveal'), key: page.calls.find((c) => c.path === '/api/reveal').key,
+                 quiet: $('keep-error').hidden, off: $('show-files').disabled, ...""" + SOUND + """ };""")
+    assert out["posts"] == [{"take": docs["ids"]["tap"]}] and out["key"] == KEY
+    assert out["quiet"] is True and out["off"] is False
+    assert out["plays"] == 0 and out["audio"] == 0
+
+
+def test_a_folder_that_will_not_open_says_where_it_is(tmp_path, docs):
+    out = run_page(tmp_path, docs, """
+        await page.open(ids.tap);
+        page.failNext.reveal = 1;
+        $('show-files').click();
+        await page.settle();
+        return { hidden: $('keep-error').hidden, words: $('keep-error').textContent };""")
+    where = docs["docs"][docs["ids"]["tap"]]["where"]
+    assert out["hidden"] is False and out["words"] == "The folder did not open. It is " + where
+
+
+def test_show_files_is_drawn_from_the_pages_own_colours():
+    rules = re.findall(r"#show-files[^{]*\{([^}]*)\}", (STATIC / "plume.css").read_text())
+    assert rules and all("#" not in rule and "rgb" not in rule for rule in rules)
+    assert "var(--secondary)" in rules[0]

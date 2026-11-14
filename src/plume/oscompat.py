@@ -242,3 +242,43 @@ def replace(src, dst, *, attempts: int = 5, delay: float = 0.02, **kw) -> None:
             if i + 1 >= attempts:
                 raise
             time.sleep(delay * (i + 1))
+
+
+# ------------------------------------------------------------------ the file manager
+
+def reveal_command(folder, select: str | None = None, *, platform: str | None = None) -> list[str]:
+    """The command that shows ``folder`` in this system's file manager.
+
+    ``select`` is a file in that folder to arrive on, where the file manager can do
+    that: macOS and Windows can, and the Linux desktops share no way to, so there the
+    folder opens.  It is a plain file name, never a path.
+    """
+    platform = sys.platform if platform is None else platform
+    folder = os.fspath(folder)
+    if select is not None and (not select or select in (".", "..") or "/" in select or "\\" in select):
+        raise ValueError("select must be a plain file name")
+    if platform == "win32":
+        if select is None:
+            return ["explorer", folder]
+        return ["explorer", "/select," + folder.rstrip("\\") + "\\" + select]
+    if platform == "darwin":
+        if select is None:
+            return ["open", folder]
+        return ["open", "-R", folder.rstrip("/") + "/" + select]
+    return ["xdg-open", folder]
+
+
+def _launch(argv: list[str]) -> None:
+    """Start the file manager and let go of it.  Raises ``OSError`` if it cannot start."""
+    proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL, close_fds=True)
+    # Reaped when it ends, so it is never left a zombie.  Its exit code says nothing
+    # useful: the Windows one is non-zero even when the window opened.
+    import threading  # noqa: PLC0415
+
+    threading.Thread(target=proc.wait, name="plume-reveal", daemon=True).start()
+
+
+def reveal(folder, select: str | None = None, *, run=None) -> None:
+    """Show ``folder`` in the file manager.  ``run`` takes the command; tests pass a fake."""
+    (_launch if run is None else run)(reveal_command(folder, select))

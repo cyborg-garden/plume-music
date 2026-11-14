@@ -462,6 +462,18 @@ async function setKept(kept) {
     keepProblem(id, title, err.status === 401 ? lostWords(!!S.csrf).text : 'That was not saved. Can plume write in this take\'s folder?', 'Keep was not saved for ');
   }
 }
+/* The take's folder, in the system's file manager. The bridge is told which take and nothing
+   else: it opens that take's own folder, with you and the band saved there as one file. */
+async function showFiles() {
+  const b = $('show-files'), id = S.take.id, title = titleOf(S.take), where = S.take.where;
+  clearProblem();
+  b.disabled = true;
+  let answer = null;
+  try { answer = await send('reveal', { take: id }); } catch (err) { /* said below */ }
+  b.disabled = false;
+  if (answer && answer.ok) return;
+  keepProblem(id, title, answer && answer.status === 401 ? lostWords(!!S.csrf).text : 'The folder did not open. It is ' + where, 'The folder did not open for ');
+}
 async function rename(id, name) {
   const title = titleOf(S.take), turn = ticket(S.nameTurn, id);
   clearProblem();
@@ -1348,6 +1360,7 @@ $('nav-takes').addEventListener('click', goShelf);
   });
   ['day', 'night'].forEach(function (n) { $('theme-' + n).addEventListener('click', function () { setTheme(n); }); });
   $('keep').addEventListener('click', function () { setKept(!S.take.kept); });
+  $('show-files').addEventListener('click', showFiles);
   $('take-name').addEventListener('change', saveName);
   $('roast-toggle').addEventListener('click', function () {
     S.roastOn = !S.roastOn;

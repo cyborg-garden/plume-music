@@ -43,6 +43,9 @@ it choose what you hear:
 **Keep** marks a take as one to hold on to, and you can give it a name. Keep deletes
 nothing. **Takes** in the header shows every take as a carved stone.
 
+**Show files** opens the take's folder. Your recording and the band's are in it, and so
+is `mix.wav`: the two as one, lined up, ready to share.
+
 Each take gets its own new folder, under `~/Music/Plume` unless `plume gui --takes DIR`
 names another. Settings shows where they go.
 

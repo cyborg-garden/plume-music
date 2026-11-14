@@ -1305,6 +1305,8 @@ def _take_doc(rows, cue_log, take_dir, ending, manifest, seed, sizes, keep, live
         "together": (recorded_from(manifest) == "input" and not live
                      and sizes.get("human") is not None and sizes.get("machine") is not None),
         "band_t_s": None if band is None else float(band["t_s"]),
+        # Rows keep the player's clock. The band's recording runs this far ahead of it.
+        "band_ahead_s": playing_delay_frames(take_dir, 1000) / 1000.0,
         "start_t_s": float(rows[0]["t_s"]) if rows else None,
         "end_t_s": float(rows[-1]["t_s"]) if rows else None,
         "portrait": portrait(rows, ending, events, seed),

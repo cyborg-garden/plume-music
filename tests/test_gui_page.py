@@ -2636,3 +2636,192 @@ def test_a_guide_that_cannot_load_says_so_in_words(tmp_path, docs):
         $('nav-guide').click(); await page.settle();
         return { screen: page.screen(), text: $('guide-body').textContent };""")
     assert out["screen"] == "guide" and "did not load" in out["text"]
+
+
+# ------------------------------------------------------------------ the playhead
+
+#: Where the line is, and what the player was told.
+LINE = ("{ x: parseFloat((/translateX\\(([-\\d.]+)px\\)/.exec($('playhead').style.transform || '') || [0, 'NaN'])[1]),"
+        " hidden: $('playhead').hidden, at: $('player').currentTime, frames: page.frames.length,"
+        " plays: $('player').plays, src: $('player').src }")
+#: A recording whose length the browser knows, playing.
+LOADED = """
+    await page.open(ids.tap);
+    $('listen-' + (typeof track === 'undefined' ? 'human' : track)).click();
+    $('player').duration = 400;
+    $('player').fire('loadedmetadata');
+    await page.settle();
+"""
+DOWN = "{ clientX: %s, button: 0, isPrimary: true, preventDefault() {} }"
+
+
+def _tap(docs, ahead=0.0):
+    take = docs["docs"][docs["ids"]["tap"]]
+    take["band_ahead_s"] = ahead
+    return take
+
+
+def _moment(take, share):
+    points = take["band"]
+    return points[0]["t_s"] + share * (points[-1]["t_s"] - points[0]["t_s"])
+
+
+def _x(share):
+    # The stub's sheet is 1280 wide with 46 of margin each side.
+    return 46 + share * (1280 - 92)
+
+
+@pytest.mark.parametrize("share", [0.0, 0.5, 1.0])
+def test_the_line_sits_on_the_moment_that_is_playing(tmp_path, docs, share):
+    t = _moment(_tap(docs), share)
+    out = run_page(tmp_path, docs, LOADED + f"$('player').currentTime = {t}; page.frame(); return {LINE};")
+    assert out["hidden"] is False
+    assert out["x"] == pytest.approx(_x(share), abs=0.01)
+
+
+def test_the_line_moves_on_every_frame_while_it_plays_and_rests_when_it_stops(tmp_path, docs):
+    take = _tap(docs)
+    out = run_page(tmp_path, docs, LOADED + f"""
+        const seen = [page.frames.length];
+        $('player').currentTime = {_moment(take, 0.25)}; page.frame();
+        const first = {LINE};
+        $('player').currentTime = {_moment(take, 0.26)}; page.frame();
+        const second = {LINE};
+        $('listen-play').click(); page.frame(); page.frame();
+        return {{ seen, first, second, after: page.frames.length }};""")
+    assert out["seen"] == [1], "one frame asked for, however many things redraw the player"
+    assert out["first"]["x"] == pytest.approx(_x(0.25), abs=0.01) and out["first"]["frames"] == 1
+    assert out["second"]["x"] == pytest.approx(_x(0.26), abs=0.01)
+    assert out["after"] == 0, "nothing runs while nothing plays"
+
+
+@pytest.mark.parametrize("track, ahead", [("human", 0.0), ("machine", 0.5)])
+def test_the_line_knows_the_band_was_recorded_ahead_of_the_player(tmp_path, docs, track, ahead):
+    take = _tap(docs, ahead=0.5)
+    span = take["band"][-1]["t_s"] - take["band"][0]["t_s"]
+    out = run_page(tmp_path, docs, f"const track = '{track}';" + LOADED
+                   + f"$('player').currentTime = {_moment(take, 0.5)}; page.frame(); return {LINE};")
+    assert out["x"] == pytest.approx(_x(0.5 + ahead / span), abs=0.01)
+
+
+@pytest.mark.parametrize("share", [0.0, 0.5, 1.0])
+def test_a_click_on_the_chart_moves_the_sound_to_that_moment(tmp_path, docs, share):
+    take = _tap(docs)
+    out = run_page(tmp_path, docs, LOADED + f"""
+        $('sheet').fire('pointerdown', {DOWN % _x(share)});
+        page.fireWindow('pointerup', {{}});
+        return {LINE};""")
+    assert out["at"] == pytest.approx(_moment(take, share), abs=0.001)
+    assert out["x"] == pytest.approx(_x(share), abs=0.01)
+
+
+def test_a_click_on_the_chart_while_the_band_plays_lands_on_the_same_moment(tmp_path, docs):
+    take = _tap(docs, ahead=0.5)
+    out = run_page(tmp_path, docs, "const track = 'machine';" + LOADED + f"""
+        $('sheet').fire('pointerdown', {DOWN % _x(0.5)});
+        return {LINE};""")
+    assert out["at"] == pytest.approx(_moment(take, 0.5) - 0.5, abs=0.001)
+    assert out["x"] == pytest.approx(_x(0.5), abs=0.01)
+
+
+def test_the_line_can_be_dragged_and_lets_go(tmp_path, docs):
+    take = _tap(docs)
+    out = run_page(tmp_path, docs, LOADED + f"""
+        $('sheet').fire('pointerdown', {DOWN % _x(0.2)});
+        page.fireWindow('pointermove', {{ clientX: {_x(0.7)} }});
+        const held = {LINE};
+        page.fireWindow('pointerup', {{}});
+        page.fireWindow('pointermove', {{ clientX: {_x(0.1)} }});
+        return {{ held, after: {LINE} }};""")
+    assert out["held"]["at"] == pytest.approx(_moment(take, 0.7), abs=0.001)
+    assert out["after"]["at"] == pytest.approx(_moment(take, 0.7), abs=0.001), "a pointer that was let go moves nothing"
+
+
+def test_a_pointer_that_never_pressed_the_chart_moves_nothing(tmp_path, docs):
+    _tap(docs)
+    out = run_page(tmp_path, docs, LOADED + f"page.fireWindow('pointermove', {{ clientX: 600 }}); return {LINE};")
+    assert out["at"] == 0
+
+
+def test_only_the_main_button_moves_the_sound(tmp_path, docs):
+    _tap(docs)
+    out = run_page(tmp_path, docs, LOADED + f"""
+        $('sheet').fire('pointerdown', {{ clientX: 600, button: 2, isPrimary: true, preventDefault() {{}} }});
+        return {LINE};""")
+    assert out["at"] == 0
+
+
+def test_left_of_the_first_bar_is_the_start_of_the_recording(tmp_path, docs):
+    take = _tap(docs)
+    out = run_page(tmp_path, docs, LOADED + f"""
+        $('player').currentTime = {_moment(take, 0.5)};
+        $('sheet').fire('pointerdown', {DOWN % 10});
+        return {LINE};""")
+    assert out["at"] == 0 and out["x"] == pytest.approx(_x(0.0), abs=0.01)
+
+
+def test_before_any_sound_a_drag_is_safe_and_play_starts_from_it(tmp_path, docs):
+    take = _tap(docs)
+    out = run_page(tmp_path, docs, f"""
+        await page.open(ids.tap);
+        $('sheet').fire('pointerdown', {DOWN % _x(0.5)});
+        page.fireWindow('pointermove', {{ clientX: {_x(0.6)} }});
+        page.fireWindow('pointerup', {{}});
+        const before = {LINE};
+        $('listen-play').click();
+        const unknown = {LINE};
+        $('sheet').fire('pointerdown', {DOWN % _x(0.4)});
+        page.fireWindow('pointerup', {{}});
+        $('player').duration = 400;
+        $('player').fire('loadedmetadata');
+        return {{ before, unknown, after: {LINE} }};""")
+    assert out["before"]["plays"] == 0 and out["before"]["src"] == "", "a drag is not a press on Play"
+    assert out["before"]["x"] == pytest.approx(_x(0.6), abs=0.01)
+    assert out["unknown"]["plays"] == 1 and out["unknown"]["x"] == pytest.approx(_x(0.6), abs=0.01)
+    assert out["after"]["at"] == pytest.approx(_moment(take, 0.4), abs=0.001)
+    assert out["after"]["x"] == pytest.approx(_x(0.4), abs=0.01)
+
+
+def test_another_recording_is_heard_from_the_same_moment(tmp_path, docs):
+    take = _tap(docs, ahead=0.5)
+    out = run_page(tmp_path, docs, LOADED + f"""
+        $('player').currentTime = {_moment(take, 0.5)};
+        $('listen-machine').click();
+        $('player').duration = 400;
+        $('player').fire('loadedmetadata');
+        return {LINE};""")
+    assert out["at"] == pytest.approx(_moment(take, 0.5) - 0.5, abs=0.001)
+    assert out["x"] == pytest.approx(_x(0.5), abs=0.01)
+
+
+def test_leaving_the_take_puts_the_line_back_and_stops_asking_for_frames(tmp_path, docs):
+    take = _tap(docs)
+    out = run_page(tmp_path, docs, LOADED + f"""
+        $('player').currentTime = {_moment(take, 0.5)}; page.frame();
+        await page.shelf(); page.frame(); page.frame();
+        const away = page.frames.length;
+        await page.open(ids.other);
+        return {{ away, ...{LINE} }};""")
+    assert out["away"] == 0
+    assert out["x"] == pytest.approx(_x(0.0), abs=0.01) and out["at"] == 0
+
+
+def test_a_take_with_no_recording_has_no_line_and_a_press_does_nothing(tmp_path, docs):
+    out = run_page(tmp_path, docs, f"""
+        await page.open(ids.lead);
+        $('sheet').fire('pointerdown', {DOWN % 600});
+        page.fireWindow('pointermove', {{ clientX: 700 }});
+        page.fireWindow('pointerup', {{}});
+        return {LINE};""")
+    assert out["hidden"] is True and out["plays"] == 0 and out["src"] == "" and out["frames"] == 0
+
+
+def test_the_line_adds_nothing_to_press_or_read_and_takes_its_colour_from_the_theme():
+    html = (STATIC / "index.html").read_text()
+    assert re.search(r'<div id="playhead" aria-hidden="true"( hidden)?></div>', html)
+    css = (STATIC / "plume.css").read_text()
+    rules = re.findall(r"^#playhead[^{]*\{[^}]*\}", css, flags=re.M)
+    assert rules and any("var(--now)" in rule for rule in rules)
+    assert not any(re.search(r"#[0-9a-fA-F]{3,8}\b|rgb|hsl", rule.split("{", 1)[1]) for rule in rules)
+    # A press on a moment still reaches the moment: the line itself is never in the way.
+    assert any("pointer-events: none" in rule for rule in rules)

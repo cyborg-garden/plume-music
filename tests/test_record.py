@@ -1566,3 +1566,14 @@ def test_a_moved_word_it_does_not_know_never_reaches_the_page():
 def test_steady_following_says_nothing():
     events = record.translate(_song_with_follow([]), ending_doc(), route="direct")
     assert not [e for e in events if e["label"] == "band followed"]
+
+
+@pytest.mark.parametrize("stream, want", [
+    ({"calibrated_ms": 250.0, "reported_ms": 480.0}, 0.25),
+    ({"calibrated_ms": None, "reported_ms": 48.0}, 0.048),
+    (None, 0.0)])
+def test_a_take_says_how_far_ahead_of_the_player_the_band_was_recorded(tmp_path, stream, want):
+    folder = write_take(tmp_path / "take", song(12), ending=ending_doc())
+    if stream is not None:
+        (folder / "stream.json").write_text(json.dumps(stream))
+    assert record.read_take(folder)["band_ahead_s"] == pytest.approx(want)

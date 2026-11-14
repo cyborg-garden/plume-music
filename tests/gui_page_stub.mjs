@@ -16,7 +16,7 @@ class El {
   constructor(page, tag) {
     Object.assign(this, { page, tag, children: [], attrs: {}, style: {}, classList: new Classes(), listeners: {},
       hidden: false, offsetWidth: 100, _id: '', _text: '', _value: '', edited: false,
-      plays: 0, pauses: 0, loads: 0, type: '', tabIndex: 0, open: false, width: 0, height: 0 });
+      plays: 0, pauses: 0, loads: 0, currentTime: 0, duration: NaN, type: '', tabIndex: 0, open: false, width: 0, height: 0 });
   }
   get id() { return this._id; }
   set id(v) { this._id = v; this.page.byId.set(v, this); }
@@ -58,7 +58,7 @@ class El {
   /* The audio element. It keeps count, and that is all it does. */
   play() { this.plays += 1; return Promise.resolve(); }
   pause() { this.pauses += 1; }
-  load() { this.loads += 1; }
+  load() { this.loads += 1; this.currentTime = 0; this.duration = NaN; }
 }
 
 /* A store that remembers every value it was ever given, so a key briefly kept shows. */
@@ -71,7 +71,7 @@ function store() {
 }
 
 export async function start(html, { takes, docs, guide = null, home = null, live = null, address = '#k=' + 'ab'.repeat(32), pinned = null, stored = null, setup = null }) {
-  const page = { byId: new Map(), activeElement: null, calls: [], held: [], failNext: {}, saved: {},
+  const page = { byId: new Map(), activeElement: null, calls: [], held: [], frames: [], failNext: {}, saved: {},
     home, live: live || { state: 'idle' }, replies: {}, down: false, later: new Map(),
     /* A person who has been through setup, unless a test says otherwise. */
     setup: setup || { step: 'count', line: 'Knock or clap 8 even beats.', note: null, choices: [], done: true, seconds: 4,
@@ -143,6 +143,9 @@ export async function start(html, { takes, docs, guide = null, home = null, live
   };
   const clearLater = (id) => { if (!page.later.delete(id)) realClear(id); };
   Object.assign(globalThis, { window: win, location, history, fetch: bridge, setTimeout: setLater, clearTimeout: clearLater,
+    /* A frame happens when a test says so: page.frame() runs what was asked for. */
+    requestAnimationFrame: (fn) => { page.frames.push(fn); return page.frames.length; },
+    cancelAnimationFrame: () => { page.frames.length = 0; },
     getComputedStyle: () => ({ paddingLeft: '40px', paddingRight: '40px', getPropertyValue: () => '#808080' }),
     document: {
       body: page.body, documentElement: page.root,
@@ -179,7 +182,8 @@ export async function start(html, { takes, docs, guide = null, home = null, live
   /* Typing leaves the box focused and edited, with no change event yet. */
   page.type = (text) => { const box = page.$('take-name'); box.focus(); box._value = text; box.edited = true; };
   /* The tab going away: a reload, a closed tab, or the browser leaving this page. */
-  page.fireWindow = (type) => (windowListeners[type] || []).forEach((fn) => fn({}));
+  page.fireWindow = (type, ev) => (windowListeners[type] || []).forEach((fn) => fn(ev || {}));
+  page.frame = () => { const due = page.frames.splice(0); due.forEach((fn) => fn(0)); };
   page.posts = (op) => page.calls.filter((c) => c.path === '/api/' + op).map((c) => c.body);
   await import('./app.mjs');
   await page.settle();

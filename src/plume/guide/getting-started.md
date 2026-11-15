@@ -22,7 +22,8 @@ questions again.
 
 ## Ending a take
 
-Press **Stop** at any time. On a plugged-in instrument you can also just stop playing:
+Press **Stop** at any time. On a plugged-in instrument, or a mic with the band only in
+your headphones, you can also just stop playing:
 the band fades out and the take ends by itself, about 20 seconds later, a little longer
 at slow tempos.
 A room mic hears the band as well as you, so it may never hear you stop. Press Stop there.

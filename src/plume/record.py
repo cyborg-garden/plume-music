@@ -1273,6 +1273,11 @@ def read_take(take_dir, *, fallback_seed: int = 0, live: bool = False) -> dict:
 def _take_doc(rows, cue_log, take_dir, ending, manifest, seed, sizes, keep, live, unread) -> dict:
     live = live and not isinstance(ending, dict)
     route = input_route(manifest)
+    if route == "headphones" and any(r.get("band_in_mic") for r in rows):
+        # The take stopped believing this mic partway: it heard the band in it.  What it
+        # says about the player after the band came in is then a room mic's, for the whole
+        # take, which is the cautious reading of the bars before it found out.
+        route = "room"
     events = translate(rows, ending, cue_log, has_human=sizes["human"] is not None,
                        live=live, unread=unread, route=route, recorded=recorded_from(manifest))
     lines = roast(rows, ending, cue_log, events=events, route=route)

@@ -899,6 +899,11 @@ class SelfMasker:
         the coupling estimate never found a gap (see the class docstring)."""
         return (self.masked_frames / self.frames_seen) if self.frames_seen else 0.0
 
+    def enable(self) -> None:
+        """Start masking partway through: an input said to be out of the band's reach
+        turned out to hold it.  Frames and levels still arrive in step from here."""
+        self._enabled = True
+
     def mask(self, frames: list, machine_rms_db: list[float]
              ) -> tuple[list, list[bool]]:
         """Return ``(frames_for_tracker, self_masked_flags)``.
@@ -4610,9 +4615,17 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
     is_direct = route.source == "direct" and midi_port is None
     # The band cannot reach this input: an instrument plugged in, or a mic with the band
     # only in headphones.  What it hears with the band in is her, so that is believed.
-    # A mic still hears the room, so before the band only notes count as her playing,
-    # the way they do on any mic; ``is_direct`` is kept for what a level alone decides.
+    # A mic still hears the room, so only notes count as her playing, before the band
+    # the way they do on any mic and under it too; ``is_direct`` is kept for what a level
+    # alone decides.
     hears_only_her = route.isolated and midi_port is None
+    # Her word about headphones is checked against what the mic holds, once the band is in:
+    # they may have come out, or the yes may have been wrong.  The take is the one place
+    # that can tell, so it decides, once, and says so in its log (see BandInMic).
+    from .bandentry import BandInMic  # noqa: PLC0415
+    band_in_mic = BandInMic(SR) if hears_only_her and route.band_in_headphones else None
+    band_in_mic_on = [False]            # set by the planner when the band comes in
+    band_in_mic_doc: list = [None]      # the decision, once made, for every row after it
     max_minutes = resolve_max_minutes(max_minutes)
 
     from .duet import DuetEngine  # noqa: PLC0415
@@ -4890,6 +4903,8 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
             v = None if voice_ring is None else voice_ring.read(n)
             if recorder is not None:
                 recorder.audio(x, m, v)
+            if band_in_mic is not None and band_in_mic_on[0]:
+                band_in_mic.feed(x, m)
             looper.feed(x)
             masked_frames, _flags, beat_state, harm_state = analysis_step(
                 extractor=extractor, hop_rms=hop_rms, masker=masker,
@@ -4947,6 +4962,7 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
         """Plan, render and place exactly one machine bar.  Returns the next
         bar's bpm.  Split out of the loop so its cost can be measured (and so
         the loop body stays readable)."""
+        nonlocal hears_only_her, follow, silence_ending   # a mic found to hold the band
         held_bpm = looper.held_bpm()    # a loop is a fixed length of audio
         if held_bpm is not None:
             bpm = held_bpm
@@ -5079,7 +5095,12 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
             elif entry.band_is_in:
                 playing = human is not None and not human.silent
                 if hears_only_her:
+                    # A mic hears the room as well as her, so under the band too it takes
+                    # notes and not a level alone: talk, or a fan, must not hold the band
+                    # up after she stops.  The bar alone, as a player coming back from a
+                    # rest must not wait a bar to be believed.
                     guitar_ear.bar(bar_chroma)
+                    playing = playing and guitar_ear.last_bar_tonal
             else:
                 playing = bar >= first_heard_bar and guitar_ear.bar(bar_chroma)
             # ``playing`` is about the bar the window read, two bars back; the ear
@@ -5103,6 +5124,20 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
                                           change_style(picked, bridge=plain_intro[0]))
                         entered = dataclasses.replace(
                             entered, chord=entry.chord_at(bar, harm_state))
+            if band_in_mic is not None:
+                band_in_mic_on[0] = entry.band_is_in
+                if band_in_mic.latched and band_in_mic_doc[0] is None:
+                    # The band is in the mic after all.  From here it is a room mic, for
+                    # the rest of the take: it never goes back, whatever it hears next.
+                    hears_only_her = False
+                    chord_follow.band_in_mic = True
+                    follow = BandFollow(trusted=False, mode=FOLLOW)
+                    silence_ending = SilenceEnding()
+                    masker.enable()
+                    band_in_mic_doc[0] = {
+                        "since_bar": bar, "share": round(float(band_in_mic.share), 2),
+                        "reason": "the band is in this mic, so it is a room mic from "
+                                  "here: playing and her chords are no longer believed"}
             # Her chords (herchords): what she played in the window bar, then the
             # band's chord for this bar, hers when she holds or loops one clearly, the
             # template otherwise.
@@ -5120,7 +5155,8 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
             playing_trusted = hears_only_her or midi_port is not None or not entry.band_is_in
             if entry.band_is_in:
                 duet.heard_notes = guitar_ear.notes()
-            # The ear only runs before the band; after that its last reading is stale.
+            # On an input the band can reach, the ear only runs before the band; after
+            # that its last reading is stale.
             fade_db, fade_done = silence_ending.update(
                 t_bar, playing or (not is_direct and not entry.band_is_in
                                    and guitar_ear.last_bar_tonal), bar_len)
@@ -5307,6 +5343,8 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
             doc["section"] = section
             doc["playing"] = playing
             doc["playing_trusted"] = playing_trusted
+            if band_in_mic_doc[0] is not None:
+                doc["band_in_mic"] = band_in_mic_doc[0]
             doc["fade_db"] = round(fade_db, 2)
             guard.winding = fade_db < 0.0     # the band is ending: her silence is expected
             doc["entry_ramp"] = {r: round(v, 3) for r, v in levels.items()

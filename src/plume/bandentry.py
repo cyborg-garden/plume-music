@@ -411,8 +411,9 @@ TONAL_TOP3 = 0.42
 
 
 class GuitarEar:
-    """Hear a guitar over drums alone.  It only works before the band comes in: once
-    bass and chords are in the room, the mic's pitches are mostly theirs."""
+    """Hear a guitar over drums alone.  On a mic the band can reach it only works before
+    the band comes in: once bass and chords are in the room, the mic's pitches are mostly
+    theirs.  An input the band cannot reach goes on being read under the band."""
 
     def __init__(self):
         self._heard = np.zeros(12)
@@ -448,6 +449,90 @@ class GuitarEar:
             return ()
         order = np.argsort(self._heard)[::-1][:count]
         return tuple(int(i) for i in order if self._heard[i] > 0.0)
+
+
+#: How much of a mic's power must be the band, arriving late, for a stretch of it to count
+#: as the band being in the mic.  A guess: on the fake device a clean mic stays under 0.13
+#: and the band at -6 dB under a player reads 0.2 to 0.6, or over 0.9 once she rests.  No
+#: real headphones, speakers or mic have been measured against it.
+BAND_IN_MIC_SHARE = 0.25
+#: Each stretch judged, and how many more of them must say yes than no before the take
+#: stops believing the mic: about eight seconds of evidence, so two or three bars.
+BAND_IN_MIC_WINDOW_S = 2.0
+BAND_IN_MIC_WINDOWS = 4
+#: A stretch counts either way only when the band is sounding and the mic is not empty.
+BAND_IN_MIC_BAND_FLOOR_DB = -50.0
+BAND_IN_MIC_MIC_FLOOR_DB = -60.0
+#: Output latency, air and input latency, generously.
+BAND_IN_MIC_MAX_DELAY_S = 0.7
+
+
+def band_share(mic, band, sr: int, max_delay_s: float = BAND_IN_MIC_MAX_DELAY_S) -> float:
+    """How much of ``mic``'s power is ``band`` arriving up to ``max_delay_s`` late, 0 to 1."""
+    n = min(len(mic), len(band))
+    if n == 0:
+        return 0.0
+    mic = np.asarray(mic[:n], dtype=np.float64)
+    band = np.asarray(band[:n], dtype=np.float64)
+    e_mic, e_band = float(np.sum(mic ** 2)), float(np.sum(band ** 2))
+    if e_mic <= 1e-9 or e_band <= 1e-9:
+        return 0.0
+    size = 2 * n
+    xcorr = np.fft.irfft(np.fft.rfft(mic, size) * np.conj(np.fft.rfft(band, size)),
+                         size)[:max(1, int(max_delay_s * sr))]
+    return min(1.0, float(np.max(np.abs(xcorr))) ** 2 / (e_mic * e_band))
+
+
+class BandInMic:
+    """Is the band in a mic the player said it could not reach?
+
+    The safety net under her word: headphones come out, or the yes was wrong, and nothing
+    else can see it.  Fed the mic and what the band played, block by block, once the band
+    is in.  Every :data:`BAND_IN_MIC_WINDOW_S` it asks how much of the mic is the band.  A
+    stretch that says yes counts one up, one that says no counts one down, and at
+    :data:`BAND_IN_MIC_WINDOWS` it latches: one loud bar cannot trip it, and once tripped
+    it never goes back, because a take that flips between believing and not is worse than
+    either.
+    """
+
+    def __init__(self, sr: int):
+        self._sr = int(sr)
+        self._size = int(BAND_IN_MIC_WINDOW_S * self._sr)
+        self._mic: list = []
+        self._band: list = []
+        self._held = 0
+        self._count = 0
+        self.latched = False
+        #: The band's share of the mic in the stretch that latched it.
+        self.share: float | None = None
+
+    def feed(self, mic, band) -> None:
+        if self.latched:
+            return
+        self._mic.append(np.asarray(mic, dtype=np.float32))
+        self._band.append(np.asarray(band, dtype=np.float32))
+        self._held += len(mic)
+        if self._held < self._size:
+            return
+        mic, band = np.concatenate(self._mic), np.concatenate(self._band)
+        self._mic, self._band, self._held = [], [], 0
+        for at in range(0, len(mic) - self._size + 1, self._size):
+            self._judge(mic[at:at + self._size], band[at:at + self._size])
+            if self.latched:
+                return
+
+    def _judge(self, mic, band) -> None:
+        def db(x):
+            return 10.0 * math.log10(float(np.mean(x.astype(np.float64) ** 2)) + 1e-12)
+        if db(band) < BAND_IN_MIC_BAND_FLOOR_DB or db(mic) < BAND_IN_MIC_MIC_FLOOR_DB:
+            return                  # nothing to hear, so it says nothing either way
+        share = band_share(mic, band, self._sr)
+        if share >= BAND_IN_MIC_SHARE:
+            self._count += 1
+            if self._count >= BAND_IN_MIC_WINDOWS:
+                self.latched, self.share = True, share
+        else:
+            self._count = max(0, self._count - 1)
 
 
 class BandEntry:

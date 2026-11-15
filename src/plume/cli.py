@@ -2639,7 +2639,9 @@ def _add_route_flags(p, *, voice: bool = True) -> None:
                    default=False,
                    help="a mic, with the band only in your headphones, so the band cannot "
                         "reach it: turns off self-masking and believes what it hears once "
-                        "the band is in. Through speakers, leave this off")
+                        "the band is in, unless the take hears the band in the mic, when "
+                        "it goes back to a room mic for good. Through speakers, leave "
+                        "this off")
 
 
 def cmd_midi(args):  # noqa: ARG001

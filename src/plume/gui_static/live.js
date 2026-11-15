@@ -93,6 +93,11 @@ export const DIRECT_LINE = 'A Direct or monitor button on your interface has no 
 export const WIRELESS_LINE = 'Wireless speakers arrive late, which makes playing along hard.';
 export const SEND_LINE = 'It arrives slightly late. Only for an instrument plugged in: a mic on this channel would howl.';
 export const ROOM_OUTPUT_LINE = 'Hear me stays off here: a room mic through speakers would howl.';
+/* She has said that output is headphones, so nothing would howl, and the rule is still the rule. */
+export const PHONES_OUTPUT_LINE = 'Hear me stays off on an output you chose. A mic can only hear itself on the system output.';
+/* The take's own decision, from its log: it heard the band in a mic she said the band could not reach. */
+export function bandInMic(row) { return !!row && !!row.band_in_mic; }
+export const BAND_IN_MIC_LINE = 'Plume hears the band in this mic, so it has stopped going by what the mic hears. Press Stop when you are done.';
 export function sendDelayLine(ms) {
   return 'Your instrument reaches that output about ' + Math.round(ms) + ' ms late, by your device\'s own count, and it could be more.';
 }
@@ -102,11 +107,13 @@ export function countWords(mode) {
   return mode === 'direct' ? 'Play 8 even beats. Muted strings work well.' : 'Knock or clap 8 even beats.';
 }
 
-/* Home's one small line: what Start will use. output: the name of another output, if any. */
-export function routeLine(device, channel, key, style, output) {
+/* Home's one small line: what Start will use. output: the name of another output, if any.
+   phones: she has said the band is only in her headphones, so this mic is not hearing the room's band. */
+export function routeLine(device, channel, key, style, output, phones) {
+  const mic = phones ? 'mic, band in headphones' : 'room mic';
   const bits = device
-    ? [device.name, device.mode === 'direct' ? 'channel ' + channel : 'room mic']
-    : ['System default', 'room mic'];
+    ? [device.name, device.mode === 'direct' ? 'channel ' + channel : mic]
+    : ['System default', mic];
   if (output) bits.push('out to ' + output);
   if (key) bits.push(key);
   if (style) bits.push(style);

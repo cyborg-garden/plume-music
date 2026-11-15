@@ -2647,9 +2647,10 @@ def test_show_files_names_the_take_and_nothing_else(tmp_path, docs):
         $('show-files').click();
         await page.settle();
         return { posts: page.posts('reveal'), key: page.calls.find((c) => c.path === '/api/reveal').key,
-                 quiet: $('keep-error').hidden, off: $('show-files').disabled, ...""" + SOUND + """ };""")
+                 quiet: $('keep-error').hidden, off: $('show-files').disabled,
+                 note: [$('files-note').hidden, $('files-note').textContent], ...""" + SOUND + """ };""")
     assert out["posts"] == [{"take": docs["ids"]["tap"]}] and out["key"] == KEY
-    assert out["quiet"] is True and out["off"] is False
+    assert out["quiet"] is True and out["off"] is False and out["note"] == [True, ""]
     assert out["plays"] == 0 and out["audio"] == 0
 
 
@@ -2668,3 +2669,35 @@ def test_show_files_is_drawn_from_the_pages_own_colours():
     rules = re.findall(r"#show-files[^{]*\{([^}]*)\}", (STATIC / "plume.css").read_text())
     assert rules and all("#" not in rule and "rgb" not in rule for rule in rules)
     assert "var(--secondary)" in rules[0]
+
+
+@pytest.mark.parametrize("answer, words", [
+    ({"shown": True, "mix": False, "band_twice": False},
+     "No mix was saved for this take. Your recordings are in the folder."),
+    ({"shown": True, "mix": True, "band_twice": True},
+     "Saved as mix.wav. Your mic may have heard the band too, so the band could be in it twice."),
+    # An answer that does not say a mix was saved is not read as one.
+    ({"shown": True}, "No mix was saved for this take. Your recordings are in the folder."),
+])
+def test_show_files_says_one_line_when_the_mix_is_not_plain(tmp_path, docs, answer, words):
+    out = run_page(tmp_path, docs, """
+        await page.open(ids.tap);
+        page.replies.reveal = [200, """ + json.dumps(answer) + """];
+        $('show-files').click();
+        await page.settle();
+        const here = [$('files-note').hidden, $('files-note').textContent];
+        await page.shelf();
+        await page.open(ids.other);
+        const elsewhere = [$('files-note').hidden, $('files-note').textContent];
+        page.replies.reveal = [200, { shown: true, mix: true, band_twice: false }];
+        page.history.go(-2);
+        await page.settle();
+        const back = $('files-note').textContent;
+        $('show-files').click();
+        await page.settle();
+        return { here, elsewhere, back, after: [$('files-note').hidden, $('files-note').textContent],
+                 problem: $('keep-error').hidden };""")
+    assert out["here"] == [False, words] and out["problem"] is True
+    assert out["elsewhere"] == [True, ""], "the line is about one take"
+    assert out["back"] == words
+    assert out["after"] == [True, ""], "a plain mix clears it"

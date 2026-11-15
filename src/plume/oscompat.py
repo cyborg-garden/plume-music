@@ -246,36 +246,71 @@ def replace(src, dst, *, attempts: int = 5, delay: float = 0.02, **kw) -> None:
 
 # ------------------------------------------------------------------ the file manager
 
-def reveal_command(folder, select: str | None = None, *, platform: str | None = None) -> list[str]:
+#: Whether the file manager's exit code says if it worked.  On Windows it does not:
+#: the code there is non-zero even when the window opened.
+LAUNCH_EXIT_MEANS_SOMETHING = not IS_WINDOWS
+#: How long a request waits to hear that the file manager failed.  One that is still
+#: running after this has opened, or is a desktop whose opener stays until it closes.
+LAUNCH_PATIENCE_S = 2.0
+
+
+def reveal_command(folder, select: str | None = None, *, platform: str | None = None,
+                   environ=None):
     """The command that shows ``folder`` in this system's file manager.
 
     ``select`` is a file in that folder to arrive on, where the file manager can do
     that: macOS and Windows can, and the Linux desktops share no way to, so there the
     folder opens.  It is a plain file name, never a path.
+
+    macOS and Linux get an argv.  macOS is asked to *reveal*, never to open: a folder
+    named like an application would otherwise be started.  Windows gets one command
+    line, because its file manager reads its own: it splits on commas and spaces, so
+    the path goes in double quotes straight after ``/select,``, which no argv quoting
+    produces.  A Windows path cannot hold a double quote, and one that does is
+    refused.  The program is named in full: Windows looks in the current folder for a
+    bare name before it looks anywhere else.
     """
     platform = sys.platform if platform is None else platform
     folder = os.fspath(folder)
     if select is not None and (not select or select in (".", "..") or "/" in select or "\\" in select):
         raise ValueError("select must be a plain file name")
     if platform == "win32":
-        if select is None:
-            return ["explorer", folder]
-        return ["explorer", "/select," + folder.rstrip("\\") + "\\" + select]
+        environ = os.environ if environ is None else environ
+        program = (environ.get("SystemRoot") or "C:\\Windows").rstrip("\\") + "\\explorer.exe"
+        target = folder.rstrip("\\") if len(folder.rstrip("\\")) > 2 else folder
+        if select is not None:
+            target = target.rstrip("\\") + "\\" + select
+        if '"' in program or '"' in target:
+            raise ValueError("a Windows path cannot hold a double quote")
+        return f'"{program}" /select,"{target}"' if select is not None else f'"{program}" "{target}"'
     if platform == "darwin":
-        if select is None:
-            return ["open", folder]
-        return ["open", "-R", folder.rstrip("/") + "/" + select]
+        return ["/usr/bin/open", "-R", folder if select is None else folder.rstrip("/") + "/" + select]
     return ["xdg-open", folder]
 
 
-def _launch(argv: list[str]) -> None:
-    """Start the file manager and let go of it.  Raises ``OSError`` if it cannot start."""
-    proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                            stderr=subprocess.DEVNULL, close_fds=True)
-    # Reaped when it ends, so it is never left a zombie.  Its exit code says nothing
-    # useful: the Windows one is non-zero even when the window opened.
+def _launch(command, *, popen=None, wait: bool | None = None) -> None:
+    """Start the file manager.  Raises ``OSError`` if it cannot start, or starts and fails.
+
+    One program, started directly: never through a shell, which would read a folder's
+    name as a command.  Where the exit code means something it is waited for, briefly:
+    a missing folder, or a desktop with no display, ends at once and non-zero.
+    """
     import threading  # noqa: PLC0415
 
+    popen = subprocess.Popen if popen is None else popen
+    wait = LAUNCH_EXIT_MEANS_SOMETHING if wait is None else wait
+    proc = popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                 stderr=subprocess.DEVNULL, close_fds=True)
+    if wait:
+        try:
+            code = proc.wait(timeout=LAUNCH_PATIENCE_S)
+        except subprocess.TimeoutExpired:
+            pass
+        else:
+            if code != 0:
+                raise OSError(f"the file manager ended with code {code}")
+            return
+    # Reaped when it ends, so it is never left a zombie.
     threading.Thread(target=proc.wait, name="plume-reveal", daemon=True).start()
 
 

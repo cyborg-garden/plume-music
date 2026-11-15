@@ -577,9 +577,16 @@ you land on, then clears.
 Show files opens the take's folder in your file manager and saves `mix.wav` there first:
 `human.wav` and `machine.wav` as one file, the player moved earlier by the round trip in
 `stream.json` (the measured one if there is one, else the one the device reported) and
-balanced the way Together plays them. It is written once and left alone until a recording
-changes. A take still being recorded gets no mix, and a room mic that heard the band from
-speakers has the band in its mix twice.
+balanced the way Together plays them. The file ends with a note of what it was made from
+(each recording and `stream.json` by size and time, and the mixing rule), and it is made
+again whenever any of that differs. Recording again into the same folder removes it.
+
+The page says nothing when the mix is plain. It says one line when no mix was saved: a take
+with one recording, one still being recorded, or one too long for a WAV. And it says one
+line when the mic may have heard the band, since the band is then in the mix twice. A take
+from a plugged-in instrument, or one whose `session.json` says the band was only in
+headphones, gets no such line. If the file manager does not open, the page says where the
+folder is.
 
 This page has only been checked on made-up take folders, in headless Chromium with the
 sound muted. Play has not been pressed in a real browser, and the page has not been tried

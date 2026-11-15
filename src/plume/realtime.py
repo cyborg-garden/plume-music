@@ -1592,6 +1592,8 @@ REC_MIDI = "midi.ndjson"
 REC_STREAM = "stream.json"
 #: Keep's sidecar.  Plain JSON beside the take, so it outlives the page that wrote it.
 REC_KEEP = "keep.json"
+#: Both recordings as one file, saved by the page when its Show files is pressed.
+REC_MIX = "mix.wav"
 
 #: Audio is flushed to disk at most this often — the most a `kill -9` can
 #: cost.  Decisions are flushed every line (they are what an observer reads).
@@ -1697,6 +1699,8 @@ class SessionRecorder:
             (self.dir / REC_ENDING).unlink(missing_ok=True)
             (self.dir / REC_KEEP).unlink(missing_ok=True)
             (self.dir / REC_STREAM).unlink(missing_ok=True)
+            # The page's mix of the last take is not a mix of this one.
+            (self.dir / REC_MIX).unlink(missing_ok=True)
             # _midi_listening writes a MIDI take's first line before this runs, so a
             # handle here means this take's own file.  Without one the file is the last take's.
             if self._midi is None:

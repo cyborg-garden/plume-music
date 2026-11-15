@@ -16,7 +16,7 @@ class El {
   constructor(page, tag) {
     Object.assign(this, { page, tag, children: [], attrs: {}, style: {}, classList: new Classes(), listeners: {},
       hidden: false, offsetWidth: 100, _id: '', _text: '', _value: '', edited: false,
-      plays: 0, pauses: 0, loads: 0, currentTime: 0, duration: NaN, type: '', tabIndex: 0, open: false, width: 0, height: 0 });
+      plays: 0, pauses: 0, loads: 0, currentTime: 0, duration: NaN, paused: true, type: '', tabIndex: 0, open: false, width: 0, height: 0 });
   }
   get id() { return this._id; }
   set id(v) { this._id = v; this.page.byId.set(v, this); }
@@ -50,15 +50,16 @@ class El {
     if (was && was.edited) { was.edited = false; was.fire('change'); }
   }
   blur() { if (this.page.activeElement === this) this.page.body.focus(); }
-  getBoundingClientRect() { return RECT; }
+  /* page.rects[id] moves or resizes one element, as a margin or a narrower window would. */
+  getBoundingClientRect() { return this.page.rects[this._id] || RECT; }
   scrollIntoView() {}
   querySelector(sel) { return this.walk().find((e) => e.tag === sel) || null; }
   walk() { return this.children.flatMap((c) => [c, ...c.walk()]); }
   getContext() { return null; }
   /* The audio element. It keeps count, and that is all it does. */
-  play() { this.plays += 1; return Promise.resolve(); }
-  pause() { this.pauses += 1; }
-  load() { this.loads += 1; this.currentTime = 0; this.duration = NaN; }
+  play() { this.plays += 1; this.paused = false; return Promise.resolve(); }
+  pause() { this.pauses += 1; this.paused = true; }
+  load() { this.loads += 1; this.currentTime = 0; this.duration = NaN; this.paused = true; }
 }
 
 /* A store that remembers every value it was ever given, so a key briefly kept shows. */
@@ -71,7 +72,7 @@ function store() {
 }
 
 export async function start(html, { takes, docs, guide = null, home = null, live = null, address = '#k=' + 'ab'.repeat(32), pinned = null, stored = null, setup = null }) {
-  const page = { byId: new Map(), activeElement: null, calls: [], held: [], frames: [], failNext: {}, saved: {},
+  const page = { byId: new Map(), activeElement: null, calls: [], held: [], frames: [], rects: {}, failNext: {}, saved: {},
     home, live: live || { state: 'idle' }, replies: {}, down: false, later: new Map(),
     /* A person who has been through setup, unless a test says otherwise. */
     setup: setup || { step: 'count', line: 'Knock or clap 8 even beats.', note: null, choices: [], done: true, seconds: 4,

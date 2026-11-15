@@ -5,7 +5,7 @@
    Start or on a choice it led to, and nothing here gives those buttons focus, so a stray key
    cannot press them. */
 import { clearStones, cssVar, queueStone, rng, stonesIdle, tok } from '/static/stone.js';
-import { audioTime, axisTime, axisX, hitBoxes, lineSpans, nextIndex, takeTime } from '/static/layout.js';
+import { audioTime, axisSpans, axisTime, axisX, hitBoxes, lineSpans, nextIndex, takeTime } from '/static/layout.js';
 import { lostWords, pinnedRoute, routeOf } from '/static/session.js';
 import { pageTitle, parseGuide, renderGuide } from '/static/guide.js';
 import { BAND_IN_INPUT_LINE, DIRECT_LINE, FADING_LINE, NO_ENDING, ROOM_END_LINE, ROOM_OUTPUT_LINE, SEND_LINE, WIRELESS_LINE, askingLine, bandInInput, countWords, delayLine, endLine, endedNote, isFading, isRunning, keyLine, landing, meterShare, movedOutput, routeLine, sendDelayLine, settledLine, setupTrouble, setupView, signView, stageWords, watchEnding, youView } from '/static/live.js';
@@ -15,7 +15,7 @@ const S = { csrf: '', take: null, selected: null, roastOn: true, screen: 'loadin
   shelfKey: null, shelfDone: false, shelfTakes: [], lastTake: null, shelfScroll: 0, cameByLink: false,
   nameFor: null, nameSent: '', keepTurn: {}, nameTurn: {}, moving: false, failed: null, newNames: {},
   live: { state: 'idle' }, liveTurn: 0, following: false, starting: false, stopSent: false, stopPending: false,
-  trackButtons: {}, track: null, audioOn: false, seekTo: null, axis: null, frame: 0, scrub: false,
+  trackButtons: {}, track: null, audioOn: false, seekTo: null, axis: null, frame: 0, scrub: null,
   home: null, homeTurn: 0, homeNote: '', settingsNote: '', form: { device: null, channel: null },
   setup: null, setupTurn: 0, listening: false, listenSlow: false, answering: false, ending: NO_ENDING,
   guide: null };
@@ -144,7 +144,7 @@ function drawSheet() {
   const had = document.activeElement && document.activeElement.id;
   wrap.textContent = ''; list.textContent = '';
   const phone = window.innerWidth < 600, empty = !take.bars;
-  S.axis = empty ? null : g.axis;
+  S.axis = !empty && axisSpans(g.axis) ? g.axis : null;
   placePlayhead();
   $('sheet-empty').hidden = !empty;
   $('sheet-empty').textContent = take.unread ? 'This log is too big to draw here.'
@@ -300,7 +300,8 @@ function drawReplay() {
 function soundAt() {
   return S.seekTo !== null ? S.seekTo : $('player').currentTime || 0;
 }
-function bandAhead() { return S.take ? S.take.band_ahead_s : 0; }
+/* A take that cannot say how far ahead the band was recorded draws both on one clock. */
+function bandAhead() { return S.take && S.take.band_ahead_s || 0; }
 /* The line on the chart. It only ever follows soundAt. */
 function placePlayhead() {
   const line = $('playhead'), on = !!(S.axis && S.track && S.take);
@@ -326,8 +327,39 @@ function seekToX(x) {
 function scrubTo(ev) {
   seekToX(ev.clientX - $('sheet').getBoundingClientRect().left);
 }
+/* One pointer holds the line at a time: S.scrub is that pointer, and no other moves the sound
+   or lets go for it. A mouse press is a press at once. A finger may be on its way down the
+   page instead, so it holds nothing until it has gone along the chart or lifted where it landed. */
+const DRAG_SLOP = 8;
+function beginScrub(ev) {
+  if (S.scrub || ev.button > 0 || ev.isPrimary === false || !S.axis || !S.track) return;
+  S.scrub = { id: ev.pointerId, x: ev.clientX, y: ev.clientY, held: ev.pointerType !== 'touch' };
+  if (S.scrub.held) holdLine(ev);
+}
+function holdLine(ev) {
+  S.scrub.held = true;
+  $('sheet').classList.toggle('scrub', true);
+  scrubTo(ev);
+}
+function moveScrub(ev) {
+  if (!S.scrub || ev.pointerId !== S.scrub.id) return;
+  /* No button down means the release happened somewhere it could not be heard. */
+  if (ev.buttons === 0) { endScrub(); return; }
+  if (S.scrub.held) { scrubTo(ev); return; }
+  const dx = Math.abs(ev.clientX - S.scrub.x), dy = Math.abs(ev.clientY - S.scrub.y);
+  if (dy >= DRAG_SLOP && dy >= dx) endScrub();
+  else if (dx >= DRAG_SLOP) holdLine(ev);
+}
+function liftScrub(ev) {
+  if (!S.scrub || ev.pointerId !== S.scrub.id) return;
+  if (!S.scrub.held) scrubTo(ev);
+  endScrub();
+}
+function cancelScrub(ev) {
+  if (S.scrub && ev.pointerId === S.scrub.id) endScrub();
+}
 function endScrub() {
-  S.scrub = false;
+  S.scrub = null;
   $('sheet').classList.toggle('scrub', false);
 }
 function stopAudio() {
@@ -337,7 +369,6 @@ function stopAudio() {
   p.load();
   S.audioOn = false; S.seekTo = null;
   endScrub();
-  placePlayhead();
   $('listen-seek').value = '0';
   $('listen-time').textContent = '';
   $('listen-play').textContent = 'Play';
@@ -364,7 +395,8 @@ function drawPlayer() {
 }
 /* Changing what you hear keeps your place, so the three can be compared at one moment. */
 function playTrack(track) {
-  const p = $('player'), at = audioTime(takeTime(soundAt(), S.track, bandAhead()), track, bandAhead(), null);
+  /* The start is the start of every recording, whichever clock it keeps. */
+  const p = $('player'), now = soundAt(), at = now > 0 ? audioTime(takeTime(now, S.track, bandAhead()), track, bandAhead(), null) : 0;
   S.track = track;
   S.seekTo = at || null;
   p.src = trackUrl(track);
@@ -1339,15 +1371,21 @@ $('player').addEventListener('ended', function () {
 /* The whole chart moves the sound, so the line can be grabbed anywhere along it. The moves
    and the letting go are heard on the window: a drag may leave the chart, and a moment
    pressed on the way still gets its own click. */
-$('sheet').addEventListener('pointerdown', function (ev) {
-  if (ev.button > 0 || ev.isPrimary === false || !S.axis || !S.track) return;
-  S.scrub = true;
-  $('sheet').classList.toggle('scrub', true);
-  scrubTo(ev);
+$('sheet').addEventListener('pointerdown', beginScrub);
+window.addEventListener('pointermove', moveScrub);
+window.addEventListener('pointerup', liftScrub);
+/* The browser took the gesture for a scroll, or the release went somewhere else. */
+window.addEventListener('pointercancel', cancelScrub);
+window.addEventListener('blur', endScrub);
+window.addEventListener('contextmenu', endScrub);
+/* The sound can stop or start without this page asking: a media key, or a recording that
+   will not load. What the player says is what the page shows, and the frames follow it. */
+['play', 'pause', 'error'].forEach(function (type) {
+  $('player').addEventListener(type, function () {
+    S.audioOn = type !== 'error' && !$('player').paused;
+    drawPlayer();
+  });
 });
-window.addEventListener('pointermove', function (ev) { if (S.scrub) scrubTo(ev); });
-window.addEventListener('pointerup', endScrub);
-window.addEventListener('pointercancel', endScrub);
 $('nav-takes').addEventListener('click', goShelf);
   $('nav-settings').addEventListener('click', goSettings);
   $('settings-done').addEventListener('click', goHome);

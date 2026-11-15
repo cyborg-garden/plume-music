@@ -258,11 +258,11 @@ def test_a_place_off_either_end_is_the_nearest_moment_on_the_chart(tmp_path):
     assert axis_js(tmp_path, "return [layout.axisTime(axis, -50), layout.axisTime(axis, 5000)];") == [8.0, 208.0]
 
 
-def test_a_chart_of_one_point_still_answers(tmp_path):
+def test_a_chart_of_one_point_still_draws_its_marks(tmp_path):
     out = run_js(tmp_path, "layout", body="""
         const axis = { x0: 46, x1: 1234, t0: 3, t1: 3 };
-        return [layout.axisX(axis, 3), layout.axisTime(axis, 600)];""")
-    assert out[0] == 46 and 3 <= out[1] <= 4
+        return layout.axisX(axis, 3);""")
+    assert out == 46
 
 
 @pytest.mark.parametrize("track, want", [("human", 50.0), ("machine", 50.25), ("together", 50.25)])
@@ -278,4 +278,15 @@ def test_no_place_is_before_the_recording_starts(tmp_path, length, want):
 
 def test_no_place_is_past_the_end_of_a_recording_whose_length_is_known(tmp_path):
     out = run_js(tmp_path, "layout", body="return [layout.audioTime(500, 'human', 0, 300), layout.audioTime(500, 'human', 0, null)];")
-    assert out == [300, 500]
+    assert 299.8 < out[0] < 300, "the very end would read as finished"
+    assert out[1] == 500
+
+
+@pytest.mark.parametrize("axis, ok", [
+    ({"x0": 46, "x1": 1234, "t0": 8.0, "t1": 208.0}, True),
+    ({"x0": 46, "x1": 1234, "t0": 3.0, "t1": 3.0}, False),
+    ({"x0": 46, "x1": 1234, "t0": 0, "t1": 0}, False),
+    ({"x0": 46, "x1": 46, "t0": 8.0, "t1": 208.0}, False),
+    (None, False)])
+def test_only_a_chart_that_spans_time_and_width_can_place_a_moment(tmp_path, axis, ok):
+    assert run_js(tmp_path, "layout", body=f"return layout.axisSpans({json.dumps(axis)});") is ok

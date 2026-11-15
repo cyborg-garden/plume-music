@@ -1222,3 +1222,13 @@ def test_together_needs_the_page_key(takes, anon, client):
     _two_track_take(takes, "direct-take", "direct")
     tid = take_id(client, "direct-take")
     assert anon.get(f"/api/take/{tid}/audio/together")[0].status in (401, 403)
+
+
+def test_a_take_is_read_again_when_its_device_report_changes(tmp_path):
+    """The report is written after the take opens, so a take read before it must not stay that way."""
+    folder = write_take(tmp_path / "takes" / "one", song(12), ending=ending_doc())
+    library = gui.Library(roots=[tmp_path / "takes"])
+    take_id = library.id_of_folder(folder)
+    assert library.take(take_id, live=set())["band_ahead_s"] is None
+    (folder / "stream.json").write_text(json.dumps({"calibrated_ms": 250.0}))
+    assert library.take(take_id, live=set())["band_ahead_s"] == 0.25

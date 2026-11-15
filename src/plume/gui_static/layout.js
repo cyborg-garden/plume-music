@@ -49,3 +49,32 @@ export function nextIndex(key, index, count) {
   if (key === 'End') return count - 1;
   return -1;
 }
+
+/* The chart's time axis, and the one mapping between a moment and its place on it.
+   axis: { x0, x1, t0, t1 }, the first and last bar and where they are drawn. The recording
+   starts before the first bar and ends after the last, so this is never a share of the width. */
+function spanOf(axis) { return axis.t1 > axis.t0 ? axis.t1 - axis.t0 : 1; }
+export function axisX(axis, t) {
+  return axis.x0 + (axis.x1 - axis.x0) * Math.max(0, Math.min(1, (t - axis.t0) / spanOf(axis)));
+}
+/* Whether there is a stretch of time to place a moment on. One bar, or none, has no such
+   stretch: its marks can still be drawn, but nothing can be said about where the sound is. */
+export function axisSpans(axis) {
+  return !!axis && axis.t1 > axis.t0 && axis.x1 > axis.x0;
+}
+export function axisTime(axis, x) {
+  const wide = axis.x1 - axis.x0, share = wide > 0 ? (x - axis.x0) / wide : 0;
+  return axis.t0 + spanOf(axis) * Math.max(0, Math.min(1, share));
+}
+
+/* The chart keeps the player's clock. The band was recorded as it left, which is `ahead`
+   seconds before the player heard it, so its recording and the mix built on it run early. */
+function lead(track, ahead) { return track === 'human' ? 0 : Number(ahead) || 0; }
+export function takeTime(audioS, track, ahead) { return audioS + lead(track, ahead); }
+/* length: the recording's, in seconds, or anything else while it is not known. A player sent
+   to the very end calls the recording over, so the last place is just short of it. */
+const SHORT_OF_END = 0.05;
+export function audioTime(takeS, track, ahead, length) {
+  const at = Math.max(0, takeS - lead(track, ahead));
+  return length > 0 && isFinite(length) ? Math.min(at, Math.max(0, length - SHORT_OF_END)) : at;
+}

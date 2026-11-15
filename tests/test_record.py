@@ -1566,3 +1566,22 @@ def test_a_moved_word_it_does_not_know_never_reaches_the_page():
 def test_steady_following_says_nothing():
     events = record.translate(_song_with_follow([]), ending_doc(), route="direct")
     assert not [e for e in events if e["label"] == "band followed"]
+
+
+@pytest.mark.parametrize("stream, want", [
+    ({"calibrated_ms": 250.0, "reported_ms": 480.0}, 0.25),
+    ({"calibrated_ms": None, "reported_ms": 48.0}, 0.048),
+    ({"calibrated_ms": None, "reported_ms": None}, None),
+    ({"calibrated_ms": "250", "reported_ms": True}, None),
+    ({"calibrated_ms": 5000.0}, None),
+    (None, None)])
+def test_a_take_says_how_far_ahead_of_the_player_the_band_was_recorded(tmp_path, stream, want):
+    """Or says it does not know.  A guess here would put the line on the wrong moment."""
+    folder = write_take(tmp_path / "take", song(12), ending=ending_doc())
+    if stream is not None:
+        (folder / "stream.json").write_text(json.dumps(stream))
+    got = record.read_take(folder)["band_ahead_s"]
+    assert got == (None if want is None else pytest.approx(want))
+    # The mix of both recordings lines them up by the same figure, from the same place.
+    assert record.playing_delay_s(folder) == got
+    assert record.playing_delay_frames(folder, 48000) == round((want or 0.0) * 48000)

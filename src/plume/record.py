@@ -16,7 +16,8 @@ Evidence classes for the roast (plume GUI scope, section 6):
 
 - A: plume's own actions (bar, bpm, entry, section, cues, ending).  Always fine.
 - B: heard over drums alone (``playing`` in drums bars).  Gently, bars cited.
-- C: direct input.  Not until it has been tested on a real interface.
+- C: an input the band cannot reach (direct, or a mic with the band only in
+  headphones).  Not until it has been tested for real.
 - D: anything about the player on a room mic with the band in.  Never.
 
 Pure apart from :func:`read_take`.  No audio, no device, no network.
@@ -642,10 +643,12 @@ def _nothing_played(ending: dict | None, has_human: bool, *, live: bool = False,
 
 
 def input_route(manifest) -> str:
-    """How plume heard this take: midi, direct, room, or unknown for an older take.
+    """How plume heard this take: midi, direct, headphones, room, or unknown for an older take.
 
     A ``--midi`` take listens to the keys whatever its audio route says, as the
-    engine does.  Unknown gets the most cautious copy, the same as a room mic.
+    engine does.  Headphones is a mic the player said the band could not reach, because
+    it was only in her headphones.  Unknown gets the most cautious copy, the same as a
+    room mic.
     """
     if not isinstance(manifest, dict):
         return "unknown"
@@ -653,6 +656,8 @@ def input_route(manifest) -> str:
         return "midi"
     audio = manifest.get("input")
     source = audio.get("source") if isinstance(audio, dict) else None
+    if source == "room" and audio.get("isolated") is True:
+        return "headphones"
     return source if source in ("direct", "room") else "unknown"
 
 
@@ -690,6 +695,12 @@ def _follow_moves(row: dict) -> tuple[list[str], int | None]:
 
 def _hears_player(route: str) -> bool:
     """The band's own sound does not reach these, so silence there really is the player."""
+    return route in ("direct", "midi", "headphones")
+
+
+def _knows_her_by_level(route: str) -> bool:
+    """Before the band, these go by a level or by the keys.  Any mic waits for notes, which
+    takes about three bars, and a mic with the band only in headphones is still a mic."""
     return route in ("direct", "midi")
 
 
@@ -761,10 +772,10 @@ def translate(rows: list[dict], ending: dict | None = None,
                 add(row, "plan", "start", f"The band started{speed}.")
         if entry == "drums" and not heard and row.get("playing") is True:
             heard = True
-            # Three bars is what a room mic measured. A direct input or keys take less.
+            # Three bars is what a mic measured. A direct input or keys take less.
             add(row, "plan", "heard you",
                 "I was sure I could hear you by here."
-                + ("" if _hears_player(route) else " That takes me about three bars."))
+                + ("" if _knows_her_by_level(route) else " That takes me about three bars."))
         if entry and entry != prev_entry and i > 0:
             key = _key_words(row)
             if entry == "band":
@@ -1002,7 +1013,7 @@ def roast(rows: list[dict], ending: dict | None = None, cue_log: list[dict] | No
 
     band = _first(rows, lambda r: _entry(r) == "band")
     tap = _entry(rows[0]) is not None
-    # About three bars of confirmation are a room mic's lag, so they are never the player's fault.
+    # About three bars of confirmation are a mic's lag, so they are never the player's fault.
     heard = _first(rows, lambda r: _entry(r) == "drums" and r.get("playing") is True)
     hears = _hears_player(route)
     if band and hears:
@@ -1027,7 +1038,7 @@ def roast(rows: list[dict], ending: dict | None = None, cue_log: list[dict] | No
             _END_LABEL[END_SILENCE])
     # A direct input or keys are a verdict on the playing (class C), and the three bars
     # are not theirs. Counted from the first bar, which --from-bar moves.
-    waited = heard["bar"] - rows[0]["bar"] if heard and not hears else 0
+    waited = heard["bar"] - rows[0]["bar"] if heard and not _knows_her_by_level(route) else 0
     if waited >= 8:
         say(f"You let the drums run about {waited - 3} bars before you came in. "
             "I took off the three I need to be sure.", heard, "heard you")

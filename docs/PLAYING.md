@@ -159,7 +159,7 @@ A `watch` line looks like this:
 describes the band. `fade_db` goes below 0 while the band is fading out.
 
 Trust `section`, `stage`, `key` and `chord`, which report what the band is doing. The
-`you_*` fields come with their own verdict. Every line has `input` (`room`, `direct` or `midi`),
+`you_*` fields come with their own verdict. Every line has `input` (`room`, `direct`, `headphones` or `midi`),
 `you_trusted` (the names of the `you_*` fields that describe the player) and `you_why`.
 
 | Situation | `you_trusted` |
@@ -168,6 +168,8 @@ Trust `section`, `stage`, `key` and `chord`, which report what the band is doing
 | Room mic, drums alone | `you_notes` only |
 | `--direct`, `--midi`, or the band not sounding | all three |
 | `--direct`, but the band turns up in the input | none, and `you_why` says to check routing |
+| `--band-in-headphones` (a mic, band only in headphones) | all three |
+| `--band-in-headphones`, but the band turns up in the mic | none, and `you_why` says to check for speakers |
 
 Report nothing from a field that isn't listed. `you:*` entries in `changes` come from the
 same fields, so they get the same doubt. On a room mic those fields measure the mic with
@@ -352,7 +354,12 @@ delay. To keep your output elsewhere, use `--input-device` instead, which leaves
 system default, or add `--output-device NAME` to `plume lead` to name it, using its whole name. Channels count from 1,
 as printed on the interface. `--direct` tells plume the band can't reach this input, which
 turns off self-masking and lets the level alone say whether you are playing, even with the
-band in. It also applies to a mic when the band is only in your headphones.
+band in.
+
+For a mic with the band only in your headphones, add `--band-in-headphones` instead. The band
+can't reach the mic then, so plume believes what it hears once the band is in: it follows your
+chords and hears you stop. It is still a mic, which hears the room too, so before the band comes
+in plume waits for notes, the same as on any mic. Through speakers, leave it off.
 
 This setup hasn't been played yet: it has only run against a fake device. The thresholds
 were tuned for a room mic and will likely need adjusting. Run
@@ -517,7 +524,7 @@ at it. `plume stop` works as usual, and Ctrl-C on `plume gui` stops the take it 
 The first press of Start is the setup, one line at a time, in the same place Start was:
 
 1. "Play something." Plume listens for a few seconds on a short child that plays nothing, keeps the loudest channel and checks the level with no questions. If it is hot or barely there it says what to turn, and you can play again or start anyway. If nothing arrives it names the device, and if nothing arrives or it is barely there it offers any other device to try. With nothing plugged in it says to plug something in.
-2. "Headphones on?" No means speakers, including filming with a camera in the room, and Hear me stays off.
+2. "Headphones on?" No means speakers, including filming with a camera in the room, and Hear me stays off. On a mic, yes also means the band is only in your headphones, so the mic is believed once the band is in.
 3. If yes, "Can you hear yourself?" Yes means something else is already sending the sound, such as a monitor button or an instrument you can hear in the room, so Hear me stays off. No asks you to check the volume first, and "Still nothing" turns Hear me on.
 4. If you said headphones, an output that reports a large delay, or looks wireless (which it says is a guess), gets one line suggesting wired headphones.
 5. Then the count, with no click, and the band coming in is the end of the setup.
@@ -551,7 +558,7 @@ up to then is safe. End a take with Ctrl-C or `plume stop` instead.
 
 Output in Settings sends the band somewhere other than your input's own outs, so people in the room can hear it while your guitar still records through your interface. It starts on Same as input, or System output on a room mic, and either of those is exactly what plume did before there was a choice. The choice is saved per input in `setup.json`, by ID. Choosing opens nothing: sound still starts only from Start. An output that has gone is refused in plain words at Start and is never swapped for another. A Direct or monitor button on your interface only reaches that interface's own outs, so your guitar reaches the other output only through plume.
 
-So on a direct input Settings offers one more tick, off by default: Send my instrument to this output. It arrives slightly late, and it is only for an instrument plugged in, since a mic on that channel would howl. Plume cannot tell an instrument from a mic, so the tick is your word for it, and it is for that output and that channel only. Change either and it goes off. Plume also treats another output as speakers, so a yes about headphones does not reach it: Hear me saved for your headphones stays with your interface's outs, and comes back when you do. A room mic is never sent through another output at all, and setup does not ask about headphones while one is chosen, since those questions are about your own output.
+So on a direct input Settings offers one more tick, off by default: Send my instrument to this output. It arrives slightly late, and it is only for an instrument plugged in, since a mic on that channel would howl. Plume cannot tell an instrument from a mic, so the tick is your word for it, and it is for that output and that channel only. Change either and it goes off. Plume also treats another output as speakers, so a yes about headphones does not reach it: Hear me saved for your headphones stays with your interface's outs, and comes back when you do. A room mic is never sent through another output at all, and setup does not ask about headphones while one is chosen, since those questions are about your own output. A mic gets one question of its own there: "Is the band only in your headphones?" Yes means the band can't reach the mic, so plume believes what it hears once the band is in. It is asked once for that output, and again if you choose another or change what is plugged in. It never turns Hear me on.
 
 Wireless speakers arrive late, which makes playing along hard. Plume cannot tell wireless from a name, so it says this for any other output.
 

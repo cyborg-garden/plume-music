@@ -26,6 +26,11 @@ An output other than the input's own is a saved choice too.  It is taken to be s
 plume cannot tell, so a yes about headphones says nothing about it: an instrument reaches it only
 by an opt-in of its own, for that output and that channel, and a room mic never does.
 
+A mic hears the band as well as her, unless the band is only in her headphones.  Plume cannot tell
+that either, so it asks: on the system's output "Headphones on?" already says it, and on an
+output she chose there is one question of its own, for that output.  A yes makes the take believe
+the mic once the band is in.  It is still a mic in every other way, and it says nothing to Hear me.
+
 A process that nobody can reach is the failure this file exists to avoid.  So the child
 keeps its own 60 minute cap and still answers ``plume stop``, closing the bridge stops
 the take it started, and a take that needs a person to end it stops itself when no page
@@ -438,6 +443,21 @@ class Route:
     hear_me: bool
     channels: int = 1       # how many this device has, so what the page can offer her
     output: str | None = None   # None: the input's own, or the system's on a room mic
+    isolated: bool = False  # a mic, and she said the band is only in her headphones
+
+
+def _band_in_headphones(device: dict | None, saved: dict) -> bool:
+    """Whether she said the band cannot reach this mic, of where its sound goes now.
+
+    On the system's output that is her yes about headphones.  On an output she chose it is
+    the answer to its own question, and only for that output.  Never an instrument plugged
+    in, which the band cannot reach anyway.
+    """
+    if device is not None and device["mode"] == "direct":
+        return False
+    if saved.get("output") is None:
+        return saved.get("headphones") is True
+    return saved.get("band_phones") is True and saved.get("band_output") == saved["output"]
 
 
 def _sends(device: dict | None, saved: dict, channel: int) -> bool:
@@ -499,17 +519,20 @@ def _route(body: dict, devices: list[dict], *, preferred=None, saved_for=lambda 
         if hear_me and headphones is not True:
             raise Refused(400, NO_HEAR_ME)
     return Route(None if device is None else device["name"], mode, channel, hear_me, most,
-                 None if output is None else output["name"]), device
+                 None if output is None else output["name"],
+                 isolated=_band_in_headphones(device, saved)), device
 
 
 # --------------------------------------------------------------------------------- setup
 
 _ANSWERS = {"headphones": ("yes", "no"), "hears_self": ("yes", "no"), "volume": ("fixed", "still"),
-            "latency": ("ok",), "hear_me": ("on", "off"), "send": ("on", "off")}
+            "latency": ("ok",), "hear_me": ("on", "off"), "send": ("on", "off"), "band": ("yes", "no")}
 _YES_NO = [{"answer": "yes", "label": "Yes"}, {"answer": "no", "label": "No"}]
 _STEPS = {
     "headphones": ("Headphones on?", _YES_NO),
     "hears_self": ("Can you hear yourself?", _YES_NO),
+    #: Only of a mic on an output she chose.  On the system's, "Headphones on?" has said it.
+    "band": ("Is the band only in your headphones?", _YES_NO),
     "volume": ("Check your headphone volume.", [{"answer": "fixed", "label": "That was it"},
                                                 {"answer": "still", "label": "Still nothing"}]),
 }
@@ -519,7 +542,7 @@ _TRY_OR_START = [{"answer": "again", "label": "Play again"}, {"answer": "start",
 _TRY_ONLY = [{"answer": "again", "label": "Try again"}]
 _DEVICE_KEY = re.compile(r"[0-9a-f]{16}|default")
 _OUTPUT_ID = re.compile(r"[0-9a-f]{16}")
-_ROOM_ANSWERS = ("headphones", "hears_self", "still", "hear_me", "late_said")
+_ROOM_ANSWERS = ("headphones", "hears_self", "still", "hear_me", "late_said", "band_phones", "band_output")
 
 
 def _setup_key(device: dict | None) -> str:
@@ -531,7 +554,7 @@ def _clean_entry(entry) -> dict:
     if not isinstance(entry, dict):
         return {}
     out = {}
-    for name in ("output", "send_output"):
+    for name in ("output", "send_output", "band_output"):
         if isinstance(entry.get(name), str) and _OUTPUT_ID.fullmatch(entry[name]):
             out[name] = entry[name]
     send_channel = entry.get("send_channel")
@@ -544,7 +567,7 @@ def _clean_entry(entry) -> dict:
         out["channel"] = channel
     if entry.get("level") in ("ok", "hot", "low"):
         out["level"] = entry["level"]
-    for name in ("headphones", "hears_self", "still", "hear_me", "late_said"):
+    for name in ("headphones", "hears_self", "still", "hear_me", "late_said", "band_phones"):
         if isinstance(entry.get(name), bool):
             out[name] = entry[name]
     if out.get("headphones") is not True:
@@ -646,10 +669,13 @@ def _saved_channel(device: dict | None, saved: dict) -> int:
     return saved["channel"] if saved.get("channel", most + 1) <= most else 1
 
 
-def _next_step(entry: dict, late: str | None) -> str:
+def _next_step(entry: dict, late: str | None, *, mic: bool = False) -> str:
+    """``mic``: not an instrument plugged in, so the band may be reaching it."""
     if entry.get("level") != "ok":
         return "listen"
     if entry.get("output") is not None:
+        if mic and entry.get("band_output") != entry["output"]:
+            return "band"           # asked once of this output, whatever she said
         return "count"              # every question after this is about her own output
     if "headphones" not in entry:
         return "headphones"
@@ -785,6 +811,8 @@ def build_argv(route: Route, folder: Path, *, key: str | None, style: str | None
         argv.append(f"--input-device={route.name}")
         if route.channel != 1:
             argv.append(f"--input-channel={route.channel}")
+    if route.isolated and route.mode != "direct":
+        argv.append("--band-in-headphones")
     if route.output is not None:
         argv.append(f"--output-device={route.output}")
     if route.hear_me:
@@ -1035,7 +1063,7 @@ class TakeRunner:
         late = _late_line(device, rows, output.get(device["name"]))
         return {**device, "reported_ms": reported.get(device["name"]), "hear_me": saved.get("hear_me") is True,
                 "headphones": saved.get("headphones"), "channel": _saved_channel(device, saved),
-                "setup_done": _next_step(saved, late) == "count",
+                "setup_done": _next_step(saved, late, mic=device["mode"] != "direct") == "count",
                 **self._output_view(device, saved, outputs)}
 
     def _saved(self, device: dict | None, mark: str) -> dict:
@@ -1067,8 +1095,8 @@ class TakeRunner:
     def _setup_doc(self, device: dict | None, rows: list[dict], mark: str, output: dict) -> dict:
         saved = self._saved(device, mark)
         late = self._late_for(device, rows, output)
-        step = _next_step(saved, late)
         direct = device is not None and device["mode"] == "direct"
+        step = _next_step(saved, late, mic=not direct)
         line, choices, note = PLAY_SOMETHING, [], None
         if step in _STEPS:
             line, choices = _STEPS[step]
@@ -1199,14 +1227,16 @@ class TakeRunner:
             return self._set_hear_me(body.get("device"), answer == "on")
         if step == "send":
             return self._set_send(body.get("device"), body.get("channel"), answer == "on")
-        # She may have just plugged them in because it asked, so this one waits for a fresh look.
-        fresh = step == "headphones"
+        # She may have just plugged them in because it asked, so these wait for a fresh look.
+        fresh = step in ("headphones", "band")
         try:
             devices, rows, mark = self._look() if fresh else self._look_recent()
         except TakeError as e:
             raise Refused(409, str(e)) from None
         device = self._named(body.get("device"), devices, mark)
         entry, asked_again = self._in_the_flow(device, mark)
+        if step == "band" and device is not None and device["mode"] == "direct":
+            raise Refused(409, "Setup has moved on. Please start again.")
         if not asked_again or fresh:
             self._apply_answer(entry, step, answer)
         self._keep(device, entry, rows, mark)
@@ -1251,6 +1281,11 @@ class TakeRunner:
                 raise Refused(409, "Setup has moved on. Please start again.")
             entry.pop("still", None)
             entry["hears_self"], entry["hear_me"] = answer == "yes", False
+        elif step == "band":
+            # About the output she chose, so with none chosen there is nothing to say it of.
+            if entry.get("output") is None:
+                raise Refused(409, "Setup has moved on. Please start again.")
+            entry["band_phones"], entry["band_output"] = answer == "yes", entry["output"]
         elif step == "volume":
             if entry.get("headphones") is not True or entry.get("hears_self") is not False:
                 raise Refused(409, "Setup has moved on. Please start again.")
@@ -1269,7 +1304,8 @@ class TakeRunner:
 
     def _set_output(self, device_id, answer: str) -> dict:
         """Where this input's sound goes.  Saved, and nothing opens.  Any change takes back the
-        opt-in for sending her instrument, because that was a yes about the other output."""
+        opt-in for sending her instrument, because that was a yes about the other output, and
+        what she said of the band being only in her headphones, for the same reason."""
         self._not_while_running()
         try:
             devices, rows, mark = self._look()
@@ -1285,8 +1321,8 @@ class TakeRunner:
                 raise Refused(400, OUTPUT_MISSING)
             wanted = answer
         if wanted != entry.get("output"):
-            entry.pop("send_output", None)
-            entry.pop("send_channel", None)
+            for name in ("send_output", "send_channel", "band_phones", "band_output"):
+                entry.pop(name, None)
         entry.pop("output", None)
         if wanted is not None:
             entry["output"] = wanted

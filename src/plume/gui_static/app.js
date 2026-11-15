@@ -162,8 +162,9 @@ function drawSheet() {
   const tap = !empty && take.tap_start;
   [hl, tick, yes, no].forEach(function (el) { el.hidden = !tap; });
   if (tap) {
-    /* Only a room mic loses the player to the band. On direct input or MIDI the line runs on. */
-    const hearsOn = take.route === 'direct' || take.route === 'midi';
+    /* Only a room mic loses the player to the band. On direct input or MIDI the line runs on,
+       and on a mic when the band was only in her headphones. */
+    const hearsOn = take.route === 'direct' || take.route === 'midi' || take.route === 'headphones';
     const end = take.band_t_s !== null && !hearsOn ? take.band_t_s : take.end_t_s, xEnd = g.xAt(end), xStart = g.xAt(take.start_t_s);
     hl.style.left = xStart + 'px'; hl.style.top = hearY + 'px'; hl.style.width = Math.max(0, xEnd - xStart) + 'px';
     tick.style.left = xEnd + 'px'; tick.style.top = (hearY - 4) + 'px';

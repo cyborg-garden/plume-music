@@ -1226,11 +1226,16 @@ OPEN_TOGETHER_FAILED = "could not open that input and output together"
 class InputRoute:
     """Which input a live session listens to.
 
-    ``source`` is "direct" when the player says the band cannot reach this input (an
-    instrument plugged in, or a mic with the band only in headphones), else "room".
-    Every level threshold plume has was tuned on a room mic, and a direct input keeps
-    them as a starting point, so its record says ``thresholds_calibrated: False``
-    until someone has measured a real pickup against them.
+    ``source`` is "direct" when the player says this is an instrument plugged in, which
+    the band cannot reach, else "room": a mic.  Every level threshold plume has was tuned
+    on a room mic, and a direct input keeps them as a starting point, so its record says
+    ``thresholds_calibrated: False`` until someone has measured a real pickup against them.
+
+    ``band_in_headphones`` is the player's word that the band is only in headphones, so it
+    cannot reach this mic either.  That is all it says.  It is still a mic: it hears the
+    room as well as her, its thresholds are the ones tuned on a mic, and it is no pickup.
+    So :attr:`isolated` is what "the band cannot reach this" reads, and ``source`` is only
+    for what really takes an instrument plugged in.
     """
     device: object = None       # what Stream(device=) takes
     channels: int = 1           # input channels the stream must open
@@ -1239,6 +1244,12 @@ class InputRoute:
     source: str = "room"
     device_name: str | None = None
     output_name: str | None = None      # only when the sound goes out somewhere she named
+    band_in_headphones: bool = False
+
+    @property
+    def isolated(self) -> bool:
+        """The band cannot reach this input, so whatever it holds is not the band."""
+        return self.source == "direct" or self.band_in_headphones
 
     def describe(self) -> dict:
         doc = {"source": self.source, "device": self.device_name,
@@ -1248,12 +1259,15 @@ class InputRoute:
             doc["output"] = self.output_name
         if self.source == "direct":
             doc["thresholds_calibrated"] = False
+        elif self.band_in_headphones:
+            doc["isolated"] = True
         return doc
 
 
 def resolve_input(sd, device: str | None = None, *, input_device: str | None = None,
                   input_channel: int | None = None, voice_channel: int | None = None,
-                  direct: bool = False, output_device: str | None = None) -> InputRoute:
+                  direct: bool = False, output_device: str | None = None,
+                  band_in_headphones: bool = False) -> InputRoute:
     """Turn the player's choice of input into a route, or say what is wrong with it.
 
     Channels are counted from 1, the way an interface labels its sockets.  With nothing
@@ -1311,7 +1325,9 @@ def resolve_input(sd, device: str | None = None, *, input_device: str | None = N
                             f"({guitar + 1}): the voice needs its own")
     return InputRoute(device=dev, channels=max(guitar, -1 if voice is None else voice) + 1,
                       guitar=guitar, voice=voice, source="direct" if direct else "room",
-                      device_name=name, output_name=output_name)
+                      device_name=name, output_name=output_name,
+                      # An instrument plugged in already says more than this does.
+                      band_in_headphones=bool(band_in_headphones) and not direct)
 
 
 def input_devices(sd) -> list[dict]:
@@ -2323,7 +2339,8 @@ def jam(*, style: str, seed: int, params, device: str | None = None,
         latency_comp_s: float | None = None,
         input_device: str | None = None, input_channel: int | None = None,
         direct: bool = False, midi: str | None = None,
-        midi_clock: bool = False, sound: str | None = None) -> None:
+        midi_clock: bool = False, sound: str | None = None,
+        band_in_headphones: bool = False) -> None:
     """Run the live sideman until it is ended (SPEC-V1 section 7).
 
     ``params`` is a ``plume.mind.MindParams``.  ``tightness`` overrides the
@@ -2369,12 +2386,14 @@ def jam(*, style: str, seed: int, params, device: str | None = None,
                     input_mode=input_mode, count_in=count_in,
                     input_device=input_device, input_channel=input_channel,
                     direct=direct,
+                    **({"band_in_headphones": True} if band_in_headphones else {}),
                     **({} if sound is None else {"sound": sound}),
                     **({} if midi is None else {"midi": midi,
                                                 "midi_clock": midi_clock}))
     sd = _import_sounddevice()
     route = resolve_input(sd, device, input_device=input_device,
-                          input_channel=input_channel, direct=direct)
+                          input_channel=input_channel, direct=direct,
+                          band_in_headphones=band_in_headphones)
     check_audio_consent(device)
     dev = route.device
     midi_port = _resolve_midi_port(midi)
@@ -2430,7 +2449,7 @@ def jam(*, style: str, seed: int, params, device: str | None = None,
         # may never disagree with the rendered audio (live_status_state).
         "audible_until": 0,
     }
-    masker = SelfMasker(enabled=route.source != "direct")
+    masker = SelfMasker(enabled=not route.isolated)
     midi_in = None
     if midi_port is not None:
         midi_in, extractor, masker = _midi_listening(midi_port, timeline, recorder,
@@ -4538,7 +4557,7 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
          voice_channel: int | None = None, direct: bool = False,
          midi: str | None = None, midi_clock: bool = False,
          detect: bool = False, output_device: str | None = None,
-         sound: str | None = None) -> None:
+         sound: str | None = None, band_in_headphones: bool = False) -> None:
     """The machine starts; you join (SPEC-V2 section 5).
 
     ``tap_start``: nothing plays until four knocks set the tempo, the drums then
@@ -4581,13 +4600,19 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
     sd = _import_sounddevice()
     route = resolve_input(sd, device, input_device=input_device,
                           input_channel=input_channel, voice_channel=voice_channel,
-                          direct=direct, output_device=output_device)
+                          direct=direct, output_device=output_device,
+                          band_in_headphones=band_in_headphones)
     check_audio_consent(device)
     dev = route.device
     midi_port = _resolve_midi_port(midi)
     # With --midi the band listens to the notes, whatever --direct says about the
     # audio input, so a level from that input decides nothing here.
     is_direct = route.source == "direct" and midi_port is None
+    # The band cannot reach this input: an instrument plugged in, or a mic with the band
+    # only in headphones.  What it hears with the band in is her, so that is believed.
+    # A mic still hears the room, so before the band only notes count as her playing,
+    # the way they do on any mic; ``is_direct`` is kept for what a level alone decides.
+    hears_only_her = route.isolated and midi_port is None
     max_minutes = resolve_max_minutes(max_minutes)
 
     from .duet import DuetEngine  # noqa: PLC0415
@@ -4646,11 +4671,11 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
         from .herchords import ChordFollower, clean_bar  # noqa: PLC0415
         # A room mic hears the band's own chord, and nothing here can tell it from
         # hers, so only an input the band cannot reach follows her chords.
-        chord_follow = ChordFollower(band_in_mic=not (is_direct or midi_port is not None))
+        chord_follow = ChordFollower(band_in_mic=not (hears_only_her or midi_port is not None))
         # The band follows how she plays.  FOLLOW is the only mode so far: the seam a
         # "plume leads" mode would come in by.  A room mic hears the band too, so it
         # follows more cautiously (see BandFollow).
-        follow = BandFollow(trusted=is_direct or midi_port is not None, mode=FOLLOW)
+        follow = BandFollow(trusted=hears_only_her or midi_port is not None, mode=FOLLOW)
         from .listen.features import CountInDetector  # noqa: PLC0415
         # The ear confirms the player about a bar after a level would, so a direct input
         # waits one bar longer to give the player the same eight or so before the band.
@@ -4665,12 +4690,13 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
             if not parse_prompt(prompt or "").styles:
                 # Until the count lands ``style`` is only compose's placeholder.
                 style_pick = StylePick(key=named_key,
-                                       trust_busy=is_direct or midi_port is not None,
-                                       # whether she strums: only an input of hers alone
+                                       trust_busy=hears_only_her or midi_port is not None,
+                                       # whether she strums: only an instrument plugged
+                                       # in, which is all this has been tried against
                                        hear_technique=is_direct)
         # A room mic cannot hear her stop over the band, so it keeps the long wait.
         silence_ending = (SilenceEnding(end_after_s=END_AFTER_S)
-                          if is_direct or midi_port is not None else SilenceEnding())
+                          if hears_only_her or midi_port is not None else SilenceEnding())
         # Stricter on evenness and speed than a tracker's count-in: with no
         # quiet start required, laughing in the room read as a count at 181 bpm.
         # Either four clear knocks or six soft ones: how hard she knocks varies by
@@ -4761,7 +4787,7 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
               "taps": None, "chroma": [], "technique": []}
     # Her own frames, for the folk guess, while it is still listening.
     want_technique = style_pick is not None and style_pick.folk_ear is not None
-    masker = SelfMasker(enabled=route.source != "direct")
+    masker = SelfMasker(enabled=not route.isolated)
     midi_in = None
     if midi_port is not None:
         midi_in, extractor, masker = _midi_listening(midi_port, timeline, recorder,
@@ -5044,6 +5070,7 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
             # the band is in, all that is left is whether the mic is silent.  A
             # direct input holds nothing but the player, so its level answers the whole way
             # through, and the ear can go on learning the player's notes under the band.
+            # So can a mic's with the band only in headphones, once the band is in.
             if is_direct:
                 playing = (bar >= first_heard_bar and human is not None
                            and not human.silent)
@@ -5051,6 +5078,8 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
                     guitar_ear.bar(bar_chroma)
             elif entry.band_is_in:
                 playing = human is not None and not human.silent
+                if hears_only_her:
+                    guitar_ear.bar(bar_chroma)
             else:
                 playing = bar >= first_heard_bar and guitar_ear.bar(bar_chroma)
             # ``playing`` is about the bar the window read, two bars back; the ear
@@ -5088,7 +5117,7 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
                                                  phrase_start=bar - entry.bars_in)
                 entered = dataclasses.replace(entered, chord=chords_doc["chord"])
             # Over a room mic with the band in, "not silent" mostly means the band.
-            playing_trusted = is_direct or midi_port is not None or not entry.band_is_in
+            playing_trusted = hears_only_her or midi_port is not None or not entry.band_is_in
             if entry.band_is_in:
                 duet.heard_notes = guitar_ear.notes()
             # The ear only runs before the band; after that its last reading is stale.
@@ -5115,7 +5144,7 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
                 # What she plays is only her on an input that hears nothing else, so a
                 # room mic's bars are weighed by BandFollow with that in mind.
                 parts = None
-                if is_direct and bar >= first_heard_bar:
+                if hears_only_her and bar >= first_heard_bar:
                     # Her level by the half bar, the newest half as soon as it is
                     # heard.  Only an input that hears nothing but her: off a room
                     # mic a half bar is mostly the band.

@@ -343,7 +343,7 @@ class Library:
     def _signature(path: Path) -> tuple:
         out = []
         for name in (record.REC_MANIFEST, record.REC_DECISIONS, record.REC_ENDING, record.REC_CUES,
-                     record.REC_KEEP, REC_HUMAN, REC_MACHINE):
+                     record.REC_KEEP, record.REC_STREAM, REC_HUMAN, REC_MACHINE):
             try:
                 st = os.lstat(path / name)
                 out.append((st.st_mtime_ns, st.st_size))

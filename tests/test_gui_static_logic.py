@@ -230,3 +230,63 @@ def test_only_day_and_night_are_offered():
     ("#/guide/" + "a" * 41, {"name": "home"}), ("#/guide/Terminal", {"name": "home"})])
 def test_only_a_plain_page_name_is_a_guide_address(tmp_path, hash_, want):
     assert run_js(tmp_path, "session", body=f"return session.routeOf({json.dumps(hash_)});") == want
+
+
+# ------------------------------------------------------------------ the playhead
+
+AXIS = {"x0": 46, "x1": 1234, "t0": 8.0, "t1": 208.0}
+
+
+def axis_js(tmp_path, body):
+    return run_js(tmp_path, "layout", body=f"const axis = {json.dumps(AXIS)}; {body}")
+
+
+@pytest.mark.parametrize("t, x", [(8.0, 46), (108.0, 640), (208.0, 1234)])
+def test_a_moment_and_its_place_on_the_chart_are_one_mapping(tmp_path, t, x):
+    out = axis_js(tmp_path, f"return [layout.axisX(axis, {t}), layout.axisTime(axis, {x})];")
+    assert out == [pytest.approx(x), pytest.approx(t)]
+
+
+def test_the_chart_does_not_start_where_the_recording_does(tmp_path):
+    """The first bar comes seconds into the recording, so a share of the width is the wrong moment."""
+    out = axis_js(tmp_path, "return [layout.axisX(axis, 0), layout.axisX(axis, 104), layout.axisX(axis, 400)];")
+    assert out[0] == 46 and out[2] == 1234
+    assert out[1] == pytest.approx(46 + 1188 * 96 / 200)
+
+
+def test_a_place_off_either_end_is_the_nearest_moment_on_the_chart(tmp_path):
+    assert axis_js(tmp_path, "return [layout.axisTime(axis, -50), layout.axisTime(axis, 5000)];") == [8.0, 208.0]
+
+
+def test_a_chart_of_one_point_still_draws_its_marks(tmp_path):
+    out = run_js(tmp_path, "layout", body="""
+        const axis = { x0: 46, x1: 1234, t0: 3, t1: 3 };
+        return layout.axisX(axis, 3);""")
+    assert out == 46
+
+
+@pytest.mark.parametrize("track, want", [("human", 50.0), ("machine", 50.25), ("together", 50.25)])
+def test_the_band_is_recorded_ahead_of_the_player_it_was_heard_by(tmp_path, track, want):
+    out = run_js(tmp_path, "layout", body=f"return [layout.takeTime(50, '{track}', 0.25), layout.audioTime({want}, '{track}', 0.25, 300)];")
+    assert out == [pytest.approx(want), pytest.approx(50.0)]
+
+
+@pytest.mark.parametrize("length, want", [(300, 0), ("null", 0), ("NaN", 0)])
+def test_no_place_is_before_the_recording_starts(tmp_path, length, want):
+    assert run_js(tmp_path, "layout", body=f"return layout.audioTime(0.1, 'machine', 0.25, {length});") == want
+
+
+def test_no_place_is_past_the_end_of_a_recording_whose_length_is_known(tmp_path):
+    out = run_js(tmp_path, "layout", body="return [layout.audioTime(500, 'human', 0, 300), layout.audioTime(500, 'human', 0, null)];")
+    assert 299.8 < out[0] < 300, "the very end would read as finished"
+    assert out[1] == 500
+
+
+@pytest.mark.parametrize("axis, ok", [
+    ({"x0": 46, "x1": 1234, "t0": 8.0, "t1": 208.0}, True),
+    ({"x0": 46, "x1": 1234, "t0": 3.0, "t1": 3.0}, False),
+    ({"x0": 46, "x1": 1234, "t0": 0, "t1": 0}, False),
+    ({"x0": 46, "x1": 46, "t0": 8.0, "t1": 208.0}, False),
+    (None, False)])
+def test_only_a_chart_that_spans_time_and_width_can_place_a_moment(tmp_path, axis, ok):
+    assert run_js(tmp_path, "layout", body=f"return layout.axisSpans({json.dumps(axis)});") is ok

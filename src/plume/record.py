@@ -37,7 +37,7 @@ from .mind import CUE_BOUNDARIES, cue_is_exact, parse_cue
 from .realtime import (DEFAULT_MAX_MINUTES, END_FORM, END_INTERRUPT, END_MAX_MINUTES, END_SILENCE,
                        END_SONG, END_STOPPED, END_TERMINATED, END_WEDGED,
                        REC_CUES, REC_DECISIONS, REC_ENDING, REC_HUMAN, REC_KEEP,
-                       REC_MACHINE, REC_MANIFEST)
+                       REC_MACHINE, REC_MANIFEST, REC_STREAM)
 from .theory import _QUALITIES
 
 #: Rows bigger than this are not a take this page can usefully draw.
@@ -1218,15 +1218,25 @@ def _audio_size(path: Path) -> int | None:
     return info.st_size if stat.S_ISREG(info.st_mode) else None
 
 
-def playing_delay_frames(take_dir, rate: int) -> int:
-    """How far ``human.wav`` runs behind ``machine.wav``: the band's way out plus the player's
-    way back.  The measured figure if there is one, else what the device reported, else none."""
-    stream = _read_json(Path(take_dir) / "stream.json") or {}
+def playing_delay_s(take_dir) -> float | None:
+    """How far ``human.wav`` runs behind ``machine.wav``, in seconds: the band's way out plus
+    the player's way back.  The measured figure if there is one, else what the device
+    reported.  None when the take does not say, which is not the same as no delay.
+
+    This is the trip the sound made, not how early the band chose to play to allow for it, so
+    it holds however a take was started.  Everything that lines the two recordings up asks here.
+    """
+    stream = _read_json(Path(take_dir) / REC_STREAM) or {}
     for name in ("calibrated_ms", "reported_ms"):
         ms = stream.get(name)
         if isinstance(ms, (int, float)) and not isinstance(ms, bool) and 0 <= ms <= 1000:
-            return round(ms * rate / 1000)
-    return 0
+            return ms / 1000.0
+    return None
+
+
+def playing_delay_frames(take_dir, rate: int) -> int:
+    """:func:`playing_delay_s` in frames.  A take that does not say is not moved."""
+    return round((playing_delay_s(take_dir) or 0.0) * rate)
 
 
 def read_take(take_dir, *, fallback_seed: int = 0, live: bool = False) -> dict:
@@ -1305,6 +1315,9 @@ def _take_doc(rows, cue_log, take_dir, ending, manifest, seed, sizes, keep, live
         "together": (recorded_from(manifest) == "input" and not live
                      and sizes.get("human") is not None and sizes.get("machine") is not None),
         "band_t_s": None if band is None else float(band["t_s"]),
+        # Rows keep the player's clock. The band's recording runs this far ahead of it, or
+        # None where the take does not say and the page has to draw both on one clock.
+        "band_ahead_s": playing_delay_s(take_dir),
         "start_t_s": float(rows[0]["t_s"]) if rows else None,
         "end_t_s": float(rows[-1]["t_s"]) if rows else None,
         "portrait": portrait(rows, ending, events, seed),

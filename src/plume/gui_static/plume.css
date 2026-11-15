@@ -188,7 +188,7 @@ header { display: flex; flex-wrap: wrap; align-items: center; gap: 0 16px; paddi
 #take-name { background: none; border: 0; border-bottom: 1px solid var(--hairline); border-radius: 0; font-size: 16px; color: var(--text); padding: 2px 0; width: 14em; max-width: 60vw; }
 #keep-path { font: 400 13px var(--mono); overflow-wrap: anywhere; }
 
-#sheet { position: relative; flex: none; height: 360px; margin: 6px calc(-1 * var(--gr)) 0 calc(-1 * var(--gl)); overflow: hidden; }
+#sheet { position: relative; flex: none; touch-action: pan-y; height: 360px; margin: 6px calc(-1 * var(--gr)) 0 calc(-1 * var(--gl)); overflow: hidden; }
 #terrain { position: absolute; left: 0; top: 0; width: 100%; height: 100%; display: block; }
 #sheet-empty { position: absolute; left: var(--gl); right: var(--gr); bottom: 24px; margin: 0; font-size: 19px; color: var(--secondary); }
 .hl { position: absolute; padding: 0; background: none; border: 0; display: block; }
@@ -207,6 +207,13 @@ header { display: flex; flex-wrap: wrap; align-items: center; gap: 0 16px; paddi
 .hl.static { pointer-events: none; }
 #hear-line { position: absolute; height: 0; border-top: 1px solid var(--text); pointer-events: none; }
 #hear-tick { position: absolute; width: 0; height: 9px; border-left: 1px solid var(--text); pointer-events: none; }
+/* Where the sound is. Drawn only, so a press goes through it to the chart and its moments. */
+#playhead { position: absolute; left: 0; top: 0; bottom: 0; width: 0; border-left: 1px solid var(--now); opacity: .7; pointer-events: none; will-change: transform; }
+#playhead::before { content: ""; position: absolute; left: -4px; top: 0; width: 7px; height: 7px; border-radius: 50%; background: var(--now); }
+#playhead[hidden] { display: none; }
+#sheet.scrub #playhead { opacity: 1; }
+/* A drag along the chart is not a selection of its words. */
+#sheet.scrub { -webkit-user-select: none; user-select: none; }
 .hear-lab { position: absolute; font-size: 11px; line-height: 14px; color: var(--text); padding: 0 3px; pointer-events: none; white-space: nowrap; }
 #rec-details { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 0 28px; margin-top: 8px; font-size: 14px; color: var(--secondary); }
 #rec-details > details[open] { flex: 1 1 20rem; min-width: 0; }

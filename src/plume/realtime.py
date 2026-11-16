@@ -1598,28 +1598,51 @@ REC_MIX = "mix.wav"
 #: plume knows a ``mix.wav`` for its own: a player may keep one of theirs under that name.
 MIX_CHUNK = b"plMx"
 _MIX_TAIL_BYTES = 1024
+#: The header a saved mix starts with: RIFF, one format chunk, and the name and length of the samples.
+_MIX_HEADER_BYTES = 44
 
 
 def is_own_mix(path) -> bool:
-    """True when the file at ``path`` is a mix plume saved, by the note it ends with.
+    """True when the file at ``path`` is a mix plume saved, by its whole layout.
 
-    The note is the file's last chunk: plume's name, a length that runs exactly to the
-    end of the file, and JSON that names the rule the mix was made by.  It is looked for
-    at the end and nowhere else, so a mix whose start was damaged is still known for
-    plume's and can be made again.  Anything less is not plume's and is left alone: a
-    symlink, a folder, a missing or unreadable file, another program's chunk of the
-    same name, and a mix of plume's that something has since added to.
+    Plume writes one layout and no other: a 44-byte header, the samples, then its note
+    as the last chunk.  The note is plume's name, a length that runs exactly to the end
+    of the file, and JSON naming the rule the mix was made by and how many frames it
+    holds.  A file is plume's only when its note starts exactly where that many frames
+    after such a header end.  The bytes of a note at the end of a file are not enough:
+    they can be the end of the sound, or of another chunk, and an editor that keeps
+    chunks it does not know will carry the note into a file the player has changed.
+
+    The header itself is not read when the note gives the frames, so a mix whose start
+    was damaged is still known for plume's and can be made again.  A note from before
+    it gave the frames is believed only while the header still gives the same layout.
+
+    Anything else is the player's and is left alone: a symlink, a folder, a missing or
+    unreadable file, and any file that is not laid out exactly so.
     """
     try:
         fd = oscompat.open_private(path, oscompat.read_flags())
     except OSError:
         return False
     try:
-        with os.fdopen(fd, "rb") as f:
-            st = os.fstat(f.fileno())
-            if not stat.S_ISREG(st.st_mode):
-                return False
-            f.seek(max(0, st.st_size - _MIX_TAIL_BYTES))
+        # Checked on the descriptor, before anything else can fail and leave it open:
+        # a folder of this name opens, and cannot then be made into a file object.
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            os.close(fd)
+            return False
+        f = os.fdopen(fd, "rb")
+    except OSError:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        return False
+    try:
+        with f:
+            size = os.fstat(f.fileno()).st_size
+            header = f.read(_MIX_HEADER_BYTES)
+            start = max(0, size - _MIX_TAIL_BYTES)
+            f.seek(start)
             tail = f.read(_MIX_TAIL_BYTES)
     except OSError:
         return False
@@ -1632,7 +1655,14 @@ def is_own_mix(path) -> bool:
             except (ValueError, RecursionError):
                 doc = None
             if isinstance(doc, dict) and isinstance(doc.get("rule"), str):
-                return True
+                frames = doc.get("frames")
+                if isinstance(frames, int) and not isinstance(frames, bool):
+                    samples = frames * 2
+                elif len(header) == _MIX_HEADER_BYTES and header[36:40] == b"data":
+                    samples = int.from_bytes(header[40:44], "little")
+                else:
+                    return False
+                return samples > 0 and start + at == _MIX_HEADER_BYTES + samples
         at = tail.rfind(MIX_CHUNK, 0, at)
     return False
 

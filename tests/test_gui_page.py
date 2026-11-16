@@ -3104,6 +3104,8 @@ def test_show_files_is_drawn_from_the_pages_own_colours():
     ({"shown": True}, "No mix was saved for this take. Your recordings are in the folder."),
     ({"shown": True, "mix": False, "band_twice": False, "why": "theirs"},
      "This folder already has a mix.wav that plume can't replace. Move or rename it to get a new one."),
+    ({"shown": True, "mix": False, "band_twice": False, "why": "stale"},
+     "The mix.wav in this folder is an older one, and a new one could not be saved."),
     ({"shown": True, "mix": False, "band_twice": False, "why": "in_use"},
      "mix.wav is open in another program, so it could not be updated. Close it there and try again."),
 ])

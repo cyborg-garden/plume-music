@@ -139,6 +139,16 @@ class MixInUse(GuiError):
     """Plume's own older mix could not be replaced: another program has it open."""
 
 
+#: Whether a refused rename over an old mix means another program has that mix open.
+#: On Windows it does.  Elsewhere an open file never stops a rename, so it means
+#: something else: a locked file, or a folder that keeps its files.
+_RENAME_REFUSAL_IS_IN_USE = oscompat.IS_WINDOWS
+
+
+class _Abandoned(Exception):
+    """A mix given up before it was put in place, because a take began in its folder."""
+
+
 class _NotReplaced(PermissionError):
     """A finished mix that could not be renamed into place.  Only that step raises it."""
 
@@ -447,9 +457,13 @@ class Library:
         still exactly what is here: see :func:`_mix_stamp`.
         """
         path = self.path_of(take_id)
-        if path is None or str(path) in _live_folders():
+        if path is None:
             return None
         with self._mix_lock(take_id):
+            # Asked with the lock held, and again before the mix is put in place: asked
+            # before, a take could start here in between.
+            if str(path) in _live_folders():
+                return None
             raw = []
             try:
                 try:
@@ -475,12 +489,17 @@ class Library:
                     mode = stat.S_IMODE(stats[0].st_mode)
                     try:
                         self._save_mix(path, human, machine, shift, frames, stamp, mode)
+                    except _Abandoned:
+                        return None
                     except _NotReplaced:
                         # The new mix was written whole and could not take the old one's
-                        # place.  Windows refuses that while a player holds the old one
-                        # open.  Failing to write it at all is not this, and is not caught.
+                        # place.  Failing to write it at all is not this, and is not caught.
+                        # Windows refuses the rename while a player holds the old one open,
+                        # and only there is that what a refusal means.  Elsewhere it is a
+                        # locked file or a folder that will not let go of it: a mix plume
+                        # cannot replace, which is what the page then says.
                         if there:
-                            raise MixInUse(REC_MIX) from None
+                            raise (MixInUse if _RENAME_REFUSAL_IS_IN_USE else MixInTheWay)(REC_MIX) from None
                         raise
             finally:
                 for f in raw:
@@ -504,6 +523,10 @@ class Library:
                         count = min(_TOGETHER_FRAMES, frames - frame)
                         f.write(_mixed_pcm(human, machine, shift, frame, count))
                     f.write(stamp)
+                if str(path) in _live_folders():
+                    # A take started here while this was being written.  The folder is
+                    # that session's now, and its recordings are no longer these.
+                    raise _Abandoned(REC_MIX)
                 try:
                     _replace_in(folder, tmp, REC_MIX)
                 except PermissionError as e:
@@ -971,6 +994,10 @@ class _Handler(BaseHTTPRequestHandler):
             mix, why = None, "in_use"
         except (OSError, RuntimeError, ValueError, ArithmeticError):
             mix = None          # a folder that cannot be written in can still be shown
+        if mix is None and why is None and is_own_mix(folder / REC_MIX):
+            # No mix was made, and an older one of plume's is still here.  "No mix was
+            # saved" would be true and would leave out the thing the person will find.
+            why = "stale"
         try:
             # Always by a file inside it.  Asked for bare, the folder is shown as an item
             # in the folder it sits in, and the person is looking at the wrong place.
@@ -1118,11 +1145,21 @@ def _open_track(folder: Path, name: str):
         fd = _open_in(where, name, oscompat.read_flags())
     finally:
         _close_folder(where)
-    f = os.fdopen(fd, "rb")
-    if not stat.S_ISREG(os.fstat(f.fileno()).st_mode):
-        f.close()
+    # Checked on the descriptor: a folder of that name opens, and then cannot be made
+    # into a file object, which would leave the descriptor open for good.
+    try:
+        regular = stat.S_ISREG(os.fstat(fd).st_mode)
+    except OSError:
+        os.close(fd)
+        raise
+    if not regular:
+        os.close(fd)
         raise OSError("not a file")
-    return f
+    try:
+        return os.fdopen(fd, "rb")
+    except OSError:
+        os.close(fd)
+        raise
 
 
 def _wav_header(frames: int, rate: int, *, extra: int = 0) -> bytes:

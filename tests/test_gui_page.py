@@ -3060,3 +3060,92 @@ def test_a_take_that_cannot_say_how_far_ahead_the_band_was_draws_both_on_one_clo
         $('player').currentTime = {_moment(take, 0.5)}; page.frame();
         return {LINE};""")
     assert out["x"] == pytest.approx(_x(0.5), abs=0.01)
+
+
+# ---------------------------------------------------------------------- files
+
+def test_show_files_names_the_take_and_nothing_else(tmp_path, docs):
+    out = run_page(tmp_path, docs, """
+        await page.open(ids.tap);
+        page.replies.reveal = [200, { shown: true, mix: true }];
+        $('show-files').click();
+        await page.settle();
+        return { posts: page.posts('reveal'), key: page.calls.find((c) => c.path === '/api/reveal').key,
+                 quiet: $('keep-error').hidden, off: $('show-files').disabled,
+                 note: [$('files-note').hidden, $('files-note').textContent], ...""" + SOUND + """ };""")
+    assert out["posts"] == [{"take": docs["ids"]["tap"]}] and out["key"] == KEY
+    assert out["quiet"] is True and out["off"] is False and out["note"] == [True, ""]
+    assert out["plays"] == 0 and out["audio"] == 0
+
+
+def test_a_folder_that_will_not_open_says_where_it_is(tmp_path, docs):
+    out = run_page(tmp_path, docs, """
+        await page.open(ids.tap);
+        page.failNext.reveal = 1;
+        $('show-files').click();
+        await page.settle();
+        return { hidden: $('keep-error').hidden, words: $('keep-error').textContent };""")
+    where = docs["docs"][docs["ids"]["tap"]]["where"]
+    assert out["hidden"] is False and out["words"] == "The folder did not open. It is " + where
+
+
+def test_show_files_is_drawn_from_the_pages_own_colours():
+    rules = re.findall(r"#show-files[^{]*\{([^}]*)\}", (STATIC / "plume.css").read_text())
+    assert rules and all("#" not in rule and "rgb" not in rule for rule in rules)
+    assert "var(--secondary)" in rules[0]
+
+
+@pytest.mark.parametrize("answer, words", [
+    ({"shown": True, "mix": False, "band_twice": False},
+     "No mix was saved for this take. Your recordings are in the folder."),
+    ({"shown": True, "mix": True, "band_twice": True},
+     "Saved as mix.wav. Your mic may have heard the band too, so the band could be in it twice."),
+    # An answer that does not say a mix was saved is not read as one.
+    ({"shown": True}, "No mix was saved for this take. Your recordings are in the folder."),
+    ({"shown": True, "mix": False, "band_twice": False, "why": "theirs"},
+     "This folder already has a mix.wav that plume can't replace. Move or rename it to get a new one."),
+    ({"shown": True, "mix": False, "band_twice": False, "why": "in_use"},
+     "mix.wav is open in another program, so it could not be updated. Close it there and try again."),
+])
+def test_show_files_says_one_line_when_the_mix_is_not_plain(tmp_path, docs, answer, words):
+    out = run_page(tmp_path, docs, """
+        await page.open(ids.tap);
+        page.replies.reveal = [200, """ + json.dumps(answer) + """];
+        $('show-files').click();
+        await page.settle();
+        const here = [$('files-note').hidden, $('files-note').textContent];
+        await page.shelf();
+        await page.open(ids.other);
+        const elsewhere = [$('files-note').hidden, $('files-note').textContent];
+        page.replies.reveal = [200, { shown: true, mix: true, band_twice: false }];
+        page.history.go(-2);
+        await page.settle();
+        const back = $('files-note').textContent;
+        $('show-files').click();
+        await page.settle();
+        return { here, elsewhere, back, after: [$('files-note').hidden, $('files-note').textContent],
+                 problem: $('keep-error').hidden };""")
+    assert out["here"] == [False, words] and out["problem"] is True
+    assert out["elsewhere"] == [True, ""], "the line is about one take"
+    assert out["back"] == words
+    assert out["after"] == [True, ""], "a plain mix clears it"
+
+
+def test_a_new_click_takes_the_last_line_away_before_its_answer_comes(tmp_path, docs):
+    out = run_page(tmp_path, docs, """
+        await page.open(ids.tap);
+        page.replies.reveal = [200, { shown: true, mix: false, band_twice: false, why: null }];
+        $('show-files').click();
+        await page.settle();
+        const first = [$('files-note').hidden, $('files-note').textContent];
+        const open = page.hold('reveal');
+        $('show-files').click();
+        await page.settle();
+        const waiting = [$('files-note').hidden, $('files-note').textContent, $('show-files').disabled];
+        page.replies.reveal = [200, { shown: true, mix: true, band_twice: false, why: null }];
+        open();
+        await page.settle();
+        return { first, waiting, after: [$('files-note').hidden, $('show-files').disabled] };""")
+    assert out["first"][0] is False and out["first"][1].startswith("No mix")
+    assert out["waiting"] == [True, "", True], "an old line must not sit beside a new click"
+    assert out["after"] == [True, False]

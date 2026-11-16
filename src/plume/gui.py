@@ -47,6 +47,7 @@ import stat
 import sys
 import signal
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
@@ -56,7 +57,7 @@ import soundfile as sf
 
 from . import fx as _fx
 from . import guitake, oscompat, record
-from .realtime import REC_HUMAN, REC_MACHINE, list_sessions
+from .realtime import MIX_CHUNK, REC_HUMAN, REC_MACHINE, REC_MIX, REC_STREAM, is_own_mix, list_sessions
 
 STATE_DIR_ENV = "PLUME_GUI_STATE_DIR"
 
@@ -64,7 +65,7 @@ GET_ROUTES = ("/", "/auth", "/static/{name}", "/api/session", "/api/takes",
               "/api/take/{id}", "/api/take/{id}/audio/{track}", "/api/home", "/api/live", "/api/setup",
               "/api/guide")
 POST_OPS = frozenset({"keep", "rename", "start", "stop", "cue", "setup/listen", "setup/answer",
-                      "setup/cancel", "setup/reset"})
+                      "setup/cancel", "setup/reset", "reveal"})
 
 _STATIC_DIR = Path(__file__).with_name("gui_static")
 #: Every file the page may load, and its type.  Nothing else under the folder is served.
@@ -99,6 +100,14 @@ _TOGETHER_BAND_DB = 3.0
 _TOGETHER_CEILING_DB = 0.0
 _TOGETHER_FRAMES = 65536
 _WAV_HEADER = 44
+#: A WAV's lengths are 32 bits wide, so nothing longer than this can be written as one.
+_WAV_MAX_BYTES = 0xFFFFFFFF
+#: Raised when a saved mix would come out different for a reason the three numbers
+#: above do not show.  Those numbers are part of the rule too: see :func:`_mix_rule`.
+_MIX_RULE = 1
+_MIX_TMP_RE = re.compile(r"\." + re.escape(REC_MIX) + r"\.[0-9a-f]{16}\.tmp")
+#: A half-written mix nothing has touched for this long was left by a run that died.
+_MIX_TMP_STALE_S = 60.0
 
 _CSP = ("default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; font-src 'self'; "
         "connect-src 'self'; media-src 'self'; base-uri 'none'; form-action 'none'; "
@@ -117,6 +126,21 @@ _RANGE_RE = re.compile(r"bytes=(\d{0,18})-(\d{0,18})")
 
 class GuiError(RuntimeError):
     """A clean, user-facing failure."""
+
+
+class MixInTheWay(GuiError):
+    """The take folder holds a ``mix.wav`` plume does not know for its own, so it stays.
+
+    The player's own, or one of plume's that something has since changed at its end.
+    """
+
+
+class MixInUse(GuiError):
+    """Plume's own older mix could not be replaced: another program has it open."""
+
+
+class _NotReplaced(PermissionError):
+    """A finished mix that could not be renamed into place.  Only that step raises it."""
 
 
 # ------------------------------------------------------------------ the state file
@@ -233,10 +257,11 @@ def _open_in(where, name: str, flags: int, mode: int = 0o600) -> int:
 
 
 def _replace_in(where, src: str, dst: str) -> None:
+    # Retried briefly where a reader holding the old file open makes it fail.
     if isinstance(where, int):
-        os.replace(src, dst, src_dir_fd=where, dst_dir_fd=where)
+        oscompat.replace(src, dst, src_dir_fd=where, dst_dir_fd=where)
     else:
-        os.replace(Path(where) / src, Path(where) / dst)
+        oscompat.replace(Path(where) / src, Path(where) / dst)
 
 
 def _unlink_in(where, name: str) -> None:
@@ -277,6 +302,8 @@ class Library:
         self._lock = threading.Lock()
         #: Held across disk work, so it is not the lock every reader needs.
         self._keep_lock = threading.Lock()
+        #: One per take, so a long mix holds up nobody else's.
+        self._mix_locks: dict[str, threading.Lock] = {}
         self._paths: dict[str, Path] = {}
         self._cache: dict[str, tuple] = {}
 
@@ -397,6 +424,201 @@ class Library:
             finally:
                 _close_folder(folder)
         return doc
+
+    def _mix_lock(self, take_id: str) -> threading.Lock:
+        with self._lock:
+            return self._mix_locks.setdefault(take_id, threading.Lock())
+
+    def write_mix(self, take_id: str) -> str | None:
+        """Save both recordings as one file in the take's folder, and say its name.
+
+        The same samples Together plays: the player moved earlier by the take's round
+        trip, the band lifted over her, the sum soft-limited.  None when there is nothing
+        to mix: one recording missing, two sample rates, more than a WAV can hold, or a
+        take still being recorded, whose folder belongs to the session writing it.  A
+        room mic take gets one too; :func:`band_may_be_twice` says when to warn of that.
+
+        Only plume's own ``mix.wav`` is ever replaced.  One the player put there raises
+        :class:`MixInTheWay`, and an older one of plume's that another program holds
+        open raises :class:`MixInUse`; in both the file is as it was.
+
+        Written under another name and renamed, so ``mix.wav`` is whole or absent.  The
+        file ends by saying what it was made from, and is left alone only while that is
+        still exactly what is here: see :func:`_mix_stamp`.
+        """
+        path = self.path_of(take_id)
+        if path is None or str(path) in _live_folders():
+            return None
+        with self._mix_lock(take_id):
+            raw = []
+            try:
+                try:
+                    for name in (REC_HUMAN, REC_MACHINE):
+                        raw.append(_open_track(path, name))
+                    stats = [os.fstat(f.fileno()) for f in raw]
+                    human, machine = [sf.SoundFile(f) for f in raw]
+                except (OSError, RuntimeError, ValueError):
+                    return None
+                if human.samplerate != machine.samplerate:
+                    return None
+                shift = record.playing_delay_frames(path, human.samplerate)
+                frames = max(human.frames - shift, machine.frames)
+                stamp = _mix_stamp(path, *stats, shift=shift, frames=frames, rate=human.samplerate)
+                if frames <= 0 or _WAV_HEADER + frames * 2 + len(stamp) > _WAV_MAX_BYTES:
+                    return None
+                if not _mix_is_current(path, frames, human.samplerate, stamp):
+                    theirs = path / REC_MIX
+                    there = os.path.lexists(theirs)
+                    if there and not is_own_mix(theirs):
+                        raise MixInTheWay(REC_MIX)
+                    # Readable by whoever can read the recordings it is made from.
+                    mode = stat.S_IMODE(stats[0].st_mode)
+                    try:
+                        self._save_mix(path, human, machine, shift, frames, stamp, mode)
+                    except _NotReplaced:
+                        # The new mix was written whole and could not take the old one's
+                        # place.  Windows refuses that while a player holds the old one
+                        # open.  Failing to write it at all is not this, and is not caught.
+                        if there:
+                            raise MixInUse(REC_MIX) from None
+                        raise
+            finally:
+                for f in raw:
+                    f.close()
+        return REC_MIX
+
+    @staticmethod
+    def _save_mix(path: Path, human, machine, shift: int, frames: int, stamp: bytes,
+                  mode: int) -> None:
+        folder = _open_folder(path)
+        # As for keep.json: a name nobody could have planted, and O_EXCL in case they did.
+        tmp = f".{REC_MIX}.{secrets.token_hex(8)}.tmp"
+        try:
+            _sweep_mix_leftovers(path, folder)
+            fd = _open_in(folder, tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            try:
+                with os.fdopen(fd, "wb") as f:
+                    oscompat.fchmod_private(f.fileno(), mode)
+                    f.write(_wav_header(frames, human.samplerate, extra=len(stamp)))
+                    for frame in range(0, frames, _TOGETHER_FRAMES):
+                        count = min(_TOGETHER_FRAMES, frames - frame)
+                        f.write(_mixed_pcm(human, machine, shift, frame, count))
+                    f.write(stamp)
+                try:
+                    _replace_in(folder, tmp, REC_MIX)
+                except PermissionError as e:
+                    raise _NotReplaced(*e.args) from None
+            except BaseException:
+                try:
+                    _unlink_in(folder, tmp)
+                except OSError:
+                    pass
+                raise
+        finally:
+            _close_folder(folder)
+
+
+def _mix_rule() -> str:
+    """How a mix is made, as text.  A mix made by another rule is made again."""
+    return f"{_MIX_RULE}:{_TOGETHER_GAIN}:{_TOGETHER_BAND_DB}:{_TOGETHER_CEILING_DB}"
+
+
+def _identity(st) -> list[int]:
+    return [st.st_size, st.st_mtime_ns]
+
+
+def _mix_stamp(path: Path, human, machine, *, shift: int, frames: int, rate: int) -> bytes:
+    """The chunk that ends a saved mix: everything its samples depend on.
+
+    The rule, the delay in frames that was actually used, the length and rate, and each
+    file that went in by its size and its time to the nanosecond (``human`` and
+    ``machine`` are those files' ``fstat``).  "Is the mix newer?" would be the wrong
+    question: a recording put back from a copy keeps its old date, and a change to the
+    rule changes no date at all.  The delay is here as a number, not only as its file's
+    size and date, because a file can be rewritten and keep both.  It is inside the
+    mix, after the samples, so it can never describe another file than its own.
+    """
+    try:
+        stream = _identity(os.lstat(path / REC_STREAM))
+    except OSError:
+        stream = None
+    doc = {"rule": _mix_rule(), "shift": int(shift), "frames": int(frames), "rate": int(rate),
+           "human": _identity(human), "machine": _identity(machine), "stream": stream}
+    body = json.dumps(doc, sort_keys=True).encode()
+    body += b" " * (len(body) % 2)          # a chunk is an even number of bytes
+    return MIX_CHUNK + len(body).to_bytes(4, "little") + body
+
+
+def _mix_is_current(path: Path, frames: int, rate: int, stamp: bytes) -> bool:
+    """True when ``mix.wav`` is a whole mix of exactly these files, by this rule.
+
+    The header must be the one this mix would be written with, the file exactly as long
+    as that header says, and the note at its end the one that would be written now.  The
+    samples between are not read again: they were written with the note, in one rename.
+    """
+    data = _WAV_HEADER + frames * 2
+    try:
+        header = _wav_header(frames, rate, extra=len(stamp))
+        with _open_track(path, REC_MIX) as f:
+            if os.fstat(f.fileno()).st_size != data + len(stamp):
+                return False
+            if f.read(_WAV_HEADER) != header:
+                return False
+            f.seek(data)
+            return f.read(len(stamp)) == stamp
+    except (OSError, ArithmeticError):
+        return False
+
+
+def _sweep_mix_leftovers(path: Path, folder) -> None:
+    """Remove half-written mixes a killed run left in this take's folder.
+
+    Only names this module makes, only plain files, and only ones nothing has written
+    to for a while: another bridge may be half way through one of its own.
+    """
+    try:
+        names = os.listdir(path)
+        now = time.time()
+        for name in names:
+            if not _MIX_TMP_RE.fullmatch(name):
+                continue
+            st = os.lstat(path / name)
+            if stat.S_ISREG(st.st_mode) and now - st.st_mtime > _MIX_TMP_STALE_S:
+                _unlink_in(folder, name)
+    except OSError:
+        pass
+
+
+def _something_inside(folder: Path) -> str | None:
+    """A file a take folder holds, to show the folder by.  The player's recording first."""
+    for name in (REC_HUMAN, REC_MACHINE, record.REC_MANIFEST, record.REC_DECISIONS, record.REC_ENDING):
+        if record._is_regular(folder / name):
+            return name
+    return None
+
+
+def band_may_be_twice(folder: Path) -> bool:
+    """True when a mix of this take may hold the band twice.
+
+    A plugged-in instrument is the player alone.  A mic is not, unless the take's
+    manifest says the band could not reach it: ``input.isolated`` being ``true``.
+    Nothing writes that yet, so today every mic take answers True.  It is read here,
+    in the place and under the name the manifest's ``input`` block would carry it, so
+    that a take which does say so is believed.  Anything else is a mic that could
+    hear the band.
+    """
+    manifest = record._read_json(Path(folder) / record.REC_MANIFEST) or {}
+    if record.recorded_from(manifest) == "input":
+        return False
+    audio = manifest.get("input")
+    return not (isinstance(audio, dict) and audio.get("isolated") is True)
+
+
+def _reveal(folder: Path, select: str | None) -> None:
+    """Show a folder in the system's file manager.  Never under pytest: it opens a window."""
+    if "PYTEST_CURRENT_TEST" in os.environ or "pytest" in sys.modules:
+        raise GuiError("the real file manager does not open under pytest")
+    oscompat.reveal(folder, select)
 
 
 # ---------------------------------------------------------------------- the handler
@@ -674,6 +896,8 @@ class _Handler(BaseHTTPRequestHandler):
             raise _Refused(400, "body must be an object")
         if op in ("keep", "rename"):
             self._keep_or_rename(op, body)
+        elif op == "reveal":
+            self._show_files(body)
         else:
             self._take_op(op, body)
 
@@ -726,6 +950,35 @@ class _Handler(BaseHTTPRequestHandler):
         if doc is None:
             raise _Refused(404, "no such take")
         self._json(doc)
+
+    def _show_files(self, body: dict) -> None:
+        """Show the take's folder, with its mix in it if one can be made.
+
+        The body names a take by the ID this server gave out and nothing else, so the
+        only folder that can open is one the library listed.
+        """
+        if set(body) != {"take"} or not isinstance(body["take"], str):
+            raise _Refused(400, "body needs a take, and only a take")
+        folder = self.gui.library.path_of(body["take"])
+        if folder is None:
+            raise _Refused(404, "no such take")
+        why = None
+        try:
+            mix = self.gui.library.write_mix(body["take"])
+        except MixInTheWay:
+            mix, why = None, "theirs"
+        except MixInUse:
+            mix, why = None, "in_use"
+        except (OSError, RuntimeError, ValueError, ArithmeticError):
+            mix = None          # a folder that cannot be written in can still be shown
+        try:
+            # Always by a file inside it.  Asked for bare, the folder is shown as an item
+            # in the folder it sits in, and the person is looking at the wrong place.
+            self.gui.revealer(folder, REC_MIX if mix or why else _something_inside(folder))
+        except (OSError, GuiError):
+            raise _Refused(500, "could not open the folder") from None
+        twice = mix is not None and band_may_be_twice(folder)
+        self._json({"shown": True, "mix": mix is not None, "band_twice": twice, "why": why})
 
     # -- routes
 
@@ -872,9 +1125,10 @@ def _open_track(folder: Path, name: str):
     return f
 
 
-def _wav_header(frames: int, rate: int) -> bytes:
+def _wav_header(frames: int, rate: int, *, extra: int = 0) -> bytes:
+    """``extra`` is how many bytes of other chunks follow the samples."""
     data = frames * 2
-    return (b"RIFF" + (36 + data).to_bytes(4, "little") + b"WAVEfmt " + (16).to_bytes(4, "little")
+    return (b"RIFF" + (36 + data + extra).to_bytes(4, "little") + b"WAVEfmt " + (16).to_bytes(4, "little")
             + (1).to_bytes(2, "little") + (1).to_bytes(2, "little") + rate.to_bytes(4, "little")
             + (rate * 2).to_bytes(4, "little") + (2).to_bytes(2, "little") + (16).to_bytes(2, "little")
             + b"data" + data.to_bytes(4, "little"))
@@ -933,8 +1187,11 @@ class GuiServer:
     """The bridge: an HTTP server on loopback, its session state, and its library."""
 
     def __init__(self, *, roots=(), pinned=None, log=None, write_state: bool = True,
-                 spawner=None, lister=None, sessions=None, stopper=None, **take_options):
+                 spawner=None, lister=None, sessions=None, stopper=None, revealer=None,
+                 **take_options):
         self.library = Library(roots, pinned)
+        #: ``(folder, file name or None)``: opens the system's file manager.  Tests pass a fake.
+        self.revealer = _reveal if revealer is None else revealer
         self.takes = guitake.TakeRunner(
             self.library.roots[0] if self.library.roots else default_library(),
             log_path=lambda: state_path().with_name("take.log"),

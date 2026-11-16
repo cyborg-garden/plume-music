@@ -1592,6 +1592,49 @@ REC_MIDI = "midi.ndjson"
 REC_STREAM = "stream.json"
 #: Keep's sidecar.  Plain JSON beside the take, so it outlives the page that wrote it.
 REC_KEEP = "keep.json"
+#: Both recordings as one file, saved by the page when its Show files is pressed.
+REC_MIX = "mix.wav"
+#: The chunk a saved mix ends with.  It says what the mix was made from, and it is how
+#: plume knows a ``mix.wav`` for its own: a player may keep one of theirs under that name.
+MIX_CHUNK = b"plMx"
+_MIX_TAIL_BYTES = 1024
+
+
+def is_own_mix(path) -> bool:
+    """True when the file at ``path`` is a mix plume saved, by the note it ends with.
+
+    The note is the file's last chunk: plume's name, a length that runs exactly to the
+    end of the file, and JSON that names the rule the mix was made by.  It is looked for
+    at the end and nowhere else, so a mix whose start was damaged is still known for
+    plume's and can be made again.  Anything less is not plume's and is left alone: a
+    symlink, a folder, a missing or unreadable file, another program's chunk of the
+    same name, and a mix of plume's that something has since added to.
+    """
+    try:
+        fd = oscompat.open_private(path, oscompat.read_flags())
+    except OSError:
+        return False
+    try:
+        with os.fdopen(fd, "rb") as f:
+            st = os.fstat(f.fileno())
+            if not stat.S_ISREG(st.st_mode):
+                return False
+            f.seek(max(0, st.st_size - _MIX_TAIL_BYTES))
+            tail = f.read(_MIX_TAIL_BYTES)
+    except OSError:
+        return False
+    at = tail.rfind(MIX_CHUNK)
+    while at >= 0:
+        body = tail[at + 8:]
+        if len(tail) >= at + 8 and int.from_bytes(tail[at + 4:at + 8], "little") == len(body):
+            try:
+                doc = json.loads(body)
+            except (ValueError, RecursionError):
+                doc = None
+            if isinstance(doc, dict) and isinstance(doc.get("rule"), str):
+                return True
+        at = tail.rfind(MIX_CHUNK, 0, at)
+    return False
 
 #: Audio is flushed to disk at most this often — the most a `kill -9` can
 #: cost.  Decisions are flushed every line (they are what an observer reads).
@@ -1697,6 +1740,13 @@ class SessionRecorder:
             (self.dir / REC_ENDING).unlink(missing_ok=True)
             (self.dir / REC_KEEP).unlink(missing_ok=True)
             (self.dir / REC_STREAM).unlink(missing_ok=True)
+            # The page's mix of the last take is not a mix of this one.  A mix.wav that
+            # plume did not write is the player's, and stays.
+            if is_own_mix(self.dir / REC_MIX):
+                try:
+                    (self.dir / REC_MIX).unlink(missing_ok=True)
+                except OSError:
+                    pass        # held open by a player, say: never a reason not to record
             # _midi_listening writes a MIDI take's first line before this runs, so a
             # handle here means this take's own file.  Without one the file is the last take's.
             if self._midi is None:

@@ -183,6 +183,8 @@ header { display: flex; flex-wrap: wrap; align-items: center; gap: 0 16px; paddi
 #rec-again { padding: 11px 20px; }
 #keep.undo { border: 0; padding-inline: 4px; font-weight: 400; color: var(--secondary); text-decoration: underline; text-underline-offset: 3px; }
 #kept-status { font-weight: 500; font-size: 17px; }
+#show-files { background: none; border: 0; padding: 11px 4px; font-weight: 400; color: var(--secondary); text-decoration: underline; text-underline-offset: 3px; }
+#show-files:hover { color: var(--text); }
 #keep-panel { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: baseline; padding-top: 10px; font-size: 14px; color: var(--secondary); }
 #keep-panel label { display: flex; gap: 8px; align-items: baseline; }
 #take-name { background: none; border: 0; border-bottom: 1px solid var(--hairline); border-radius: 0; font-size: 16px; color: var(--text); padding: 2px 0; width: 14em; max-width: 60vw; }

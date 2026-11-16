@@ -583,7 +583,7 @@ function stopVideoPreview() {
 }
 function drawVideo() {
   const here = S.screen === 'record' && S.take, doc = here ? videoFor(S.take.id) : null;
-  const view = videoView(doc, S.dropping, !!doc && S.videoAgain === (S.take && S.take.id));
+  const view = videoView(doc, S.dropping, !!doc && S.videoTwice === (S.take && S.take.id));
   $('video').hidden = !view.shown;
   $('video').classList.toggle('dropping', S.dropping);
   $('video-add').disabled = !view.add;
@@ -610,7 +610,7 @@ function drawVideo() {
 }
 function setVideo(id, doc, again) {
   /* Said until the bridge next says where the work has got to. */
-  S.videoAgain = again ? id : null;
+  S.videoTwice = again ? id : null;
   S.video = { id: id, doc: doc };
   if (S.take && S.take.id === id) drawVideo();
   clearTimeout(S.videoTimer);

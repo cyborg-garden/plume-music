@@ -38,6 +38,9 @@ The knobs that matter, and the failures they reproduce:
   cost a whole session is untestable by construction.
 - ``latency`` — the stand-in reports a round trip the way ``sounddevice`` does,
   so ``realtime.stream_latency_hops`` aligns the mask to it.
+- ``bleed_shape`` — **a real speaker in a real room.**  An impulse response for that
+  path (see :func:`small_speaker_in_a_room`): the copy in the mic has lost its bass and
+  gained a tail, so it is no longer the output arriving late and nothing else.
 - ``human_channel`` / ``inputs`` / ``bleed_channels`` — **the audio interface.**
   ``human`` arrives on one input channel, ``inputs`` puts other material on other
   channels (a voice mic, or a loud decoy on the channel plume must not read), and
@@ -141,7 +144,8 @@ class FakeAudioStream:
                  latency: tuple[float, float] | None = None,
                  loop_human: bool = True, human_channel: int = 0,
                  inputs: dict | None = None,
-                 bleed_channels: tuple[int, ...] = (0,), hold=None):
+                 bleed_channels: tuple[int, ...] = (0,), hold=None,
+                 bleed_shape=None):
         self._human_ch = int(human_channel)
         self._inputs = {int(k): np.asarray(v, dtype=np.float32)
                         for k, v in (inputs or {}).items()}
@@ -169,6 +173,9 @@ class FakeAudioStream:
             1, int(round(float(bleed_delay_s) * SR / max(1, int(blocksize)))))
         self._echo: collections.deque = collections.deque(
             maxlen=self._bleed_blocks)
+        #: what the speaker and the room do to that sound on the way: an impulse
+        #: response.  None = a clean copy, which no real speaker or room gives.
+        self._bleed_shape = None if bleed_shape is None else _Shaper(bleed_shape, int(blocksize))
         #: what ``sounddevice`` calls ``Stream.latency``: (input, output), s.
         self.latency = ((0.010, 0.010) if latency is None
                         else (float(latency[0]), float(latency[1])))
@@ -249,7 +256,10 @@ class FakeAudioStream:
             if self._cb is not None:
                 self._cb(indata, outdata, self._n, None, None)
             if self._bleed is not None:
-                self._echo.append(outdata.mean(axis=1).astype(np.float32))
+                played = outdata.mean(axis=1).astype(np.float32)
+                if self._bleed_shape is not None:
+                    played = self._bleed_shape.block(played)
+                self._echo.append(played)
             if self._capture:
                 self.captured.append(outdata.copy())
             self.blocks += 1
@@ -382,6 +392,42 @@ class patched_module:  # noqa: N801 - used as a context manager
             sys.modules[self._name] = self._old
         else:
             sys.modules.pop(self._name, None)
+
+
+class _Shaper:
+    """An impulse response applied to a stream a block at a time, with nothing lost between
+    blocks.  By FFT, so a long room costs little even on a fast fake playhead."""
+
+    def __init__(self, impulse, blocksize: int):
+        self._ir = np.asarray(impulse, dtype=np.float64)
+        self._n = int(blocksize)
+        self._size = 1 << int(np.ceil(np.log2(self._ir.size + self._n)))
+        self._spectrum = np.fft.rfft(self._ir, self._size)
+        self._past = np.zeros(self._ir.size - 1)
+
+    def block(self, x) -> np.ndarray:
+        joined = np.concatenate([self._past, np.asarray(x, dtype=np.float64)])
+        out = np.fft.irfft(np.fft.rfft(joined, self._size) * self._spectrum, self._size)
+        if self._ir.size > 1:
+            self._past = joined[-(self._ir.size - 1):]
+        # The first len(ir) - 1 samples wrap around; the ones after are this block's own.
+        return out[self._ir.size - 1:self._ir.size - 1 + len(x)].astype(np.float32)
+
+
+def small_speaker_in_a_room(*, low_cut_hz: float = 300.0, rt60_s: float = 0.3, wet: float = 1.0,
+                            seed: int = 0) -> np.ndarray:
+    """An impulse response for ``bleed_shape``: no bass, as a small speaker has none, and a
+    room's tail after it.  Made up, not measured from any speaker or room."""
+    taps = 513
+    t = np.arange(taps) - taps // 2
+    low = np.sinc(2.0 * low_cut_hz / SR * t) * (2.0 * low_cut_hz / SR) * np.hamming(taps)
+    high = -low
+    high[taps // 2] += 1.0
+    tail = np.arange(int(rt60_s * SR)) / SR
+    room = np.random.default_rng(seed).standard_normal(tail.size) * 10.0 ** (-3.0 * tail / rt60_s)
+    room *= float(wet) / np.sqrt(np.sum(room ** 2))
+    room[0] += 1.0
+    return np.convolve(high, room)
 
 
 def fake_audio(human=None, **kw) -> FakeAudioDevice:

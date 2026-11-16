@@ -363,14 +363,18 @@ in plume waits for notes, the same as on any mic, and with the band in it still 
 rather than a level, so a noisy room doesn't keep the band from hearing you stop. Through
 speakers, leave it off.
 
-Plume checks this for itself. Once the band is in, the take measures how much of the mic is the
-band's own sound. If the band is clearly there for several bars, because the headphones came out
-or the band was on speakers after all, the take stops going by what the mic hears and treats it
-as a room mic for the rest of the take. It doesn't switch back. The log row where it decides
-carries `band_in_mic` with the bar and the reason, the live page says so in one line, and Stop
-is then how the take ends. Plume can't see headphones being unplugged where the list of devices
-doesn't change, so this check is what covers that. Its threshold (a quarter of the mic's power
-being the band, for about eight seconds) has only run against a fake device, not real gear.
+Plume checks this for itself, in `plume lead` with or without a count and in `plume jam`. For
+the whole take it measures how much of the mic is the band's own sound, as it would arrive through
+a speaker and a room: it compares the two between 300 Hz and 4 kHz, the range a small speaker
+plays, and allows for the speaker's and the room's colouring rather than looking for an exact
+copy. A player's notes sit on a few frequencies, so the band is found under playing too. If the
+band is clearly there for about eight seconds, because the headphones came out or the band was
+on speakers after all, the take stops going by what the mic hears and treats it as a room mic
+for the rest of the take. It doesn't switch back, and a fade already under way carries on. The
+log row where it decides carries `band_in_mic` with the bar, the share it measured and the
+reason, the live page says so in one line, and Stop is then how the take ends. This is also what
+covers headphones being unplugged where the list of devices doesn't change. Its threshold was
+set against a fake device with made-up speakers and rooms.
 
 This setup hasn't been played yet: it has only run against a fake device. The thresholds
 were tuned for a room mic and will likely need adjusting. Run

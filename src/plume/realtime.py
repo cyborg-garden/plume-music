@@ -321,6 +321,14 @@ FOLLOW_READ_MARGIN_S = 0.1
 PLAN_BUDGET_X = 4.0
 
 
+def _band_in_mic_doc(bar, share) -> dict:
+    """The take's one decision that a mic said to be out of the band's reach holds it,
+    as every row from then on carries it."""
+    return {"since_bar": bar, "share": round(float(share), 2),
+            "reason": "the band is in this mic, so it is a room mic from here: what it "
+                      "hears is no longer believed to be only her"}
+
+
 def follow_parts(bar_events, later_events, w_start: float, w_end: float,
                  next_start: float, *, fed_until: float | None, heard_until: float,
                  silence_rms_db: float, ref_db: float | None):
@@ -2455,6 +2463,10 @@ def jam(*, style: str, seed: int, params, device: str | None = None,
         "audible_until": 0,
     }
     masker = SelfMasker(enabled=not route.isolated)
+    # A mic said to have the band only in headphones is checked, as in lead (BandInMic).
+    from .bandentry import BandInMic  # noqa: PLC0415
+    band_in_mic = (BandInMic(SR) if route.band_in_headphones and midi_port is None else None)
+    band_in_mic_doc: list = [None]
     midi_in = None
     if midi_port is not None:
         midi_in, extractor, masker = _midi_listening(midi_port, timeline, recorder,
@@ -2522,6 +2534,13 @@ def jam(*, style: str, seed: int, params, device: str | None = None,
         """One decision -> the live log, flushed (v1.3)."""
         n_decisions[0] += 1
         doc.setdefault("input_fault", guard.fault)   # a buzzing or dead input
+        if band_in_mic is not None and band_in_mic.latched and band_in_mic_doc[0] is None:
+            # The band is in the mic after all, so it is masked again, for the rest of
+            # the take.  The same decision, logged the same way, as in lead.
+            masker.enable()
+            band_in_mic_doc[0] = _band_in_mic_doc(doc.get("bar"), band_in_mic.share)
+        if band_in_mic_doc[0] is not None:
+            doc["band_in_mic"] = band_in_mic_doc[0]
         if recorder is not None:
             recorder.decision(doc)
 
@@ -2548,6 +2567,8 @@ def jam(*, style: str, seed: int, params, device: str | None = None,
             heed_input(guard, x, ending.is_set() or stop.is_set())
             if recorder is not None:
                 recorder.audio(x, m)
+            if band_in_mic is not None:
+                band_in_mic.feed(x, m)
             masked_frames, _flags, beat_state, harm_state = analysis_step(
                 extractor=extractor, hop_rms=hop_rms, masker=masker,
                 tracker=tracker, harmony=harmony,
@@ -4619,12 +4640,12 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
     # the way they do on any mic and under it too; ``is_direct`` is kept for what a level
     # alone decides.
     hears_only_her = route.isolated and midi_port is None
-    # Her word about headphones is checked against what the mic holds, once the band is in:
-    # they may have come out, or the yes may have been wrong.  The take is the one place
-    # that can tell, so it decides, once, and says so in its log (see BandInMic).
+    # Her word about headphones is checked against what the mic holds, for the whole take
+    # and however it was started: they may have come out, or the yes may have been wrong.
+    # The take is the one place that can tell, so it decides, once, and says so in its log
+    # (see BandInMic).
     from .bandentry import BandInMic  # noqa: PLC0415
     band_in_mic = BandInMic(SR) if hears_only_her and route.band_in_headphones else None
-    band_in_mic_on = [False]            # set by the planner when the band comes in
     band_in_mic_doc: list = [None]      # the decision, once made, for every row after it
     max_minutes = resolve_max_minutes(max_minutes)
 
@@ -4903,7 +4924,7 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
             v = None if voice_ring is None else voice_ring.read(n)
             if recorder is not None:
                 recorder.audio(x, m, v)
-            if band_in_mic is not None and band_in_mic_on[0]:
+            if band_in_mic is not None:
                 band_in_mic.feed(x, m)
             looper.feed(x)
             masked_frames, _flags, beat_state, harm_state = analysis_step(
@@ -4972,6 +4993,17 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
         if input_fx is not None:
             input_fx.set_bpm(bpm)        # her echoes on the band's tempo
         looper.note_bar(bar, int(round(t_bar * SR)) - comp_samples[0], bpm)
+        if band_in_mic is not None and band_in_mic.latched and band_in_mic_doc[0] is None:
+            # The band is in the mic after all.  From here it is a room mic, for the rest
+            # of the take: it never goes back, whatever it hears next.
+            hears_only_her = False
+            masker.enable()
+            if entry is not None:
+                chord_follow.band_in_mic = True
+                follow = BandFollow(trusted=False, mode=FOLLOW)
+                # Not a new ending: one already fading must go on fading.
+                silence_ending.long_wait()
+            band_in_mic_doc[0] = _band_in_mic_doc(bar, band_in_mic.share)
         # This bar is planned a bar ahead of the playhead, so the bar just
         # before it has barely started and holds almost no frames.  Read the
         # last bar that has actually finished, at the tempo it was played: a
@@ -5124,20 +5156,6 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
                                           change_style(picked, bridge=plain_intro[0]))
                         entered = dataclasses.replace(
                             entered, chord=entry.chord_at(bar, harm_state))
-            if band_in_mic is not None:
-                band_in_mic_on[0] = entry.band_is_in
-                if band_in_mic.latched and band_in_mic_doc[0] is None:
-                    # The band is in the mic after all.  From here it is a room mic, for
-                    # the rest of the take: it never goes back, whatever it hears next.
-                    hears_only_her = False
-                    chord_follow.band_in_mic = True
-                    follow = BandFollow(trusted=False, mode=FOLLOW)
-                    silence_ending = SilenceEnding()
-                    masker.enable()
-                    band_in_mic_doc[0] = {
-                        "since_bar": bar, "share": round(float(band_in_mic.share), 2),
-                        "reason": "the band is in this mic, so it is a room mic from "
-                                  "here: playing and her chords are no longer believed"}
             # Her chords (herchords): what she played in the window bar, then the
             # band's chord for this bar, hers when she holds or loops one clearly, the
             # template otherwise.
@@ -5343,8 +5361,6 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
             doc["section"] = section
             doc["playing"] = playing
             doc["playing_trusted"] = playing_trusted
-            if band_in_mic_doc[0] is not None:
-                doc["band_in_mic"] = band_in_mic_doc[0]
             doc["fade_db"] = round(fade_db, 2)
             guard.winding = fade_db < 0.0     # the band is ending: her silence is expected
             doc["entry_ramp"] = {r: round(v, 3) for r, v in levels.items()
@@ -5367,6 +5383,8 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
                 shared["end_reason"] = END_SILENCE
         # v1.3: flushed to decisions.ndjson the moment the bar is planned, so
         # the log can be tailed while the band plays.
+        if band_in_mic_doc[0] is not None:
+            doc["band_in_mic"] = band_in_mic_doc[0]
         last_decision["d"] = doc
         n_decisions[0] += 1
         if recorder is not None:

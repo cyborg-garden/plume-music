@@ -283,9 +283,8 @@ def test_a_device_that_turns_into_a_mic_brings_no_yes_with_it(rig, runner, meter
     walk(runner, ("headphones", "yes"), ("hears_self", "yes"))
     before = guitake.device_list_mark(guitake._rows(rig.devices))
     # A software device whose name holds this one's takes over its output, so it is a mic now.
-    rig.devices = [{"name": "Zoom Audio Interface 4x4 Loopback", "inputs": 0, "outputs": 2}, *rig.devices]
     name = rig.devices[-3]["name"]
-    rig.devices[0]["name"] = f"Loopback of {name}"
+    rig.devices = [{"name": f"Loopback of {name}", "inputs": 0, "outputs": 2}, *rig.devices]
     assert guitake.device_list_mark(guitake._rows(rig.devices)) == before
     now = next(d for d in runner.home()["devices"] if d["id"] == BOX_ID)
     assert now["mode"] == "room", "the stand-in list did not turn it into a mic, so this proves nothing"
@@ -643,6 +642,126 @@ def test_the_measure_reads_how_much_of_the_mic_is_the_band():
     assert bandentry.band_share(np.zeros(100), np.zeros(100), realtime.SR) == 0.0
 
 
+def _a_band(seconds=2.0, seed=0):
+    """Something like a band: chords on the notes of C major, and drums as bursts of noise."""
+    rng = np.random.default_rng(seed)
+    n = int(seconds * realtime.SR)
+    t = np.arange(n) / realtime.SR
+    chord = sum(np.sin(2 * np.pi * f * t + rng.uniform(0, 6.28)) / (1 + 0.2 * j)
+                for j, f in enumerate((65.41, 130.81, 164.81, 196.0, 261.63, 329.63, 392.0, 523.25, 783.99, 1046.5)))
+    drums = rng.standard_normal(n) * (np.exp(-((t * 4.0) % 1.0) * 12.0))
+    return (0.02 * chord + 0.05 * drums).astype(np.float32)
+
+
+def _her_on_the_bands_notes(seconds=2.0, level=0.03, seed=5):
+    """Held notes, dead in tune with the band's own, and a little room noise."""
+    rng = np.random.default_rng(seed)
+    n = int(seconds * realtime.SR)
+    t = np.arange(n) / realtime.SR
+    held = sum(np.sin(2 * np.pi * f * t + rng.uniform(0, 6.28)) for f in (261.63, 329.63, 392.0, 523.25, 783.99, 1046.5))
+    return (level * held + rng.standard_normal(n) * 3e-4).astype(np.float32)
+
+
+def _through(shape, band):
+    from conftest import _Shaper
+    return _Shaper(shape, band.size).block(band)
+
+
+def _one_lag_share(mic, band):
+    """What a single delayed copy explains: the measure this replaced, kept here to show the case."""
+    n = mic.size
+    x = np.fft.irfft(np.fft.rfft(mic, 2 * n) * np.conj(np.fft.rfft(band, 2 * n)), 2 * n)[:int(0.7 * realtime.SR)]
+    return float(np.max(np.abs(x)) ** 2 / (np.sum(mic.astype(np.float64) ** 2) * np.sum(band.astype(np.float64) ** 2)))
+
+
+@pytest.mark.parametrize("shape", [
+    {"low_cut_hz": 200.0, "rt60_s": 0.05, "wet": 0.0},      # a small speaker, with no bass
+    {"low_cut_hz": 300.0, "rt60_s": 0.3, "wet": 1.0},       # and a room after it
+    {"low_cut_hz": 300.0, "rt60_s": 0.6, "wet": 1.5},       # a livelier room
+])
+def test_the_band_through_a_small_speaker_and_a_room_is_still_the_band(shape):
+    """The mic holds nothing but the band, and not a clean copy of it: its bass is gone and a
+    room's tail is on it.  One delayed copy explains little of that.  A short filter does."""
+    from conftest import small_speaker_in_a_room
+    from plume import bandentry
+    band = _a_band()
+    mic = 0.5 * _through(small_speaker_in_a_room(**shape), band)
+    mic = mic + np.random.default_rng(9).standard_normal(mic.size).astype(np.float32) * 3e-4
+    assert bandentry.band_share(mic, band, realtime.SR) >= 1.4 * bandentry.BAND_IN_MIC_SHARE
+    if shape["wet"]:
+        assert _one_lag_share(mic, band) < 0.25, "the case is not the one this is for"
+    check = bandentry.BandInMic(realtime.SR)
+    for n in range(bandentry.BAND_IN_MIC_WINDOWS):
+        assert check.latched is False
+        band = _a_band(seed=n)
+        check.feed(0.5 * _through(small_speaker_in_a_room(**shape), band), band)
+    assert check.latched is True
+
+
+@pytest.mark.parametrize("louder_db", [6.0, 10.0])
+def test_the_band_is_found_under_a_player_louder_than_it(louder_db):
+    """She plays notes, and notes leave most of the spectrum to whatever else is in the mic."""
+    from plume import bandentry
+    band = _a_band()
+    leak = 0.5 * np.concatenate([np.zeros(960, dtype=np.float32), band[:-960]])
+    her = _her_on_the_bands_notes(level=1.0)
+    her *= float(np.sqrt(np.mean(leak ** 2) / np.mean(her ** 2))) * 10.0 ** (louder_db / 20.0)
+    assert bandentry.band_share(leak + her, band, realtime.SR) >= 1.4 * bandentry.BAND_IN_MIC_SHARE
+    assert _one_lag_share(leak + her, band) < 0.25, "the case is not the one this is for"
+
+
+def test_her_own_held_notes_on_the_bands_partials_are_not_the_band():
+    """A clean mic.  She holds the band's own notes, in tune, for as long as it listens."""
+    from plume import bandentry
+    check = bandentry.BandInMic(realtime.SR)
+    worst = 0.0
+    for n in range(40):
+        band, her = _a_band(seed=n), _her_on_the_bands_notes(seed=100 + n)
+        worst = max(worst, bandentry.band_share(her, band, realtime.SR))
+        check.feed(her, band)
+    assert check.latched is False
+    assert worst < 0.6 * bandentry.BAND_IN_MIC_SHARE, worst
+
+
+def test_the_share_is_there_by_the_time_it_says_it_latched():
+    """Another thread reads the share as soon as it sees the latch."""
+    from plume import bandentry
+    seen = []
+
+    class Watched(bandentry.BandInMic):
+        def __setattr__(self, name, value):
+            if name == "latched" and value:
+                seen.append(self.share)
+            super().__setattr__(name, value)
+    check = Watched(realtime.SR)
+    for n in range(bandentry.BAND_IN_MIC_WINDOWS):
+        check.feed(*_bleeding(0.6, seed=n))
+    assert check.latched and seen and seen[0] is not None
+
+
+def test_a_fade_already_running_is_kept_when_the_long_wait_comes_back():
+    """Trust is withdrawn while the band is fading out.  It goes on fading: starting the ending
+    over would bring the band back to full level for no reason she could hear."""
+    from plume.bandentry import END_AFTER_S, SilenceEnding
+    ending, bar_s = SilenceEnding(end_after_s=END_AFTER_S), 2.0
+    t, gains = 0.0, []
+    ending.update(t, True, bar_s)
+    while not gains or gains[-1] == 0.0:
+        t += bar_s
+        gains.append(ending.update(t, False, bar_s)[0])
+    ending.long_wait()
+    t += bar_s
+    after = ending.update(t, False, bar_s)[0]
+    assert after < gains[-1] < 0.0, "the fade carried on down"
+    # And from here it is a room mic's ending: once she is heard again, the next wait is the long one.
+    t += bar_s
+    assert ending.update(t, True, bar_s) == (0.0, False)
+    quiet = 0
+    while ending.update(t + (quiet + 1) * bar_s, False, bar_s)[0] == 0.0:
+        quiet += 1
+    assert quiet * bar_s >= 28.0
+
+
 def test_it_takes_several_stretches_of_evidence_and_then_never_goes_back():
     from plume import bandentry
     check = bandentry.BandInMic(realtime.SR)
@@ -675,31 +794,41 @@ def test_silence_on_either_side_is_no_evidence():
     assert check.latched is False
 
 
-def test_the_band_in_the_mic_is_found_out_and_the_take_falls_back_for_good(tmp_path, consent, maskers):
+def test_the_band_in_the_mic_is_found_out_and_the_take_falls_back_for_good(tmp_path, consent, maskers, monkeypatch):
     """At the speed of a real take.  Her word was wrong, or the headphones came out: the band is
     in the mic at -6 dB.  The take notices within a few bars, says so in its log, and from there
     is a room mic until it ends."""
-    rec = _mic_take(tmp_path, "found", _direct_take(stops_at=45.0, total=400.0), rate_x=1.0, minutes=1.3,
+    from plume import bandentry
+    endings = []
+
+    class Ending(bandentry.SilenceEnding):
+        def __init__(self, *a, **kw):
+            endings.append(kw.get("end_after_s"))
+            super().__init__(*a, **kw)
+    monkeypatch.setattr(bandentry, "SilenceEnding", Ending)
+    rec = _mic_take(tmp_path, "found", _direct_take(stops_at=45.0, total=400.0), rate_x=1.0, minutes=0.9,
                     fake={"bleed_db": -6.0}, band_in_headphones=True)
     rows = rows_of(rec)
     first_in = next(i for i, r in enumerate(rows) if r["entry"] != "drums")
     found = next((i for i, r in enumerate(rows) if "band_in_mic" in r), None)
     assert found is not None, "the band at -6 dB in the mic was never noticed"
-    assert first_in < found <= first_in + 8, "within a few bars of the band coming in"
+    assert found <= first_in + 4, "by a few bars after the band came in, at the latest"
     said = rows[found]["band_in_mic"]
     assert said["since_bar"] == rows[found]["bar"] and said["share"] >= 0.25 and "room mic" in said["reason"]
     after = rows[found:]
     assert all(r.get("band_in_mic") == said for r in after), "decided once, and kept"
-    assert not any(r["playing_trusted"] for r in after), "it never goes back to believing the mic"
+    # A room mic is believed over drums alone, as it always was, and never once the band is in.
+    assert not any(r["playing_trusted"] for r in rows[max(found, first_in):]), "it never goes back to believing the mic"
     assert all("room mic" in json.dumps(r["chords"]) for r in after if r.get("chords"))
     assert [m._enabled for m in maskers] == [True], "and it masks its own sound again"
+    assert endings == [bandentry.END_AFTER_S], "the ending it had is kept, not started over"
     # The pages are told a room mic's story about this take, not that it heard her throughout.
     assert record.read_take(rec)["route"] == "room"
 
 
 def test_her_playing_over_a_clean_mic_never_trips_it(tmp_path, consent):
     """At the speed of a real take, playing the band's own chords the whole way through."""
-    rec = _mic_take(tmp_path, "kept", _direct_take(stops_at=390.0, total=400.0), rate_x=1.0, minutes=1.3,
+    rec = _mic_take(tmp_path, "kept", _direct_take(stops_at=390.0, total=400.0), rate_x=1.0, minutes=1.15,
                     band_in_headphones=True)
     rows = rows_of(rec)
     in_band = [r for r in rows if r["entry"] != "drums"]
@@ -896,3 +1025,67 @@ def test_settings_does_not_say_speakers_would_howl_of_an_output_she_said_is_head
     assert said[False]["line"] == "Hear me stays off here: a room mic through speakers would howl."
     assert said[True]["line"] == "Hear me stays off on an output you chose. A mic can only hear itself on the system output."
     assert "band in headphones" in said[True]["gear"] and "room mic" in said[False]["gear"]
+
+
+# ----------------------------------------------- a real speaker, a real room, and every way in
+
+def _rows_and_found(rec):
+    rows = rows_of(rec)
+    return rows, next((i for i, r in enumerate(rows) if "band_in_mic" in r), None)
+
+
+@pytest.mark.parametrize("name,shape", [("nobass", {"low_cut_hz": 300.0, "rt60_s": 0.05, "wet": 0.0}),
+                                        ("room", {"low_cut_hz": 300.0, "rt60_s": 0.5, "wet": 1.5})])
+def test_a_shaped_leak_is_found_out_too(tmp_path, consent, name, shape):
+    """The band reaches the mic through a small speaker, and then through a room as well."""
+    from conftest import small_speaker_in_a_room
+    rec = _mic_take(tmp_path, name, _direct_take(stops_at=45.0, total=400.0), rate_x=4.0, minutes=0.4,
+                    fake={"bleed_db": -6.0, "bleed_shape": small_speaker_in_a_room(**shape)},
+                    band_in_headphones=True)
+    rows, found = _rows_and_found(rec)
+    assert found is not None, "the band through a speaker and a room was never noticed"
+    first_in = next((i for i, r in enumerate(rows) if r["entry"] != "drums"), len(rows))
+    assert found <= first_in + 4
+    assert not any(r["playing_trusted"] for r in rows[found:] if r["entry"] != "drums")
+
+
+def test_she_stops_with_the_band_leaking_and_is_not_heard_playing_on(tmp_path, consent):
+    """The band at -6 dB in the mic, and she stops at 45 seconds.  Bars that say she is playing
+    and can be believed, after she has stopped, are the harm: there must be next to none."""
+    rec = _mic_take(tmp_path, "stops", _direct_take(stops_at=45.0, total=400.0), rate_x=4.0, minutes=0.45,
+                    fake={"bleed_db": -6.0}, band_in_headphones=True)
+    rows, found = _rows_and_found(rec)
+    assert found is not None
+    wrong = [r["bar"] for r in rows if r["t_s"] > 52.0 and r["playing"] and r["playing_trusted"]]
+    assert wrong == [], wrong
+    assert rows[found]["t_s"] < 45.0, "found while she was still playing"
+
+
+def test_plain_lead_checks_her_word_too(tmp_path, consent, maskers):
+    """No count, so the band plays from the first bar.  The flag is honoured here, and so checked."""
+    for name, fake in (("lead-leak", {"bleed_db": -6.0}), ("lead-clean", {})):
+        device = fake_audio(_direct_take(stops_at=390.0, total=400.0), devices=RIG, rate_x=playhead_rate(4.0), **fake)
+        with patched_module("sounddevice", device):
+            realtime.lead(prompt="lofi in C major", seed=0, role=roles_mod.RoleParams(role="lead"),
+                          record_dir=str(tmp_path / name), status=False,
+                          socket_path=short_socket_path(name), max_minutes=0.15, band_in_headphones=True)
+    rows, found = _rows_and_found(tmp_path / "lead-leak")
+    assert found is not None and rows[found]["band_in_mic"]["since_bar"] == rows[found]["bar"]
+    assert all(r.get("band_in_mic") == rows[found]["band_in_mic"] for r in rows[found:])
+    assert _rows_and_found(tmp_path / "lead-clean")[1] is None
+    assert [m._enabled for m in maskers] == [True, False], "masking comes back only where the band was found"
+
+
+def test_jam_checks_her_word_too(tmp_path, consent, maskers):
+    from test_live_correctness import strum
+    for name, fake in (("jam-leak", {"bleed_db": -6.0}), ("jam-clean", {})):
+        # a chord on every beat, which is what gets a jam's band to come in and stay
+        device = fake_audio(strum(100.0, 200.0), devices=RIG, rate_x=playhead_rate(4.0), **fake)
+        with patched_module("sounddevice", device):
+            realtime.jam(style="lofi", seed=0, params=mind_mod.MindParams(), record_dir=str(tmp_path / name),
+                         max_minutes=0.3, band_in_headphones=True)
+    rows, found = _rows_and_found(tmp_path / "jam-leak")
+    assert found is not None, "the band in the mic was never noticed in a jam"
+    assert all("band_in_mic" in r for r in rows[found:]) and "room mic" in rows[found]["band_in_mic"]["reason"]
+    assert _rows_and_found(tmp_path / "jam-clean")[1] is None
+    assert [m._enabled for m in maskers] == [True, False]

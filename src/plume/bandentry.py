@@ -451,11 +451,12 @@ class GuitarEar:
         return tuple(int(i) for i in order if self._heard[i] > 0.0)
 
 
-#: How much of a mic's power must be the band, arriving late, for a stretch of it to count
-#: as the band being in the mic.  A guess: on the fake device a clean mic stays under 0.13
-#: and the band at -6 dB under a player reads 0.2 to 0.6, or over 0.9 once she rests.  No
-#: real headphones, speakers or mic have been measured against it.
-BAND_IN_MIC_SHARE = 0.25
+#: How much of a mic must be the band, by :func:`band_share`, for a stretch of it to count
+#: as the band being in the mic.  A guess, set against the fake device and made-up speakers
+#: and rooms: a clean mic reads up to 0.15 there, held notes on the band's own partials
+#: 0.03, and the band through a small speaker and a lively room 0.43 and up, with or
+#: without a player over it.  No real headphones, speakers or mic have been measured.
+BAND_IN_MIC_SHARE = 0.3
 #: Each stretch judged, and how many more of them must say yes than no before the take
 #: stops believing the mic: about eight seconds of evidence, so two or three bars.
 BAND_IN_MIC_WINDOW_S = 2.0
@@ -465,30 +466,75 @@ BAND_IN_MIC_BAND_FLOOR_DB = -50.0
 BAND_IN_MIC_MIC_FLOOR_DB = -60.0
 #: Output latency, air and input latency, generously.
 BAND_IN_MIC_MAX_DELAY_S = 0.7
+#: What a small speaker reproduces and a mic picks up well.  Most of a band's power is
+#: bass, which a small speaker never plays, so the bass says nothing about a leak.
+BAND_IN_MIC_LOW_HZ = 300.0
+BAND_IN_MIC_HIGH_HZ = 4000.0
+#: The filter the band may reach the mic through: this long (85 ms at 48 kHz), which
+#: holds a speaker's response and the early part of a room.
+BAND_IN_MIC_FILTER = 4096
+#: Only where the band itself has something to say: this far under its strongest frequency.
+BAND_IN_MIC_BAND_RANGE_DB = 30.0
 
 
 def band_share(mic, band, sr: int, max_delay_s: float = BAND_IN_MIC_MAX_DELAY_S) -> float:
-    """How much of ``mic``'s power is ``band`` arriving up to ``max_delay_s`` late, 0 to 1."""
+    """How much of ``mic`` is ``band``, come through a speaker and a room, 0 to 1.
+
+    Not a delayed copy: a speaker drops the bass and a room adds its tail, so the band in
+    a mic is the band through a short filter nobody knows.  So this lines the two up on
+    their best delay, and then asks, frequency by frequency between
+    :data:`BAND_IN_MIC_LOW_HZ` and :data:`BAND_IN_MIC_HIGH_HZ`, how much of the mic there
+    is explained by the band through any filter up to :data:`BAND_IN_MIC_FILTER` long
+    (the coherence of the two, averaged over short pieces of the stretch).  The answer is
+    the middle value over the frequencies where the band is sounding.
+
+    The middle, not the mean: a player's notes sit on a few frequencies, however loud, and
+    leave the rest to whatever else is in the mic.  So a band under a louder player still
+    reads high, and a player holding the band's own notes on a clean mic reads low.
+    """
     n = min(len(mic), len(band))
-    if n == 0:
+    seg, hop = BAND_IN_MIC_FILTER, BAND_IN_MIC_FILTER // 2
+    if n < 8 * seg:
         return 0.0
     mic = np.asarray(mic[:n], dtype=np.float64)
     band = np.asarray(band[:n], dtype=np.float64)
-    e_mic, e_band = float(np.sum(mic ** 2)), float(np.sum(band ** 2))
-    if e_mic <= 1e-9 or e_band <= 1e-9:
+    if float(np.sum(mic ** 2)) <= 1e-9 or float(np.sum(band ** 2)) <= 1e-9:
         return 0.0
+    # The delay, from the phase alone and only in the range a speaker plays: loud bass
+    # would otherwise decide it, and the bass may not be in the mic at all.
     size = 2 * n
-    xcorr = np.fft.irfft(np.fft.rfft(mic, size) * np.conj(np.fft.rfft(band, size)),
-                         size)[:max(1, int(max_delay_s * sr))]
-    return min(1.0, float(np.max(np.abs(xcorr))) ** 2 / (e_mic * e_band))
+    cross = np.fft.rfft(mic, size) * np.conj(np.fft.rfft(band, size))
+    freqs = np.fft.rfftfreq(size, 1.0 / sr)
+    size_of = np.abs(cross)
+    keep = (freqs >= BAND_IN_MIC_LOW_HZ) & (freqs <= BAND_IN_MIC_HIGH_HZ) & (size_of > 0.0)
+    cross = np.where(keep, cross / np.maximum(size_of, 1e-30), 0.0)
+    lag = int(np.argmax(np.abs(np.fft.irfft(cross, size)[:max(1, int(max_delay_s * sr))])))
+    mic, band = mic[lag:], band[:n - lag]
+    pieces = (len(mic) - seg) // hop + 1
+    if pieces < 8:
+        return 0.0
+    at = np.arange(seg)[None, :] + hop * np.arange(pieces)[:, None]
+    window = np.hanning(seg)
+    m = np.fft.rfft(mic[at] * window, axis=1)
+    b = np.fft.rfft(band[at] * window, axis=1)
+    freqs = np.fft.rfftfreq(seg, 1.0 / sr)
+    keep = (freqs >= BAND_IN_MIC_LOW_HZ) & (freqs <= BAND_IN_MIC_HIGH_HZ)
+    both = np.mean(m * np.conj(b), axis=0)[keep]
+    band_power = np.mean(np.abs(b) ** 2, axis=0)[keep]
+    mic_power = np.mean(np.abs(m) ** 2, axis=0)[keep]
+    explained = np.abs(both) ** 2 / np.maximum(band_power * mic_power, 1e-30)
+    sounding = band_power >= float(np.max(band_power)) * 10.0 ** (-BAND_IN_MIC_BAND_RANGE_DB / 10.0)
+    if int(np.sum(sounding)) < 8:
+        return 0.0
+    return min(1.0, float(np.median(explained[sounding])))
 
 
 class BandInMic:
     """Is the band in a mic the player said it could not reach?
 
     The safety net under her word: headphones come out, or the yes was wrong, and nothing
-    else can see it.  Fed the mic and what the band played, block by block, once the band
-    is in.  Every :data:`BAND_IN_MIC_WINDOW_S` it asks how much of the mic is the band.  A
+    else can see it.  Fed the mic and what the band played, block by block, off the audio
+    callback, for as long as the take runs.  Every :data:`BAND_IN_MIC_WINDOW_S` it asks how much of the mic is the band.  A
     stretch that says yes counts one up, one that says no counts one down, and at
     :data:`BAND_IN_MIC_WINDOWS` it latches: one loud bar cannot trip it, and once tripped
     it never goes back, because a take that flips between believing and not is worse than
@@ -530,7 +576,9 @@ class BandInMic:
         if share >= BAND_IN_MIC_SHARE:
             self._count += 1
             if self._count >= BAND_IN_MIC_WINDOWS:
-                self.latched, self.share = True, share
+                # The share first: another thread reads it as soon as it sees the latch.
+                self.share = share
+                self.latched = True
         else:
             self._count = max(0, self._count - 1)
 
@@ -1228,6 +1276,12 @@ class SilenceEnding:
         self._played = False
         self._fade = 0
         self._bars_of_fade = self._fade_bars
+
+    def long_wait(self) -> None:
+        """From here it cannot tell the player stopped after all, so it waits as a room
+        mic's ending does.  A fade already running is kept: it goes on down, and only
+        the next wait is the long one."""
+        self._end_after_s = None
 
     def _timing(self, bar_s: float | None) -> tuple[float, int]:
         """(seconds to wait, bars to fade over)."""

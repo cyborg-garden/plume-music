@@ -23,6 +23,7 @@ import signal
 import stat
 import subprocess
 import sys
+import threading
 
 #: True on Windows, where the POSIX hardening below has to be replaced, not skipped.
 IS_WINDOWS = sys.platform == "win32"
@@ -260,7 +261,9 @@ def reveal_command(folder, select: str | None = None, *, platform: str | None = 
 
     ``select`` is a file in that folder to arrive on, where the file manager can do
     that: macOS and Windows can, and the Linux desktops share no way to, so there the
-    folder opens.  It is a plain file name, never a path.
+    folder opens.  It is a plain file name, never a path.  Callers should always name
+    one: with none, macOS and Windows show the folder as an item in the folder it sits
+    in, which is not the folder that was asked for.
 
     macOS and Linux get an argv.  macOS is asked to *reveal*, never to open: a folder
     named like an application would otherwise be started.  Windows gets one command
@@ -295,8 +298,6 @@ def _launch(command, *, popen=None, wait: bool | None = None) -> None:
     name as a command.  Where the exit code means something it is waited for, briefly:
     a missing folder, or a desktop with no display, ends at once and non-zero.
     """
-    import threading  # noqa: PLC0415
-
     popen = subprocess.Popen if popen is None else popen
     wait = LAUNCH_EXIT_MEANS_SOMETHING if wait is None else wait
     proc = popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
@@ -310,7 +311,8 @@ def _launch(command, *, popen=None, wait: bool | None = None) -> None:
             if code != 0:
                 raise OSError(f"the file manager ended with code {code}")
             return
-    # Reaped when it ends, so it is never left a zombie.
+    # Reaped when it ends, so it is never left a zombie.  A daemon thread: a file
+    # manager left open must never be what keeps plume from quitting.
     threading.Thread(target=proc.wait, name="plume-reveal", daemon=True).start()
 
 

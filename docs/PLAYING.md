@@ -578,15 +578,21 @@ Show files opens the take's folder in your file manager and saves `mix.wav` ther
 `human.wav` and `machine.wav` as one file, the player moved earlier by the round trip in
 `stream.json` (the measured one if there is one, else the one the device reported) and
 balanced the way Together plays them. The file ends with a note of what it was made from
-(each recording and `stream.json` by size and time, and the mixing rule), and it is made
-again whenever any of that differs. Recording again into the same folder removes it.
+(the mixing rule, the delay used, and each recording and `stream.json` by size and time),
+and it is made again whenever any of that differs. Recording again into the same folder
+removes it. That note is also how plume knows a mix for its own: a `mix.wav` without it is
+yours, and plume neither replaces it nor removes it.
 
-The page says nothing when the mix is plain. It says one line when no mix was saved: a take
-with one recording, one still being recorded, or one too long for a WAV. And it says one
-line when the mic may have heard the band, since the band is then in the mix twice. A take
-from a plugged-in instrument, or one whose `session.json` says the band was only in
-headphones, gets no such line. If the file manager does not open, the page says where the
-folder is.
+The page says nothing when the mix is plain. Otherwise it says one line:
+
+- no mix was saved: a take with one recording, one still being recorded, or one too long
+  for a WAV;
+- the folder already has a `mix.wav` plume did not make, so it was left;
+- plume's own older mix is open in another program and could not be updated;
+- the take was recorded from a mic, which may have heard the band, so the band could be in
+  the mix twice. Only a take from a plugged-in instrument is free of that line today.
+
+If the file manager does not open, the page says where the folder is.
 
 This page has only been checked on made-up take folders, in headless Chromium with the
 sound muted. Play has not been pressed in a real browser, and the page has not been tried

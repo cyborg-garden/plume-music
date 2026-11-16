@@ -44,10 +44,10 @@ it choose what you hear:
 nothing. **Takes** in the header shows every take as a carved stone.
 
 **Show files** opens the take's folder. Your recording and the band's are in it, and so
-is `mix.wav`: the two as one, lined up. From a plugged-in instrument, or a mic with the
-band only in your headphones, that is ready to share. A mic that could hear the band has
-the band in the mix twice, and the page says so when that may be the case. A take with
-only one recording gets no mix, and the page says that too.
+is `mix.wav`: the two as one, lined up. From a plugged-in instrument that is ready to
+share. From a mic, the band may be in the mix twice, because the mic may have heard it
+too, and the page says so. A take with only one recording gets no mix, and the page says
+that too. If you keep a `mix.wav` of your own in the folder, plume leaves it alone.
 
 Each take gets its own new folder, under `~/Music/Plume` unless `plume gui --takes DIR`
 names another. Settings shows where they go.

@@ -3102,6 +3102,10 @@ def test_show_files_is_drawn_from_the_pages_own_colours():
      "Saved as mix.wav. Your mic may have heard the band too, so the band could be in it twice."),
     # An answer that does not say a mix was saved is not read as one.
     ({"shown": True}, "No mix was saved for this take. Your recordings are in the folder."),
+    ({"shown": True, "mix": False, "band_twice": False, "why": "theirs"},
+     "This folder already has a mix.wav that plume did not make, so it was left as it is."),
+    ({"shown": True, "mix": False, "band_twice": False, "why": "in_use"},
+     "mix.wav is open in another program, so it could not be updated. Close it there and try again."),
 ])
 def test_show_files_says_one_line_when_the_mix_is_not_plain(tmp_path, docs, answer, words):
     out = run_page(tmp_path, docs, """
@@ -3125,3 +3129,23 @@ def test_show_files_says_one_line_when_the_mix_is_not_plain(tmp_path, docs, answ
     assert out["elsewhere"] == [True, ""], "the line is about one take"
     assert out["back"] == words
     assert out["after"] == [True, ""], "a plain mix clears it"
+
+
+def test_a_new_click_takes_the_last_line_away_before_its_answer_comes(tmp_path, docs):
+    out = run_page(tmp_path, docs, """
+        await page.open(ids.tap);
+        page.replies.reveal = [200, { shown: true, mix: false, band_twice: false, why: null }];
+        $('show-files').click();
+        await page.settle();
+        const first = [$('files-note').hidden, $('files-note').textContent];
+        const open = page.hold('reveal');
+        $('show-files').click();
+        await page.settle();
+        const waiting = [$('files-note').hidden, $('files-note').textContent, $('show-files').disabled];
+        page.replies.reveal = [200, { shown: true, mix: true, band_twice: false, why: null }];
+        open();
+        await page.settle();
+        return { first, waiting, after: [$('files-note').hidden, $('show-files').disabled] };""")
+    assert out["first"][0] is False and out["first"][1].startswith("No mix")
+    assert out["waiting"] == [True, "", True], "an old line must not sit beside a new click"
+    assert out["after"] == [True, False]

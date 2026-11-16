@@ -57,7 +57,7 @@ import soundfile as sf
 
 from . import fx as _fx
 from . import guitake, oscompat, record
-from .realtime import REC_HUMAN, REC_MACHINE, REC_MIX, REC_STREAM, list_sessions
+from .realtime import MIX_CHUNK, REC_HUMAN, REC_MACHINE, REC_MIX, REC_STREAM, is_own_mix, list_sessions
 
 STATE_DIR_ENV = "PLUME_GUI_STATE_DIR"
 
@@ -105,8 +105,6 @@ _WAV_MAX_BYTES = 0xFFFFFFFF
 #: Raised when a saved mix would come out different for a reason the three numbers
 #: above do not show.  Those numbers are part of the rule too: see :func:`_mix_rule`.
 _MIX_RULE = 1
-#: The chunk after a saved mix's samples that says what it was made from.
-_MIX_CHUNK = b"plMx"
 _MIX_TMP_RE = re.compile(r"\." + re.escape(REC_MIX) + r"\.[0-9a-f]{16}\.tmp")
 #: A half-written mix nothing has touched for this long was left by a run that died.
 _MIX_TMP_STALE_S = 60.0
@@ -128,6 +126,14 @@ _RANGE_RE = re.compile(r"bytes=(\d{0,18})-(\d{0,18})")
 
 class GuiError(RuntimeError):
     """A clean, user-facing failure."""
+
+
+class MixInTheWay(GuiError):
+    """The take folder holds a ``mix.wav`` plume did not write.  It is the player's, and stays."""
+
+
+class MixInUse(GuiError):
+    """Plume's own older mix could not be replaced: another program has it open."""
 
 
 # ------------------------------------------------------------------ the state file
@@ -247,7 +253,8 @@ def _replace_in(where, src: str, dst: str) -> None:
     if isinstance(where, int):
         os.replace(src, dst, src_dir_fd=where, dst_dir_fd=where)
     else:
-        os.replace(Path(where) / src, Path(where) / dst)
+        # Retried briefly where a reader holding the old file open makes it fail.
+        oscompat.replace(Path(where) / src, Path(where) / dst)
 
 
 def _unlink_in(where, name: str) -> None:
@@ -424,6 +431,10 @@ class Library:
         take still being recorded, whose folder belongs to the session writing it.  A
         room mic take gets one too; :func:`band_may_be_twice` says when to warn of that.
 
+        Only plume's own ``mix.wav`` is ever replaced.  One the player put there raises
+        :class:`MixInTheWay`, and an older one of plume's that another program holds
+        open raises :class:`MixInUse`; in both the file is as it was.
+
         Written under another name and renamed, so ``mix.wav`` is whole or absent.  The
         file ends by saying what it was made from, and is left alone only while that is
         still exactly what is here: see :func:`_mix_stamp`.
@@ -445,13 +456,24 @@ class Library:
                     return None
                 shift = record.playing_delay_frames(path, human.samplerate)
                 frames = max(human.frames - shift, machine.frames)
-                stamp = _mix_stamp(path, *stats)
+                stamp = _mix_stamp(path, *stats, shift=shift, frames=frames, rate=human.samplerate)
                 if frames <= 0 or _WAV_HEADER + frames * 2 + len(stamp) > _WAV_MAX_BYTES:
                     return None
-                if not _mix_is_current(path, frames, stamp):
+                if not _mix_is_current(path, frames, human.samplerate, stamp):
+                    theirs = path / REC_MIX
+                    there = os.path.lexists(theirs)
+                    if there and not is_own_mix(theirs):
+                        raise MixInTheWay(REC_MIX)
                     # Readable by whoever can read the recordings it is made from.
                     mode = stat.S_IMODE(stats[0].st_mode)
-                    self._save_mix(path, human, machine, shift, frames, stamp, mode)
+                    try:
+                        self._save_mix(path, human, machine, shift, frames, stamp, mode)
+                    except PermissionError:
+                        # The new mix was written and could not take the old one's place.
+                        # Windows refuses that while a player holds the old one open.
+                        if there:
+                            raise MixInUse(REC_MIX) from None
+                        raise
             finally:
                 for f in raw:
                     f.close()
@@ -494,35 +516,46 @@ def _identity(st) -> list[int]:
     return [st.st_size, st.st_mtime_ns]
 
 
-def _mix_stamp(path: Path, human, machine) -> bytes:  # the two recordings' fstat results
-    """The chunk that ends a saved mix: the rule, and exactly which files went in.
+def _mix_stamp(path: Path, human, machine, *, shift: int, frames: int, rate: int) -> bytes:
+    """The chunk that ends a saved mix: everything its samples depend on.
 
-    Each file by its size and its time to the nanosecond, the delay's file included.
-    "Is the mix newer?" would be the wrong question: a recording put back from a copy
-    keeps its old date, and a change to the rule changes no date at all.  It is inside
-    the mix, after the samples, so it can never describe another file than its own.
+    The rule, the delay in frames that was actually used, the length and rate, and each
+    file that went in by its size and its time to the nanosecond (``human`` and
+    ``machine`` are those files' ``fstat``).  "Is the mix newer?" would be the wrong
+    question: a recording put back from a copy keeps its old date, and a change to the
+    rule changes no date at all.  The delay is here as a number, not only as its file's
+    size and date, because a file can be rewritten and keep both.  It is inside the
+    mix, after the samples, so it can never describe another file than its own.
     """
     try:
         stream = _identity(os.lstat(path / REC_STREAM))
     except OSError:
         stream = None
-    doc = {"rule": _mix_rule(), "human": _identity(human), "machine": _identity(machine),
-           "stream": stream}
+    doc = {"rule": _mix_rule(), "shift": int(shift), "frames": int(frames), "rate": int(rate),
+           "human": _identity(human), "machine": _identity(machine), "stream": stream}
     body = json.dumps(doc, sort_keys=True).encode()
     body += b" " * (len(body) % 2)          # a chunk is an even number of bytes
-    return _MIX_CHUNK + len(body).to_bytes(4, "little") + body
+    return MIX_CHUNK + len(body).to_bytes(4, "little") + body
 
 
-def _mix_is_current(path: Path, frames: int, stamp: bytes) -> bool:
-    """True when ``mix.wav`` is a whole mix of exactly these files, by this rule."""
+def _mix_is_current(path: Path, frames: int, rate: int, stamp: bytes) -> bool:
+    """True when ``mix.wav`` is a whole mix of exactly these files, by this rule.
+
+    The header must be the one this mix would be written with, the file exactly as long
+    as that header says, and the note at its end the one that would be written now.  The
+    samples between are not read again: they were written with the note, in one rename.
+    """
     data = _WAV_HEADER + frames * 2
     try:
+        header = _wav_header(frames, rate, extra=len(stamp))
         with _open_track(path, REC_MIX) as f:
             if os.fstat(f.fileno()).st_size != data + len(stamp):
                 return False
+            if f.read(_WAV_HEADER) != header:
+                return False
             f.seek(data)
             return f.read(len(stamp)) == stamp
-    except OSError:
+    except (OSError, ArithmeticError):
         return False
 
 
@@ -545,12 +578,23 @@ def _sweep_mix_leftovers(path: Path, folder) -> None:
         pass
 
 
+def _something_inside(folder: Path) -> str | None:
+    """A file a take folder holds, to show the folder by.  The player's recording first."""
+    for name in (REC_HUMAN, REC_MACHINE, record.REC_MANIFEST, record.REC_DECISIONS, record.REC_ENDING):
+        if record._is_regular(folder / name):
+            return name
+    return None
+
+
 def band_may_be_twice(folder: Path) -> bool:
     """True when a mix of this take may hold the band twice.
 
-    A plugged-in instrument is the player alone.  A mic is not, unless the take says
-    the band was only in headphones (``input.isolated`` in the manifest, where a take
-    has it).  Anything else, or nothing, is read as a mic that could hear the band.
+    A plugged-in instrument is the player alone.  A mic is not, unless the take's
+    manifest says the band could not reach it: ``input.isolated`` being ``true``.
+    Nothing writes that yet, so today every mic take answers True.  It is read here,
+    in the place and under the name the manifest's ``input`` block would carry it, so
+    that a take which does say so is believed.  Anything else is a mic that could
+    hear the band.
     """
     manifest = record._read_json(Path(folder) / record.REC_MANIFEST) or {}
     if record.recorded_from(manifest) == "input":
@@ -907,16 +951,23 @@ class _Handler(BaseHTTPRequestHandler):
         folder = self.gui.library.path_of(body["take"])
         if folder is None:
             raise _Refused(404, "no such take")
+        why = None
         try:
             mix = self.gui.library.write_mix(body["take"])
+        except MixInTheWay:
+            mix, why = None, "theirs"
+        except MixInUse:
+            mix, why = None, "in_use"
         except (OSError, RuntimeError, ValueError, ArithmeticError):
             mix = None          # a folder that cannot be written in can still be shown
         try:
-            self.gui.revealer(folder, mix)
+            # Always by a file inside it.  Asked for bare, the folder is shown as an item
+            # in the folder it sits in, and the person is looking at the wrong place.
+            self.gui.revealer(folder, REC_MIX if mix or why else _something_inside(folder))
         except (OSError, GuiError):
             raise _Refused(500, "could not open the folder") from None
         twice = mix is not None and band_may_be_twice(folder)
-        self._json({"shown": True, "mix": mix is not None, "band_twice": twice})
+        self._json({"shown": True, "mix": mix is not None, "band_twice": twice, "why": why})
 
     # -- routes
 

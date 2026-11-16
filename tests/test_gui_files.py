@@ -239,15 +239,15 @@ def test_the_mix_arrives_whole_under_its_own_name_or_not_at_all(root, server, cl
 
 
 @needs_symlinks
-def test_a_planted_mix_symlink_is_replaced_and_its_target_untouched(root, server, client, tmp_path):
+def test_a_planted_mix_symlink_is_left_and_its_target_untouched(root, server, client, tmp_path):
     human, machine = clicks()
     folder = make_take(root / "t", human=human, machine=machine, stream={"calibrated_ms": 10.0})
     target = tmp_path / "elsewhere.txt"
     target.write_text("mine")
     (folder / "mix.wav").symlink_to(target)
-    server.library.write_mix(take_id(client, "t"))
-    assert target.read_text() == "mine"
-    assert not (folder / "mix.wav").is_symlink() and len(read_mix(folder)) == 4800
+    with pytest.raises(gui.MixInTheWay):
+        server.library.write_mix(take_id(client, "t"))
+    assert target.read_text() == "mine" and (folder / "mix.wav").is_symlink()
 
 
 def test_the_recordings_are_not_changed_by_a_mix(root, server, client):
@@ -265,7 +265,7 @@ def test_show_files_writes_the_mix_and_shows_the_takes_own_folder(root, shown, c
     human, machine = clicks()
     folder = make_take(root / "t", human=human, machine=machine, stream={"calibrated_ms": 10.0})
     resp, out = client.post("/api/reveal", {"take": take_id(client, "t")})
-    assert resp.status == 200 and json.loads(out) == {"shown": True, "mix": True, "band_twice": False}
+    assert resp.status == 200 and json.loads(out) == {"shown": True, "mix": True, "band_twice": False, "why": None}
     assert shown == [(folder.resolve(), "mix.wav")]
     assert len(read_mix(folder)) == 4800
 
@@ -274,8 +274,24 @@ def test_show_files_still_shows_a_take_that_can_have_no_mix(root, shown, client)
     human, _ = clicks()
     folder = make_take(root / "t", human=human)
     resp, out = client.post("/api/reveal", {"take": take_id(client, "t")})
-    assert resp.status == 200 and json.loads(out) == {"shown": True, "mix": False, "band_twice": False}
-    assert shown == [(folder.resolve(), None)]
+    assert resp.status == 200 and json.loads(out) == {"shown": True, "mix": False, "band_twice": False, "why": None}
+    # Shown by a file inside it, so the take's folder opens and not the one it sits in.
+    assert shown == [(folder.resolve(), "human.wav")]
+
+
+@pytest.mark.parametrize("has, want", [
+    (["human.wav", "machine.wav"], "human.wav"), (["machine.wav", "ending.json"], "machine.wav"),
+    (["ending.json"], "ending.json"),
+    (["session.json"], "session.json"), (["decisions.ndjson"], "decisions.ndjson"),
+])
+def test_a_take_with_no_mix_is_shown_by_something_inside_it(root, shown, client, monkeypatch, has, want):
+    folder = root / "t"
+    folder.mkdir(parents=True)
+    for name in has:
+        (folder / name).write_bytes(b"{}" if name.endswith("json") else b"")
+    monkeypatch.setattr(gui, "_WAV_MAX_BYTES", 0)
+    resp, _ = client.post("/api/reveal", {"take": take_id(client, "t")})
+    assert resp.status == 200 and shown == [(folder.resolve(), want)]
 
 
 def test_a_mix_that_cannot_be_written_does_not_stop_the_folder_showing(root, shown, client, monkeypatch):
@@ -287,8 +303,8 @@ def test_a_mix_that_cannot_be_written_does_not_stop_the_folder_showing(root, sho
 
     monkeypatch.setattr(gui, "_mixed_pcm", broken)
     resp, out = client.post("/api/reveal", {"take": take_id(client, "t")})
-    assert resp.status == 200 and json.loads(out) == {"shown": True, "mix": False, "band_twice": False}
-    assert shown == [(folder.resolve(), None)]
+    assert resp.status == 200 and json.loads(out) == {"shown": True, "mix": False, "band_twice": False, "why": None}
+    assert shown == [(folder.resolve(), "human.wav")]
 
 
 def test_a_request_cannot_name_a_folder(root, shown, client, tmp_path):
@@ -433,7 +449,7 @@ def test_a_new_version_of_the_rule_makes_a_new_mix(root, server, client, monkeyp
     assert _made(folder) != before
 
 
-@pytest.mark.parametrize("damage", ["cut short", "added to", "another file"])
+@pytest.mark.parametrize("damage", ["cut short", "added to", "header gone", "samples gone", "all but the note"])
 def test_a_mix_that_is_not_the_whole_file_is_made_again(root, server, client, damage):
     folder, tid = _mixed_take(root, server, client)
     whole = (folder / "mix.wav").read_bytes()
@@ -442,8 +458,12 @@ def test_a_mix_that_is_not_the_whole_file_is_made_again(root, server, client, da
         (folder / "mix.wav").write_bytes(whole[:-1])
     elif damage == "added to":
         (folder / "mix.wav").write_bytes(whole + b"\0\0")
+    elif damage == "header gone":
+        (folder / "mix.wav").write_bytes(bytes(44) + whole[44:])
+    elif damage == "samples gone":
+        (folder / "mix.wav").write_bytes(whole[:40] + (10).to_bytes(4, "little") + whole[44:])
     else:
-        sf.write(folder / "mix.wav", np.zeros(4800), RATE, subtype="PCM_16")
+        (folder / "mix.wav").write_bytes(bytes(44 + 4800 * 2) + whole[44 + 4800 * 2:])
     os.utime(folder / "mix.wav", ns=(when, when))          # newer than everything it is made from
     server.library.write_mix(tid)
     assert (folder / "mix.wav").read_bytes() == whole
@@ -475,7 +495,7 @@ def test_a_mix_too_long_for_a_wav_is_not_made_and_the_folder_still_opens(root, s
     assert server.library.write_mix(tid) is None
     resp, out = client.post("/api/reveal", {"take": tid})
     assert resp.status == 200 and json.loads(out)["mix"] is False
-    assert shown == [(folder.resolve(), None)] and not (folder / "mix.wav").exists()
+    assert shown == [(folder.resolve(), "human.wav")] and not (folder / "mix.wav").exists()
 
 
 def test_a_header_that_cannot_hold_the_length_does_not_stop_the_folder_opening(root, shown, client, monkeypatch):
@@ -488,7 +508,7 @@ def test_a_header_that_cannot_hold_the_length_does_not_stop_the_folder_opening(r
     monkeypatch.setattr(gui, "_wav_header", too_big)
     resp, out = client.post("/api/reveal", {"take": take_id(client, "t")})
     assert resp.status == 200 and json.loads(out)["mix"] is False
-    assert shown == [(folder.resolve(), None)]
+    assert shown == [(folder.resolve(), "human.wav")]
     assert sorted(n for n in os.listdir(folder) if "mix" in n) == []
 
 
@@ -576,6 +596,156 @@ def test_recording_again_into_a_folder_takes_the_old_mix_away(root, server, clie
         recorder.close()
 
 
+# ------------------------------------------------------------------ the note at the end of a mix
+
+def _note(folder):
+    whole = (folder / "mix.wav").read_bytes()
+    at = whole.rindex(b"plMx")
+    size = int.from_bytes(whole[at + 4:at + 8], "little")
+    assert at + 8 + size == len(whole), "the note is the last thing in the file"
+    return json.loads(whole[at + 8:]), size
+
+
+def test_the_mix_says_the_delay_it_was_made_with(root, server, client):
+    folder, _ = _mixed_take(root, server, client)
+    doc, _ = _note(folder)
+    assert doc["shift"] == 480 and doc["frames"] == 4800 and doc["rate"] == RATE
+
+
+def test_a_delay_changed_without_a_trace_still_makes_a_new_mix(root, server, client):
+    folder, tid = _mixed_take(root, server, client)
+    was = os.stat(folder / "stream.json")
+    text = (folder / "stream.json").read_text()
+    changed = text.replace("10.0", "20.0")
+    assert len(changed) == len(text) and changed != text
+    (folder / "stream.json").write_text(changed)
+    os.utime(folder / "stream.json", ns=(was.st_atime_ns, was.st_mtime_ns))     # same size, same time
+    now = os.stat(folder / "stream.json")
+    assert (now.st_size, now.st_mtime_ns) == (was.st_size, was.st_mtime_ns)
+    server.library.write_mix(tid)
+    assert _note(folder)[0]["shift"] == 960
+    assert read_mix(folder)[100] / 32767 == pytest.approx(0.25 * BAND * 0.7, abs=1e-3)
+
+
+@pytest.mark.parametrize("rule", [1, 10, 100, 1000])
+def test_the_note_is_an_even_number_of_bytes_whatever_it_says(root, server, client, monkeypatch, rule):
+    import wave
+    monkeypatch.setattr(gui, "_MIX_RULE", rule)
+    folder, _ = _mixed_take(root, server, client)
+    _, size = _note(folder)
+    assert size % 2 == 0
+    with wave.open(str(folder / "mix.wav")) as w:
+        assert w.getnframes() == 4800
+
+
+def test_the_note_lengths_tried_are_both_odd_and_even_before_padding(root, server, client, monkeypatch):
+    sizes = set()
+    for rule in (1, 10):
+        monkeypatch.setattr(gui, "_MIX_RULE", rule)
+        folder, tid = (root / "t", None) if (root / "t").exists() else _mixed_take(root, server, client)
+        if tid is None:
+            server.library.write_mix(take_id(client, "t"))
+        doc, _ = _note(folder)
+        sizes.add(len(json.dumps(doc, sort_keys=True)) % 2)
+    assert sizes == {0, 1}, "the check above needs a note of each parity"
+
+
+# ------------------------------------------------------------------ a mix.wav that is not plume's
+
+def _their_mix(folder):
+    sf.write(folder / "mix.wav", np.full(100, 0.25), RATE, subtype="PCM_16")
+    return (folder / "mix.wav").read_bytes()
+
+
+def test_a_mix_the_player_made_is_never_replaced(root, server, shown, client):
+    human, machine = clicks()
+    folder = make_take(root / "t", human=human, machine=machine)
+    theirs = _their_mix(folder)
+    tid = take_id(client, "t")
+    with pytest.raises(gui.MixInTheWay):
+        server.library.write_mix(tid)
+    resp, out = client.post("/api/reveal", {"take": tid})
+    assert resp.status == 200
+    assert json.loads(out) == {"shown": True, "mix": False, "band_twice": False, "why": "theirs"}
+    assert (folder / "mix.wav").read_bytes() == theirs
+    assert [n for n in os.listdir(folder) if n.endswith(".tmp")] == []
+    assert shown == [(folder.resolve(), "mix.wav")]
+
+
+@pytest.mark.parametrize("theirs", [b"", b"notes about the mix", b"RIFF" + bytes(40), b"plMx"])
+def test_anything_called_mix_that_plume_did_not_write_is_left(root, server, client, theirs):
+    human, machine = clicks()
+    folder = make_take(root / "t", human=human, machine=machine)
+    (folder / "mix.wav").write_bytes(theirs)
+    with pytest.raises(gui.MixInTheWay):
+        server.library.write_mix(take_id(client, "t"))
+    assert (folder / "mix.wav").read_bytes() == theirs
+
+
+def test_recording_again_leaves_a_mix_the_player_made(root):
+    folder = root / "t"
+    folder.mkdir(parents=True)
+    theirs = _their_mix(folder)
+    recorder = realtime.SessionRecorder(folder, sr=RATE).open({"seed": 2})
+    try:
+        assert (folder / "mix.wav").read_bytes() == theirs
+    finally:
+        recorder.close()
+
+
+@needs_symlinks
+def test_recording_again_leaves_a_mix_that_is_a_link(root, tmp_path):
+    folder = root / "t"
+    folder.mkdir(parents=True)
+    target = tmp_path / "elsewhere.wav"
+    target.write_bytes(b"mine")
+    (folder / "mix.wav").symlink_to(target)
+    recorder = realtime.SessionRecorder(folder, sr=RATE).open({"seed": 2})
+    try:
+        assert (folder / "mix.wav").is_symlink() and target.read_bytes() == b"mine"
+    finally:
+        recorder.close()
+
+
+def test_only_a_file_with_plumes_note_is_plumes(root, server, client):
+    folder, _ = _mixed_take(root, server, client)
+    assert realtime.is_own_mix(folder / "mix.wav") is True
+    assert realtime.is_own_mix(folder / "human.wav") is False
+    assert realtime.is_own_mix(folder / "nothing.wav") is False
+    assert realtime.is_own_mix(folder) is False
+
+
+def test_a_mix_held_open_elsewhere_is_said_to_be_in_use(root, server, shown, client, monkeypatch):
+    folder, tid = _mixed_take(root, server, client)
+    old = (folder / "mix.wav").read_bytes()
+    (folder / "stream.json").write_text(json.dumps({"calibrated_ms": 20.0}))
+
+    def held(where, src, dst):
+        raise PermissionError(13, "in use by another program")
+
+    monkeypatch.setattr(gui, "_replace_in", held)
+    with pytest.raises(gui.MixInUse):
+        server.library.write_mix(tid)
+    resp, out = client.post("/api/reveal", {"take": tid})
+    assert resp.status == 200
+    assert json.loads(out) == {"shown": True, "mix": False, "band_twice": False, "why": "in_use"}
+    assert (folder / "mix.wav").read_bytes() == old
+    assert [n for n in os.listdir(folder) if n.endswith(".tmp")] == []
+    assert shown == [(folder.resolve(), "mix.wav")]
+
+
+def test_a_first_mix_that_cannot_be_put_in_place_is_just_no_mix(root, server, shown, client, monkeypatch):
+    human, machine = clicks()
+    folder = make_take(root / "t", human=human, machine=machine)
+
+    def refused(where, src, dst):
+        raise PermissionError(13, "read-only")
+
+    monkeypatch.setattr(gui, "_replace_in", refused)
+    resp, out = client.post("/api/reveal", {"take": take_id(client, "t")})
+    assert json.loads(out) == {"shown": True, "mix": False, "band_twice": False, "why": None}
+
+
 # ------------------------------------------------------------------ a mic that may have heard the band
 
 @pytest.mark.parametrize("audio, twice", [
@@ -593,14 +763,14 @@ def test_show_files_says_when_the_band_may_be_in_the_mix_twice(root, shown, clie
     folder = make_take(root / "t", human=human, machine=machine)
     (folder / "session.json").write_text(json.dumps({"seed": 1, "input": audio}))
     resp, out = client.post("/api/reveal", {"take": take_id(client, "t")})
-    assert resp.status == 200 and json.loads(out) == {"shown": True, "mix": True, "band_twice": twice}
+    assert resp.status == 200 and json.loads(out) == {"shown": True, "mix": True, "band_twice": twice, "why": None}
 
 
 def test_no_mix_is_never_said_to_hold_the_band_twice(root, shown, client):
     human, _ = clicks()
     make_take(root / "t", human=human, source="room")
     _, out = client.post("/api/reveal", {"take": take_id(client, "t")})
-    assert json.loads(out) == {"shown": True, "mix": False, "band_twice": False}
+    assert json.loads(out) == {"shown": True, "mix": False, "band_twice": False, "why": None}
 
 
 # ------------------------------------------------------------------ per platform
@@ -697,6 +867,20 @@ def test_a_file_manager_that_stays_open_is_not_waited_for():
     while len(proc.waits) < 2 and time.monotonic() < wait_until_reaped:
         time.sleep(0.01)
     assert proc.waits[1:] == [None], "it is still reaped when it ends"
+
+
+def test_a_file_manager_left_open_never_keeps_plume_from_quitting(monkeypatch):
+    made = []
+
+    class Watched(threading.Thread):
+        def __init__(self, *args, **kw):
+            super().__init__(*args, **kw)
+            made.append(self)
+
+    monkeypatch.setattr(oscompat.threading, "Thread", Watched)
+    oscompat._launch(["xdg-open", "/music/take"], popen=FakePopen(FakeProcess(hangs=True)), wait=True)
+    oscompat._launch('"C:\\Windows\\explorer.exe" "C:\\t"', popen=FakePopen(FakeProcess()), wait=False)
+    assert len(made) == 2 and all(thread.daemon for thread in made)
 
 
 def test_where_the_exit_code_means_nothing_it_is_not_read():

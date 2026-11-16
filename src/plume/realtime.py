@@ -1594,6 +1594,35 @@ REC_STREAM = "stream.json"
 REC_KEEP = "keep.json"
 #: Both recordings as one file, saved by the page when its Show files is pressed.
 REC_MIX = "mix.wav"
+#: The chunk a saved mix ends with.  It says what the mix was made from, and it is how
+#: plume knows a ``mix.wav`` for its own: a player may keep one of theirs under that name.
+MIX_CHUNK = b"plMx"
+_MIX_TAIL_BYTES = 1024
+
+
+def is_own_mix(path) -> bool:
+    """True when the file at ``path`` is a mix plume saved, by the note it ends with.
+
+    Read from the end of the file and nowhere else, so a mix whose start was damaged is
+    still known for plume's and can be made again.  A symlink, a folder, a missing file
+    and anything without the note are not plume's, and plume leaves those alone.
+    """
+    try:
+        fd = oscompat.open_private(path, oscompat.read_flags())
+    except OSError:
+        return False
+    try:
+        with os.fdopen(fd, "rb") as f:
+            st = os.fstat(f.fileno())
+            if not stat.S_ISREG(st.st_mode):
+                return False
+            f.seek(max(0, st.st_size - _MIX_TAIL_BYTES))
+            tail = f.read(_MIX_TAIL_BYTES)
+    except OSError:
+        return False
+    at = tail.rfind(MIX_CHUNK)
+    # The note is JSON, after the chunk's name and its four bytes of length.
+    return at >= 0 and tail[at + 8:at + 9] == b"{"
 
 #: Audio is flushed to disk at most this often — the most a `kill -9` can
 #: cost.  Decisions are flushed every line (they are what an observer reads).
@@ -1699,8 +1728,10 @@ class SessionRecorder:
             (self.dir / REC_ENDING).unlink(missing_ok=True)
             (self.dir / REC_KEEP).unlink(missing_ok=True)
             (self.dir / REC_STREAM).unlink(missing_ok=True)
-            # The page's mix of the last take is not a mix of this one.
-            (self.dir / REC_MIX).unlink(missing_ok=True)
+            # The page's mix of the last take is not a mix of this one.  A mix.wav that
+            # plume did not write is the player's, and stays.
+            if is_own_mix(self.dir / REC_MIX):
+                (self.dir / REC_MIX).unlink(missing_ok=True)
             # _midi_listening writes a MIDI take's first line before this runs, so a
             # handle here means this take's own file.  Without one the file is the last take's.
             if self._midi is None:

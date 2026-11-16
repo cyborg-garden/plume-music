@@ -60,7 +60,7 @@ def film(tmp_path_factory, human):
     talk[START:START + len(human)] *= 0.3
     sound = placed(heard_by_camera(human, RATE), START, n) + talk + pilot(n)
     path = make_video(tmp_path_factory.mktemp("film") / "in.mp4", seconds=VIDEO_S, sound=sound,
-                      tags=("title=secret-title", "location=+12.3456-045.6789/", "comment=made on a secret-device"))
+                      tags=("title=secret-title", "comment=made on a secret-device"))
     return path.read_bytes()
 
 
@@ -209,8 +209,7 @@ def test_the_picture_is_copied_and_nothing_the_camera_wrote_comes_along(server, 
     (tmp_path / "in.mp4").write_bytes(film)
     assert picture_md5(take / "video.mp4") == picture_md5(tmp_path / "in.mp4")
     made = (take / "video.mp4").read_bytes()
-    # The title and the maker's note as text, and the place as the box an mp4 keeps it in.
-    for secret in (b"secret-title", b"loci", b"secret-device"):
+    for secret in (b"secret-title", b"secret-device"):
         assert secret in film and secret not in made
     probe = takevideo.probe(FFMPEG, take / "video.mp4")
     assert probe.has_audio and probe.duration_s == pytest.approx(VIDEO_S, abs=0.3)

@@ -13,6 +13,9 @@ dependencies = [
     "numpy",
     "scipy",
     "soundfile",
+    # ffmpeg for "Add a video" on a take's page: the package brings a binary for macOS,
+    # Windows and Linux, run as a separate program.  Without it, one on the PATH is used.
+    "imageio-ffmpeg>=0.6.0,<0.7",
 ]
 
 [project.optional-dependencies]

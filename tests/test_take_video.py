@@ -14,8 +14,8 @@ import numpy as np
 import pytest
 
 from plume import takevideo
-from video_fixture import (FFMPEG, float_sound, heard_by_camera, make_video, needs_ffmpeg, placed, playing,
-                           talking)
+from video_fixture import (CAMERA_SECRETS, FFMPEG, PLACE, described, float_sound, heard_by_camera,
+                           make_camera_video, make_video, needs_ffmpeg, placed, playing, talking)
 
 R = takevideo.ALIGN_RATE
 #: How close the start must be found.  Half a video frame at 100 frames a second,
@@ -374,3 +374,45 @@ def test_a_loud_take_does_not_clip_once_it_is_a_video(tmp_path, keep_sound):
     sound = float_sound(out)
     assert float(np.max(np.abs(sound))) <= 1.0
     assert float(np.sqrt(np.mean(sound ** 2))) > 0.2            # and it is still loud, not turned down to nothing
+
+
+# -------------------------------------------------- what the camera wrote about itself
+
+#: What each kind of file must be carrying going in, or the test proves nothing.
+MUST_CARRY = {"mp4": ("secret-title", "secret-artist", "secret-comment", "secret-picture-handler",
+                      "secret-sound-handler", "secret-chapter", "secret-subtitle"),
+              "mov": CAMERA_SECRETS[:8] + ("secret-chapter", "secret-subtitle")}
+#: What ffmpeg's account of a file says when it holds each kind of thing.
+TELLS = ("Chapter", "Subtitle", "Data:", "timecode", "creation_time", "location", "(fra)", "secret")
+
+
+@needs_ffmpeg
+@pytest.mark.parametrize("keep_sound", [True, False])
+@pytest.mark.parametrize("container", ["mp4", "mov"])
+def test_nothing_the_camera_wrote_about_itself_is_in_the_saved_video(tmp_path, container, keep_sound):
+    """Where it was filmed, on what, when, and every name on every track.  A phone writes
+    all of it, and a video shared with a band in it must carry none of it."""
+    source = make_camera_video(tmp_path / "camera", container)
+    before, told = source.read_bytes(), described(source)
+    for secret in MUST_CARRY[container]:
+        assert secret.encode() in before, f"the made-up video does not carry {secret}"
+    # An mp4 keeps the place in a box of numbers, so the text of it is not there to find.
+    assert b"loci" in before and PLACE in told and "rotation of 90" in told
+    assert (PLACE.encode() in before) is (container == "mov")
+    for tell in TELLS:
+        assert tell in told, f"the made-up video has no {tell}"
+    found = takevideo.probe(FFMPEG, source)
+    out = tmp_path / "video.mp4"
+    takevideo.write_video(FFMPEG, source, out, mixed=lambda frame, count: bytes(2 * count), rate=48000,
+                          band_at=0, duration_s=found.duration_s, keep_sound=keep_sound, codec=found.codec)
+    after, told = out.read_bytes(), described(out)
+    # (The encoder's own name is not looked for: the made-up picture carries it inside its
+    # frames, and the frames are copied as they are.)
+    for secret in CAMERA_SECRETS + ("loci", PLACE, PLACE.strip("+/"), "2001", "01:02:03", "FFMP", "Lavf"):
+        assert secret.encode() not in after, f"{secret} is in the saved video"
+    for tell in TELLS + ("(deu)", "(eng)"):
+        assert tell not in told, f"the saved video has a {tell}"
+    tracks = [line.split(": ", 2)[1] for line in told.splitlines() if line.lstrip().startswith("Stream #")]
+    assert tracks == ["Video", "Audio"]
+    # The one thing kept: which way up the picture is.
+    assert "rotation of 90" in told

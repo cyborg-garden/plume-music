@@ -108,3 +108,54 @@ def float_sound(path, rate: int = 48000) -> np.ndarray:
                            "-ar", str(rate), "-f", "f32le", "-"], capture_output=True, check=True,
                           timeout=120, stdin=subprocess.DEVNULL)
     return np.frombuffer(done.stdout, dtype="<f4")
+
+
+#: Everything a camera might write about itself, all of it invented.  The place is put
+#: together here, in the form a camera writes one (ISO 6709).
+PLACE = "+%07.4f-%08.4f/" % (12.3456, 98.7654)
+CAMERA_SECRETS = ("secret-title", "secret-artist", "secret-comment", "secret-maker", "secret-model-9",
+                  "secret-software", "secret-picture-handler", "secret-sound-handler", "secret-stream-title",
+                  "secret-chapter", "secret-subtitle")
+
+
+def make_camera_video(folder, container: str, *, seconds: float = 3.0):
+    """A video carrying what a real camera's does: where and on what it was filmed and when,
+    names on every track, a chapter, a subtitle track, a timecode track, and a turned picture.
+
+    ``container`` is "mp4" or "mov".  The mov keeps its tags the way a phone's does, under
+    their own names, so the maker and model are in it as text.
+    """
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "subs.srt").write_text("1\n00:00:00,000 --> 00:00:02,000\nsecret-subtitle\n", encoding="utf-8")
+    (folder / "meta.txt").write_text(";FFMETADATA1\n[CHAPTER]\nTIMEBASE=1/1000\nSTART=0\nEND=1500\n"
+                                     "title=secret-chapter\n", encoding="utf-8")
+    picture, out = folder / "picture.mp4", folder / f"camera.{container}"
+    subprocess.run([FFMPEG, "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi",
+                    "-i", f"color=c=black:s=32x32:r=5:d={seconds}", "-c:v", "mpeg4", "-q:v", "20",
+                    "-t", str(seconds), "-f", "mp4", str(picture)], check=True, timeout=120, stdin=subprocess.DEVNULL)
+    tags = ["title=secret-title", "artist=secret-artist", "comment=secret-comment", f"location={PLACE}",
+            "make=secret-maker", "model=secret-model-9", "software=secret-software",
+            "creation_time=2001-02-03T04:05:06.000000Z"]
+    # The picture goes in turned on its side, the way a phone held upright says so.
+    cmd = [FFMPEG, "-hide_banner", "-loglevel", "error", "-y", "-display_rotation", "90", "-i", str(picture),
+           "-f", "lavfi", "-i", f"sine=frequency=440:sample_rate=48000:duration={seconds}",
+           "-i", str(folder / "subs.srt"), "-i", str(folder / "meta.txt"),
+           "-map", "0:v", "-map", "1:a", "-map", "2:s", "-map_chapters", "3",
+           "-c:v", "copy", "-c:a", "aac", "-b:a", "96k", "-c:s", "mov_text"]
+    for tag in tags:
+        cmd += ["-metadata", tag]
+    cmd += ["-metadata:s:v:0", "handler_name=secret-picture-handler", "-metadata:s:v:0", "title=secret-stream-title",
+            "-metadata:s:v:0", "language=fra", "-metadata:s:a:0", "handler_name=secret-sound-handler",
+            "-metadata:s:a:0", "language=deu", "-timecode", "01:02:03:04"]
+    if container == "mov":
+        cmd += ["-movflags", "use_metadata_tags"]
+    subprocess.run(cmd + ["-t", str(seconds), "-f", container, str(out)], check=True, timeout=120,
+                   stdin=subprocess.DEVNULL)
+    return out
+
+
+def described(path) -> str:
+    """What ffmpeg says a file holds: its tags, its tracks, its chapters, how its picture is turned."""
+    done = subprocess.run([FFMPEG, "-hide_banner", "-i", str(path)], capture_output=True, timeout=120,
+                          stdin=subprocess.DEVNULL)
+    return done.stderr.decode("utf-8", errors="replace")

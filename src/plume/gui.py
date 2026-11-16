@@ -132,7 +132,8 @@ class GuiError(RuntimeError):
 class MixInTheWay(GuiError):
     """The take folder holds a ``mix.wav`` plume does not know for its own, so it stays.
 
-    The player's own, or one of plume's that something has since changed at its end.
+    The player's own, or one of plume's that is no longer exactly the file plume wrote:
+    edited, damaged, or saved again by another program.  Also one that is locked.
     """
 
 
@@ -481,10 +482,13 @@ class Library:
                 facts = _mix_facts(path, *stats, shift=shift, frames=frames, rate=human.samplerate)
                 if frames <= 0 or _WAV_HEADER + frames * 2 + len(_mix_note(facts)) > _WAV_MAX_BYTES:
                     return None
-                if not _mix_is_current(path, facts):
-                    theirs = path / REC_MIX
+                theirs = path / REC_MIX
+                # Read once: this hashes the whole mix, and says both whose it is and
+                # what it was made from.
+                note = own_mix_note(theirs)
+                if not _mix_is_current(note, facts):
                     there = os.path.lexists(theirs)
-                    if there and not is_own_mix(theirs):
+                    if there and note is None:
                         raise MixInTheWay(REC_MIX)
                     # Readable by whoever can read the recordings it is made from.
                     mode = stat.S_IMODE(stats[0].st_mode)
@@ -588,14 +592,14 @@ def _mix_note(facts: dict, digest: str = "0" * 64) -> bytes:
     return MIX_CHUNK + len(body).to_bytes(4, "little") + body
 
 
-def _mix_is_current(path: Path, facts: dict) -> bool:
-    """True when ``mix.wav`` is plume's own mix of exactly these files, by this rule.
+def _mix_is_current(note: dict | None, facts: dict) -> bool:
+    """True when ``note`` is that of plume's own mix of exactly these files, by this rule.
 
-    :func:`plume.realtime.own_mix_note` answers whether the file is whole and plume's,
-    down to its samples.  What is left is whether it was made from what is here now.
+    ``note`` is what :func:`plume.realtime.own_mix_note` read from ``mix.wav``: None
+    unless the file is whole and plume's, down to its samples.  What is left to ask is
+    whether it was made from what is here now.
     """
-    doc = own_mix_note(path / REC_MIX)
-    return doc is not None and {k: v for k, v in doc.items() if k != "sha256"} == facts
+    return note is not None and {k: v for k, v in note.items() if k != "sha256"} == facts
 
 
 def _may_be_written(path: Path) -> bool:

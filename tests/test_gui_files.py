@@ -1141,9 +1141,107 @@ def test_the_note_must_say_the_rate_as_a_whole_number(tmp_path, rate):
     assert _is_plumes(tmp_path, _made_by_hand(10, rate=rate)) is False
 
 
-@pytest.mark.parametrize("digest", ["", "0" * 64, "not a digest", 7, None, True, ["a"], ...])
+@pytest.mark.parametrize("digest", ["", "0" * 64, "not a digest", 7, None, True, ["a"], ...,
+                                    "\u00e9" * 64, "\u0661" * 64, "g" * 64, "0" * 63, "0" * 65, " " * 64])
 def test_the_note_must_carry_the_digest_of_this_sound(tmp_path, digest):
     assert _is_plumes(tmp_path, _made_by_hand(10, sha256=digest)) is False
+
+
+def test_the_digest_is_sixty_four_lowercase_hex_digits_and_nothing_else(tmp_path):
+    whole = _made_by_hand(10)
+    right = json.loads(whole[whole.rindex(b"plMx") + 8:])["sha256"]
+    assert right != right.upper(), "the check needs a digest with a letter in it"
+    assert _is_plumes(tmp_path, _made_by_hand(10, sha256=right)) is True
+    for wrong in (right.upper(), right + "\n", " " + right[1:], right[:-1] + "\u00e9"):
+        assert _is_plumes(tmp_path, _made_by_hand(10, sha256=wrong)) is False
+
+
+ODD_NOTES = {
+    "a digest that is not ascii": {"sha256": "\u00e9" * 64},
+    "more frames than a file can hold": {"frames": 10 ** 40},
+    "a rate no header can hold": {"rate": 10 ** 40},
+    "a rule that is a list": {"rule": ["1"]},
+    "frames that is a nest of lists": {"frames": [[[[[[[[[[10]]]]]]]]]]},
+}
+
+
+def _odd_mix(what: str) -> bytes:
+    if what == "a note that is not text":
+        whole = _made_by_hand(10)
+        at = whole.rindex(b"plMx")
+        return whole[:at + 9] + b"\xff\xfe" + whole[at + 11:]
+    if what == "a note nested too deep to read":
+        body = b'{"rule": ' + b"[" * 900 + b"]" * 100
+        return realtime.wav_header(10, RATE, extra=8 + len(body)) + bytes(20) + b"plMx" + len(body).to_bytes(4, "little") + body
+    return _made_by_hand(10, **ODD_NOTES[what])
+
+
+ODD = [*ODD_NOTES, "a note that is not text", "a note nested too deep to read"]
+
+
+@pytest.mark.parametrize("what", ODD)
+def test_an_odd_mix_is_the_players_and_never_an_error(tmp_path, what):
+    assert _is_plumes(tmp_path, _odd_mix(what)) is False
+    assert realtime.own_mix_note(tmp_path / "mix.wav") is None
+
+
+@pytest.mark.parametrize("what", ODD)
+def test_an_odd_mix_in_the_folder_never_stops_a_take_starting(root, what):
+    folder = root / "t"
+    folder.mkdir(parents=True)
+    theirs = _odd_mix(what)
+    (folder / "mix.wav").write_bytes(theirs)
+    recorder = realtime.SessionRecorder(folder, sr=RATE).open({"seed": 2})
+    try:
+        assert (folder / "session.json").exists() and (folder / "human.wav").exists()
+    finally:
+        recorder.close()
+    assert (folder / "mix.wav").read_bytes() == theirs
+
+
+@pytest.mark.parametrize("what", ODD)
+def test_show_files_answers_kindly_with_an_odd_mix_in_the_folder(root, shown, client, what):
+    human, machine = clicks()
+    folder = make_take(root / "t", human=human, machine=machine)
+    theirs = _odd_mix(what)
+    (folder / "mix.wav").write_bytes(theirs)
+    resp, out = client.post("/api/reveal", {"take": take_id(client, "t")})
+    assert resp.status == 200
+    assert json.loads(out) == {"shown": True, "mix": False, "band_twice": False, "why": "theirs"}
+    assert (folder / "mix.wav").read_bytes() == theirs
+    assert shown == [(folder.resolve(), "mix.wav")]
+
+
+def test_a_real_mistake_in_the_check_is_not_swallowed(tmp_path, monkeypatch):
+    """Odd files are the player's.  A fault in plume's own code is not an odd file."""
+    path = tmp_path / "mix.wav"
+    path.write_bytes(_made_by_hand(10))
+
+    def broken(*args, **kw):
+        raise AttributeError("a mistake in plume")
+
+    monkeypatch.setattr(realtime, "wav_header", broken)
+    with pytest.raises(AttributeError):
+        realtime.is_own_mix(path)
+
+
+def test_an_out_of_date_mix_is_checked_against_its_sound_once_a_click(root, server, client, monkeypatch):
+    folder, tid = _mixed_take(root, server, client)
+    (folder / "stream.json").write_text(json.dumps({"calibrated_ms": 20.0}))
+    real, asked = gui.own_mix_note, []
+
+    def counted(path):
+        asked.append(os.path.basename(os.fspath(path)))
+        return real(path)
+
+    def never(path):
+        raise AssertionError("the mix was read a second time")
+
+    monkeypatch.setattr(gui, "own_mix_note", counted)
+    monkeypatch.setattr(gui, "is_own_mix", never)
+    assert server.library.write_mix(tid) == "mix.wav"
+    assert asked == ["mix.wav"]
+    assert _note(folder)[0]["shift"] == 960
 
 
 def test_the_digest_is_taken_in_pieces_and_never_from_the_whole_file_at_once(tmp_path, monkeypatch):

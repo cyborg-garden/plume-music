@@ -34,6 +34,7 @@ import json
 import math
 import os
 import queue
+import re
 import signal as _signal_module
 import socket
 import stat
@@ -1602,6 +1603,8 @@ MIX_CHUNK = b"plMx"
 _MIX_TAIL_BYTES = 1024
 #: The header a saved mix starts with: RIFF, one format chunk, and the name and length of the samples.
 _MIX_HEADER_BYTES = 44
+#: A SHA-256 as ``hexdigest`` writes it, and nothing else.
+_SHA256_HEX_RE = re.compile(r"[0-9a-f]{64}")
 #: How much of a mix is read at a time while its samples are hashed.
 _MIX_HASH_BYTES = 1024 * 1024
 
@@ -1693,7 +1696,10 @@ def _note_at(tail: bytes, at: int) -> dict | None:
 
 def _is_the_mix_it_says(f, header: bytes, note_at: int, note_bytes: int, doc: dict) -> bool:
     frames, rate, digest = doc.get("frames"), doc.get("rate"), doc.get("sha256")
-    if not (_whole_number(frames) and _whole_number(rate) and isinstance(digest, str)):
+    # The digest is exactly what hexdigest() gives, checked before it is compared: a
+    # comparison of text that is not ASCII raises, and an odd file must never raise.
+    if not (_whole_number(frames) and _whole_number(rate) and isinstance(digest, str)
+            and _SHA256_HEX_RE.fullmatch(digest)):
         return False
     samples = frames * 2
     if note_at != _MIX_HEADER_BYTES + samples:

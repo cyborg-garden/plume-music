@@ -802,6 +802,7 @@ class SelfMasker:
                  blank_envelope: bool = True, enabled: bool = True):
         #: False on a direct input.  Nothing of ours can reach it, and a mask with
         #: nothing to mask only punches holes at the machine's beat rate (v1.7).
+        #: It goes on listening while off, so it can be switched on (see ``enable``).
         self._enabled = bool(enabled)
         self._margin = float(margin_db)
         self._alpha = float(human_alpha)
@@ -909,7 +910,9 @@ class SelfMasker:
 
     def enable(self) -> None:
         """Start masking partway through: an input said to be out of the band's reach
-        turned out to hold it.  Frames and levels still arrive in step from here."""
+        turned out to hold it.  It has been listening all along (see :meth:`mask`), so
+        it already knows her level and how much of the band the mic holds, and masks
+        from here as one that had been on from the start would."""
         self._enabled = True
 
     def mask(self, frames: list, machine_rms_db: list[float]
@@ -924,10 +927,13 @@ class SelfMasker:
 
         Chunking-invariant: all state carries between calls, so feeding the
         same stream in one block or in a hundred gives identical flags.
+
+        Switched off, it masks nothing and hands every frame back untouched, but it
+        still listens: her level, the delayed bus and the coupling are all kept up to
+        date.  One that learned nothing while off would, switched on partway, find
+        every frame of the band louder than a player it had never heard, and blank
+        them all for as long as the band played.
         """
-        if not self._enabled:
-            self.frames_seen += len(frames)
-            return list(frames), [False] * len(frames)
         self._delay.extend(float(v) for v in machine_rms_db)
         out = []
         flags = []
@@ -958,7 +964,7 @@ class SelfMasker:
             hit = self._hold > 0
             if hit:
                 self._hold -= 1
-            masked = loud or (competitive and hit)
+            masked = self._enabled and (loud or (competitive and hit))
             if self._adapt:
                 if audible:
                     # The leaky minimum: an upper bound that needs the human
@@ -5051,8 +5057,11 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
             if entry is not None:
                 chord_follow.band_in_mic = True
                 follow = BandFollow(trusted=False, mode=FOLLOW)
-                # Not a new ending: one already fading must go on fading.
+                # Not a new ending: one already fading must go on fading, and finish.
                 silence_ending.long_wait()
+                if style_pick is not None:
+                    # How busy the mic sounds is the band as much as her now.
+                    style_pick.distrust()
             band_in_mic_doc[0] = _band_in_mic_doc(bar, band_in_mic.share)
         # This bar is planned a bar ahead of the playhead, so the bar just
         # before it has barely started and holds almost no frames.  Read the

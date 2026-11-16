@@ -553,7 +553,7 @@ _STEPS = {
     "hears_self": ("Can you hear yourself?", _YES_NO),
     #: Only of a mic.  On the system's output "Headphones on?" saves this too, so it is
     #: only asked there of answers from before that was so.
-    "band": ("Is the band only in your headphones?", _YES_NO),
+    "band": ("Is the band only in your headphones? If you can hear it in the room at all, say No.", _YES_NO),
     "volume": ("Check your headphone volume.", [{"answer": "fixed", "label": "That was it"},
                                                 {"answer": "still", "label": "Still nothing"}]),
 }

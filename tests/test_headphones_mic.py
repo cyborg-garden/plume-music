@@ -29,7 +29,7 @@ from test_gui_setup import good, levels, walk
 from test_gui_take import AUDIO_BOX, LAPTOP_MIC, LAPTOP_OUT, _parsed
 
 FLAG = "--band-in-headphones"
-QUESTION = "Is the band only in your headphones?"
+QUESTION = "Is the band only in your headphones? If you can hear it in the room at all, say No."
 
 
 def band(runner, answer, device=MIC_ID, output=SPEAKERS_ID):
@@ -740,8 +740,8 @@ def test_the_share_is_there_by_the_time_it_says_it_latched():
 
 
 def test_a_fade_already_running_is_kept_when_the_long_wait_comes_back():
-    """Trust is withdrawn while the band is fading out.  It goes on fading: starting the ending
-    over would bring the band back to full level for no reason she could hear."""
+    """Trust is withdrawn while the band is fading out.  It goes on fading, to the end: the band
+    is in the mic from here, so "not silent" is no longer her coming back."""
     from plume.bandentry import END_AFTER_S, SilenceEnding
     ending, bar_s = SilenceEnding(end_after_s=END_AFTER_S), 2.0
     t, gains = 0.0, []
@@ -750,14 +750,25 @@ def test_a_fade_already_running_is_kept_when_the_long_wait_comes_back():
         t += bar_s
         gains.append(ending.update(t, False, bar_s)[0])
     ending.long_wait()
-    t += bar_s
-    after = ending.update(t, False, bar_s)[0]
-    assert after < gains[-1] < 0.0, "the fade carried on down"
-    # And from here it is a room mic's ending: once she is heard again, the next wait is the long one.
-    t += bar_s
-    assert ending.update(t, True, bar_s) == (0.0, False)
-    quiet = 0
-    while ending.update(t + (quiet + 1) * bar_s, False, bar_s)[0] == 0.0:
+    done = False
+    for _ in range(12):
+        t += bar_s
+        gain, done = ending.update(t, True, bar_s)       # the mic is never silent again
+        assert gain <= gains[-1] < 0.0, "the fade carried on down"
+        gains.append(gain)
+        if done:
+            break
+    assert done, "and it ended"
+
+
+def test_with_no_fade_running_the_long_wait_is_a_room_mics():
+    from plume.bandentry import END_AFTER_S, SilenceEnding
+    ending, bar_s = SilenceEnding(end_after_s=END_AFTER_S), 2.0
+    ending.update(0.0, True, bar_s)
+    ending.long_wait()
+    assert ending.update(bar_s, True, bar_s) == (0.0, False), "playing is still playing"
+    quiet = 1
+    while ending.update((quiet + 1) * bar_s, False, bar_s)[0] == 0.0:
         quiet += 1
     assert quiet * bar_s >= 28.0
 
@@ -960,7 +971,8 @@ def test_the_page_sends_the_output_it_asked_about_with_the_answer(tmp_path, docs
         page.replies['setup/answer'] = [200, {json.dumps({**COUNT, "device": mic["id"], "mode": "room"})}];
         $('setup-yes').click(); await page.settle();
         return {{ seen, said: page.posts('setup/answer') }};""")
-    assert out["seen"]["say"] == QUESTION and out["seen"]["choices"] == ["Yes", "No"]
+    assert out["seen"]["say"] == "Is the band only in your headphones?" and out["seen"]["choices"] == ["Yes", "No"]
+    assert out["seen"]["more"] == "If you can hear it in the room at all, say No."
     assert out["seen"]["note"] == "The band goes out to Test Phones."
     assert out["said"] == [{"step": "band", "answer": "yes", "device": mic["id"], "output": SPEAKERS_ID}]
 
@@ -1089,3 +1101,241 @@ def test_jam_checks_her_word_too(tmp_path, consent, maskers):
     assert all("band_in_mic" in r for r in rows[found:]) and "room mic" in rows[found]["band_in_mic"]["reason"]
     assert _rows_and_found(tmp_path / "jam-clean")[1] is None
     assert [m._enabled for m in maskers] == [True, False]
+
+
+# ------------------------------------------------------------ after the take stops believing
+
+def _hops(x):
+    return [float(v) for v in realtime.HopRms().process(x)]
+
+
+def _mic_and_band(seconds=40.0, leak=0.06):
+    """Her, strumming, with the band under her in the mic about 24 dB down."""
+    from test_live_correctness import strum
+    from plume.listen.features import FeatureExtractor
+    band = np.concatenate([_a_band(seed=n) for n in range(int(seconds // 2))])
+    band[:6 * realtime.SR] = 0.0          # she starts alone, as in any take
+    t = np.arange(band.size) / realtime.SR
+    held = sum(np.sin(2 * np.pi * f * t) for f in (130.81, 196.0, 329.63)) * 0.05
+    her = strum(100.0, band.size / realtime.SR)[:band.size] + held.astype(np.float32)
+    late = np.concatenate([np.zeros(960, dtype=np.float32), band[:-960]])
+    frames = FeatureExtractor(sr=realtime.SR).process((her + leak * late).astype(np.float32))
+    levels = _hops(band)[:len(frames)]
+    return frames[:len(levels)], levels
+
+
+def test_a_mask_switched_on_partway_masks_about_what_one_on_from_the_start_does():
+    """It has been listening all along, so it knows her level and how much of the band the mic
+    holds.  One that learned nothing would find every band frame louder than a player it had
+    never heard, and blank the lot."""
+    frames, levels = _mic_and_band()
+    half = len(frames) // 2
+    always = realtime.SelfMasker()
+    always.mask(frames[:half], levels[:half])
+    out_a, flags_a = always.mask(frames[half:], levels[half:])
+    late = realtime.SelfMasker(enabled=False)
+    out, flags = late.mask(frames[:half], levels[:half])
+    assert not any(flags) and all(a is b for a, b in zip(out, frames[:half])), "off, it touches nothing"
+    assert late.human_rms_db > -60.0, "and it has still learned how loud she is"
+    late.enable()
+    out_b, flags_b = late.mask(frames[half:], levels[half:])
+    share_a, share_b = sum(flags_a) / len(flags_a), sum(flags_b) / len(flags_b)
+    assert 0.0 < share_a < 0.9, "the stand-in take is not one a room mic can work with"
+    assert abs(share_b - share_a) <= 0.1, (share_a, share_b)
+    onsets_a, onsets_b = sum(f.onset for f in out_a), sum(f.onset for f in out_b)
+    assert onsets_a > 0 and onsets_b >= 0.8 * onsets_a, (onsets_a, onsets_b)
+
+
+def test_a_take_that_stops_believing_the_mic_still_hears_her_as_a_room_mic_would(tmp_path, consent, monkeypatch):
+    """Her headphones come out a minute in, with the whole band playing, and a moderate amount
+    of it reaches the mic while she strums on.  After the take falls back it masks about what a
+    room mic does over the same stretch, and still finds where her notes land."""
+    marks = []
+
+    class Spy(realtime.SelfMasker):
+        def __init__(self, *a, **kw):
+            super().__init__(*a, **kw)
+            marks.append({"at": None, "self": self, "seen": [], "masked": []})
+
+        def enable(self):
+            marks[-1]["at"] = self.frames_seen
+            super().enable()
+
+        def mask(self, frames, levels):
+            out = super().mask(frames, levels)
+            marks[-1]["seen"].append(self.frames_seen)
+            marks[-1]["masked"].append(self.masked_frames)
+            return out
+    monkeypatch.setattr(realtime, "SelfMasker", Spy)
+    human = _direct_take(stops_at=390.0, total=400.0)
+    fake = {"bleed_db": -18.0, "bleed_from_s": 60.0}
+    fell_back = _mic_take(tmp_path, "fell", human, rate_x=4.0, minutes=0.8, fake=fake, band_in_headphones=True)
+    room = _mic_take(tmp_path, "room18", human, rate_x=4.0, minutes=0.8, fake=fake)
+    late, always = marks[0], marks[1]
+    assert late["at"] is not None, "the take never fell back, so this proves nothing"
+
+    def masked_from(mark, start):
+        """The share of frames masked from frame ``start`` to the end of the take."""
+        at = next(i for i, seen in enumerate(mark["seen"]) if seen >= start)
+        return (mark["masked"][-1] - mark["masked"][at]) / (mark["seen"][-1] - mark["seen"][at])
+    after, as_room = masked_from(late, late["at"]), masked_from(always, late["at"])
+    assert 0.0 < as_room < 0.9
+    # No more than a room mic blanks, or her notes are lost with the band's; and it does mask.
+    assert 0.6 * as_room <= after <= as_room + 0.08, (after, as_room)
+    rows, found = _rows_and_found(fell_back)
+
+    def placed(some):
+        """The share of bars in which her notes were found and placed against the beat."""
+        return sum(r.get("human_offset_ms") is not None for r in some) / len(some)
+    room_placed = placed(rows_of(room)[found + 2:])
+    print(f"masked after falling back {after:.2f}, a room mic over the same stretch {as_room:.2f}, "
+          f"bars with her notes placed {placed(rows[found + 2:]):.2f} against {room_placed:.2f} over {len(rows[found + 2:])} bars")
+    assert room_placed > 0.0, "a room mic finds none either, so this proves nothing"
+    assert placed(rows[found + 2:]) >= 0.8 * room_placed, (placed(rows[found + 2:]), room_placed)
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), -float("inf")])
+@pytest.mark.parametrize("where", ["mic", "band"])
+def test_a_stretch_with_a_sample_that_is_not_a_number_is_not_judged(bad, where):
+    from plume import bandentry
+    check = bandentry.BandInMic(realtime.SR)
+    for n in range(12):
+        mic, band = _bleeding(0.0, seed=n)
+        (mic if where == "mic" else band)[1000 + n] = bad
+        assert bandentry.band_share(mic, band, realtime.SR) == 0.0
+        check.feed(mic, band)
+    assert check.latched is False and check.share is None
+
+
+def test_listening_for_the_band_costs_little(monkeypatch):
+    """Counted, not timed: how many samples go through a transform for one stretch.  It listens
+    between 300 Hz and 4 kHz, so it has no need of 48,000 samples a second."""
+    from plume import bandentry
+    done = []
+    for name in ("rfft", "irfft"):
+        real = getattr(np.fft, name)
+        monkeypatch.setattr(np.fft, name, lambda a, n=None, axis=-1, _real=real: (
+            done.append(int(np.asarray(a).size if n is None else n * (np.asarray(a).size // np.asarray(a).shape[axis]))),
+            _real(a, n=n, axis=axis))[1])
+    mic, band = _bleeding(0.6)
+    assert bandentry.band_share(mic, band, realtime.SR) >= bandentry.BAND_IN_MIC_SHARE
+    assert sum(done) <= 200_000, sum(done)
+
+
+def test_a_few_strong_frequencies_do_not_stand_for_the_whole_band():
+    """A third of the frequencies agree perfectly and the rest not at all.  That is her on the
+    band's notes, not the band: the middle value says so where an average would not."""
+    from plume import bandentry
+    rng = np.random.default_rng(4)
+    n = 2 * realtime.SR
+    t = np.arange(n) / realtime.SR
+    notes = np.arange(310.0, 3990.0, 150.0)
+    shared = sum(np.sin(2 * np.pi * f * t + rng.uniform(0, 6.28)) for f in notes)
+    band = (0.02 * shared + rng.standard_normal(n) * 0.02).astype(np.float32)
+    her = (0.02 * shared + rng.standard_normal(n) * 3e-4).astype(np.float32)
+    share = bandentry.band_share(her, band, realtime.SR)
+    assert share < 0.5 * bandentry.BAND_IN_MIC_SHARE, share
+
+
+def test_evidence_against_counts_as_much_as_evidence_for():
+    """Every other stretch says yes and the ones between say no, for a long time.  That never
+    adds up: a no takes back a yes."""
+    from plume import bandentry
+    check = bandentry.BandInMic(realtime.SR)
+    for n in range(40):
+        check.feed(*_bleeding(0.6 if n % 2 == 0 else 0.0, seed=n))
+    assert check.latched is False
+    for n in range(bandentry.BAND_IN_MIC_WINDOWS):
+        check.feed(*_bleeding(0.6, seed=200 + n))
+    assert check.latched is True, "and it has not gone deaf: a run of yes still latches"
+
+
+def test_a_guess_at_the_style_stops_counting_how_busy_she_is():
+    from plume.bandentry import StylePick
+    pick = StylePick(key=None, trust_busy=True)
+    pick.heard_bar(8)
+    assert pick.busy == 2.0
+    pick.distrust()
+    pick.heard_bar(8)
+    assert pick.busy is None
+
+
+def test_the_style_guess_is_told_when_the_take_stops_believing_the_mic(tmp_path, consent, monkeypatch):
+    """Found over the drums, before the style is picked: how busy the mic sounds is then the
+    drums as much as her."""
+    from plume import bandentry
+    made = []
+
+    class Pick(bandentry.StylePick):
+        def __init__(self, *a, **kw):
+            super().__init__(*a, **kw)
+            made.append(self)
+    monkeypatch.setattr(bandentry, "StylePick", Pick)
+    device = fake_audio(_direct_take(stops_at=390.0, total=400.0), devices=RIG, rate_x=playhead_rate(4.0), bleed_db=-6.0)
+    with patched_module("sounddevice", device):
+        realtime.lead(prompt=None, seed=0, tap_start=True, detect=True, role=roles_mod.RoleParams(role="lead"),
+                      record_dir=str(tmp_path / "pick"), status=False, socket_path=short_socket_path("pick"),
+                      max_minutes=0.3, band_in_headphones=True)
+    rows, found = _rows_and_found(tmp_path / "pick")
+    assert found is not None and len(made) == 1
+    assert made[0].busy is None
+
+
+def test_a_fade_under_way_when_the_take_stops_believing_the_mic_finishes(tmp_path, consent, monkeypatch):
+    """She has stopped in a noisy room and the band is fading out when the take stops believing
+    the mic.  From there "playing" only means the mic is not silent, and a noisy room never is.
+    The fade still runs to its end and the take ends.
+
+    When the check trips is set by hand here, on the first bar of the fade: a leak that arrives
+    then would be heard as her before it was found out, and bring the band back first."""
+    from plume import bandentry
+    checks = []
+
+    class Check(bandentry.BandInMic):
+        def __init__(self, *a, **kw):
+            super().__init__(*a, **kw)
+            checks.append(self)
+
+        def feed(self, mic, band):
+            pass
+
+    class Ending(bandentry.SilenceEnding):
+        def update(self, *a, **kw):
+            gain, done = super().update(*a, **kw)
+            if gain < 0.0 and checks and not checks[0].latched:
+                checks[0].share = 0.9
+                checks[0].latched = True
+            return gain, done
+    monkeypatch.setattr(bandentry, "BandInMic", Check)
+    monkeypatch.setattr(bandentry, "SilenceEnding", Ending)
+    rec = _mic_take(tmp_path, "fade", _noisy(_direct_take(stops_at=45.0, total=400.0)), rate_x=4.0, minutes=0.6,
+                    band_in_headphones=True)
+    rows, found = _rows_and_found(rec)
+    assert found is not None and rows[found - 1]["fade_db"] < 0.0, "it was not during a fade"
+    after = rows[found:]
+    assert any(r["playing"] for r in after), "the room is not noisy enough for this to prove anything"
+    assert not any(r["playing_trusted"] for r in after)
+    fades = [r["fade_db"] for r in rows[found - 1:]]
+    assert all(b <= a < 0.0 for a, b in zip(fades, fades[1:])), fades
+    assert json.loads((rec / "ending.json").read_text())["reason"] == realtime.END_SILENCE
+
+
+def test_the_help_says_the_flag_is_about_a_mic_and_not_the_keys():
+    text = " ".join(cli._build_parser().parse_args.__self__._subparsers._group_actions[0].choices["lead"].format_help().split())
+    assert "--band-in-headphones" in text
+    assert "With --midi the band listens to the keys, so this changes nothing" in text
+
+
+def test_a_stretch_that_is_not_judged_counts_neither_way():
+    """Three stretches say yes, one holds a sample that is no number, and one more says yes.
+    The bad one took nothing back, so that is the fourth."""
+    from plume import bandentry
+    check = bandentry.BandInMic(realtime.SR)
+    for n in range(bandentry.BAND_IN_MIC_WINDOWS - 1):
+        check.feed(*_bleeding(0.6, seed=n))
+    mic, band = _bleeding(0.0, seed=50)
+    mic[5] = float("nan")
+    check.feed(mic, band)
+    assert check.latched is False
+    check.feed(*_bleeding(0.6, seed=51))
+    assert check.latched is True

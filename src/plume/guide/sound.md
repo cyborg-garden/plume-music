@@ -18,7 +18,8 @@ Plume treats each input one of three ways:
 - **A plugged-in instrument** (a direct input, through an audio interface) hears only you.
   Plume can follow you for the whole take, and the band finishes by itself when you stop.
 - **A mic with the band only in your headphones** hears you and the room, but not the
-  band. Plume can't tell that by itself, so setup asks. After a yes, plume follows you for
+  band. Plume can't tell that by itself, so setup asks. If you can hear the band in the
+  room at all, say No. After a yes, plume follows you for
   the whole take and the band finishes by itself when you stop. If a take then hears the
   band in the mic after all, it goes back to treating it as a room mic for the rest of
   that take, and the live screen says so.

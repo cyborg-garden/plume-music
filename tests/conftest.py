@@ -38,6 +38,7 @@ The knobs that matter, and the failures they reproduce:
   cost a whole session is untestable by construction.
 - ``latency`` — the stand-in reports a round trip the way ``sounddevice`` does,
   so ``realtime.stream_latency_hops`` aligns the mask to it.
+- ``bleed_from_s`` — **headphones coming out.**  The leak starts this far into the take.
 - ``bleed_shape`` — **a real speaker in a real room.**  An impulse response for that
   path (see :func:`small_speaker_in_a_room`): the copy in the mic has lost its bass and
   gained a tail, so it is no longer the output arriving late and nothing else.
@@ -145,7 +146,7 @@ class FakeAudioStream:
                  loop_human: bool = True, human_channel: int = 0,
                  inputs: dict | None = None,
                  bleed_channels: tuple[int, ...] = (0,), hold=None,
-                 bleed_shape=None):
+                 bleed_shape=None, bleed_from_s: float = 0.0):
         self._human_ch = int(human_channel)
         self._inputs = {int(k): np.asarray(v, dtype=np.float32)
                         for k, v in (inputs or {}).items()}
@@ -173,6 +174,8 @@ class FakeAudioStream:
             1, int(round(float(bleed_delay_s) * SR / max(1, int(blocksize)))))
         self._echo: collections.deque = collections.deque(
             maxlen=self._bleed_blocks)
+        #: the leak only starts this far into the take: headphones coming out partway.
+        self._bleed_from = int(float(bleed_from_s) * SR)
         #: what the speaker and the room do to that sound on the way: an impulse
         #: response.  None = a clean copy, which no real speaker or room gives.
         self._bleed_shape = None if bleed_shape is None else _Shaper(bleed_shape, int(blocksize))
@@ -247,7 +250,8 @@ class FakeAudioStream:
             # quieter.  Without this the fake device is an isolation booth and
             # self-masking cannot be tested at all — which is exactly how a
             # mask that reached nothing shipped.
-            if self._bleed is not None and len(self._echo) == self._echo.maxlen:
+            if (self._bleed is not None and len(self._echo) == self._echo.maxlen
+                    and pos >= self._bleed_from):
                 for ch in self._bleed_channels:
                     if ch < self._in_ch:
                         indata[:, ch] += self._echo[0] * self._bleed

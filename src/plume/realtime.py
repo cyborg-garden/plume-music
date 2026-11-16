@@ -28,10 +28,13 @@ from __future__ import annotations
 import collections
 import contextlib
 import dataclasses
+import hashlib
+import hmac
 import json
 import math
 import os
 import queue
+import re
 import signal as _signal_module
 import socket
 import stat
@@ -1598,43 +1601,129 @@ REC_MIX = "mix.wav"
 #: plume knows a ``mix.wav`` for its own: a player may keep one of theirs under that name.
 MIX_CHUNK = b"plMx"
 _MIX_TAIL_BYTES = 1024
+#: The header a saved mix starts with: RIFF, one format chunk, and the name and length of the samples.
+_MIX_HEADER_BYTES = 44
+#: A SHA-256 as ``hexdigest`` writes it, and nothing else.
+_SHA256_HEX_RE = re.compile(r"[0-9a-f]{64}")
+#: How much of a mix is read at a time while its samples are hashed.
+_MIX_HASH_BYTES = 1024 * 1024
 
 
-def is_own_mix(path) -> bool:
-    """True when the file at ``path`` is a mix plume saved, by the note it ends with.
+def wav_header(frames: int, rate: int, *, extra: int = 0) -> bytes:
+    """The 44 bytes that start a 16-bit mono WAV of ``frames`` samples.
 
-    The note is the file's last chunk: plume's name, a length that runs exactly to the
-    end of the file, and JSON that names the rule the mix was made by.  It is looked for
-    at the end and nowhere else, so a mix whose start was damaged is still known for
-    plume's and can be made again.  Anything less is not plume's and is left alone: a
-    symlink, a folder, a missing or unreadable file, another program's chunk of the
-    same name, and a mix of plume's that something has since added to.
+    ``extra`` is how many bytes of other chunks follow the samples.
+    """
+    data = frames * 2
+    return (b"RIFF" + (36 + data + extra).to_bytes(4, "little") + b"WAVEfmt " + (16).to_bytes(4, "little")
+            + (1).to_bytes(2, "little") + (1).to_bytes(2, "little") + rate.to_bytes(4, "little")
+            + (rate * 2).to_bytes(4, "little") + (2).to_bytes(2, "little") + (16).to_bytes(2, "little")
+            + b"data" + data.to_bytes(4, "little"))
+
+
+def _whole_number(value) -> bool:
+    """A real positive int.  Not ``True``, which Python counts as 1, and not a float."""
+    return isinstance(value, int) and not isinstance(value, bool) and value > 0
+
+
+def own_mix_note(path) -> dict | None:
+    """The note of a mix plume saved, or None when the file is not exactly such a mix.
+
+    Plume writes one thing and no other: the header :func:`wav_header` gives, the
+    samples, then its note as the last chunk.  The note is plume's name, a length that
+    runs exactly to the end of the file, and JSON naming the rule the mix was made by,
+    its frames and rate, and a SHA-256 of the samples.  A file is plume's only when
+    every byte of it is what that describes: the header is the one plume would write
+    for those frames and that rate, the note starts exactly where the samples end, and
+    the samples hash to the digest.
+
+    Anything less is the player's file and is left alone.  The bytes of a note at the
+    end of a file are not enough: an editor that keeps chunks it does not know carries
+    the note into a file the player has changed, at another length or at the same one.
+    A mix of plume's that was damaged is the player's too, because nothing here can
+    tell damage from an edit.  So is a symlink, a folder, and a missing or unreadable
+    file.
+
+    The samples are hashed in pieces, never read whole, and the file is closed on
+    every way out.
     """
     try:
         fd = oscompat.open_private(path, oscompat.read_flags())
     except OSError:
+        return None
+    try:
+        # Checked on the descriptor, before anything else can fail and leave it open:
+        # a folder of this name opens, and cannot then be made into a file object.
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            os.close(fd)
+            return None
+        f = os.fdopen(fd, "rb")
+    except OSError:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        return None
+    try:
+        with f:
+            size = os.fstat(f.fileno()).st_size
+            header = f.read(_MIX_HEADER_BYTES)
+            start = max(0, size - _MIX_TAIL_BYTES)
+            f.seek(start)
+            tail = f.read(_MIX_TAIL_BYTES)
+            at = tail.rfind(MIX_CHUNK)
+            while at >= 0:
+                doc = _note_at(tail, at)
+                if doc is not None:
+                    return doc if _is_the_mix_it_says(f, header, start + at, len(tail) - at, doc) else None
+                at = tail.rfind(MIX_CHUNK, 0, at)
+    except OSError:
+        return None
+    return None
+
+
+def _note_at(tail: bytes, at: int) -> dict | None:
+    """The note starting at ``at``, if it is a chunk that runs exactly to the end."""
+    body = tail[at + 8:]
+    if len(tail) < at + 8 or int.from_bytes(tail[at + 4:at + 8], "little") != len(body):
+        return None
+    try:
+        doc = json.loads(body)
+    except (ValueError, RecursionError):
+        return None
+    return doc if isinstance(doc, dict) and isinstance(doc.get("rule"), str) else None
+
+
+def _is_the_mix_it_says(f, header: bytes, note_at: int, note_bytes: int, doc: dict) -> bool:
+    frames, rate, digest = doc.get("frames"), doc.get("rate"), doc.get("sha256")
+    # The digest is exactly what hexdigest() gives, checked before it is compared: a
+    # comparison of text that is not ASCII raises, and an odd file must never raise.
+    if not (_whole_number(frames) and _whole_number(rate) and isinstance(digest, str)
+            and _SHA256_HEX_RE.fullmatch(digest)):
+        return False
+    samples = frames * 2
+    if note_at != _MIX_HEADER_BYTES + samples:
         return False
     try:
-        with os.fdopen(fd, "rb") as f:
-            st = os.fstat(f.fileno())
-            if not stat.S_ISREG(st.st_mode):
-                return False
-            f.seek(max(0, st.st_size - _MIX_TAIL_BYTES))
-            tail = f.read(_MIX_TAIL_BYTES)
-    except OSError:
+        if header != wav_header(frames, rate, extra=note_bytes):
+            return False
+    except OverflowError:
         return False
-    at = tail.rfind(MIX_CHUNK)
-    while at >= 0:
-        body = tail[at + 8:]
-        if len(tail) >= at + 8 and int.from_bytes(tail[at + 4:at + 8], "little") == len(body):
-            try:
-                doc = json.loads(body)
-            except (ValueError, RecursionError):
-                doc = None
-            if isinstance(doc, dict) and isinstance(doc.get("rule"), str):
-                return True
-        at = tail.rfind(MIX_CHUNK, 0, at)
-    return False
+    hashed = hashlib.sha256()
+    f.seek(_MIX_HEADER_BYTES)
+    left = samples
+    while left > 0:
+        piece = f.read(min(_MIX_HASH_BYTES, left))
+        if not piece:
+            return False
+        hashed.update(piece)
+        left -= len(piece)
+    return hmac.compare_digest(hashed.hexdigest(), digest)
+
+
+def is_own_mix(path) -> bool:
+    """True when the file at ``path`` is a mix plume saved: see :func:`own_mix_note`."""
+    return own_mix_note(path) is not None
 
 #: Audio is flushed to disk at most this often — the most a `kill -9` can
 #: cost.  Decisions are flushed every line (they are what an observer reads).
@@ -3872,8 +3961,17 @@ def list_sessions(*, prune: bool = True) -> list[LiveSession]:
         try:
             # O_NONBLOCK: a FIFO here must not hang whoever is asking what is playing.
             fd = oscompat.open_private(f, oscompat.read_flags())
-            with os.fdopen(fd, "r", encoding="utf-8") as fh:
-                if stat.S_ISREG(os.fstat(fh.fileno()).st_mode):
+            # Checked on the descriptor: a folder named like a record opens, and then
+            # cannot be made into a file object, which would leave it open for good.
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                os.close(fd)
+            else:
+                try:
+                    fh = os.fdopen(fd, "r", encoding="utf-8")
+                except OSError:
+                    os.close(fd)
+                    raise
+                with fh:
                     rec = LiveSession.from_dict(json.load(fh))
         except (OSError, ValueError, TypeError, KeyError, AttributeError):
             # Broad on purpose: this is a cache of running processes, and a

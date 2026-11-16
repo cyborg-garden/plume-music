@@ -544,6 +544,7 @@ async function setKept(kept) {
    else: it opens that take's own folder, with you and the band saved there as one file. */
 function filesWords(doc) {
   if (doc && doc.why === 'theirs') return 'This folder already has a mix.wav that plume can\'t replace. Move or rename it to get a new one.';
+  if (doc && doc.why === 'stale') return 'The mix.wav in this folder is an older one, and a new one could not be saved.';
   if (doc && doc.why === 'in_use') return 'mix.wav is open in another program, so it could not be updated. Close it there and try again.';
   if (!doc || doc.mix !== true) return 'No mix was saved for this take. Your recordings are in the folder.';
   if (doc.band_twice === true) return 'Saved as mix.wav. Your mic may have heard the band too, so the band could be in it twice.';

@@ -578,18 +578,30 @@ Show files opens the take's folder in your file manager and saves `mix.wav` ther
 `human.wav` and `machine.wav` as one file, the player moved earlier by the round trip in
 `stream.json` (the measured one if there is one, else the one the device reported) and
 balanced the way Together plays them. The file ends with a note of what it was made from
-(the mixing rule, the delay used, and each recording and `stream.json` by size and time),
+(the mixing rule, the delay used, each recording and `stream.json` by size and time, and a
+fingerprint of the mixed sound),
 and it is made again whenever any of that differs. Recording again into the same folder
-removes it. That note is also how plume knows a mix for its own: a `mix.wav` without it is
-yours, and plume neither replaces it nor removes it.
+removes it.
+
+Plume only ever replaces or removes a `mix.wav` that is still exactly the file it wrote.
+The note at the end carries a fingerprint of the sound, and plume checks the whole file
+against it. If you have changed the file in any way, edited it, made it louder, trimmed it,
+tagged it, or saved it from another program, it is yours: plume leaves it where it is and
+tells you. The same goes for a `mix.wav` plume never made, and for one of plume's that got
+damaged. Move or rename it and plume will save a new one.
 
 The page says nothing when the mix is plain. Otherwise it says one line:
 
-- no mix was saved: a take with one recording, one still being recorded, or one too long
-  for a WAV;
-- the folder already has a `mix.wav` plume can't replace, so it was left: one of yours, or
-  one of plume's that another program has since added to. Move or rename it to get a new one;
-- plume's own older mix is open in another program and could not be updated;
+- no mix was saved: a take with one recording, one still being recorded, one whose two
+  recordings have different sample rates, one too long for a WAV, or a folder plume cannot
+  write in;
+- no new mix was saved and an older one of plume's is still in the folder, so the `mix.wav`
+  there is out of date;
+- the folder already has a `mix.wav` plume can't replace, so it was left: one of yours, one
+  of plume's that another program has since changed, or one that is locked. Move or rename
+  it to get a new one;
+- plume's own older mix is open in another program and could not be updated (Windows, where
+  an open file cannot be replaced);
 - the take was recorded from a mic, which may have heard the band, so the band could be in
   the mix twice. Only a take from a plugged-in instrument is free of that line today.
 

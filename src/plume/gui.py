@@ -60,7 +60,8 @@ import soundfile as sf
 
 from . import fx as _fx
 from . import guitake, oscompat, record, takevideo
-from .realtime import MIX_CHUNK, REC_HUMAN, REC_MACHINE, REC_MIX, REC_STREAM, is_own_mix, list_sessions
+from .realtime import (MIX_CHUNK, REC_HUMAN, REC_MACHINE, REC_MIX, REC_STREAM, is_own_mix, list_sessions,
+                       own_mix_note, wav_header)
 
 STATE_DIR_ENV = "PLUME_GUI_STATE_DIR"
 
@@ -163,12 +164,23 @@ class GuiError(RuntimeError):
 class MixInTheWay(GuiError):
     """The take folder holds a ``mix.wav`` plume does not know for its own, so it stays.
 
-    The player's own, or one of plume's that something has since changed at its end.
+    The player's own, or one of plume's that is no longer exactly the file plume wrote:
+    edited, damaged, or saved again by another program.  Also one that is locked.
     """
 
 
 class MixInUse(GuiError):
     """Plume's own older mix could not be replaced: another program has it open."""
+
+
+#: Whether a refused rename over an old mix means another program has that mix open.
+#: On Windows it does.  Elsewhere an open file never stops a rename, so it means
+#: something else: a locked file, or a folder that keeps its files.
+_RENAME_REFUSAL_IS_IN_USE = oscompat.IS_WINDOWS
+
+
+class _Abandoned(Exception):
+    """A mix given up before it was put in place, because a take began in its folder."""
 
 
 class _NotReplaced(PermissionError):
@@ -519,12 +531,16 @@ class Library:
 
         Written under another name and renamed, so ``mix.wav`` is whole or absent.  The
         file ends by saying what it was made from, and is left alone only while that is
-        still exactly what is here: see :func:`_mix_stamp`.
+        still exactly what is here: see :func:`_mix_facts`.
         """
         path = self.path_of(take_id)
-        if path is None or str(path) in _live_folders():
+        if path is None:
             return None
         with self._mix_lock(take_id):
+            # Asked with the lock held, and again before the mix is put in place: asked
+            # before, a take could start here in between.
+            if str(path) in _live_folders():
+                return None
             raw = []
             try:
                 try:
@@ -538,24 +554,34 @@ class Library:
                     return None
                 shift = record.playing_delay_frames(path, human.samplerate)
                 frames = max(human.frames - shift, machine.frames)
-                stamp = _mix_stamp(path, *stats, shift=shift, frames=frames, rate=human.samplerate)
-                if frames <= 0 or _WAV_HEADER + frames * 2 + len(stamp) > _WAV_MAX_BYTES:
+                facts = _mix_facts(path, *stats, shift=shift, frames=frames, rate=human.samplerate)
+                if frames <= 0 or _WAV_HEADER + frames * 2 + len(_mix_note(facts)) > _WAV_MAX_BYTES:
                     return None
-                if not _mix_is_current(path, frames, human.samplerate, stamp):
-                    theirs = path / REC_MIX
+                theirs = path / REC_MIX
+                # Read once: this hashes the whole mix, and says both whose it is and
+                # what it was made from.
+                note = own_mix_note(theirs)
+                if not _mix_is_current(note, facts):
                     there = os.path.lexists(theirs)
-                    if there and not is_own_mix(theirs):
+                    if there and note is None:
                         raise MixInTheWay(REC_MIX)
                     # Readable by whoever can read the recordings it is made from.
                     mode = stat.S_IMODE(stats[0].st_mode)
                     try:
-                        self._save_mix(path, human, machine, shift, frames, stamp, mode)
+                        self._save_mix(path, human, machine, shift, frames, facts, mode)
+                    except _Abandoned:
+                        return None
                     except _NotReplaced:
                         # The new mix was written whole and could not take the old one's
-                        # place.  Windows refuses that while a player holds the old one
-                        # open.  Failing to write it at all is not this, and is not caught.
+                        # place.  Failing to write it at all is not this, and is not caught.
+                        # Windows refuses the rename while a player holds the old one open,
+                        # and only there is that what a refusal means.  Elsewhere it is a
+                        # locked file or a folder that will not let go of it: a mix plume
+                        # cannot replace, which is what the page then says.  A mix marked
+                        # read-only is refused on Windows as well, and nothing has it open.
                         if there:
-                            raise MixInUse(REC_MIX) from None
+                            in_use = _RENAME_REFUSAL_IS_IN_USE and _may_be_written(theirs)
+                            raise (MixInUse if in_use else MixInTheWay)(REC_MIX) from None
                         raise
             finally:
                 for f in raw:
@@ -563,7 +589,7 @@ class Library:
         return REC_MIX
 
     @staticmethod
-    def _save_mix(path: Path, human, machine, shift: int, frames: int, stamp: bytes,
+    def _save_mix(path: Path, human, machine, shift: int, frames: int, facts: dict,
                   mode: int) -> None:
         folder = _open_folder(path)
         # As for keep.json: a name nobody could have planted, and O_EXCL in case they did.
@@ -574,11 +600,20 @@ class Library:
             try:
                 with os.fdopen(fd, "wb") as f:
                     oscompat.fchmod_private(f.fileno(), mode)
-                    f.write(_wav_header(frames, human.samplerate, extra=len(stamp)))
+                    # The note's length does not depend on the digest, so the header can
+                    # say how long the file will be before the samples exist.
+                    f.write(_wav_header(frames, human.samplerate, extra=len(_mix_note(facts))))
+                    heard = hashlib.sha256()
                     for frame in range(0, frames, _TOGETHER_FRAMES):
                         count = min(_TOGETHER_FRAMES, frames - frame)
-                        f.write(_mixed_pcm(human, machine, shift, frame, count))
-                    f.write(stamp)
+                        pcm = _mixed_pcm(human, machine, shift, frame, count)
+                        heard.update(pcm)          # as they are written: nothing is read back
+                        f.write(pcm)
+                    f.write(_mix_note(facts, heard.hexdigest()))
+                if str(path) in _live_folders():
+                    # A take started here while this was being written.  The folder is
+                    # that session's now, and its recordings are no longer these.
+                    raise _Abandoned(REC_MIX)
                 try:
                     _replace_in(folder, tmp, REC_MIX)
                 except PermissionError as e:
@@ -948,47 +983,52 @@ def _identity(st) -> list[int]:
     return [st.st_size, st.st_mtime_ns]
 
 
-def _mix_stamp(path: Path, human, machine, *, shift: int, frames: int, rate: int) -> bytes:
-    """The chunk that ends a saved mix: everything its samples depend on.
+def _mix_facts(path: Path, human, machine, *, shift: int, frames: int, rate: int) -> dict:
+    """Everything a mix's samples depend on, as the note records it.
 
     The rule, the delay in frames that was actually used, the length and rate, and each
     file that went in by its size and its time to the nanosecond (``human`` and
     ``machine`` are those files' ``fstat``).  "Is the mix newer?" would be the wrong
     question: a recording put back from a copy keeps its old date, and a change to the
     rule changes no date at all.  The delay is here as a number, not only as its file's
-    size and date, because a file can be rewritten and keep both.  It is inside the
-    mix, after the samples, so it can never describe another file than its own.
+    size and date, because a file can be rewritten and keep both.
     """
     try:
         stream = _identity(os.lstat(path / REC_STREAM))
     except OSError:
         stream = None
-    doc = {"rule": _mix_rule(), "shift": int(shift), "frames": int(frames), "rate": int(rate),
-           "human": _identity(human), "machine": _identity(machine), "stream": stream}
-    body = json.dumps(doc, sort_keys=True).encode()
+    return {"rule": _mix_rule(), "shift": int(shift), "frames": int(frames), "rate": int(rate),
+            "human": _identity(human), "machine": _identity(machine), "stream": stream}
+
+
+def _mix_note(facts: dict, digest: str = "0" * 64) -> bytes:
+    """The chunk that ends a saved mix: its facts, and a SHA-256 of its samples.
+
+    The digest is what lets plume know the file again for exactly what it wrote.  It is
+    always 64 characters, so the note is the same length whatever the samples are.  The
+    note is inside the mix, after the samples, so it can never describe another file.
+    """
+    body = json.dumps({**facts, "sha256": digest}, sort_keys=True).encode()
     body += b" " * (len(body) % 2)          # a chunk is an even number of bytes
     return MIX_CHUNK + len(body).to_bytes(4, "little") + body
 
 
-def _mix_is_current(path: Path, frames: int, rate: int, stamp: bytes) -> bool:
-    """True when ``mix.wav`` is a whole mix of exactly these files, by this rule.
+def _mix_is_current(note: dict | None, facts: dict) -> bool:
+    """True when ``note`` is that of plume's own mix of exactly these files, by this rule.
 
-    The header must be the one this mix would be written with, the file exactly as long
-    as that header says, and the note at its end the one that would be written now.  The
-    samples between are not read again: they were written with the note, in one rename.
+    ``note`` is what :func:`plume.realtime.own_mix_note` read from ``mix.wav``: None
+    unless the file is whole and plume's, down to its samples.  What is left to ask is
+    whether it was made from what is here now.
     """
-    data = _WAV_HEADER + frames * 2
+    return note is not None and {k: v for k, v in note.items() if k != "sha256"} == facts
+
+
+def _may_be_written(path: Path) -> bool:
+    """False when the file is marked read-only, which on Windows is the read-only attribute."""
     try:
-        header = _wav_header(frames, rate, extra=len(stamp))
-        with _open_track(path, REC_MIX) as f:
-            if os.fstat(f.fileno()).st_size != data + len(stamp):
-                return False
-            if f.read(_WAV_HEADER) != header:
-                return False
-            f.seek(data)
-            return f.read(len(stamp)) == stamp
-    except (OSError, ArithmeticError):
-        return False
+        return bool(os.lstat(path).st_mode & stat.S_IWUSR)
+    except OSError:
+        return True
 
 
 def _sweep_mix_leftovers(path: Path, folder) -> None:
@@ -1433,6 +1473,10 @@ class _Handler(BaseHTTPRequestHandler):
             mix, why = None, "in_use"
         except (OSError, RuntimeError, ValueError, ArithmeticError):
             mix = None          # a folder that cannot be written in can still be shown
+        if mix is None and why is None and is_own_mix(folder / REC_MIX):
+            # No mix was made, and an older one of plume's is still here.  "No mix was
+            # saved" would be true and would leave out the thing the person will find.
+            why = "stale"
         try:
             # Always by a file inside it.  Asked for bare, the folder is shown as an item
             # in the folder it sits in, and the person is looking at the wrong place.
@@ -1666,20 +1710,26 @@ def _open_track(folder: Path, name: str):
         fd = _open_in(where, name, oscompat.read_flags())
     finally:
         _close_folder(where)
-    f = os.fdopen(fd, "rb")
-    if not stat.S_ISREG(os.fstat(f.fileno()).st_mode):
-        f.close()
+    # Checked on the descriptor: a folder of that name opens, and then cannot be made
+    # into a file object, which would leave the descriptor open for good.
+    try:
+        regular = stat.S_ISREG(os.fstat(fd).st_mode)
+    except OSError:
+        os.close(fd)
+        raise
+    if not regular:
+        os.close(fd)
         raise OSError("not a file")
-    return f
+    try:
+        return os.fdopen(fd, "rb")
+    except OSError:
+        os.close(fd)
+        raise
 
 
 def _wav_header(frames: int, rate: int, *, extra: int = 0) -> bytes:
     """``extra`` is how many bytes of other chunks follow the samples."""
-    data = frames * 2
-    return (b"RIFF" + (36 + data + extra).to_bytes(4, "little") + b"WAVEfmt " + (16).to_bytes(4, "little")
-            + (1).to_bytes(2, "little") + (1).to_bytes(2, "little") + rate.to_bytes(4, "little")
-            + (rate * 2).to_bytes(4, "little") + (2).to_bytes(2, "little") + (16).to_bytes(2, "little")
-            + b"data" + data.to_bytes(4, "little"))
+    return wav_header(frames, rate, extra=extra)
 
 
 def _read_mono(track, start: int, count: int) -> np.ndarray:

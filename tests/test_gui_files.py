@@ -7,7 +7,9 @@ and that refusal is tested too.
 """
 from __future__ import annotations
 
+import hashlib
 import json
+import math
 import os
 import stat
 import subprocess
@@ -18,7 +20,7 @@ import numpy as np
 import pytest
 import soundfile as sf
 
-from conftest import needs_symlinks
+from conftest import needs_symlinks, plume_registry  # noqa: F401
 from plume import gui, oscompat, realtime
 from test_gui_bridge import Client
 
@@ -450,19 +452,24 @@ def test_a_new_version_of_the_rule_makes_a_new_mix(root, server, client, monkeyp
 
 
 @pytest.mark.parametrize("damage", ["header gone", "samples gone", "all but the note"])
-def test_a_mix_that_is_not_the_whole_file_is_made_again(root, server, client, damage):
+def test_a_mix_that_is_not_the_whole_file_is_no_longer_known_for_plumes(root, server, client, damage):
+    """It was made again once.  A file that is not exactly what plume wrote may be the
+    player's work on it, and plume cannot tell damage from an edit, so it is left."""
     folder, tid = _mixed_take(root, server, client)
     whole = (folder / "mix.wav").read_bytes()
     when = os.stat(folder / "mix.wav").st_mtime_ns + 5_000_000_000
     if damage == "header gone":
-        (folder / "mix.wav").write_bytes(bytes(44) + whole[44:])
+        changed = bytes(44) + whole[44:]
     elif damage == "samples gone":
-        (folder / "mix.wav").write_bytes(whole[:40] + (10).to_bytes(4, "little") + whole[44:])
+        changed = whole[:40] + (10).to_bytes(4, "little") + whole[44:]
     else:
-        (folder / "mix.wav").write_bytes(bytes(44 + 4800 * 2) + whole[44 + 4800 * 2:])
+        changed = bytes(44 + 4800 * 2) + whole[44 + 4800 * 2:]
+    (folder / "mix.wav").write_bytes(changed)
     os.utime(folder / "mix.wav", ns=(when, when))          # newer than everything it is made from
-    server.library.write_mix(tid)
-    assert (folder / "mix.wav").read_bytes() == whole
+    assert realtime.is_own_mix(folder / "mix.wav") is False
+    with pytest.raises(gui.MixInTheWay):
+        server.library.write_mix(tid)
+    assert (folder / "mix.wav").read_bytes() == changed
 
 
 @pytest.mark.parametrize("change", ["cut short", "a tag added after the note", "the note's length changed"])
@@ -504,19 +511,24 @@ def test_another_programs_chunk_of_the_same_name_does_not_make_a_file_plumes(roo
     assert (folder / "mix.wav").read_bytes() == theirs
 
 
-def test_a_mix_saved_before_the_note_said_the_delay_is_still_plumes(root, server, client):
-    """The note's first form: the rule and the three files, nothing more."""
+def test_a_mix_whose_note_does_not_vouch_for_its_sound_is_the_players(root, server, client):
+    """The note's first form named the rule and the three files and nothing about the
+    sound.  With nothing to check the sound against, the file cannot be known for plume's."""
     folder, tid = _mixed_take(root, server, client)
     whole = (folder / "mix.wav").read_bytes()
     at = whole.rindex(b"plMx")
     doc = json.loads(whole[at + 8:])
-    old = json.dumps({k: doc[k] for k in ("rule", "human", "machine", "stream")}, sort_keys=True).encode()
-    old += b" " * (len(old) % 2)
-    earlier = whole[:at] + b"plMx" + len(old).to_bytes(4, "little") + old
-    (folder / "mix.wav").write_bytes(earlier)
-    assert realtime.is_own_mix(folder / "mix.wav") is True
-    assert server.library.write_mix(tid) == "mix.wav"
-    assert (folder / "mix.wav").read_bytes() == whole, "known for plume's, and brought up to date"
+    for keep in (("rule", "human", "machine", "stream"),
+                 ("rule", "human", "machine", "stream", "shift", "frames", "rate")):
+        old = json.dumps({k: doc[k] for k in keep}, sort_keys=True).encode()
+        old += b" " * (len(old) % 2)
+        earlier = whole[:4] + (at + 8 + len(old) - 8).to_bytes(4, "little") + whole[8:at] \
+            + b"plMx" + len(old).to_bytes(4, "little") + old
+        (folder / "mix.wav").write_bytes(earlier)
+        assert realtime.is_own_mix(folder / "mix.wav") is False
+        with pytest.raises(gui.MixInTheWay):
+            server.library.write_mix(tid)
+        assert (folder / "mix.wav").read_bytes() == earlier
 
 
 @needs_symlinks
@@ -566,7 +578,7 @@ def test_a_folder_that_cannot_be_written_in_is_not_called_a_mix_in_use(root, ser
     finally:
         os.chmod(folder, 0o755)
     assert resp.status == 200
-    assert json.loads(out) == {"shown": True, "mix": False, "band_twice": False, "why": None}
+    assert json.loads(out) == {"shown": True, "mix": False, "band_twice": False, "why": "stale"}          # not in use: an older mix, and no new one
     assert (folder / "mix.wav").read_bytes() == old
 
 
@@ -828,6 +840,8 @@ def test_only_a_file_with_plumes_note_is_plumes(root, server, client):
 
 
 def test_a_mix_held_open_elsewhere_is_said_to_be_in_use(root, server, shown, client, monkeypatch):
+    # Where a refused rename means exactly that.  Elsewhere: see the test after this one.
+    monkeypatch.setattr(gui, "_RENAME_REFUSAL_IS_IN_USE", True)
     folder, tid = _mixed_take(root, server, client)
     old = (folder / "mix.wav").read_bytes()
     (folder / "stream.json").write_text(json.dumps({"calibrated_ms": 20.0}))
@@ -844,6 +858,517 @@ def test_a_mix_held_open_elsewhere_is_said_to_be_in_use(root, server, shown, cli
     assert (folder / "mix.wav").read_bytes() == old
     assert [n for n in os.listdir(folder) if n.endswith(".tmp")] == []
     assert shown == [(folder.resolve(), "mix.wav")]
+
+
+def test_a_refused_rename_is_only_called_in_use_where_it_means_that(root, server, shown, client, monkeypatch):
+    """A locked file or a sticky folder also refuses a rename, and no program has it open."""
+    assert gui._RENAME_REFUSAL_IS_IN_USE is oscompat.IS_WINDOWS
+    monkeypatch.setattr(gui, "_RENAME_REFUSAL_IS_IN_USE", False)
+    folder, tid = _mixed_take(root, server, client)
+    old = (folder / "mix.wav").read_bytes()
+    (folder / "stream.json").write_text(json.dumps({"calibrated_ms": 20.0}))
+
+    def refused(where, src, dst):
+        raise PermissionError(1, "operation not permitted")
+
+    monkeypatch.setattr(gui, "_replace_in", refused)
+    with pytest.raises(gui.MixInTheWay) as failure:
+        server.library.write_mix(tid)
+    assert not isinstance(failure.value, gui.MixInUse)
+    _, out = client.post("/api/reveal", {"take": tid})
+    assert json.loads(out) == {"shown": True, "mix": False, "band_twice": False, "why": "theirs"}
+    assert (folder / "mix.wav").read_bytes() == old
+    assert [n for n in os.listdir(folder) if n.endswith(".tmp")] == []
+
+
+# ------------------------------------------------------------------ an older mix still in the folder
+
+def _out_of_date(root, server, client):
+    folder, tid = _mixed_take(root, server, client)
+    (folder / "stream.json").write_text(json.dumps({"calibrated_ms": 20.0}))
+    return folder, tid, (folder / "mix.wav").read_bytes()
+
+
+def test_an_older_mix_left_by_a_take_now_recording_is_not_called_no_mix(root, server, shown, client, monkeypatch):
+    folder, tid, old = _out_of_date(root, server, client)
+    monkeypatch.setattr(gui, "_live_folders", lambda: {str(folder.resolve())})
+    resp, out = client.post("/api/reveal", {"take": tid})
+    assert resp.status == 200
+    assert json.loads(out) == {"shown": True, "mix": False, "band_twice": False, "why": "stale"}
+    assert (folder / "mix.wav").read_bytes() == old
+    assert shown == [(folder.resolve(), "mix.wav")]
+
+
+def test_an_older_mix_that_could_not_be_remade_is_not_called_no_mix(root, shown, server, client, monkeypatch):
+    folder, tid, old = _out_of_date(root, server, client)
+
+    def broken(*args):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(gui, "_mixed_pcm", broken)
+    _, out = client.post("/api/reveal", {"take": tid})
+    assert json.loads(out) == {"shown": True, "mix": False, "band_twice": False, "why": "stale"}
+    assert (folder / "mix.wav").read_bytes() == old
+
+
+def test_an_older_mix_beside_a_take_that_lost_a_recording_is_not_called_no_mix(root, shown, server, client):
+    folder, tid, old = _out_of_date(root, server, client)
+    (folder / "machine.wav").unlink()
+    _, out = client.post("/api/reveal", {"take": tid})
+    assert json.loads(out) == {"shown": True, "mix": False, "band_twice": False, "why": "stale"}
+    assert (folder / "mix.wav").read_bytes() == old
+
+
+def test_a_take_with_no_mix_at_all_is_still_just_no_mix(root, shown, server, client, monkeypatch):
+    human, machine = clicks()
+    folder = make_take(root / "t", human=human, machine=machine)
+    monkeypatch.setattr(gui, "_live_folders", lambda: {str(folder.resolve())})
+    _, out = client.post("/api/reveal", {"take": take_id(client, "t")})
+    assert json.loads(out) == {"shown": True, "mix": False, "band_twice": False, "why": None}
+
+
+def test_whether_a_take_is_being_recorded_is_asked_while_its_mix_is_held(root, server, client, monkeypatch):
+    human, machine = clicks()
+    make_take(root / "t", human=human, machine=machine)
+    tid = take_id(client, "t")
+    held = []
+
+    def asked():
+        held.append(server.library._mix_lock(tid).locked())
+        return set()
+
+    monkeypatch.setattr(gui, "_live_folders", asked)
+    assert server.library.write_mix(tid) == "mix.wav"
+    assert held and all(held), "asked before the lock, a take can start in between"
+
+
+def test_a_take_that_starts_while_its_mix_is_being_made_gets_no_mix(root, server, client, monkeypatch):
+    human, machine = clicks()
+    folder = make_take(root / "t", human=human, machine=machine)
+    tid = take_id(client, "t")
+    started = []
+    real = gui._mixed_pcm
+
+    def mixing(*args):
+        started.append(True)          # the samples are being written: now a take starts here
+        return real(*args)
+
+    monkeypatch.setattr(gui, "_mixed_pcm", mixing)
+    monkeypatch.setattr(gui, "_live_folders", lambda: {str(folder.resolve())} if started else set())
+    assert server.library.write_mix(tid) is None
+    assert started and sorted(n for n in os.listdir(folder) if "mix" in n) == []
+
+
+# ------------------------------------------------------------------ plume's own, by the whole layout
+
+def _plumes(root, server, client):
+    folder, tid = _mixed_take(root, server, client)
+    whole = (folder / "mix.wav").read_bytes()
+    at = whole.rindex(b"plMx")
+    return folder, tid, whole, whole[at:]
+
+
+def _riff(*chunks: bytes) -> bytes:
+    rest = b"WAVE" + b"".join(chunks)
+    return b"RIFF" + len(rest).to_bytes(4, "little") + rest
+
+
+def _chunk(name: bytes, body: bytes) -> bytes:
+    return name + len(body).to_bytes(4, "little") + body + b"\0" * (len(body) % 2)
+
+
+FMT = _chunk(b"fmt ", (1).to_bytes(2, "little") + (1).to_bytes(2, "little") + RATE.to_bytes(4, "little")
+             + (RATE * 2).to_bytes(4, "little") + (2).to_bytes(2, "little") + (16).to_bytes(2, "little"))
+
+
+@pytest.mark.parametrize("how", ["the sound itself ends in the note", "another chunk's contents end in the note",
+                                 "edited, with a chunk added before the sound",
+                                 "edited to another length, the note kept", "the note, and nothing before it"])
+def test_a_file_that_only_ends_like_a_mix_is_the_players(root, server, client, how):
+    folder, tid, whole, note = _plumes(root, server, client)
+    samples = whole[44:44 + 4800 * 2]
+    theirs = {
+        "the sound itself ends in the note": _riff(FMT, _chunk(b"data", bytes(100) + note)),
+        "another chunk's contents end in the note": _riff(FMT, _chunk(b"data", bytes(20)), _chunk(b"LIST", b"INFO" + note)),
+        "edited, with a chunk added before the sound": _riff(FMT, _chunk(b"LIST", b"INFOmine"), _chunk(b"data", samples), note),
+        "edited to another length, the note kept": _riff(FMT, _chunk(b"data", samples[:4000]), note),
+        "the note, and nothing before it": note,
+    }[how]
+    assert theirs.endswith(note)
+    (folder / "mix.wav").write_bytes(theirs)
+    (folder / "stream.json").write_text(json.dumps({"calibrated_ms": 20.0}))     # so plume would want a new one
+    assert realtime.is_own_mix(folder / "mix.wav") is False
+    with pytest.raises(gui.MixInTheWay):
+        server.library.write_mix(tid)
+    recorder = realtime.SessionRecorder(folder, sr=RATE).open({"seed": 2})
+    recorder.close()
+    assert (folder / "mix.wav").read_bytes() == theirs
+
+
+def test_a_mix_with_another_start_is_not_plumes_even_with_its_sound_whole(root, server, client):
+    """Once this was still plume's.  A header that is not the one plume writes means
+    something else has written to the file, and then it is the player's."""
+    folder, tid, whole, note = _plumes(root, server, client)
+    assert realtime.is_own_mix(folder / "mix.wav") is True
+    (folder / "mix.wav").write_bytes(bytes(44) + whole[44:])
+    assert realtime.is_own_mix(folder / "mix.wav") is False
+
+
+# ------------------------------------------------------------------ plume's own, by its sound
+
+def _made_by_hand(n=10, *, samples=None, header=None, **note) -> bytes:
+    """A file laid out as plume lays out a mix of ``n`` frames, with whatever the note is told to say."""
+    samples = (bytes(range(1, 256)) * (n // 100 + 1))[:n * 2] if samples is None else samples
+    rate = RATE
+    doc = {"rule": gui._mix_rule(), "shift": 0, "frames": n, "rate": rate, "human": [1, 1],
+           "machine": [1, 1], "stream": None, "sha256": hashlib.sha256(samples).hexdigest()}
+    doc.update(note)
+    doc = {k: v for k, v in doc.items() if v is not ...}
+    body = json.dumps(doc, sort_keys=True).encode()
+    body += b" " * (len(body) % 2)
+    chunk = b"plMx" + len(body).to_bytes(4, "little") + body
+    head = realtime.wav_header(len(samples) // 2, rate, extra=len(chunk)) if header is None else header
+    return head + samples + chunk
+
+
+def _is_plumes(tmp_path, data: bytes) -> bool:
+    path = tmp_path / "mix.wav"
+    path.write_bytes(data)
+    return realtime.is_own_mix(path)
+
+
+def test_a_file_made_exactly_as_plume_makes_one_is_plumes(tmp_path):
+    assert _is_plumes(tmp_path, _made_by_hand()) is True, "the checks below need this to hold"
+
+
+def test_something_between_the_sound_and_the_note_makes_it_the_players(tmp_path):
+    """The header, the sound and the note are each exactly plume's, and the file is not."""
+    whole = _made_by_hand(10)
+    at = whole.rindex(b"plMx")
+    assert _is_plumes(tmp_path, whole[:at] + bytes(50) + whole[at:]) is False
+    assert _is_plumes(tmp_path, whole[:at] + _chunk(b"LIST", b"INFO") + whole[at:]) is False
+
+
+def test_the_note_carries_a_digest_of_the_sound(root, server, client):
+    folder, _ = _mixed_take(root, server, client)
+    whole = (folder / "mix.wav").read_bytes()
+    doc, _ = _note(folder)
+    assert doc["sha256"] == hashlib.sha256(whole[44:44 + 4800 * 2]).hexdigest()
+    assert realtime.is_own_mix(folder / "mix.wav") is True
+
+
+@pytest.mark.parametrize("edit", ["made louder", "one sample changed", "silenced", "reversed"])
+def test_a_mix_the_player_worked_on_at_the_same_length_is_theirs(root, server, client, edit):
+    folder, tid, whole, note = _plumes(root, server, client)
+    sound = np.frombuffer(whole[44:44 + 4800 * 2], dtype="<i2").copy()
+    if edit == "made louder":
+        sound = (sound * 1.2).astype("<i2")
+    elif edit == "one sample changed":
+        sound[4799] += 1
+    elif edit == "silenced":
+        sound[:] = 0
+    else:
+        sound = sound[::-1]
+    theirs = whole[:44] + sound.tobytes() + note
+    assert len(theirs) == len(whole) and theirs != whole
+    (folder / "mix.wav").write_bytes(theirs)
+    (folder / "stream.json").write_text(json.dumps({"calibrated_ms": 20.0}))     # so plume would want a new one
+    assert realtime.is_own_mix(folder / "mix.wav") is False
+    with pytest.raises(gui.MixInTheWay):
+        server.library.write_mix(tid)
+    recorder = realtime.SessionRecorder(folder, sr=RATE).open({"seed": 2})
+    recorder.close()
+    assert (folder / "mix.wav").read_bytes() == theirs
+
+
+def _fmt(tag=1, channels=1, rate=RATE, bits=16, more=b""):
+    block = channels * bits // 8
+    return _chunk(b"fmt ", tag.to_bytes(2, "little") + channels.to_bytes(2, "little") + rate.to_bytes(4, "little")
+                  + (rate * block).to_bytes(4, "little") + block.to_bytes(2, "little") + bits.to_bytes(2, "little") + more)
+
+
+@pytest.mark.parametrize("how", ["said to be stereo", "said to be 8 bit", "said to be 24 bit", "said to be another rate",
+                                 "a longer format chunk, the sound trimmed to fit",
+                                 "an extensible format chunk, the sound trimmed to fit",
+                                 "a list before the sound, the sound trimmed to fit",
+                                 "the magic of a 64-bit file", "a sound length that lies", "a whole length that lies"])
+def test_the_same_bytes_under_another_description_are_the_players(root, server, client, how):
+    """Every one of these is exactly as long as plume's mix, ends in plume's note, and
+    starts 44 bytes of something before sound the note could be about."""
+    folder, tid, whole, note = _plumes(root, server, client)
+    sound = whole[44:44 + 4800 * 2]
+
+    def laid(fmt, *before, trim=0):
+        return _riff(fmt, *before, _chunk(b"data", sound[trim:]), note)
+
+    theirs = {
+        "said to be stereo": laid(_fmt(channels=2)),
+        "said to be 8 bit": laid(_fmt(bits=8)),
+        "said to be 24 bit": laid(_fmt(bits=24)),
+        "said to be another rate": laid(_fmt(rate=44100)),
+        "a longer format chunk, the sound trimmed to fit": laid(_fmt(more=bytes(2)), trim=2),
+        "an extensible format chunk, the sound trimmed to fit": laid(_fmt(tag=0xFFFE, more=bytes(24)), trim=24),
+        "a list before the sound, the sound trimmed to fit": laid(_fmt(), _chunk(b"LIST", b"INFO"), trim=12),
+        "the magic of a 64-bit file": b"RF64" + whole[4:],
+        "a sound length that lies": whole[:40] + (4800 * 2 + len(note)).to_bytes(4, "little") + whole[44:],
+        "a whole length that lies": whole[:4] + (36).to_bytes(4, "little") + whole[8:],
+    }[how]
+    assert len(theirs) == len(whole) and theirs != whole and theirs.endswith(note)
+    (folder / "mix.wav").write_bytes(theirs)
+    (folder / "stream.json").write_text(json.dumps({"calibrated_ms": 20.0}))
+    assert realtime.is_own_mix(folder / "mix.wav") is False
+    with pytest.raises(gui.MixInTheWay):
+        server.library.write_mix(tid)
+    recorder = realtime.SessionRecorder(folder, sr=RATE).open({"seed": 2})
+    recorder.close()
+    assert (folder / "mix.wav").read_bytes() == theirs
+
+
+@pytest.mark.parametrize("frames", [10.0, "10", None, [10], {"n": 10}, math.nan, 0, -10, ...])
+def test_the_note_must_say_how_long_the_sound_is_in_whole_frames(tmp_path, frames):
+    assert _is_plumes(tmp_path, _made_by_hand(10, frames=frames)) is False
+
+
+def test_true_is_not_one_frame(tmp_path):
+    """In Python ``True == 1``.  A one-frame file whose note says ``true`` is laid out
+    just as a mix of one frame would be, and is still not one."""
+    assert _is_plumes(tmp_path, _made_by_hand(1)) is True
+    assert _is_plumes(tmp_path, _made_by_hand(1, frames=True)) is False
+
+
+@pytest.mark.parametrize("rate", [float(RATE), str(RATE), None, True, 0, -RATE, ...])
+def test_the_note_must_say_the_rate_as_a_whole_number(tmp_path, rate):
+    assert _is_plumes(tmp_path, _made_by_hand(10, rate=rate)) is False
+
+
+@pytest.mark.parametrize("digest", ["", "0" * 64, "not a digest", 7, None, True, ["a"], ...,
+                                    "\u00e9" * 64, "\u0661" * 64, "g" * 64, "0" * 63, "0" * 65, " " * 64])
+def test_the_note_must_carry_the_digest_of_this_sound(tmp_path, digest):
+    assert _is_plumes(tmp_path, _made_by_hand(10, sha256=digest)) is False
+
+
+def test_the_digest_is_sixty_four_lowercase_hex_digits_and_nothing_else(tmp_path):
+    whole = _made_by_hand(10)
+    right = json.loads(whole[whole.rindex(b"plMx") + 8:])["sha256"]
+    assert right != right.upper(), "the check needs a digest with a letter in it"
+    assert _is_plumes(tmp_path, _made_by_hand(10, sha256=right)) is True
+    for wrong in (right.upper(), right + "\n", " " + right[1:], right[:-1] + "\u00e9"):
+        assert _is_plumes(tmp_path, _made_by_hand(10, sha256=wrong)) is False
+
+
+ODD_NOTES = {
+    "a digest that is not ascii": {"sha256": "\u00e9" * 64},
+    "more frames than a file can hold": {"frames": 10 ** 40},
+    "a rate no header can hold": {"rate": 10 ** 40},
+    "a rule that is a list": {"rule": ["1"]},
+    "frames that is a nest of lists": {"frames": [[[[[[[[[[10]]]]]]]]]]},
+}
+
+
+def _odd_mix(what: str) -> bytes:
+    if what == "a note that is not text":
+        whole = _made_by_hand(10)
+        at = whole.rindex(b"plMx")
+        return whole[:at + 9] + b"\xff\xfe" + whole[at + 11:]
+    if what == "a note nested too deep to read":
+        body = b'{"rule": ' + b"[" * 900 + b"]" * 100
+        return realtime.wav_header(10, RATE, extra=8 + len(body)) + bytes(20) + b"plMx" + len(body).to_bytes(4, "little") + body
+    return _made_by_hand(10, **ODD_NOTES[what])
+
+
+ODD = [*ODD_NOTES, "a note that is not text", "a note nested too deep to read"]
+
+
+@pytest.mark.parametrize("what", ODD)
+def test_an_odd_mix_is_the_players_and_never_an_error(tmp_path, what):
+    assert _is_plumes(tmp_path, _odd_mix(what)) is False
+    assert realtime.own_mix_note(tmp_path / "mix.wav") is None
+
+
+@pytest.mark.parametrize("what", ODD)
+def test_an_odd_mix_in_the_folder_never_stops_a_take_starting(root, what):
+    folder = root / "t"
+    folder.mkdir(parents=True)
+    theirs = _odd_mix(what)
+    (folder / "mix.wav").write_bytes(theirs)
+    recorder = realtime.SessionRecorder(folder, sr=RATE).open({"seed": 2})
+    try:
+        assert (folder / "session.json").exists() and (folder / "human.wav").exists()
+    finally:
+        recorder.close()
+    assert (folder / "mix.wav").read_bytes() == theirs
+
+
+@pytest.mark.parametrize("what", ODD)
+def test_show_files_answers_kindly_with_an_odd_mix_in_the_folder(root, shown, client, what):
+    human, machine = clicks()
+    folder = make_take(root / "t", human=human, machine=machine)
+    theirs = _odd_mix(what)
+    (folder / "mix.wav").write_bytes(theirs)
+    resp, out = client.post("/api/reveal", {"take": take_id(client, "t")})
+    assert resp.status == 200
+    assert json.loads(out) == {"shown": True, "mix": False, "band_twice": False, "why": "theirs"}
+    assert (folder / "mix.wav").read_bytes() == theirs
+    assert shown == [(folder.resolve(), "mix.wav")]
+
+
+def test_a_real_mistake_in_the_check_is_not_swallowed(tmp_path, monkeypatch):
+    """Odd files are the player's.  A fault in plume's own code is not an odd file."""
+    path = tmp_path / "mix.wav"
+    path.write_bytes(_made_by_hand(10))
+
+    def broken(*args, **kw):
+        raise AttributeError("a mistake in plume")
+
+    monkeypatch.setattr(realtime, "wav_header", broken)
+    with pytest.raises(AttributeError):
+        realtime.is_own_mix(path)
+
+
+def test_an_out_of_date_mix_is_checked_against_its_sound_once_a_click(root, server, client, monkeypatch):
+    folder, tid = _mixed_take(root, server, client)
+    (folder / "stream.json").write_text(json.dumps({"calibrated_ms": 20.0}))
+    real, asked = gui.own_mix_note, []
+
+    def counted(path):
+        asked.append(os.path.basename(os.fspath(path)))
+        return real(path)
+
+    def never(path):
+        raise AssertionError("the mix was read a second time")
+
+    monkeypatch.setattr(gui, "own_mix_note", counted)
+    monkeypatch.setattr(gui, "is_own_mix", never)
+    assert server.library.write_mix(tid) == "mix.wav"
+    assert asked == ["mix.wav"]
+    assert _note(folder)[0]["shift"] == 960
+
+
+def test_the_digest_is_taken_in_pieces_and_never_from_the_whole_file_at_once(tmp_path, monkeypatch):
+    path = tmp_path / "mix.wav"
+    path.write_bytes(_made_by_hand(50_000))
+    monkeypatch.setattr(realtime, "_MIX_HASH_BYTES", 4096)
+    biggest = []
+    real = realtime.os.fdopen
+
+    def watched(fd, *args, **kw):
+        f = real(fd, *args, **kw)
+        read = f.read
+        f_read = lambda n=-1: (biggest.append(n), read(n))[1]          # noqa: E731
+
+        class Watching:
+            def __getattr__(self, name):
+                return f_read if name == "read" else getattr(f, name)
+
+            def __enter__(self):
+                f.__enter__()
+                return self
+
+            def __exit__(self, *a):
+                return f.__exit__(*a)
+
+        return Watching()
+
+    monkeypatch.setattr(realtime.os, "fdopen", watched)
+    assert realtime.is_own_mix(path) is True
+    assert biggest and all(0 <= n <= 4096 for n in biggest), "no read may ask for the whole file"
+
+
+# ------------------------------------------------------------------ a mix plume may not write over
+
+def test_a_mix_marked_read_only_is_not_said_to_be_open_in_another_program(root, server, shown, client, monkeypatch):
+    """Where a refused rename usually means the file is open: one the player has marked
+    read-only is refused too, and nothing has it open."""
+    monkeypatch.setattr(gui, "_RENAME_REFUSAL_IS_IN_USE", True)
+    folder, tid = _mixed_take(root, server, client)
+    (folder / "stream.json").write_text(json.dumps({"calibrated_ms": 20.0}))
+    os.chmod(folder / "mix.wav", 0o444)
+
+    def refused(where, src, dst):
+        raise PermissionError(13, "access is denied")
+
+    monkeypatch.setattr(gui, "_replace_in", refused)
+    try:
+        with pytest.raises(gui.MixInTheWay) as failure:
+            server.library.write_mix(tid)
+        assert not isinstance(failure.value, gui.MixInUse)
+        _, out = client.post("/api/reveal", {"take": tid})
+    finally:
+        os.chmod(folder / "mix.wav", 0o644)
+    assert json.loads(out) == {"shown": True, "mix": False, "band_twice": False, "why": "theirs"}
+
+
+# ------------------------------------------------------------------ handles
+
+def _open_handles() -> int:
+    return len(os.listdir("/dev/fd"))
+
+
+def _settled_handles() -> int:
+    """The count once it has stopped moving.  A request answered a moment ago can still
+    be closing its socket on the server's thread, and that is not a leak either way."""
+    last, same = _open_handles(), 0
+    until = time.monotonic() + 5
+    while same < 5 and time.monotonic() < until:
+        time.sleep(0.02)
+        now = _open_handles()
+        same = same + 1 if now == last else 0
+        last = now
+    return last
+
+
+needs_handle_count = pytest.mark.skipif(not os.path.isdir("/dev/fd"), reason="needs a way to count open handles")
+
+
+@needs_handle_count
+def test_a_folder_called_mix_costs_no_handles_however_often_it_is_asked_about(root, server):
+    human, machine = clicks()
+    folder = make_take(root / "t", human=human, machine=machine)
+    (folder / "mix.wav").mkdir()
+    # No request is made here: the take is found through the library itself, so no
+    # socket is opening or closing while handles are being counted.
+    tid = server.library.id_of_folder(folder)
+    assert tid is not None
+    realtime.is_own_mix(folder / "mix.wav")
+    before = _settled_handles()
+    for _ in range(21):
+        assert realtime.is_own_mix(folder / "mix.wav") is False
+        with pytest.raises(OSError):
+            gui._open_track(folder, "mix.wav")
+        with pytest.raises(gui.MixInTheWay):
+            server.library.write_mix(tid)
+    # Each leak this guards against costs a handle a round, so 21 or more in all.
+    assert _settled_handles() <= before
+
+
+@needs_handle_count
+def test_asking_whose_a_mix_is_leaves_no_handle_open_whatever_the_answer(tmp_path):
+    folder = tmp_path / "a folder"
+    folder.mkdir()
+    cases = [_made_by_hand(), _made_by_hand(sha256="0" * 64), _made_by_hand(frames=True), b"", b"plMx", bytes(2000)]
+    paths = [folder, tmp_path / "missing.wav"]
+    for i, data in enumerate(cases):
+        paths.append(tmp_path / f"{i}.wav")
+        paths[-1].write_bytes(data)
+    answers = [realtime.is_own_mix(path) for path in paths]
+    assert answers == [False, False, True, False, False, False, False, False]
+    before = _settled_handles()
+    for _ in range(21):
+        for path in paths:
+            realtime.is_own_mix(path)
+    assert _settled_handles() <= before
+
+
+@needs_handle_count
+def test_a_folder_named_like_a_session_costs_no_handles(plume_registry):
+    (plume_registry / "1234.json").mkdir()
+    (plume_registry / "5678.json").write_text("not json")
+    assert realtime.list_sessions(prune=False) == []
+    before = _settled_handles()
+    for _ in range(21):
+        assert realtime.list_sessions(prune=False) == []
+    assert _settled_handles() <= before
+    assert (plume_registry / "1234.json").is_dir()
 
 
 def test_a_first_mix_that_cannot_be_put_in_place_is_just_no_mix(root, server, shown, client, monkeypatch):

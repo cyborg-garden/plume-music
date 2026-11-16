@@ -37,15 +37,17 @@ export function placeWords(seconds) {
 }
 
 /* What to show for a take's video. doc is the bridge's answer, or null before one has come.
-   dropping is true while a file is held over the page. */
-export function videoView(doc, dropping) {
+   dropping is true while a file is held over the page; again, just after a second video was
+   offered while the first is still being worked on. */
+export function videoView(doc, dropping, again) {
   const view = { shown: false, say: '', warn: false, add: false, bar: null, nudge: false, listen: false,
     show: false, stop: false };
   if (!doc || doc.can !== true) return view;
   view.shown = true;
   const state = doc.state || 'idle';
   if (state in WORKING) {
-    view.say = WORKING[state];
+    /* again: she offered another video while this one is under way. */
+    view.say = again ? FAILED.busy : WORKING[state];
     /* A share when the bridge knows one; otherwise a bar that only says something is happening. */
     view.bar = typeof doc.progress === 'number' ? Math.max(0, Math.min(1, doc.progress)) : 'busy';
     view.stop = true;

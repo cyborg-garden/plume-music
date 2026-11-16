@@ -583,7 +583,7 @@ function stopVideoPreview() {
 }
 function drawVideo() {
   const here = S.screen === 'record' && S.take, doc = here ? videoFor(S.take.id) : null;
-  const view = videoView(doc, S.dropping);
+  const view = videoView(doc, S.dropping, !!doc && S.videoAgain === (S.take && S.take.id));
   $('video').hidden = !view.shown;
   $('video').classList.toggle('dropping', S.dropping);
   $('video-add').disabled = !view.add;
@@ -608,7 +608,9 @@ function drawVideo() {
   }
   if (!view.nudge) stopVideoPreview();
 }
-function setVideo(id, doc) {
+function setVideo(id, doc, again) {
+  /* Said until the bridge next says where the work has got to. */
+  S.videoAgain = again ? id : null;
   S.video = { id: id, doc: doc };
   if (S.take && S.take.id === id) drawVideo();
   clearTimeout(S.videoTimer);
@@ -638,9 +640,11 @@ function videoFailed(id, why) {
   setVideo(id, { state: 'failed', why: why, can: true, ready: was.ready !== false, have: was.have === true, theirs: was.theirs === true, max_bytes: was.max_bytes });
 }
 async function addVideo(file) {
-  if (!file || !S.take || S.videoSending) return;
+  if (!file || !S.take) return;
   const id = S.take.id, was = videoFor(id);
-  if (!was || was.can !== true || was.ready !== true || isWorking(was)) return;
+  /* One at a time. Doing nothing would leave her wondering whether the second one took. */
+  if (was && isWorking(was)) { setVideo(id, was, true); return; }
+  if (S.videoSending || !was || was.can !== true || was.ready !== true) return;
   if (was.theirs === true) { videoFailed(id, 'theirs'); return; }
   if (was.max_bytes && file.size > was.max_bytes) { videoFailed(id, 'too_big'); return; }
   const sound = $('video-sound').checked !== false;

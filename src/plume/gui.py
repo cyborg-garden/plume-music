@@ -803,7 +803,7 @@ class Library:
                         ffmpeg, path / job.source, path / tmp, mixed=mixed, rate=rate,
                         band_at=takevideo.video_frame_of(job.start_s, shift, rate),
                         duration_s=job.probe.duration_s, keep_sound=job.keep_sound and job.probe.has_audio,
-                        codec=job.probe.codec,
+                        codec=job.probe.codec, picture=job.probe.picture,
                         cancelled=job.cancel.is_set, progress=progress)
                     fd = _open_in(folder, tmp, os.O_WRONLY | os.O_APPEND | oscompat.O_BINARY, 0o600)
                     with os.fdopen(fd, "ab") as f:

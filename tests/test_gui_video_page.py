@@ -341,3 +341,20 @@ def test_no_maker_or_device_is_named_and_every_word_comes_from_one_place():
     # The page script holds no sentence of its own about videos: they are all in video.js.
     assert "Bringing your video" not in page and "isn't sure" not in page
     assert "innerHTML" not in words and "innerHTML" not in page
+
+
+def test_a_second_video_while_one_is_on_its_way_is_told_plume_is_still_working(tmp_path, docs):
+    out = run_page(tmp_path, docs, f"""
+        await page.open(ids.tap);
+        page.hold('video/upload');
+        {CHOOSE}
+        const ev = {{ dataTransfer: {{ types: ['Files'], files: [{{ name: 'again.mp4', size: 10 }}] }}, preventDefault() {{}} }};
+        page.fireWindow('drop', ev); await page.settle();
+        const told = {VIEW};
+        {video(state="receiving", progress=0.5)}
+        await page.poll();
+        return {{ told, later: {VIEW} }};""")
+    told, later = out["told"], out["later"]
+    assert told["say"] == "Plume is still working on a video for this take."
+    assert told["uploads"] == 1 and told["bar"] and told["stop"] and not told["warn"]
+    assert later["say"] == "Bringing your video in." and later["uploads"] == 1

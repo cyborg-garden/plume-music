@@ -82,7 +82,7 @@ _HEADROOM = 0.891
 _CEILING = 0.944
 _LOUD_TRIES = 2
 _DURATION_RE = re.compile(r"Duration:\s*(\d+):(\d\d):(\d\d(?:\.\d+)?)")
-_STREAM_RE = re.compile(r"Stream #0:\d+.*?: (Video|Audio): (.*)")
+_STREAM_RE = re.compile(r"Stream #0:(\d+).*?: (Video|Audio): (.*)")
 
 
 #: The file a finished video is saved as, in the take's folder.
@@ -150,6 +150,8 @@ class Probe:
     has_audio: bool
     #: The picture's format, as ffmpeg names it: "h264", "hevc".
     codec: str = ""
+    #: Which of the file's tracks the picture is.  Not always the first: a still can sit ahead of it.
+    picture: int = 0
 
 
 @dataclass(frozen=True)
@@ -180,7 +182,50 @@ def find_ffmpeg() -> str | None:
             return exe
     except Exception:  # noqa: BLE001 - not installed, or installed with no binary for this machine
         pass
-    return shutil.which("ffmpeg")
+    return _on_path()
+
+
+def _same_folder(a: str, b: str) -> bool:
+    return os.path.normcase(os.path.abspath(a)) == os.path.normcase(os.path.abspath(b))
+
+
+def _on_path() -> str | None:
+    """An ffmpeg the PATH names by a whole address, and no other.
+
+    Windows looks in the folder a program runs in before it looks along the PATH, and a
+    PATH can hold "." or an empty entry that means the same.  A take's folder, or a
+    download, must never be where the tool plume runs comes from.  So one found in the
+    current folder counts only if the PATH names that folder in full.
+    """
+    entries = [e for e in os.environ.get("PATH", "").split(os.pathsep) if e and os.path.isabs(e)]
+    found = shutil.which("ffmpeg")
+    if found:
+        folder = os.path.dirname(found)
+        loose = folder in ("", ".") or not os.path.isabs(found)
+        if not loose and (not _same_folder(folder, os.getcwd())
+                          or any(_same_folder(folder, entry) for entry in entries)):
+            return found
+    if not found:
+        return None
+    # The one found first was not to be trusted.  There may still be a proper one behind it.
+    names = ["ffmpeg"]
+    if sys.platform == "win32":
+        names = ["ffmpeg" + ext for ext in os.environ.get("PATHEXT", ".EXE").split(os.pathsep) if ext]
+    for entry in entries:
+        for name in names:
+            path = os.path.join(entry, name)
+            if os.path.isfile(path) and os.access(path, os.X_OK):
+                return path
+    return None
+
+
+#: The pictures an mp4 can hold as they are, by ffmpeg's names for them.
+_COPIES = frozenset({"h264", "hevc", "mpeg4", "av1", "vp9"})
+
+
+def can_copy(codec: str) -> bool:
+    """Whether a picture in this form can go into the saved file without being made again."""
+    return codec in _COPIES
 
 
 def _quiet() -> dict:
@@ -216,10 +261,17 @@ def probe(ffmpeg: str, path) -> Probe:
                               stderr=subprocess.PIPE, timeout=120, check=False, **_quiet())
     except (OSError, subprocess.TimeoutExpired):
         raise VideoError("not_video") from None
-    text = done.stderr.decode("utf-8", errors="replace")
-    kinds = [(kind, rest) for kind, rest in _STREAM_RE.findall(text)]
+    return read_probe(done.stderr.decode("utf-8", errors="replace"))
+
+
+def read_probe(text: str) -> Probe:
+    """What ffmpeg's account of a file says it holds."""
+    tracks = _STREAM_RE.findall(text)
+    kinds = [(kind, rest) for _, kind, rest in tracks]
     # A song's cover art is a picture, not a film.
-    video = [rest for kind, rest in kinds if kind == "Video" and "attached pic" not in rest]
+    films = [(int(index), rest) for index, kind, rest in tracks
+             if kind == "Video" and "attached pic" not in rest]
+    video = [rest for _, rest in films]
     found = _DURATION_RE.search(text)
     if not video or not found:
         raise VideoError("not_video")
@@ -228,7 +280,11 @@ def probe(ffmpeg: str, path) -> Probe:
     if not 0 < duration <= MAX_VIDEO_S:
         raise VideoError("not_video" if duration <= 0 else "too_long")
     codec = re.match(r"[a-z0-9_]+", video[0])
-    return Probe(duration, any(kind == "Audio" for kind, _ in kinds), codec.group(0) if codec else "")
+    codec = codec.group(0) if codec else ""
+    if not can_copy(codec):
+        # Said now, in the words for a file plume cannot use, and not after minutes of work.
+        raise VideoError("not_video")
+    return Probe(duration, any(kind == "Audio" for kind, _ in kinds), codec, films[0][0])
 
 
 def decode(ffmpeg: str, source, *, rate: int = ALIGN_RATE, cancelled=None,
@@ -512,12 +568,13 @@ def _graph(keep_sound: bool, rate: int, gain: float = 0.0) -> list[str]:
 
 
 def write_command(ffmpeg: str, source, out, *, rate: int, duration_s: float, keep_sound: bool,
-                  codec: str = "", gain: float = 0.0) -> list[str]:
+                  codec: str = "", gain: float = 0.0, picture: int | None = None) -> list[str]:
     """The child's command line: the video in, the take on its standard input, an mp4 out."""
     cmd = [ffmpeg, "-hide_banner", "-loglevel", "error", "-y",
            "-i", os.fspath(source),
            "-f", "s16le", "-ar", str(rate), "-ac", "1", "-i", "pipe:0",
-           "-map", "0:v:0", *_graph(keep_sound, rate, gain), "-c:v", "copy"]
+           "-map", "0:v:0" if picture is None else f"0:{int(picture)}",
+           *_graph(keep_sound, rate, gain), "-c:v", "copy"]
     if codec == "hevc":
         # This format has two names in an mp4, and some players only know this one.
         cmd += ["-tag:v", "hvc1"]
@@ -527,7 +584,8 @@ def write_command(ffmpeg: str, source, out, *, rate: int, duration_s: float, kee
 
 
 def write_video(ffmpeg: str, source, out, *, mixed, rate: int, band_at: int, duration_s: float,
-                keep_sound: bool, codec: str = "", cancelled=None, progress=None) -> None:
+                keep_sound: bool, codec: str = "", picture: int | None = None, cancelled=None,
+                progress=None) -> None:
     """Write ``source`` again at ``out`` with the take in its sound.
 
     The picture is copied as it is.  The sound is the video's own, if kept, with the
@@ -542,7 +600,8 @@ def write_video(ffmpeg: str, source, out, *, mixed, rate: int, band_at: int, dur
     gain = _HEADROOM
     for again in range(_LOUD_TRIES + 1):
         _write_once(ffmpeg, source, out, mixed=mixed, rate=rate, band_at=band_at, duration_s=duration_s,
-                    keep_sound=keep_sound, codec=codec, gain=gain, cancelled=cancelled, progress=progress)
+                    keep_sound=keep_sound, codec=codec, gain=gain, picture=picture, cancelled=cancelled,
+                    progress=progress)
         peak = loudest(ffmpeg, out, cancelled=cancelled)
         if peak <= _CEILING or again == _LOUD_TRIES:
             return
@@ -577,11 +636,12 @@ def loudest(ffmpeg: str, path, *, cancelled=None) -> float:
 
 
 def _write_once(ffmpeg: str, source, out, *, mixed, rate: int, band_at: int, duration_s: float,
-                keep_sound: bool, codec: str, gain: float, cancelled=None, progress=None) -> None:
+                keep_sound: bool, codec: str, gain: float, picture: int | None = None, cancelled=None,
+                progress=None) -> None:
     # A little past the end, so the sound never stops short of the picture.
     total = max(1, math.ceil((duration_s + 0.1) * rate))
     cmd = write_command(ffmpeg, source, out, rate=rate, duration_s=duration_s, keep_sound=keep_sound,
-                        codec=codec, gain=gain)
+                        codec=codec, gain=gain, picture=picture)
     try:
         proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
                                 stderr=subprocess.DEVNULL, **_quiet())

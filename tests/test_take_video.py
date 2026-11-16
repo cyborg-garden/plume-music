@@ -416,3 +416,112 @@ def test_nothing_the_camera_wrote_about_itself_is_in_the_saved_video(tmp_path, c
     assert tracks == ["Video", "Audio"]
     # The one thing kept: which way up the picture is.
     assert "rotation of 90" in told
+
+
+# ------------------------------------------------------- which picture, and which tool
+
+def make_with_cover(tmp_path):
+    """A video whose first picture track is a still: cover art, ahead of the film."""
+    import subprocess
+
+    film = make_video(tmp_path / "film.mp4", seconds=2.0, sound=playing(2.0, 48000))
+    cover = tmp_path / "cover.jpg"
+    subprocess.run([FFMPEG, "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "color=c=red:s=32x32",
+                    "-frames:v", "1", str(cover)], check=True, timeout=120, stdin=subprocess.DEVNULL)
+    out = tmp_path / "covered.mp4"
+    subprocess.run([FFMPEG, "-hide_banner", "-loglevel", "error", "-y", "-i", str(cover), "-i", str(film),
+                    "-map", "0:v", "-map", "1:v", "-map", "1:a", "-c", "copy", "-disposition:v:0", "attached_pic",
+                    "-f", "mp4", str(out)], check=True, timeout=120, stdin=subprocess.DEVNULL)
+    return film, out
+
+
+@needs_ffmpeg
+def test_the_film_is_copied_and_never_its_cover_art(tmp_path):
+    from video_fixture import picture_md5
+
+    film, covered = make_with_cover(tmp_path)
+    found = takevideo.probe(FFMPEG, covered)
+    told = [line for line in described(covered).splitlines() if "Stream #0:" in line and "Video" in line]
+    assert len(told) == 2, "the made-up video has no cover art"
+    film_track = next(i for i, line in enumerate(described(covered).splitlines()) if "mpeg4" in line)
+    assert found.codec == "mpeg4"
+    assert f"Stream #0:{found.picture}" in described(covered).splitlines()[film_track]
+    out = tmp_path / "video.mp4"
+    takevideo.write_video(FFMPEG, covered, out, mixed=lambda frame, count: bytes(2 * count), rate=48000,
+                          band_at=0, duration_s=found.duration_s, keep_sound=True, codec=found.codec,
+                          picture=found.picture)
+    assert picture_md5(out) == picture_md5(film)
+    assert takevideo.probe(FFMPEG, out).duration_s == pytest.approx(2.0, abs=0.3)
+
+
+def test_a_still_ahead_of_the_film_is_passed_over():
+    """Where the cover art sits depends on the kind of file.  When it comes first, the
+    film is still the track that is copied."""
+    told = """Input #0, matroska,webm, from 'in.mkv':
+  Duration: 00:00:07.50, start: 0.000000, bitrate: 900 kb/s
+  Stream #0:0: Video: mjpeg (Baseline), yuvj420p(pc), 600x600, 90k tbr, 90k tbn (attached pic)
+  Stream #0:1(und): Audio: aac (LC), 48000 Hz, stereo, fltp (default)
+  Stream #0:2(und): Video: h264 (High), yuv420p, 1280x720, 30 fps, 30 tbr, 1k tbn (default)
+"""
+    found = takevideo.read_probe(told)
+    assert found == takevideo.Probe(7.5, True, "h264", 2)
+    cmd = takevideo.write_command("ffmpeg", "in.mkv", "out.tmp", rate=48000, duration_s=7.5, keep_sound=True,
+                                  codec=found.codec, picture=found.picture)
+    assert "0:2" in cmd and "0:v:0" not in cmd
+    with pytest.raises(takevideo.VideoError):
+        takevideo.read_probe(told.replace("h264 (High)", "vp8"))
+    with pytest.raises(takevideo.VideoError):                 # a song with its cover is not a film
+        takevideo.read_probe("\n".join(told.splitlines()[:4]))
+
+
+@needs_ffmpeg
+def test_a_picture_that_cannot_be_copied_into_the_saved_file_is_refused_at_once(tmp_path):
+    import subprocess
+
+    odd = tmp_path / "odd.avi"                        # a film, but in a form an mp4 cannot hold as it is
+    subprocess.run([FFMPEG, "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi",
+                    "-i", "color=c=black:s=32x32:r=5:d=1", "-c:v", "huffyuv", str(odd)], check=True, timeout=120,
+                   stdin=subprocess.DEVNULL)
+    with pytest.raises(takevideo.VideoError) as refused:
+        takevideo.probe(FFMPEG, odd)
+    assert refused.value.why == "not_video"
+
+
+@pytest.mark.parametrize("codec,fits", [("h264", True), ("hevc", True), ("mpeg4", True), ("av1", True),
+                                        ("vp9", True), ("vp8", False), ("theora", False), ("huffyuv", False),
+                                        ("prores", False), ("", False)])
+def test_which_pictures_an_mp4_can_hold_as_they_are(codec, fits):
+    assert takevideo.can_copy(codec) is fits
+
+
+def fake_tool(folder):
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / ("ffmpeg.exe" if sys.platform == "win32" else "ffmpeg")
+    path.write_bytes(b"")
+    path.chmod(0o755)
+    return path
+
+
+def test_an_ffmpeg_in_the_folder_plume_runs_in_is_never_the_one_used(tmp_path, monkeypatch):
+    """Windows looks in the current folder before the PATH, and a PATH can name it too.
+    A take folder, or a download, must not be able to supply the tool plume runs."""
+    monkeypatch.setitem(sys.modules, "imageio_ffmpeg", None)
+    here, empty = tmp_path / "here", tmp_path / "empty"
+    fake_tool(here)
+    empty.mkdir()
+    monkeypatch.chdir(here)
+    for path in (str(empty), "." + os.pathsep + str(empty), os.pathsep + str(empty), "", "sub" + os.pathsep + "."):
+        monkeypatch.setenv("PATH", path)
+        assert takevideo.find_ffmpeg() is None, path
+
+
+def test_an_ffmpeg_on_the_path_proper_is_found_by_its_whole_address(tmp_path, monkeypatch):
+    monkeypatch.setitem(sys.modules, "imageio_ffmpeg", None)
+    real = fake_tool(tmp_path / "tools")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("PATH", "." + os.pathsep + str(tmp_path / "tools"))
+    found = takevideo.find_ffmpeg()
+    assert found is not None and os.path.isabs(found) and os.path.samefile(found, real)
+    # The folder plume runs in is fine when the PATH names it in full: that is a choice someone made.
+    monkeypatch.chdir(tmp_path / "tools")
+    assert os.path.samefile(takevideo.find_ffmpeg(), real)

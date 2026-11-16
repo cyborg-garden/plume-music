@@ -58,6 +58,16 @@ _FINE_FLOOR = 6.0
 _FINE_AGREE_S = 0.005
 #: ... and from here up it is as sure as it gets.
 _FINE_SURE = 20.0
+#: Another place within this of the best is the same place.
+_SAME_PLACE_S = 0.25
+#: Other places are looked at when their outline fits this much as well as the best's ...
+_RUNNER_OUTLINE = 0.5
+#: ... at most this many of them ...
+_RUNNERS_UP = 4
+#: ... and one whose sound fits this much as well as the best's makes the answer a guess.
+_RUNNER_SOUND = 0.5
+#: What a guess between places that fit alike is worth.
+_AMBIGUOUS = 0.2
 #: At or above this, the place is trusted and nobody is asked.
 CONFIDENT = 0.5
 #: Quieter than this at its loudest, a sound is nothing to line up with.
@@ -65,6 +75,12 @@ _SILENT_PEAK = 10 ** (-60 / 20)
 _DRIFT_MIN_S = 40.0
 _PCM_BLOCK = 1 << 16
 _LIMITER_AHEAD_MS = 5
+#: The level the loudest moment is handed to the encoder at: 1 dB under full scale.
+_HEADROOM = 0.891
+#: A video whose decoded sound passes this (half a decibel under full scale) is written
+#: again, quieter, at most this many times.
+_CEILING = 0.944
+_LOUD_TRIES = 2
 _DURATION_RE = re.compile(r"Duration:\s*(\d+):(\d\d):(\d\d(?:\.\d+)?)")
 _STREAM_RE = re.compile(r"Stream #0:\d+.*?: (Video|Audio): (.*)")
 
@@ -414,8 +430,32 @@ def align(video: np.ndarray, take: np.ndarray) -> Alignment:
     start_s = (int(lags[best]) + _peak(score, best) - best) / ENV_RATE
     start_s, strength = _fine(video, take, start_s)
     confidence = float(np.clip((strength - _FINE_FLOOR) / (_FINE_SURE - _FINE_FLOOR), 0.0, 1.0))
+    if confidence >= CONFIDENT and _fits_elsewhere(video, take, lags, score, best, strength):
+        confidence = _AMBIGUOUS
     drift = _drift(video, take, start_s) if confidence > 0 else None
     return Alignment(float(start_s), confidence, drift)
+
+
+def _fits_elsewhere(video: np.ndarray, take: np.ndarray, lags: np.ndarray, score: np.ndarray,
+                    best: int, strength: float) -> bool:
+    """True when the take fits another place in the video about as well as the best one.
+
+    A hand never plays a phrase twice the same, so a second round of it fits in outline
+    and not in sound.  A looper's rounds are the same samples: every round fits in both,
+    and which one the take is cannot be heard.  Then the answer is a guess, however sharp.
+    """
+    others = score.copy()
+    apart = int(_SAME_PLACE_S * ENV_RATE)
+    others[max(0, best - apart):best + apart + 1] = -np.inf
+    for _ in range(_RUNNERS_UP):
+        at = int(np.argmax(others))
+        if not others[at] >= _RUNNER_OUTLINE * score[best]:
+            return False
+        _, other = _fine(video, take, (int(lags[at]) + _peak(score, at) - at) / ENV_RATE)
+        if other >= _RUNNER_SOUND * strength:
+            return True
+        others[max(0, at - apart):at + apart + 1] = -np.inf
+    return False
 
 
 def first_sound_s(take: np.ndarray) -> float:
@@ -449,29 +489,35 @@ def laid_in(mixed, band_at: int, begin: int, count: int) -> bytes:
     return _silence(lead) + (mixed(first + lead, count - lead) if count > lead else b"")
 
 
-def _graph(keep_sound: bool, rate: int) -> list[str]:
-    """What the child does with the two sounds.  Input 0 is the video, input 1 the take."""
+def _graph(keep_sound: bool, rate: int, gain: float = 0.0) -> list[str]:
+    """What the child does with the two sounds.  Input 0 is the video, input 1 the take.
+
+    ``gain`` is the level the loudest moment is handed to the encoder at, as a share of
+    full scale; none given means :data:`_HEADROOM`.
+    """
+    gain = gain or _HEADROOM
     if not keep_sound:
-        return ["-map", "0:v:0", "-map", "1:a:0", "-af", "pan=stereo|c0=c0|c1=c0"]
+        return ["-map", "1:a:0", "-af", f"pan=stereo|c0={gain:.4f}*c0|c1={gain:.4f}*c0"]
     # Summed at full level, then held under full scale only where the sum would pass it.
     # amerge and pan rather than amix: every ffmpeg adds these the same way.
     graph = (f"[0:a:0]aresample={rate}:async=1:first_pts=0,aformat=channel_layouts=stereo,apad[cam];"
              "[1:a:0]pan=stereo|c0=c0|c1=c0[take];"
              "[cam][take]amerge=inputs=2,pan=stereo|c0=c0+c2|c1=c1+c3,"
-             f"alimiter=limit=0.891:attack={_LIMITER_AHEAD_MS}:release=80:level=disabled,"
+             f"alimiter=limit={_HEADROOM}:attack={_LIMITER_AHEAD_MS}:release=80:level=disabled,"
              # The limiter looks ahead, and hands its sound over that much late.  Taken back
              # off here, or the band would trail the picture by it.
-             f"atrim=start={_LIMITER_AHEAD_MS / 1000.0},asetpts=PTS-STARTPTS[out]")
-    return ["-filter_complex", graph, "-map", "0:v:0", "-map", "[out]"]
+             f"atrim=start={_LIMITER_AHEAD_MS / 1000.0},asetpts=PTS-STARTPTS,"
+             f"volume={gain / _HEADROOM:.4f}[out]")
+    return ["-filter_complex", graph, "-map", "[out]"]
 
 
 def write_command(ffmpeg: str, source, out, *, rate: int, duration_s: float, keep_sound: bool,
-                  codec: str = "") -> list[str]:
+                  codec: str = "", gain: float = 0.0) -> list[str]:
     """The child's command line: the video in, the take on its standard input, an mp4 out."""
     cmd = [ffmpeg, "-hide_banner", "-loglevel", "error", "-y",
            "-i", os.fspath(source),
            "-f", "s16le", "-ar", str(rate), "-ac", "1", "-i", "pipe:0",
-           *_graph(keep_sound, rate), "-c:v", "copy"]
+           "-map", "0:v:0", *_graph(keep_sound, rate, gain), "-c:v", "copy"]
     if codec == "hevc":
         # This format has two names in an mp4, and some players only know this one.
         cmd += ["-tag:v", "hvc1"]
@@ -487,11 +533,55 @@ def write_video(ffmpeg: str, source, out, *, mixed, rate: int, band_at: int, dur
     The picture is copied as it is.  The sound is the video's own, if kept, with the
     take's mix on top, as AAC.  Nothing the camera wrote about itself comes along:
     no tags, no place, no chapters, no data tracks.
+
+    An encoder's copy of a sound overshoots the sound it was given, and by more the
+    harder that sound was driven.  So the result is listened to (by the child, as
+    numbers): a video whose sound would pass full scale is written again, turned down
+    by as much as it passed.
     """
+    gain = _HEADROOM
+    for again in range(_LOUD_TRIES + 1):
+        _write_once(ffmpeg, source, out, mixed=mixed, rate=rate, band_at=band_at, duration_s=duration_s,
+                    keep_sound=keep_sound, codec=codec, gain=gain, cancelled=cancelled, progress=progress)
+        peak = loudest(ffmpeg, out, cancelled=cancelled)
+        if peak <= _CEILING or again == _LOUD_TRIES:
+            return
+        gain *= _HEADROOM / peak
+
+
+def loudest(ffmpeg: str, path, *, cancelled=None) -> float:
+    """The largest sample in a file's sound once decoded, where 1.0 is full scale."""
+    cmd = [ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin", "-i", os.fspath(path),
+           "-map", "0:a:0", "-vn", "-sn", "-dn", "-f", "f32le", "pipe:1"]
+    try:
+        proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                stderr=subprocess.DEVNULL, **_quiet())
+    except OSError:
+        raise VideoError("failed") from None
+    peak, rest = 0.0, b""
+    try:
+        while True:
+            if cancelled is not None and cancelled():
+                raise Cancelled
+            block = proc.stdout.read(1 << 20)
+            if not block:
+                break
+            block = rest + block
+            whole = len(block) // 4 * 4
+            rest = block[whole:]
+            if whole:
+                peak = max(peak, float(np.max(np.abs(np.frombuffer(block[:whole], dtype="<f4")))))
+    finally:
+        _stop(proc)
+    return peak if math.isfinite(peak) else 0.0
+
+
+def _write_once(ffmpeg: str, source, out, *, mixed, rate: int, band_at: int, duration_s: float,
+                keep_sound: bool, codec: str, gain: float, cancelled=None, progress=None) -> None:
     # A little past the end, so the sound never stops short of the picture.
     total = max(1, math.ceil((duration_s + 0.1) * rate))
     cmd = write_command(ffmpeg, source, out, rate=rate, duration_s=duration_s, keep_sound=keep_sound,
-                        codec=codec)
+                        codec=codec, gain=gain)
     try:
         proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
                                 stderr=subprocess.DEVNULL, **_quiet())

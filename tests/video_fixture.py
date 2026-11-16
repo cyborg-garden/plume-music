@@ -96,3 +96,15 @@ def picture_md5(path) -> str:
                            "-c", "copy", "-f", "md5", "-"], capture_output=True, check=True, timeout=120,
                           stdin=subprocess.DEVNULL)
     return done.stdout.decode().strip()
+
+
+def float_sound(path, rate: int = 48000) -> np.ndarray:
+    """A video's sound as floats that are not clipped on the way out, so a peak over full scale shows.
+
+    Every channel, one after another, as decoded: mixing two down to one in floats adds
+    them, which would read as a peak the file does not have.
+    """
+    done = subprocess.run([FFMPEG, "-hide_banner", "-loglevel", "error", "-i", str(path), "-map", "0:a:0",
+                           "-ar", str(rate), "-f", "f32le", "-"], capture_output=True, check=True,
+                          timeout=120, stdin=subprocess.DEVNULL)
+    return np.frombuffer(done.stdout, dtype="<f4")

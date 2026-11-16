@@ -14,7 +14,8 @@ import numpy as np
 import pytest
 
 from plume import takevideo
-from video_fixture import FFMPEG, heard_by_camera, make_video, needs_ffmpeg, placed, playing, talking
+from video_fixture import (FFMPEG, float_sound, heard_by_camera, make_video, needs_ffmpeg, placed, playing,
+                           talking)
 
 R = takevideo.ALIGN_RATE
 #: How close the start must be found.  Half a video frame at 100 frames a second,
@@ -295,3 +296,81 @@ def test_stopping_part_way_stops_the_tool(tmp_path):
     with pytest.raises(takevideo.Cancelled):
         takevideo.write_video(FFMPEG, path, out, mixed=lambda frame, count: bytes(2 * count), rate=48000,
                               band_at=0, duration_s=2.0, keep_sound=True, cancelled=lambda: True)
+
+
+# ------------------------------------------------------------------ a loop
+
+def phrase(seed, jitter=None):
+    """Four seconds of the same eight notes.  ``jitter`` plays them as a hand would: each
+    note a little early or late and a little louder or softer, never twice the same."""
+    rng = np.random.default_rng(seed)
+    times = np.sort(rng.uniform(0.1, 3.4, 8))
+    pitches = rng.choice((110.0, 146.8, 164.8, 196.0, 220.0, 293.7, 329.6), 8)
+    out = np.zeros(4 * R)
+    for at, pitch in zip(times, pitches):
+        level = 0.2
+        if jitter is not None:
+            at, level = at + jitter.uniform(-0.02, 0.02), level * jitter.uniform(0.7, 1.3)
+        t = np.arange(int(0.5 * R)) / R
+        note = sum(np.sin(2 * np.pi * pitch * k * t) / k for k in (1, 2, 3)) * np.exp(-t / 0.2)
+        begin = int(at * R)
+        out[begin:begin + len(note)] += (note * np.minimum(1.0, t / 0.003) * level)[:len(out) - begin]
+    return out
+
+
+def test_an_exact_loop_that_also_sounds_outside_the_take_is_not_trusted():
+    """A looper plays the same samples every time round.  Where the take sits among
+    ten identical rounds cannot be heard, so plume must ask and not guess."""
+    one = phrase(51)
+    take = np.tile(one, 5)                           # rounds three to seven of ten
+    start = 2 * R + 2 * len(one)
+    heard = (placed(heard_by_camera(np.tile(one, 10), R), 2 * R, 50 * R)
+             + talking(50.0, R, 52, 0.05)).astype(np.float32)
+    found = takevideo.align(heard, take.astype(np.float32))
+    assert not found.confident, f"placed {found.start_s - start / R:+.2f} s off at confidence {found.confidence:.2f}"
+
+
+def test_a_loop_played_by_hand_is_still_found():
+    hand = np.random.default_rng(53)
+    take = np.concatenate([phrase(54, hand) for _ in range(5)])
+    start = 3 * R + 777
+    found = takevideo.align(camera(take, start, 30 * R), take.astype(np.float32))
+    assert found.confident and found.start_s == pytest.approx(start / R, abs=TOLERANCE_S)
+
+
+def test_a_loop_played_by_hand_is_found_among_more_rounds_of_it():
+    hand = np.random.default_rng(55)
+    rounds = [phrase(56, hand) for _ in range(10)]
+    take = np.concatenate(rounds[3:8])
+    start = 2 * R + 3 * 4 * R
+    heard = (placed(heard_by_camera(np.concatenate(rounds), R), 2 * R, 50 * R)
+             + talking(50.0, R, 57, 0.05)).astype(np.float32)
+    found = takevideo.align(heard, take.astype(np.float32))
+    assert found.confident and found.start_s == pytest.approx(start / R, abs=TOLERANCE_S)
+
+
+# ------------------------------------------------------------------- headroom
+
+@needs_ffmpeg
+@pytest.mark.parametrize("keep_sound", [True, False])
+def test_a_loud_take_does_not_clip_once_it_is_a_video(tmp_path, keep_sound):
+    """The encoder's copy of a sound overshoots the sound it was given.  A mix handed
+    over at full scale comes back over it, and a player clips that."""
+    rate, seconds = 48000, 4.0
+    rng = np.random.default_rng(61)
+    # As loud as a mix gets: playing driven hard into full scale, and bursts of hiss at it.
+    loud = np.clip(playing(seconds, rate, seed=62) * 20.0, -1.0, 1.0)
+    loud[rate:2 * rate] = np.clip(rng.normal(0.0, 0.6, rate), -1.0, 1.0)
+    pcm = (loud * 32767).astype("<i2")
+    source = make_video(tmp_path / "in.mp4", seconds=seconds, sound=np.clip(talking(seconds, rate, 63, 0.6), -1, 1))
+    out = tmp_path / "out.mp4"
+
+    def mixed(frame, count):
+        got = pcm[frame:frame + count]
+        return got.tobytes() + bytes(2 * (count - len(got)))
+
+    takevideo.write_video(FFMPEG, source, out, mixed=mixed, rate=rate, band_at=0, duration_s=seconds,
+                          keep_sound=keep_sound)
+    sound = float_sound(out)
+    assert float(np.max(np.abs(sound))) <= 1.0
+    assert float(np.sqrt(np.mean(sound ** 2))) > 0.2            # and it is still loud, not turned down to nothing

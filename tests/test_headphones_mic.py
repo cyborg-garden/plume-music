@@ -1133,7 +1133,7 @@ def test_a_mask_switched_on_partway_masks_about_what_one_on_from_the_start_does(
     always = realtime.SelfMasker()
     always.mask(frames[:half], levels[:half])
     out_a, flags_a = always.mask(frames[half:], levels[half:])
-    late = realtime.SelfMasker(enabled=False)
+    late = realtime.SelfMasker(enabled=False, learn_while_off=True)
     out, flags = late.mask(frames[:half], levels[:half])
     assert not any(flags) and all(a is b for a, b in zip(out, frames[:half])), "off, it touches nothing"
     assert late.human_rms_db > -60.0, "and it has still learned how loud she is"
@@ -1339,3 +1339,22 @@ def test_a_stretch_that_is_not_judged_counts_neither_way():
     assert check.latched is False
     check.feed(*_bleeding(0.6, seed=51))
     assert check.latched is True
+
+
+def test_a_mask_that_will_never_be_switched_on_does_no_work_at_all():
+    """An instrument plugged in can never turn out to hold the band, so its mask does nothing:
+    no learning on the analysis thread, which every direct take would pay for."""
+    frames, levels = _mic_and_band(seconds=10.0)
+    off = realtime.SelfMasker(enabled=False)
+    out, flags = off.mask(frames, levels)
+    assert not any(flags) and all(a is b for a, b in zip(out, frames))
+    assert off.human_rms_db == realtime.RMS_FLOOR_DB and off.frames_seen == len(frames)
+
+
+def test_only_a_mic_said_to_be_out_of_the_bands_reach_keeps_its_mask_learning(tmp_path, consent, maskers):
+    for name, kw in (("k-direct", {"direct": True, "input_device": "audio interface", "input_channel": 1}),
+                     ("k-phones", {"band_in_headphones": True})):
+        with patched_module("sounddevice", fake_audio(np.zeros(realtime.SR), devices=RIG)):
+            realtime.lead(prompt="lofi", seed=0, tap_start=True, role=roles_mod.RoleParams(role="lead"),
+                          status=False, socket_path=short_socket_path(name), max_minutes=0.01, **kw)
+    assert [(m._enabled, m._learn_off) for m in maskers] == [(False, False), (False, True)]

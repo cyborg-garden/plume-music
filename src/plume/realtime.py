@@ -799,11 +799,14 @@ class SelfMasker:
                  rise_window_s: float = SELF_MASK_RISE_WINDOW_S,
                  hold_s: float = SELF_MASK_HOLD_S,
                  transient_gate_db: float = SELF_MASK_TRANSIENT_GATE_DB,
-                 blank_envelope: bool = True, enabled: bool = True):
+                 blank_envelope: bool = True, enabled: bool = True,
+                 learn_while_off: bool = False):
         #: False on a direct input.  Nothing of ours can reach it, and a mask with
         #: nothing to mask only punches holes at the machine's beat rate (v1.7).
-        #: It goes on listening while off, so it can be switched on (see ``enable``).
         self._enabled = bool(enabled)
+        #: Off, it still learns, so it can be switched on partway (see ``enable``).  Only
+        #: for an input that may turn out to hold the band: the rest pay nothing.
+        self._learn_off = bool(learn_while_off)
         self._margin = float(margin_db)
         self._alpha = float(human_alpha)
         self._floor = float(abs_floor_db)
@@ -932,8 +935,12 @@ class SelfMasker:
         still listens: her level, the delayed bus and the coupling are all kept up to
         date.  One that learned nothing while off would, switched on partway, find
         every frame of the band louder than a player it had never heard, and blank
-        them all for as long as the band played.
+        them all for as long as the band played.  Only when made to (``learn_while_off``):
+        an input that can never be switched on does no work at all.
         """
+        if not self._enabled and not self._learn_off:
+            self.frames_seen += len(frames)
+            return list(frames), [False] * len(frames)
         self._delay.extend(float(v) for v in machine_rms_db)
         out = []
         flags = []
@@ -2518,7 +2525,7 @@ def jam(*, style: str, seed: int, params, device: str | None = None,
         # may never disagree with the rendered audio (live_status_state).
         "audible_until": 0,
     }
-    masker = SelfMasker(enabled=not route.isolated)
+    masker = SelfMasker(enabled=not route.isolated, learn_while_off=route.band_in_headphones)
     # A mic said to have the band only in headphones is checked, as in lead (BandInMic).
     from .bandentry import BandInMic  # noqa: PLC0415
     band_in_mic = (BandInMic(SR) if route.band_in_headphones and midi_port is None else None)
@@ -4877,7 +4884,7 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
               "taps": None, "chroma": [], "technique": []}
     # Her own frames, for the folk guess, while it is still listening.
     want_technique = style_pick is not None and style_pick.folk_ear is not None
-    masker = SelfMasker(enabled=not route.isolated)
+    masker = SelfMasker(enabled=not route.isolated, learn_while_off=route.band_in_headphones)
     midi_in = None
     if midi_port is not None:
         midi_in, extractor, masker = _midi_listening(midi_port, timeline, recorder,

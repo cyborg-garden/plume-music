@@ -1603,9 +1603,12 @@ _MIX_TAIL_BYTES = 1024
 def is_own_mix(path) -> bool:
     """True when the file at ``path`` is a mix plume saved, by the note it ends with.
 
-    Read from the end of the file and nowhere else, so a mix whose start was damaged is
-    still known for plume's and can be made again.  A symlink, a folder, a missing file
-    and anything without the note are not plume's, and plume leaves those alone.
+    The note is the file's last chunk: plume's name, a length that runs exactly to the
+    end of the file, and JSON that names the rule the mix was made by.  It is looked for
+    at the end and nowhere else, so a mix whose start was damaged is still known for
+    plume's and can be made again.  Anything less is not plume's and is left alone: a
+    symlink, a folder, a missing or unreadable file, another program's chunk of the
+    same name, and a mix of plume's that something has since added to.
     """
     try:
         fd = oscompat.open_private(path, oscompat.read_flags())
@@ -1621,8 +1624,17 @@ def is_own_mix(path) -> bool:
     except OSError:
         return False
     at = tail.rfind(MIX_CHUNK)
-    # The note is JSON, after the chunk's name and its four bytes of length.
-    return at >= 0 and tail[at + 8:at + 9] == b"{"
+    while at >= 0:
+        body = tail[at + 8:]
+        if len(tail) >= at + 8 and int.from_bytes(tail[at + 4:at + 8], "little") == len(body):
+            try:
+                doc = json.loads(body)
+            except (ValueError, RecursionError):
+                doc = None
+            if isinstance(doc, dict) and isinstance(doc.get("rule"), str):
+                return True
+        at = tail.rfind(MIX_CHUNK, 0, at)
+    return False
 
 #: Audio is flushed to disk at most this often — the most a `kill -9` can
 #: cost.  Decisions are flushed every line (they are what an observer reads).
@@ -1731,7 +1743,10 @@ class SessionRecorder:
             # The page's mix of the last take is not a mix of this one.  A mix.wav that
             # plume did not write is the player's, and stays.
             if is_own_mix(self.dir / REC_MIX):
-                (self.dir / REC_MIX).unlink(missing_ok=True)
+                try:
+                    (self.dir / REC_MIX).unlink(missing_ok=True)
+                except OSError:
+                    pass        # held open by a player, say: never a reason not to record
             # _midi_listening writes a MIDI take's first line before this runs, so a
             # handle here means this take's own file.  Without one the file is the last take's.
             if self._midi is None:

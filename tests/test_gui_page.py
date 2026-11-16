@@ -3103,7 +3103,7 @@ def test_show_files_is_drawn_from_the_pages_own_colours():
     # An answer that does not say a mix was saved is not read as one.
     ({"shown": True}, "No mix was saved for this take. Your recordings are in the folder."),
     ({"shown": True, "mix": False, "band_twice": False, "why": "theirs"},
-     "This folder already has a mix.wav that plume did not make, so it was left as it is."),
+     "This folder already has a mix.wav that plume can't replace. Move or rename it to get a new one."),
     ({"shown": True, "mix": False, "band_twice": False, "why": "in_use"},
      "mix.wav is open in another program, so it could not be updated. Close it there and try again."),
 ])

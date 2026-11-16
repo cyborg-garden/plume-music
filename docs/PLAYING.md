@@ -587,7 +587,8 @@ The page says nothing when the mix is plain. Otherwise it says one line:
 
 - no mix was saved: a take with one recording, one still being recorded, or one too long
   for a WAV;
-- the folder already has a `mix.wav` plume did not make, so it was left;
+- the folder already has a `mix.wav` plume can't replace, so it was left: one of yours, or
+  one of plume's that another program has since added to. Move or rename it to get a new one;
 - plume's own older mix is open in another program and could not be updated;
 - the take was recorded from a mic, which may have heard the band, so the band could be in
   the mix twice. Only a take from a plugged-in instrument is free of that line today.

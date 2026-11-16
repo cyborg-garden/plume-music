@@ -129,11 +129,18 @@ class GuiError(RuntimeError):
 
 
 class MixInTheWay(GuiError):
-    """The take folder holds a ``mix.wav`` plume did not write.  It is the player's, and stays."""
+    """The take folder holds a ``mix.wav`` plume does not know for its own, so it stays.
+
+    The player's own, or one of plume's that something has since changed at its end.
+    """
 
 
 class MixInUse(GuiError):
     """Plume's own older mix could not be replaced: another program has it open."""
+
+
+class _NotReplaced(PermissionError):
+    """A finished mix that could not be renamed into place.  Only that step raises it."""
 
 
 # ------------------------------------------------------------------ the state file
@@ -250,10 +257,10 @@ def _open_in(where, name: str, flags: int, mode: int = 0o600) -> int:
 
 
 def _replace_in(where, src: str, dst: str) -> None:
+    # Retried briefly where a reader holding the old file open makes it fail.
     if isinstance(where, int):
-        os.replace(src, dst, src_dir_fd=where, dst_dir_fd=where)
+        oscompat.replace(src, dst, src_dir_fd=where, dst_dir_fd=where)
     else:
-        # Retried briefly where a reader holding the old file open makes it fail.
         oscompat.replace(Path(where) / src, Path(where) / dst)
 
 
@@ -468,9 +475,10 @@ class Library:
                     mode = stat.S_IMODE(stats[0].st_mode)
                     try:
                         self._save_mix(path, human, machine, shift, frames, stamp, mode)
-                    except PermissionError:
-                        # The new mix was written and could not take the old one's place.
-                        # Windows refuses that while a player holds the old one open.
+                    except _NotReplaced:
+                        # The new mix was written whole and could not take the old one's
+                        # place.  Windows refuses that while a player holds the old one
+                        # open.  Failing to write it at all is not this, and is not caught.
                         if there:
                             raise MixInUse(REC_MIX) from None
                         raise
@@ -496,7 +504,10 @@ class Library:
                         count = min(_TOGETHER_FRAMES, frames - frame)
                         f.write(_mixed_pcm(human, machine, shift, frame, count))
                     f.write(stamp)
-                _replace_in(folder, tmp, REC_MIX)
+                try:
+                    _replace_in(folder, tmp, REC_MIX)
+                except PermissionError as e:
+                    raise _NotReplaced(*e.args) from None
             except BaseException:
                 try:
                     _unlink_in(folder, tmp)

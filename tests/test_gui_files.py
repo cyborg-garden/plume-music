@@ -449,16 +449,12 @@ def test_a_new_version_of_the_rule_makes_a_new_mix(root, server, client, monkeyp
     assert _made(folder) != before
 
 
-@pytest.mark.parametrize("damage", ["cut short", "added to", "header gone", "samples gone", "all but the note"])
+@pytest.mark.parametrize("damage", ["header gone", "samples gone", "all but the note"])
 def test_a_mix_that_is_not_the_whole_file_is_made_again(root, server, client, damage):
     folder, tid = _mixed_take(root, server, client)
     whole = (folder / "mix.wav").read_bytes()
     when = os.stat(folder / "mix.wav").st_mtime_ns + 5_000_000_000
-    if damage == "cut short":
-        (folder / "mix.wav").write_bytes(whole[:-1])
-    elif damage == "added to":
-        (folder / "mix.wav").write_bytes(whole + b"\0\0")
-    elif damage == "header gone":
+    if damage == "header gone":
         (folder / "mix.wav").write_bytes(bytes(44) + whole[44:])
     elif damage == "samples gone":
         (folder / "mix.wav").write_bytes(whole[:40] + (10).to_bytes(4, "little") + whole[44:])
@@ -467,6 +463,122 @@ def test_a_mix_that_is_not_the_whole_file_is_made_again(root, server, client, da
     os.utime(folder / "mix.wav", ns=(when, when))          # newer than everything it is made from
     server.library.write_mix(tid)
     assert (folder / "mix.wav").read_bytes() == whole
+
+
+@pytest.mark.parametrize("change", ["cut short", "a tag added after the note", "the note's length changed"])
+def test_a_mix_changed_at_its_end_is_no_longer_known_for_plumes_and_is_left(root, server, client, change):
+    folder, tid = _mixed_take(root, server, client)
+    whole = (folder / "mix.wav").read_bytes()
+    at = whole.rindex(b"plMx")
+    changed = {"cut short": whole[:-1],
+               "a tag added after the note": whole + b"LIST" + (4).to_bytes(4, "little") + b"INFO",
+               "the note's length changed": whole[:at + 4] + (2).to_bytes(4, "little") + whole[at + 8:]}[change]
+    (folder / "mix.wav").write_bytes(changed)
+    assert realtime.is_own_mix(folder / "mix.wav") is False
+    with pytest.raises(gui.MixInTheWay):
+        server.library.write_mix(tid)
+    assert (folder / "mix.wav").read_bytes() == changed
+
+
+def _wav_ending_in(note: bytes) -> bytes:
+    """Somebody else's WAV: ten samples, then a chunk with plume's name on it."""
+    body = note + b" " * (len(note) % 2)
+    data = bytes(20)
+    rest = b"WAVEfmt " + (16).to_bytes(4, "little") + bytes(16) + b"data" + (20).to_bytes(4, "little") + data \
+        + b"plMx" + len(body).to_bytes(4, "little") + body
+    return b"RIFF" + len(rest).to_bytes(4, "little") + rest
+
+
+@pytest.mark.parametrize("note", [b"{", b"{not json at all", b"{}", b'{"artist": "someone"}', b'["rule"]',
+                                  b'"rule"', b'{"rule": 7}', b'{"rule": null}', b""])
+def test_another_programs_chunk_of_the_same_name_does_not_make_a_file_plumes(root, server, client, note):
+    human, machine = clicks()
+    folder = make_take(root / "t", human=human, machine=machine)
+    theirs = _wav_ending_in(note)
+    (folder / "mix.wav").write_bytes(theirs)
+    assert realtime.is_own_mix(folder / "mix.wav") is False
+    with pytest.raises(gui.MixInTheWay):
+        server.library.write_mix(take_id(client, "t"))
+    recorder = realtime.SessionRecorder(folder, sr=RATE).open({"seed": 2})
+    recorder.close()
+    assert (folder / "mix.wav").read_bytes() == theirs
+
+
+def test_a_mix_saved_before_the_note_said_the_delay_is_still_plumes(root, server, client):
+    """The note's first form: the rule and the three files, nothing more."""
+    folder, tid = _mixed_take(root, server, client)
+    whole = (folder / "mix.wav").read_bytes()
+    at = whole.rindex(b"plMx")
+    doc = json.loads(whole[at + 8:])
+    old = json.dumps({k: doc[k] for k in ("rule", "human", "machine", "stream")}, sort_keys=True).encode()
+    old += b" " * (len(old) % 2)
+    earlier = whole[:at] + b"plMx" + len(old).to_bytes(4, "little") + old
+    (folder / "mix.wav").write_bytes(earlier)
+    assert realtime.is_own_mix(folder / "mix.wav") is True
+    assert server.library.write_mix(tid) == "mix.wav"
+    assert (folder / "mix.wav").read_bytes() == whole, "known for plume's, and brought up to date"
+
+
+@needs_symlinks
+def test_a_link_to_one_of_plumes_own_mixes_is_still_left(root, server, client):
+    human, machine = clicks()
+    make_take(root / "a", human=human, machine=machine)
+    folder = make_take(root / "b", human=human, machine=machine, stream={"calibrated_ms": 10.0})
+    server.library.write_mix(take_id(client, "a"))
+    real = root / "a" / "mix.wav"
+    before = real.read_bytes()
+    assert realtime.is_own_mix(real) is True
+    (folder / "mix.wav").symlink_to(real)
+    assert realtime.is_own_mix(folder / "mix.wav") is False
+    with pytest.raises(gui.MixInTheWay):
+        server.library.write_mix(take_id(client, "b"))
+    recorder = realtime.SessionRecorder(folder, sr=RATE).open({"seed": 2})
+    recorder.close()
+    assert (folder / "mix.wav").is_symlink() and real.read_bytes() == before
+
+
+def test_the_mix_is_put_in_place_by_the_replace_that_tries_again(root, server, client, monkeypatch):
+    human, machine = clicks()
+    folder = make_take(root / "t", human=human, machine=machine)
+    real, asked = oscompat.replace, []
+
+    def watched(src, dst, **kw):
+        asked.append(os.path.basename(os.fspath(dst)))
+        return real(src, dst, **kw)
+
+    monkeypatch.setattr(oscompat, "replace", watched)
+    server.library.write_mix(take_id(client, "t"))
+    assert asked == ["mix.wav"] and len(read_mix(folder)) == 4800
+
+
+@pytest.mark.skipif(oscompat.IS_WINDOWS or (hasattr(os, "geteuid") and os.geteuid() == 0),
+                    reason="needs a folder this user cannot write in")
+def test_a_folder_that_cannot_be_written_in_is_not_called_a_mix_in_use(root, server, shown, client):
+    folder, tid = _mixed_take(root, server, client)
+    old = (folder / "mix.wav").read_bytes()
+    (folder / "stream.json").write_text(json.dumps({"calibrated_ms": 20.0}))      # the old mix is now out of date
+    os.chmod(folder, 0o555)
+    try:
+        with pytest.raises(PermissionError) as failure:
+            server.library.write_mix(tid)
+        assert not isinstance(failure.value, gui.MixInUse)
+        resp, out = client.post("/api/reveal", {"take": tid})
+    finally:
+        os.chmod(folder, 0o755)
+    assert resp.status == 200
+    assert json.loads(out) == {"shown": True, "mix": False, "band_twice": False, "why": None}
+    assert (folder / "mix.wav").read_bytes() == old
+
+
+def test_an_old_mix_that_cannot_be_removed_does_not_stop_a_take_starting(root, monkeypatch):
+    folder = root / "t"
+    (folder / "mix.wav").mkdir(parents=True)          # nothing can unlink this
+    monkeypatch.setattr(realtime, "is_own_mix", lambda path: True)
+    recorder = realtime.SessionRecorder(folder, sr=RATE).open({"seed": 2})
+    try:
+        assert (folder / "session.json").exists() and (folder / "human.wav").exists()
+    finally:
+        recorder.close()
 
 
 def test_the_mix_can_be_read_by_anything_that_reads_a_wav(root, server, client):

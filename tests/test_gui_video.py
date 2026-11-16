@@ -840,3 +840,98 @@ def test_a_tool_that_hangs_is_given_up_on_and_the_take_is_as_it_was(root, take, 
         assert sorted(os.listdir(take)) == before and all(proc.poll() is not None for proc in stalled)
     finally:
         srv.close()
+
+
+# ------------------------------------------- copies left behind by a run that died
+
+LONG_AGO = 1_000_000_000
+
+
+def leftovers(folder, *, old=True):
+    """What a run that died leaves in a take: the video as it was handed over, and a half-written one."""
+    made = [folder / (".video-in." + "a" * 16 + ".tmp"), folder / (".video.mp4." + "b" * 16 + ".tmp")]
+    for path in made:
+        path.write_bytes(b"the film as it was, place and all")
+        if old:
+            os.utime(path, (LONG_AGO, LONG_AGO))
+    return made
+
+
+def not_ours(folder):
+    """Things that look like plume's leftovers and are not, all old: none may be touched."""
+    names = ["her-notes.tmp", ".video-in.tmp", ".video-in." + "a" * 15 + ".tmp", ".video-in." + "F" * 16 + ".tmp",
+             "video.mp4.tmp", ".video-in." + "c" * 16 + ".tmp.bak"]
+    for name in names:
+        (folder / name).write_bytes(b"hers")
+    (folder / (".video-in." + "d" * 16 + ".tmp")).mkdir()
+    for name in names + [".video-in." + "d" * 16 + ".tmp"]:
+        os.utime(folder / name, (LONG_AGO, LONG_AGO))
+    return sorted(names + [".video-in." + "d" * 16 + ".tmp"])
+
+
+def test_leftovers_in_every_take_are_swept_when_plume_starts(root, human, tmp_path, monkeypatch):
+    """A crash leaves the untouched original, where it was filmed and all, hidden in the take.
+    Zipped up to share, it would go too.  It must not wait for another video to that take."""
+    monkeypatch.setenv(gui.STATE_DIR_ENV, str(tmp_path / "state"))
+    root.mkdir()
+    one = make_take(root / "one", human=human, machine=band())
+    two = make_take(root / "two", human=human)                      # one recording: no video was ever possible
+    for folder in (one, two):
+        leftovers(folder)
+    kept = not_ours(one)
+    fresh = leftovers(two, old=False)
+    srv = gui.GuiServer(roots=[root], log=lambda line: None).start()
+    try:
+        assert temps(one) == sorted(n for n in kept if n.endswith(".tmp"))
+        assert sorted(os.listdir(one)) == sorted(kept + ["decisions.ndjson", "human.wav", "machine.wav",
+                                                          "session.json"])
+        assert temps(two) == sorted(p.name for p in fresh)               # maybe another plume's, at work
+    finally:
+        srv.close()
+
+
+def test_leftovers_are_swept_whenever_the_takes_are_listed(server, client, take, root, human):
+    other = make_take(root / "u", human=human, machine=band())
+    client.get("/api/takes")
+    for folder in (take, other):
+        leftovers(folder)
+    resp, _ = client.get("/api/takes")
+    assert resp.status == 200
+    assert temps(take) == [] and temps(other) == []
+
+
+@needs_symlinks
+def test_a_link_named_like_a_leftover_is_left_and_what_it_points_at_too(server, client, take, tmp_path):
+    target = tmp_path / "elsewhere.mp4"
+    target.write_bytes(b"not plume's")
+    link = take / (".video-in." + "e" * 16 + ".tmp")
+    os.symlink(target, link)
+    os.utime(link, (LONG_AGO, LONG_AGO), follow_symlinks=False)
+    client.get("/api/takes")
+    assert link.is_symlink() and target.read_bytes() == b"not plume's"
+
+
+@needs_ffmpeg
+def test_a_video_waiting_for_a_nudge_is_never_swept_however_long_it_waits(server, client, take, strange):
+    tid = take_id(client, "t")
+    upload(client, tid, strange)
+    assert finished(server, client, tid)["state"] == "unsure"
+    (waiting,) = temps(take)
+    os.utime(take / waiting, (LONG_AGO, LONG_AGO))                   # she went for a long lunch
+    client.get("/api/takes")
+    assert temps(take) == [waiting]
+    client.post("/api/video/place", {"take": tid, "start_s": 1.5, "sound": True})
+    assert finished(server, client, tid)["state"] == "done" and temps(take) == []
+
+
+@needs_ffmpeg
+def test_a_video_being_worked_on_is_never_swept(server, client, take, film, held):
+    tid = take_id(client, "t")
+    upload(client, tid, film)
+    assert held.reached.wait(WAIT_S)
+    (working,) = temps(take)
+    os.utime(take / working, (LONG_AGO, LONG_AGO))
+    client.get("/api/takes")
+    assert temps(take) == [working]
+    held.go.set()
+    assert finished(server, client, tid)["state"] == "done"

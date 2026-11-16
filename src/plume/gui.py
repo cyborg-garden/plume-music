@@ -465,7 +465,9 @@ class Library:
     def shelf(self) -> list[dict]:
         out = []
         live = _live_folders()
-        for take_id in self._scan():
+        found = self._scan()
+        self.sweep_leftovers(found)
+        for take_id in found:
             doc = self.take(take_id, live)
             if doc is not None:
                 out.append({"id": take_id, **record.summary(doc)})
@@ -596,6 +598,27 @@ class Library:
 
 
     # ---------------------------------------------------------------- a video
+
+    def sweep_leftovers(self, found: dict[str, Path] | None = None) -> None:
+        """Remove copies of videos that a run which died left in any take's folder.
+
+        Such a copy is the film as it was handed over, where it was filmed and all,
+        under a hidden name.  Left there, it goes wherever the folder goes.  Only names
+        plume makes, only plain files, only old ones, and never in a take this bridge is
+        working on or holding a video for: one waiting for a nudge can wait all day.
+        """
+        for take_id, path in (self._scan() if found is None else found).items():
+            with self._lock:
+                if take_id in self._videos:
+                    continue
+            try:
+                folder = _open_folder(path)
+            except OSError:
+                continue
+            try:
+                _sweep_video_leftovers(path, folder)
+            finally:
+                _close_folder(folder)
 
     def ffmpeg(self) -> str | None:
         with self._lock:
@@ -1786,6 +1809,9 @@ class GuiServer:
             except OSError:
                 httpd.server_close()
                 raise
+        # A run that died may have left a copy of a video in any take.  None waits for
+        # her next video to that take to be cleared.
+        self.library.sweep_leftovers()
         self._thread = threading.Thread(target=httpd.serve_forever, name="plume-gui",
                                         kwargs={"poll_interval": 0.1}, daemon=True)
         self._thread.start()

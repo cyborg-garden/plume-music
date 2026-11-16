@@ -901,12 +901,15 @@ def test_leftovers_are_swept_whenever_the_takes_are_listed(server, client, take,
 
 
 @needs_symlinks
-def test_a_link_named_like_a_leftover_is_left_and_what_it_points_at_too(server, client, take, tmp_path):
+def test_a_link_named_like_a_leftover_is_left_and_what_it_points_at_too(server, client, take, tmp_path,
+                                                                       monkeypatch):
     target = tmp_path / "elsewhere.mp4"
     target.write_bytes(b"not plume's")
     link = take / (".video-in." + "e" * 16 + ".tmp")
     os.symlink(target, link)
-    os.utime(link, (LONG_AGO, LONG_AGO), follow_symlinks=False)
+    # Every leftover counts as old, so the link is left for what it is and not for its age.
+    # (Windows cannot set a link's own time.)
+    monkeypatch.setattr(gui, "_VIDEO_TMP_STALE_S", -1.0)
     client.get("/api/takes")
     assert link.is_symlink() and target.read_bytes() == b"not plume's"
 

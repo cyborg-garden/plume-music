@@ -238,6 +238,26 @@ header { display: flex; flex-wrap: wrap; align-items: center; gap: 0 16px; paddi
 #listen-play { min-width: 96px; height: 44px; padding: 0 22px; font-size: 16px; }
 #listen-seek { flex: 1 1 200px; min-width: 0; margin: 0; accent-color: var(--text); }
 #listen-time { font: 400 13px var(--mono); color: var(--secondary); white-space: nowrap; }
+/* A video for the take. One link and one switch; everything else shows only when it is needed. */
+#video { margin-top: 10px; font-size: 14px; color: var(--secondary); }
+#video-row { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 18px; }
+#video-add, #video-show { background: none; border: 0; padding: 8px 0; min-height: 32px; color: var(--secondary); text-decoration: underline; text-underline-offset: 3px; }
+#video-add:hover, #video-show:hover { color: var(--text); }
+#video-add:disabled { text-decoration: none; cursor: default; opacity: .7; }
+#video-add:disabled:hover { color: var(--secondary); }
+#video-sound-row { display: inline-flex; align-items: center; gap: 7px; min-height: 32px; }
+#video-sound { accent-color: var(--text); margin: 0; }
+#video-say { margin: 2px 0 0; max-width: 44rem; }
+#video.dropping #video-say { color: var(--text); }
+#video-bar { height: 3px; margin-top: 8px; max-width: 26rem; border-bottom: 1px solid var(--hairline); overflow: hidden; }
+#video-bar-fill { height: 100%; width: 100%; background: var(--text); transform-origin: left; transform: scaleX(0); transition: transform .3s linear; }
+#video-bar.busy #video-bar-fill { transform: none; width: 30%; animation: video-busy 1.6s ease-in-out infinite alternate; }
+@keyframes video-busy { from { margin-left: 0; } to { margin-left: 70%; } }
+#video-nudge { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; margin-top: 10px; }
+#video-slide { flex: 1 1 220px; max-width: 26rem; min-width: 0; margin: 0; accent-color: var(--text); }
+#video-at { font: 400 13px var(--mono); min-width: 5.5em; }
+#video-listen, #video-save { padding: 8px 16px; font-size: 14px; color: var(--text); }
+#video-save { color: var(--on-solid); }
 #roast-head h2 { font-size: 14px; font-weight: 400; color: var(--secondary); margin: 0; }
 #roast-head { display: flex; align-items: baseline; gap: 12px; }
 #roast-toggle { background: none; border: 0; padding: 4px 0; font-size: 13px; color: var(--secondary); text-decoration: underline; text-underline-offset: 3px; }

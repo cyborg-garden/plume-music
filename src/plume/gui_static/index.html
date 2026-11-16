@@ -178,6 +178,25 @@
       <span id="listen-time"></span>
       <audio id="player" preload="none" hidden></audio>
     </div>
+    <div id="video" hidden>
+      <div id="video-row">
+        <button id="video-add" type="button">Add a video</button>
+        <label id="video-sound-row"><input id="video-sound" type="checkbox" checked> Keep the video's sound</label>
+        <button id="video-show" type="button" hidden>Show video</button>
+        <input id="video-file" type="file" accept="video/*" tabindex="-1" aria-hidden="true" hidden>
+      </div>
+      <p id="video-say" class="note" role="status" hidden></p>
+      <div id="video-bar" hidden><div id="video-bar-fill"></div></div>
+      <div id="video-nudge" hidden>
+        <label for="video-slide">Nudge</label>
+        <input id="video-slide" type="range" min="0" max="1" step="0.01" value="0">
+        <span id="video-at"></span>
+        <button id="video-listen" class="quiet" type="button">Listen</button>
+        <button id="video-save" class="solid" type="button">Save video</button>
+        <audio id="video-player" preload="none" hidden></audio>
+      </div>
+      <button id="video-stop" class="textlink" type="button" hidden>Cancel</button>
+    </div>
     <div id="rec-details">
       <details id="ev-more"><summary>All moments</summary><ul id="ev-list" aria-label="Moments in this take"></ul></details>
       <details id="raw"><summary id="raw-toggle">Log row, what plume did</summary><pre id="raw-row"></pre></details>

@@ -763,3 +763,80 @@ def test_the_only_names_ever_written_are_plumes_own(server, client, take, film):
     finished(server, client, tid)
     assert set(os.listdir(take)) - before == {"video.mp4"}
     assert sorted(os.listdir(take.parent)) == ["t"]
+
+
+# --------------------------------------------------------- a tool that hangs
+
+@pytest.fixture
+def stalled(monkeypatch):
+    """Every tool plume starts hangs for ever.  Real children; any left running are stopped here."""
+    import subprocess
+    import sys
+
+    started = []
+
+    def spawn(cmd, **kw):
+        proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(3600)"], **kw)
+        started.append(proc)
+        return proc
+
+    monkeypatch.setattr(takevideo, "_spawn", spawn)
+    yield started
+    for proc in started:
+        if proc.poll() is None:
+            proc.kill()
+        proc.wait(timeout=60)
+
+
+def hanging_server(root, tmp_path, monkeypatch):
+    monkeypatch.setenv(gui.STATE_DIR_ENV, str(tmp_path / "state"))
+    return gui.GuiServer(roots=[root], log=lambda line: None, ffmpeg=lambda: "ffmpeg").start()
+
+
+def test_cancel_stops_a_tool_that_hangs_and_frees_the_take(root, take, stalled, tmp_path, monkeypatch):
+    """Cancel used to answer that nothing was running while the work sat there for good,
+    and every later video for that take was refused until plume was started again."""
+    srv = hanging_server(root, tmp_path, monkeypatch)
+    try:
+        client = Client(srv).login()
+        tid = take_id(client, "t")
+        assert upload(client, tid, b"x" * 5000)[0] == 202
+        assert status(client, tid)["state"] == "listening" and len(temps(take)) == 1
+        resp, out = client.post("/api/video/cancel", {"take": tid})
+        assert resp.status == 200 and json.loads(out)["state"] == "idle"
+        assert srv.library.video_wait(tid, 60.0), "the work is still there"
+        assert all(proc.poll() is not None for proc in stalled) and stalled
+        assert status(client, tid)["state"] == "idle" and temps(take) == []
+        assert upload(client, tid, b"x" * 5000)[0] == 202, "the take was not freed"
+    finally:
+        srv.close()
+    assert all(proc.poll() is not None for proc in stalled) and len(stalled) == 2
+    assert temps(take) == []
+
+
+def test_closing_plume_leaves_no_tool_running_and_no_copy_behind(root, take, stalled, tmp_path, monkeypatch):
+    srv = hanging_server(root, tmp_path, monkeypatch)
+    client = Client(srv).login()
+    tid = take_id(client, "t")
+    assert upload(client, tid, b"x" * 5000)[0] == 202
+    srv.close()
+    assert srv.library.video_wait(tid, 60.0)
+    assert stalled and all(proc.poll() is not None for proc in stalled)
+    assert temps(take) == []
+
+
+def test_a_tool_that_hangs_is_given_up_on_and_the_take_is_as_it_was(root, take, stalled, tmp_path, monkeypatch):
+    monkeypatch.setattr(takevideo, "_TIME_BASE_S", 0.05)
+    monkeypatch.setattr(takevideo, "_TIME_PER_S", 0.0)
+    srv = hanging_server(root, tmp_path, monkeypatch)
+    try:
+        client = Client(srv).login()
+        tid = take_id(client, "t")
+        before = sorted(os.listdir(take))
+        assert upload(client, tid, b"x" * 5000)[0] == 202
+        assert srv.library.video_wait(tid, 60.0)
+        doc = status(client, tid)
+        assert doc["state"] == "failed" and doc["why"] == "failed"
+        assert sorted(os.listdir(take)) == before and all(proc.poll() is not None for proc in stalled)
+    finally:
+        srv.close()

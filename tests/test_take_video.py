@@ -525,3 +525,98 @@ def test_an_ffmpeg_on_the_path_proper_is_found_by_its_whole_address(tmp_path, mo
     # The folder plume runs in is fine when the PATH names it in full: that is a choice someone made.
     monkeypatch.chdir(tmp_path / "tools")
     assert os.path.samefile(takevideo.find_ffmpeg(), real)
+
+
+# ------------------------------------------------------------ a tool that hangs
+
+@pytest.fixture
+def stalled(monkeypatch):
+    """Every tool plume starts is one that never does anything and never ends by itself.
+
+    Real children, so that stopping them is really tested; the list holds each one, and
+    whatever a test leaves running is stopped here.
+    """
+    import subprocess
+
+    started = []
+
+    def spawn(cmd, **kw):
+        proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(3600)"], **kw)
+        started.append(proc)
+        return proc
+
+    monkeypatch.setattr(takevideo, "_spawn", spawn)
+    yield started
+    for proc in started:
+        if proc.poll() is None:
+            proc.kill()
+        proc.wait(timeout=60)
+
+
+@pytest.fixture
+def no_patience(monkeypatch):
+    """The time a tool is given, cut to a moment, so a test of running out of it need not wait."""
+    monkeypatch.setattr(takevideo, "_TIME_BASE_S", 0.05)
+    monkeypatch.setattr(takevideo, "_TIME_PER_S", 0.0)
+
+
+def after(n):
+    """A cancel that comes once the work has been asked ``n`` times whether to go on."""
+    asked = iter([False] * n)
+    return lambda: next(asked, True)
+
+
+def silence(frame, count):
+    return bytes(2 * count)
+
+
+def all_stopped(started):
+    return bool(started) and all(proc.poll() is not None for proc in started)
+
+
+def test_a_tool_is_given_time_for_the_media_it_has(monkeypatch):
+    assert takevideo.time_limit(0.0) == takevideo._TIME_BASE_S
+    assert takevideo.time_limit(600.0) == takevideo._TIME_BASE_S + 600.0 * takevideo._TIME_PER_S
+    assert takevideo.time_limit(600.0) > takevideo.time_limit(60.0) >= 60.0
+    assert takevideo.time_limit(None) == takevideo.time_limit(takevideo.MAX_VIDEO_S)
+
+
+def test_a_tool_that_hangs_reading_a_file_is_stopped(tmp_path, stalled, no_patience):
+    with pytest.raises(takevideo.VideoError) as failed:
+        takevideo.probe("ffmpeg", tmp_path / "a.mp4")
+    assert failed.value.why == "failed" and all_stopped(stalled)
+
+
+def test_a_tool_that_hangs_decoding_is_stopped(tmp_path, stalled, no_patience):
+    with pytest.raises(takevideo.VideoError) as failed:
+        takevideo.decode("ffmpeg", tmp_path / "a.mp4", duration_s=5.0)
+    assert failed.value.why == "failed" and all_stopped(stalled)
+    with open(__file__, "rb") as f, pytest.raises(takevideo.VideoError):          # and when the file is piped in
+        takevideo.decode("ffmpeg", f, duration_s=5.0)
+    assert all_stopped(stalled)
+
+
+def test_a_tool_that_hangs_writing_is_stopped(tmp_path, stalled, no_patience):
+    with pytest.raises(takevideo.VideoError) as failed:
+        takevideo.write_video("ffmpeg", tmp_path / "a.mp4", tmp_path / "out.mp4", mixed=silence, rate=48000,
+                              band_at=0, duration_s=30.0, keep_sound=True)
+    assert failed.value.why == "failed" and all_stopped(stalled)
+
+
+def test_a_tool_that_hangs_measuring_is_stopped(tmp_path, stalled, no_patience):
+    with pytest.raises(takevideo.VideoError):
+        takevideo.loudest("ffmpeg", tmp_path / "a.mp4", duration_s=5.0)
+    assert all_stopped(stalled)
+
+
+def test_cancel_stops_a_tool_that_hangs_wherever_it_hangs(tmp_path, stalled):
+    with pytest.raises(takevideo.Cancelled):
+        takevideo.probe("ffmpeg", tmp_path / "a.mp4", cancelled=after(2))
+    with pytest.raises(takevideo.Cancelled):
+        takevideo.decode("ffmpeg", tmp_path / "a.mp4", cancelled=after(2))
+    with pytest.raises(takevideo.Cancelled):
+        takevideo.write_video("ffmpeg", tmp_path / "a.mp4", tmp_path / "out.mp4", mixed=silence, rate=48000,
+                              band_at=0, duration_s=30.0, keep_sound=False, cancelled=after(2))
+    with pytest.raises(takevideo.Cancelled):
+        takevideo.loudest("ffmpeg", tmp_path / "a.mp4", cancelled=after(2))
+    assert len(stalled) == 4 and all_stopped(stalled)

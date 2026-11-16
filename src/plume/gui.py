@@ -136,6 +136,8 @@ _VIDEO_NUDGE_STEP_S = 0.01
 #: With no sound to match, the nudge covers the whole video, in coarser steps.
 _VIDEO_PLACE_STEP_S = 0.05
 _VIDEO_WORKING = ("receiving", "listening", "making")
+#: How long cancel waits for work under way to let go.
+_VIDEO_CANCEL_WAIT_S = 1.0
 
 _CSP = ("default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; font-src 'self'; "
         "connect-src 'self'; media-src 'self'; base-uri 'none'; form-action 'none'; "
@@ -729,12 +731,15 @@ class Library:
         try:
             ffmpeg, source = self.ffmpeg(), job.folder / job.source
             cancelled = job.cancel.is_set
-            job.probe = takevideo.probe(ffmpeg, source)
+            job.probe = takevideo.probe(ffmpeg, source, cancelled=cancelled)
             if cancelled():
                 raise takevideo.Cancelled
             with _open_track(job.folder, REC_HUMAN) as f:
-                take = takevideo.decode(ffmpeg, f, cancelled=cancelled)
-            heard = (takevideo.decode(ffmpeg, source, cancelled=cancelled) if job.probe.has_audio
+                # Never shorter than the recording is: two bytes a sample at a low rate.
+                long = os.fstat(f.fileno()).st_size / 16000.0
+                take = takevideo.decode(ffmpeg, f, cancelled=cancelled, duration_s=long)
+            heard = (takevideo.decode(ffmpeg, source, cancelled=cancelled, duration_s=job.probe.duration_s)
+                     if job.probe.has_audio
                      else np.zeros(0, dtype=np.float32))
             found = takevideo.align(heard, take)
             if cancelled():
@@ -904,8 +909,8 @@ class Library:
     def video_cancel(self, take_id: str) -> dict | None:
         """Stop a take's video, wherever it has got to, and remove what was taken in.
 
-        A finished ``video.mp4`` is not touched: it is hers now.  Work under way stops
-        at its next step and cleans up after itself; this does not wait for that.
+        A finished ``video.mp4`` is not touched: it is hers now.  Work under way is
+        stopped where it stands, tool and all, and cleans up after itself.
         """
         if self.path_of(take_id) is None:
             return None
@@ -919,6 +924,10 @@ class Library:
         if job is not None and not working:
             self._video_drop_source(job)
             job.settled.set()
+        elif job is not None:
+            # The tool is ended from outside, so this is a moment.  Waited for, so that
+            # "stopped" is true by the time it is said, and the next video is not refused.
+            job.settled.wait(_VIDEO_CANCEL_WAIT_S)
         # Asked to stop is stopped, as far as the page is concerned.
         doc = self.video_status(take_id)
         return {**{k: doc[k] for k in ("can", "ready", "have", "theirs", "max_bytes")}, "state": "idle"}

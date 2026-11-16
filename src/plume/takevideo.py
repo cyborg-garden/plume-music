@@ -31,6 +31,8 @@ import shutil
 import stat
 import subprocess
 import sys
+import threading
+import time
 from dataclasses import dataclass
 
 import numpy as np
@@ -228,11 +230,80 @@ def can_copy(codec: str) -> bool:
     return codec in _COPIES
 
 
+#: Every run of the tool is given this long ...
+_TIME_BASE_S = 120.0
+#: ... and this much more for each second of what it is reading or writing.  Slower
+#: than that, on any machine that can play a video, it has stopped doing anything.
+_TIME_PER_S = 1.0
+#: How often a running tool is looked in on.
+_WATCH_S = 0.05
+
+
+def time_limit(duration_s: float | None) -> float:
+    """How long a run of the tool may take for media this long, before it is given up on."""
+    seconds = MAX_VIDEO_S if duration_s is None else max(0.0, float(duration_s))
+    return _TIME_BASE_S + _TIME_PER_S * seconds
+
+
+#: How a child is started.  Tests put a tool that hangs here.
+_spawn = subprocess.Popen
+
+
 def _quiet() -> dict:
     """No console window flashes up on Windows."""
     if sys.platform == "win32":
         return {"creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0)}
     return {}
+
+
+class _Child:
+    """A run of the tool that cannot outlive its welcome.
+
+    A tool that has stopped doing anything gives no sign of it: a read from it, or a
+    write to it, just never comes back.  So each run is looked in on from another
+    thread, and ended there when it has been cancelled or has had its time.  The read
+    or write then comes back at once, and :meth:`check` says why.
+    """
+
+    def __init__(self, cmd, *, limit_s: float, cancelled=None, **pipes):
+        self.why: str | None = None
+        self._cancelled, self._limit_s = cancelled, limit_s
+        self._over = threading.Event()
+        try:
+            self.proc = _spawn(cmd, **pipes, **_quiet())
+        except OSError:
+            raise VideoError("failed") from None
+        self._watcher = threading.Thread(target=self._watch, name="plume-video-watch", daemon=True)
+        self._watcher.start()
+
+    def _watch(self) -> None:
+        end = time.monotonic() + self._limit_s
+        while not self._over.wait(_WATCH_S):
+            if self._cancelled is not None and self._cancelled():
+                self.why = "cancelled"
+            elif time.monotonic() > end:
+                self.why = "stalled"
+            if self.why is not None:
+                try:
+                    self.proc.kill()
+                except OSError:
+                    pass
+                return
+
+    def check(self) -> None:
+        """Raise if this run was ended from outside: cancelled, or out of time."""
+        if self.why == "cancelled" or (self._cancelled is not None and self._cancelled()):
+            raise Cancelled
+        if self.why == "stalled":
+            raise VideoError("failed")
+
+    def __enter__(self) -> "_Child":
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self._over.set()
+        _stop(self.proc)
+        self._watcher.join(timeout=30)
 
 
 def _stop(proc) -> None:
@@ -253,15 +324,17 @@ def _stop(proc) -> None:
         pass
 
 
-def probe(ffmpeg: str, path) -> Probe:
+def probe(ffmpeg: str, path, *, cancelled=None) -> Probe:
     """What a file holds.  Raises ``VideoError("not_video")`` for anything but a video."""
-    try:
-        done = subprocess.run([ffmpeg, "-hide_banner", "-nostdin", "-i", os.fspath(path)],
-                              stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                              stderr=subprocess.PIPE, timeout=120, check=False, **_quiet())
-    except (OSError, subprocess.TimeoutExpired):
-        raise VideoError("not_video") from None
-    return read_probe(done.stderr.decode("utf-8", errors="replace"))
+    with _Child([ffmpeg, "-hide_banner", "-nostdin", "-i", os.fspath(path)], limit_s=time_limit(0.0),
+                cancelled=cancelled, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE) as child:
+        try:
+            said = child.proc.stderr.read()
+        except (OSError, ValueError):
+            said = b""
+        child.check()
+    return read_probe(said.decode("utf-8", errors="replace"))
 
 
 def read_probe(text: str) -> Probe:
@@ -288,12 +361,14 @@ def read_probe(text: str) -> Probe:
 
 
 def decode(ffmpeg: str, source, *, rate: int = ALIGN_RATE, cancelled=None,
-           start_s: float | None = None, seconds: float | None = None) -> np.ndarray:
+           start_s: float | None = None, seconds: float | None = None,
+           duration_s: float | None = None) -> np.ndarray:
     """A file's first sound as mono floats at ``rate``, on the file's own clock.
 
     ``source`` is a path, or an open binary file, which is piped in so that a file
     opened safely stays the file that is read.  Sound that begins late in a video is
-    padded so that sample 0 is the video's time 0.
+    padded so that sample 0 is the video's time 0.  ``duration_s`` is how long the file
+    is, if that is known: it sets how long the tool is given.
     """
     piped = not isinstance(source, (str, os.PathLike))
     cmd = [ffmpeg, "-hide_banner", "-loglevel", "error"]
@@ -306,25 +381,24 @@ def decode(ffmpeg: str, source, *, rate: int = ALIGN_RATE, cancelled=None,
         cmd += ["-t", f"{seconds:.6f}"]
     cmd += ["-map", "0:a:0", "-vn", "-sn", "-dn", "-af", "aresample=async=1:first_pts=0",
             "-ac", "1", "-ar", str(rate), "-f", "s16le", "pipe:1"]
-    try:
-        proc = subprocess.Popen(cmd, stdin=source if piped else subprocess.DEVNULL,
-                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, **_quiet())
-    except OSError:
-        raise VideoError("failed") from None
     blocks, limit, got = [], int(MAX_VIDEO_S * rate) * 2, 0
-    try:
+    with _Child(cmd, limit_s=time_limit(seconds if duration_s is None else duration_s), cancelled=cancelled,
+                stdin=source if piped else subprocess.DEVNULL, stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL) as child:
         while True:
             if cancelled is not None and cancelled():
                 raise Cancelled
-            block = proc.stdout.read(1 << 20)
+            try:
+                block = child.proc.stdout.read(1 << 20)
+            except (OSError, ValueError):
+                block = b""
             if not block:
                 break
             blocks.append(block)
             got += len(block)
             if got > limit:
                 raise VideoError("too_long")
-    finally:
-        _stop(proc)
+        child.check()
     data = b"".join(blocks)
     return np.frombuffer(data[:len(data) // 2 * 2], dtype="<i2").astype(np.float32) / 32768.0
 
@@ -602,27 +676,26 @@ def write_video(ffmpeg: str, source, out, *, mixed, rate: int, band_at: int, dur
         _write_once(ffmpeg, source, out, mixed=mixed, rate=rate, band_at=band_at, duration_s=duration_s,
                     keep_sound=keep_sound, codec=codec, gain=gain, picture=picture, cancelled=cancelled,
                     progress=progress)
-        peak = loudest(ffmpeg, out, cancelled=cancelled)
+        peak = loudest(ffmpeg, out, cancelled=cancelled, duration_s=duration_s)
         if peak <= _CEILING or again == _LOUD_TRIES:
             return
         gain *= _HEADROOM / peak
 
 
-def loudest(ffmpeg: str, path, *, cancelled=None) -> float:
+def loudest(ffmpeg: str, path, *, cancelled=None, duration_s: float | None = None) -> float:
     """The largest sample in a file's sound once decoded, where 1.0 is full scale."""
     cmd = [ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin", "-i", os.fspath(path),
            "-map", "0:a:0", "-vn", "-sn", "-dn", "-f", "f32le", "pipe:1"]
-    try:
-        proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                                stderr=subprocess.DEVNULL, **_quiet())
-    except OSError:
-        raise VideoError("failed") from None
     peak, rest = 0.0, b""
-    try:
+    with _Child(cmd, limit_s=time_limit(duration_s), cancelled=cancelled, stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL) as child:
         while True:
             if cancelled is not None and cancelled():
                 raise Cancelled
-            block = proc.stdout.read(1 << 20)
+            try:
+                block = child.proc.stdout.read(1 << 20)
+            except (OSError, ValueError):
+                block = b""
             if not block:
                 break
             block = rest + block
@@ -630,8 +703,7 @@ def loudest(ffmpeg: str, path, *, cancelled=None) -> float:
             rest = block[whole:]
             if whole:
                 peak = max(peak, float(np.max(np.abs(np.frombuffer(block[:whole], dtype="<f4")))))
-    finally:
-        _stop(proc)
+        child.check()
     return peak if math.isfinite(peak) else 0.0
 
 
@@ -642,12 +714,9 @@ def _write_once(ffmpeg: str, source, out, *, mixed, rate: int, band_at: int, dur
     total = max(1, math.ceil((duration_s + 0.1) * rate))
     cmd = write_command(ffmpeg, source, out, rate=rate, duration_s=duration_s, keep_sound=keep_sound,
                         codec=codec, gain=gain, picture=picture)
-    try:
-        proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
-                                stderr=subprocess.DEVNULL, **_quiet())
-    except OSError:
-        raise VideoError("failed") from None
-    try:
+    with _Child(cmd, limit_s=time_limit(duration_s), cancelled=cancelled, stdin=subprocess.PIPE,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) as child:
+        proc = child.proc
         try:
             for begin in range(0, total, _PCM_BLOCK):
                 if cancelled is not None and cancelled():
@@ -657,20 +726,14 @@ def _write_once(ffmpeg: str, source, out, *, mixed, rate: int, band_at: int, dur
                 if progress is not None:
                     progress((begin + count) / total)
             proc.stdin.close()
-        except (BrokenPipeError, OSError):
+        except (OSError, ValueError):
+            # The tool went away: stopped from outside, or it failed by itself.
+            child.check()
             raise VideoError("failed") from None
-        while True:
-            if cancelled is not None and cancelled():
-                raise Cancelled
-            try:
-                code = proc.wait(timeout=0.2)
-                break
-            except subprocess.TimeoutExpired:
-                continue
+        code = proc.wait()                  # ended by itself, or by the watcher: never for ever
+        child.check()
         if code != 0:
             raise VideoError("failed")
-    finally:
-        _stop(proc)
 
 
 def preview(ffmpeg: str, source, *, mixed, rate: int, band_at: int, from_s: float, seconds: float,
@@ -680,7 +743,7 @@ def preview(ffmpeg: str, source, *, mixed, rate: int, band_at: int, from_s: floa
     take = np.frombuffer(laid_in(mixed, band_at, begin, count), dtype="<i2").astype(np.float32) / 32768.0
     if not has_audio:
         return take
-    cam = decode(ffmpeg, source, rate=rate, start_s=begin / rate, seconds=seconds)[:count]
+    cam = decode(ffmpeg, source, rate=rate, start_s=begin / rate, seconds=seconds, duration_s=seconds)[:count]
     out = take.copy()
     out[:len(cam)] += cam
     return out

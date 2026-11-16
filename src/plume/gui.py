@@ -23,7 +23,8 @@ read them.  So, on every route, before anything else:
   ``X-Plume-Token``, a separate value the redirect hands over in the URL fragment,
   which no server ever receives, and the page keeps in sessionStorage, which is
   per origin.  Only ``<audio>``, which cannot set a header, sends it as ``?k=``;
-- a POST also needs a JSON content type;
+- a POST also needs a JSON content type.  The one exception is a video being handed
+  over, which is the file's own bytes and says so; it passes every other check first;
 - take IDs come from the server's own listing.  No client ever names a path;
 - the request path holds the token, so the stdlib's request logging is replaced:
   method, route template and status, nothing else.
@@ -41,7 +42,9 @@ import hmac
 import json
 import os
 import re
+import math
 import secrets
+import shutil
 import socket
 import stat
 import sys
@@ -56,7 +59,7 @@ import numpy as np
 import soundfile as sf
 
 from . import fx as _fx
-from . import guitake, oscompat, record
+from . import guitake, oscompat, record, takevideo
 from .realtime import (MIX_CHUNK, REC_HUMAN, REC_MACHINE, REC_MIX, REC_STREAM, is_own_mix, list_sessions,
                        own_mix_note, wav_header)
 
@@ -64,9 +67,12 @@ STATE_DIR_ENV = "PLUME_GUI_STATE_DIR"
 
 GET_ROUTES = ("/", "/auth", "/static/{name}", "/api/session", "/api/takes",
               "/api/take/{id}", "/api/take/{id}/audio/{track}", "/api/home", "/api/live", "/api/setup",
-              "/api/guide")
+              "/api/guide", "/api/take/{id}/video", "/api/take/{id}/video/preview")
 POST_OPS = frozenset({"keep", "rename", "start", "stop", "cue", "setup/listen", "setup/answer",
-                      "setup/cancel", "setup/reset", "reveal"})
+                      "setup/cancel", "setup/reset", "reveal", "video/place", "video/cancel",
+                      "video/show"})
+#: The one POST whose body is not JSON: a video, as its own bytes, for the take named.
+UPLOAD_ROUTE = "/api/video/{id}"
 
 _STATIC_DIR = Path(__file__).with_name("gui_static")
 #: Every file the page may load, and its type.  Nothing else under the folder is served.
@@ -80,6 +86,7 @@ STATIC_FILES = {
     "live.js": "text/javascript; charset=utf-8",
     "app.js": "text/javascript; charset=utf-8",
     "guide.js": "text/javascript; charset=utf-8",
+    "video.js": "text/javascript; charset=utf-8",
     "fonts/schibsted-grotesk-latin-400-normal.woff2": "font/woff2",
     "fonts/schibsted-grotesk-latin-500-normal.woff2": "font/woff2",
     "fonts/dm-mono-latin-400-normal.woff2": "font/woff2",
@@ -110,6 +117,27 @@ _MIX_TMP_RE = re.compile(r"\." + re.escape(REC_MIX) + r"\.[0-9a-f]{16}\.tmp")
 #: A half-written mix nothing has touched for this long was left by a run that died.
 _MIX_TMP_STALE_S = 60.0
 
+REC_VIDEO = takevideo.REC_VIDEO
+#: A video being taken in, and one being written, each under a name nobody could plant.
+_VIDEO_IN_RE = re.compile(r"\.video-in\.[0-9a-f]{16}\.tmp")
+_VIDEO_OUT_RE = re.compile(r"\." + re.escape(REC_VIDEO) + r"\.[0-9a-f]{16}\.tmp")
+#: Either of those that nothing has touched for this long was left by a run that died.
+#: Long, because a video waiting for a nudge is one nothing is touching.
+_VIDEO_TMP_STALE_S = 3600.0
+#: The largest video taken in: an hour of a phone's best.
+_VIDEO_MAX_BYTES = 16 * 1024 ** 3
+#: Room the disk must have beyond the video and the copy made of it.
+_VIDEO_SPARE_BYTES = 64 * 1024 * 1024
+_VIDEO_PREVIEW_S = 8.0
+#: A preview starts this long before the player's first note.
+_VIDEO_PREVIEW_LEAD_S = 1.0
+#: How far either side of an unsure match the nudge reaches, and its step.
+_VIDEO_NUDGE_S = 5.0
+_VIDEO_NUDGE_STEP_S = 0.01
+#: With no sound to match, the nudge covers the whole video, in coarser steps.
+_VIDEO_PLACE_STEP_S = 0.05
+_VIDEO_WORKING = ("receiving", "listening", "making")
+
 _CSP = ("default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; font-src 'self'; "
         "connect-src 'self'; media-src 'self'; base-uri 'none'; form-action 'none'; "
         "frame-ancestors 'none'")
@@ -121,6 +149,10 @@ _CHUNK_BYTES = 256 * 1024
 _ID_RE = re.compile(r"[0-9a-f]{16}")
 _TAKE_RE = re.compile(r"/api/take/([^/]*)")
 _AUDIO_RE = re.compile(r"/api/take/([^/]*)/audio/([^/]*)")
+_VIDEO_RE = re.compile(r"/api/take/([^/]*)/video")
+_PREVIEW_RE = re.compile(r"/api/take/([^/]*)/video/preview")
+_UPLOAD_RE = re.compile(r"/api/video/([^/]*)")
+_NUMBER_RE = re.compile(r"-?\d{1,6}(\.\d{1,6})?")
 _TOKEN_RE = re.compile(r"([0-9a-f]{32})\.([0-9a-f]{64})")
 _RANGE_RE = re.compile(r"bytes=(\d{0,18})-(\d{0,18})")
 
@@ -153,6 +185,45 @@ class _Abandoned(Exception):
 
 class _NotReplaced(PermissionError):
     """A finished mix that could not be renamed into place.  Only that step raises it."""
+
+
+class VideoRefused(GuiError):
+    """A video that was not taken in, or a step that could not be taken.
+
+    ``why`` is a short code the page has words for; ``status`` is the HTTP answer.
+    """
+
+    def __init__(self, status: int, why: str):
+        super().__init__(why)
+        self.status, self.why = status, why
+
+
+class _VideoJob:
+    """One video on its way into one take.  The library keeps at most one per take."""
+
+    def __init__(self, take_id: str, folder: Path, keep_sound: bool):
+        self.take_id, self.folder, self.keep_sound = take_id, folder, keep_sound
+        self.state = "receiving"
+        self.progress: float | None = 0.0
+        self.why: str | None = None
+        #: The video as it was handed over, by its name in the take's folder.
+        self.source: str | None = None
+        self.cancel = threading.Event()
+        self.thread: threading.Thread | None = None
+        #: Set when nothing more will happen to this job without being asked.
+        self.settled = threading.Event()
+        self.probe: takevideo.Probe | None = None
+        self.start_s: float | None = None
+        self.confidence: float | None = None
+        self.drift_ppm: float | None = None
+        self.listen_s = 0.0
+        self.take_s = 0.0
+        #: One preview or one save at a time.
+        self.busy = threading.Lock()
+
+
+def _free_bytes(folder: Path) -> int:
+    return shutil.disk_usage(folder).free
 
 
 # ------------------------------------------------------------------ the state file
@@ -308,7 +379,11 @@ def _live_folders() -> set[str]:
 class Library:
     """Takes, known by IDs this server gives out.  Paths never come from a client."""
 
-    def __init__(self, roots=(), pinned=None):
+    def __init__(self, roots=(), pinned=None, ffmpeg=None):
+        #: Finds the ffmpeg to run, or None.  Asked once, the first time it matters.
+        self._find_ffmpeg = takevideo.find_ffmpeg if ffmpeg is None else ffmpeg
+        self._ffmpeg: tuple | None = None
+        self._videos: dict[str, _VideoJob] = {}
         self.roots = [Path(r) for r in roots]
         self.pinned = None if pinned is None else Path(pinned).resolve()
         self._lock = threading.Lock()
@@ -553,6 +628,352 @@ class Library:
             _close_folder(folder)
 
 
+    # ---------------------------------------------------------------- a video
+
+    def ffmpeg(self) -> str | None:
+        with self._lock:
+            if self._ffmpeg is None:
+                self._ffmpeg = (self._find_ffmpeg(),)
+            return self._ffmpeg[0]
+
+    def _can_video(self, path: Path) -> bool:
+        """A take that is finished and has both recordings, each a plain file."""
+        if str(path) in _live_folders():
+            return False
+        return all(record._is_regular(path / name) for name in (REC_HUMAN, REC_MACHINE))
+
+    def video_status(self, take_id: str) -> dict | None:
+        """Where a take's video has got to, for the page.  None for no such take."""
+        path = self.path_of(take_id)
+        if path is None:
+            return None
+        there = os.path.lexists(path / REC_VIDEO)
+        own = there and takevideo.is_own_video(path / REC_VIDEO)
+        doc = {"state": "idle", "can": self._can_video(path), "ready": self.ffmpeg() is not None,
+               "have": bool(own), "theirs": there and not own, "max_bytes": _VIDEO_MAX_BYTES}
+        with self._lock:
+            job = self._videos.get(take_id)
+        if job is None:
+            return doc
+        doc.update(state=job.state, keep_sound=job.keep_sound)
+        if job.state in _VIDEO_WORKING:
+            doc["progress"] = job.progress
+        elif job.state == "failed":
+            doc["why"] = job.why
+        elif job.state == "done":
+            doc.update(file=REC_VIDEO, start_s=job.start_s, confidence=job.confidence,
+                       drift_ppm=job.drift_ppm)
+        elif job.state == "unsure":
+            silent = job.why == "silent"
+            if silent:
+                low, high, step = -job.take_s, job.probe.duration_s, _VIDEO_PLACE_STEP_S
+            else:
+                low, high, step = job.start_s - _VIDEO_NUDGE_S, job.start_s + _VIDEO_NUDGE_S, _VIDEO_NUDGE_STEP_S
+            doc.update(why=job.why, start_s=job.start_s, confidence=job.confidence, min_s=round(low, 3),
+                       max_s=round(high, 3), step_s=step, listen=not silent)
+        return doc
+
+    def video_receive(self, take_id: str, body, length: int, keep_sound: bool) -> dict:
+        """Take a video in from ``body``, ``length`` bytes of it, and start the work.
+
+        It is written, as it arrives, to a file in the take's folder under a name of
+        plume's own choosing: nothing the sender calls it is ever seen.  Raises
+        :class:`VideoRefused` when it is not taken in, and then nothing is left behind.
+        """
+        path = self.path_of(take_id)
+        if path is None:
+            raise VideoRefused(404, "no_take")
+        if not self._can_video(path):
+            raise VideoRefused(409, "no_take")
+        if self.ffmpeg() is None:
+            raise VideoRefused(409, "no_tool")
+        if os.path.lexists(path / REC_VIDEO) and not takevideo.is_own_video(path / REC_VIDEO):
+            raise VideoRefused(409, "theirs")
+        if length > _VIDEO_MAX_BYTES:
+            raise VideoRefused(413, "too_big")
+        job = _VideoJob(take_id, path, keep_sound)
+        with self._lock:
+            old = self._videos.get(take_id)
+            if old is not None and (old.state in _VIDEO_WORKING or not old.settled.is_set()):
+                raise VideoRefused(409, "busy")
+            self._videos[take_id] = job
+        try:
+            folder = _open_folder(path)
+        except OSError:
+            self._video_forget(job)
+            raise VideoRefused(500, "failed") from None
+        try:
+            if old is not None:
+                self._video_drop_source(old, folder)
+            _sweep_video_leftovers(path, folder)
+            try:
+                # The video, and the copy that will be made of it.
+                if _free_bytes(path) < 2 * length + _VIDEO_SPARE_BYTES:
+                    raise VideoRefused(507, "no_room")
+                name = f".video-in.{secrets.token_hex(8)}.tmp"
+                fd = _open_in(folder, name, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                job.source = name
+                with os.fdopen(fd, "wb") as f:
+                    left = length
+                    while left > 0:
+                        if job.cancel.is_set():
+                            raise VideoRefused(409, "cancelled")
+                        chunk = body.read(min(_CHUNK_BYTES, left))
+                        if not chunk:
+                            raise VideoRefused(400, "cut_short")
+                        f.write(chunk)
+                        left -= len(chunk)
+                        job.progress = 1.0 - left / length
+            except BaseException:
+                self._video_drop_source(job, folder)
+                self._video_forget(job)
+                raise
+        except OSError:
+            raise VideoRefused(500, "failed") from None
+        finally:
+            _close_folder(folder)
+        job.state, job.progress = "listening", None
+        job.thread = threading.Thread(target=self._video_work, args=(job,), name="plume-video", daemon=True)
+        job.thread.start()
+        return self.video_status(take_id)
+
+    def _video_forget(self, job: _VideoJob) -> None:
+        with self._lock:
+            if self._videos.get(job.take_id) is job:
+                del self._videos[job.take_id]
+        job.settled.set()
+
+    @staticmethod
+    def _video_drop_source(job: _VideoJob, folder=None) -> None:
+        """Remove the video a job took in.  It is plume's copy; the player's is where it was."""
+        name, job.source = job.source, None
+        if name is None:
+            return
+        try:
+            where = _open_folder(job.folder) if folder is None else folder
+            try:
+                _unlink_in(where, name)
+            finally:
+                if folder is None:
+                    _close_folder(where)
+        except OSError:
+            pass
+
+    def _video_work(self, job: _VideoJob) -> None:
+        """Read the video, find the take in it, and save it if the place is sure."""
+        try:
+            ffmpeg, source = self.ffmpeg(), job.folder / job.source
+            cancelled = job.cancel.is_set
+            job.probe = takevideo.probe(ffmpeg, source)
+            if cancelled():
+                raise takevideo.Cancelled
+            with _open_track(job.folder, REC_HUMAN) as f:
+                take = takevideo.decode(ffmpeg, f, cancelled=cancelled)
+            heard = (takevideo.decode(ffmpeg, source, cancelled=cancelled) if job.probe.has_audio
+                     else np.zeros(0, dtype=np.float32))
+            found = takevideo.align(heard, take)
+            if cancelled():
+                raise takevideo.Cancelled
+            job.listen_s, job.take_s = takevideo.first_sound_s(take), len(take) / takevideo.ALIGN_RATE
+            job.start_s, job.confidence, job.drift_ppm = found.start_s, found.confidence, found.drift_ppm
+            if found.confident:
+                self._video_make(job)
+            else:
+                job.why = found.why or "unsure"
+                job.state = "unsure"
+        except takevideo.Cancelled:
+            self._video_drop_source(job)
+            self._video_forget(job)
+        except takevideo.VideoError as e:
+            self._video_fail(job, e.why)
+        except Exception:  # noqa: BLE001 - whatever went wrong, the take is as it was and she can try again
+            self._video_fail(job, "failed")
+        finally:
+            job.settled.set()
+
+    def _video_fail(self, job: _VideoJob, why: str) -> None:
+        self._video_drop_source(job)
+        job.why, job.progress = why, None
+        job.state = "failed"
+
+    def _video_make(self, job: _VideoJob) -> None:
+        """Write the video again with the take in it, as ``video.mp4`` in the take's folder.
+
+        The take's part is the mix Together plays, by the same rule: the player moved
+        earlier by the round trip, the band lifted over her, the sum soft-limited.  It
+        is laid in so that her recording's first sample falls at ``job.start_s``.
+
+        Only plume's own ``video.mp4`` is ever replaced, and that is asked again at the
+        last moment: one the player saved while this ran stays, and this fails.
+        """
+        job.state, job.progress = "making", 0.0
+        path, ffmpeg = job.folder, self.ffmpeg()
+        raw = []
+        try:
+            try:
+                for name in (REC_HUMAN, REC_MACHINE):
+                    raw.append(_open_track(path, name))
+                mode = stat.S_IMODE(os.fstat(raw[0].fileno()).st_mode)
+                human, machine = [sf.SoundFile(f) for f in raw]
+            except (OSError, RuntimeError, ValueError):
+                raise takevideo.VideoError("failed") from None
+            if human.samplerate != machine.samplerate:
+                raise takevideo.VideoError("failed")
+            rate = human.samplerate
+            shift = record.playing_delay_frames(path, rate)
+
+            def mixed(frame: int, count: int) -> bytes:
+                return _mixed_pcm(human, machine, shift, frame, count)
+
+            def progress(share: float) -> None:
+                job.progress = share
+
+            folder = _open_folder(path)
+            tmp = f".{REC_VIDEO}.{secrets.token_hex(8)}.tmp"
+            try:
+                # Made here first, so the name the tool is given is a plain file of plume's.
+                os.close(_open_in(folder, tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600))
+                try:
+                    takevideo.write_video(
+                        ffmpeg, path / job.source, path / tmp, mixed=mixed, rate=rate,
+                        band_at=takevideo.video_frame_of(job.start_s, shift, rate),
+                        duration_s=job.probe.duration_s, keep_sound=job.keep_sound and job.probe.has_audio,
+                        codec=job.probe.codec,
+                        cancelled=job.cancel.is_set, progress=progress)
+                    fd = _open_in(folder, tmp, os.O_WRONLY | os.O_APPEND | oscompat.O_BINARY, 0o600)
+                    with os.fdopen(fd, "ab") as f:
+                        oscompat.fchmod_private(f.fileno(), mode)
+                        f.write(takevideo.stamp({"start_s": round(job.start_s, 6), "sound": job.keep_sound}))
+                    there = os.path.lexists(path / REC_VIDEO)
+                    if there and not takevideo.is_own_video(path / REC_VIDEO):
+                        raise takevideo.VideoError("theirs")
+                    try:
+                        _replace_in(folder, tmp, REC_VIDEO)
+                    except PermissionError:
+                        raise takevideo.VideoError("in_use" if there else "failed") from None
+                except BaseException:
+                    try:
+                        _unlink_in(folder, tmp)
+                    except OSError:
+                        pass
+                    raise
+            except OSError:
+                raise takevideo.VideoError("failed") from None
+            finally:
+                _close_folder(folder)
+        finally:
+            for f in raw:
+                f.close()
+        self._video_drop_source(job)
+        job.progress = None
+        job.state = "done"
+
+    def video_place(self, take_id: str, start_s: float, keep_sound: bool) -> dict | None:
+        """Save a video that was waiting for a nudge, with the take at ``start_s``."""
+        if self.path_of(take_id) is None:
+            return None
+        with self._lock:
+            job = self._videos.get(take_id)
+            if job is None or job.state != "unsure" or not job.busy.acquire(blocking=False):
+                raise VideoRefused(409, "busy" if job is not None and job.state in _VIDEO_WORKING else "nothing")
+            if not -job.take_s - 1.0 <= start_s <= job.probe.duration_s + 1.0:
+                job.busy.release()
+                raise VideoRefused(400, "bad_place")
+            job.start_s, job.keep_sound = float(start_s), keep_sound
+            job.state, job.progress = "making", 0.0
+            job.settled.clear()
+
+        def work() -> None:
+            try:
+                self._video_make(job)
+            except takevideo.Cancelled:
+                self._video_drop_source(job)
+                self._video_forget(job)
+            except takevideo.VideoError as e:
+                self._video_fail(job, e.why)
+            except Exception:  # noqa: BLE001 - as in _video_work
+                self._video_fail(job, "failed")
+            finally:
+                job.busy.release()
+                job.settled.set()
+
+        job.thread = threading.Thread(target=work, name="plume-video", daemon=True)
+        job.thread.start()
+        return self.video_status(take_id)
+
+    def video_preview(self, take_id: str, start_s: float) -> bytes | None:
+        """A few seconds of how a nudged video would sound, as a WAV.  Writes nothing.
+
+        The video's own sound with the take over it, from just before the player's
+        first note, so what she hears is whether the two of her are together.
+        """
+        with self._lock:
+            job = self._videos.get(take_id)
+        if job is None or job.state != "unsure" or not job.busy.acquire(blocking=False):
+            return None
+        raw = []
+        try:
+            if not -job.take_s - 1.0 <= start_s <= job.probe.duration_s + 1.0:
+                raise VideoRefused(400, "bad_place")
+            for name in (REC_HUMAN, REC_MACHINE):
+                raw.append(_open_track(job.folder, name))
+            human, machine = [sf.SoundFile(f) for f in raw]
+            rate = human.samplerate
+            if machine.samplerate != rate or job.source is None:
+                return None
+            shift = record.playing_delay_frames(job.folder, rate)
+            from_s = max(0.0, start_s + job.listen_s - _VIDEO_PREVIEW_LEAD_S)
+            sound = takevideo.preview(
+                self.ffmpeg(), job.folder / job.source, rate=rate, from_s=from_s, seconds=_VIDEO_PREVIEW_S,
+                mixed=lambda frame, count: _mixed_pcm(human, machine, shift, frame, count),
+                band_at=takevideo.video_frame_of(start_s, shift, rate), has_audio=job.probe.has_audio)
+            pcm = (np.clip(_fx.limiter(sound, _TOGETHER_CEILING_DB), -1.0, 1.0) * 32767.0).astype("<i2")
+            return _wav_header(len(pcm), rate) + pcm.tobytes()
+        except (OSError, RuntimeError, ValueError, takevideo.VideoError):
+            return None
+        finally:
+            for f in raw:
+                f.close()
+            job.busy.release()
+
+    def video_cancel(self, take_id: str) -> dict | None:
+        """Stop a take's video, wherever it has got to, and remove what was taken in.
+
+        A finished ``video.mp4`` is not touched: it is hers now.  Work under way stops
+        at its next step and cleans up after itself; this does not wait for that.
+        """
+        if self.path_of(take_id) is None:
+            return None
+        with self._lock:
+            job = self._videos.get(take_id)
+            working = job is not None and job.state in _VIDEO_WORKING
+            if job is not None:
+                job.cancel.set()
+                if not working:
+                    del self._videos[take_id]
+        if job is not None and not working:
+            self._video_drop_source(job)
+            job.settled.set()
+        # Asked to stop is stopped, as far as the page is concerned.
+        doc = self.video_status(take_id)
+        return {**{k: doc[k] for k in ("can", "ready", "have", "theirs", "max_bytes")}, "state": "idle"}
+
+    def video_wait(self, take_id: str, timeout: float | None = None) -> bool:
+        """Wait until a take's video needs nothing more done.  True if that came."""
+        with self._lock:
+            job = self._videos.get(take_id)
+        return True if job is None else job.settled.wait(timeout)
+
+    def close_videos(self, timeout: float = 30.0) -> None:
+        """Stop every video under way and remove every one that was waiting."""
+        with self._lock:
+            jobs = list(self._videos.values())
+        for job in jobs:
+            self.video_cancel(job.take_id)
+        for job in jobs:
+            job.settled.wait(timeout)
+
+
 def _mix_rule() -> str:
     """How a mix is made, as text.  A mix made by another rule is made again."""
     return f"{_MIX_RULE}:{_TOGETHER_GAIN}:{_TOGETHER_BAND_DB}:{_TOGETHER_CEILING_DB}"
@@ -624,6 +1045,23 @@ def _sweep_mix_leftovers(path: Path, folder) -> None:
                 continue
             st = os.lstat(path / name)
             if stat.S_ISREG(st.st_mode) and now - st.st_mtime > _MIX_TMP_STALE_S:
+                _unlink_in(folder, name)
+    except OSError:
+        pass
+
+
+def _sweep_video_leftovers(path: Path, folder) -> None:
+    """Remove videos a killed run left half taken in or half written in this take's folder.
+
+    As for mixes: only names this module makes, only plain files, only old ones.
+    """
+    try:
+        now = time.time()
+        for name in os.listdir(path):
+            if not (_VIDEO_IN_RE.fullmatch(name) or _VIDEO_OUT_RE.fullmatch(name)):
+                continue
+            st = os.lstat(path / name)
+            if stat.S_ISREG(st.st_mode) and now - st.st_mtime > _VIDEO_TMP_STALE_S:
                 _unlink_in(folder, name)
     except OSError:
         pass
@@ -863,7 +1301,9 @@ class _Handler(BaseHTTPRequestHandler):
             self._static(name)
             return
         found = _AUDIO_RE.fullmatch(path)
-        self._require_page_key(csrf, query=parts.query if found else None)
+        preview = _PREVIEW_RE.fullmatch(path)
+        # An audio element cannot set a header, so what one plays may carry the key instead.
+        self._require_page_key(csrf, query=parts.query if found or preview else None)
         if path == "/api/session":
             self.route = "/api/session"
             self._json({"csrf": self._session(), "open_take": self.gui.library.pinned_id()})
@@ -892,6 +1332,18 @@ class _Handler(BaseHTTPRequestHandler):
             self.route = "/api/take/{id}/audio/{track}"
             self._audio(found.group(1), found.group(2))
             return
+        if preview:
+            self.route = "/api/take/{id}/video/preview"
+            self._video_preview(preview.group(1), parts.query)
+            return
+        found = _VIDEO_RE.fullmatch(path)
+        if found:
+            self.route = "/api/take/{id}/video"
+            doc = self.gui.library.video_status(found.group(1))
+            if doc is None:
+                raise _Refused(404, "no such take")
+            self._json(doc)
+            return
         found = _TAKE_RE.fullmatch(path)
         if found:
             self.route = "/api/take/{id}"
@@ -905,21 +1357,29 @@ class _Handler(BaseHTTPRequestHandler):
     def _post(self) -> None:
         self.route = "?"
         op = self.path[len("/api/"):] if self.path.startswith("/api/") else ""
+        parts = urlsplit(self.path)
+        upload = _UPLOAD_RE.fullmatch(parts.path) if op not in POST_OPS else None
         if op in POST_OPS:
             self.route = f"/api/{op}"
+        elif upload:
+            self.route = UPLOAD_ROUTE
         self._check_common()
         # Required here, where a GET may leave it out.
         if not self.headers.get("Origin"):
             raise _Refused(403, "origin required")
         csrf = self._require_session()
-        if op not in POST_OPS:
+        if op not in POST_OPS and not upload:
             raise _Refused(404, "not found")
         ctype = (self.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
-        if ctype != "application/json":
-            raise _Refused(415, "content type must be application/json")
+        wanted = "application/octet-stream" if upload else "application/json"
+        if ctype != wanted:
+            raise _Refused(415, f"content type must be {wanted}")
         sent = self.headers.get("X-Plume-Token") or ""
         if not hmac.compare_digest(sent.encode(), csrf.encode()):
             raise _Refused(403, "bad token")
+        if upload:
+            self._video_upload(upload.group(1), parts.query)
+            return
         try:
             length = int(self.headers.get("Content-Length") or 0)
         except ValueError:
@@ -938,6 +1398,8 @@ class _Handler(BaseHTTPRequestHandler):
             self._keep_or_rename(op, body)
         elif op == "reveal":
             self._show_files(body)
+        elif op.startswith("video/"):
+            self._video_op(op, body)
         else:
             self._take_op(op, body)
 
@@ -1023,6 +1485,92 @@ class _Handler(BaseHTTPRequestHandler):
             raise _Refused(500, "could not open the folder") from None
         twice = mix is not None and band_may_be_twice(folder)
         self._json({"shown": True, "mix": mix is not None, "band_twice": twice, "why": why})
+
+    # -- a video
+
+    def _video_refuse(self, refused: VideoRefused) -> None:
+        self.close_connection = True          # what was not read must not parse as a next request
+        body = json.dumps({"error": "that video was not taken in", "why": refused.why}).encode()
+        self._send(refused.status, body, "application/json; charset=utf-8", {"Connection": "close"})
+
+    def _video_upload(self, take_id: str, query: str) -> None:
+        """A video handed over for a take: the body is the file, and that is all it is.
+
+        The query says whether to keep the video's sound and nothing else.  No name
+        comes with it, and the take is one the library listed.
+        """
+        asked = parse_qs(query, keep_blank_values=True)
+        if set(asked) != {"sound"} or asked["sound"] not in (["0"], ["1"]):
+            raise _Refused(400, "say only whether to keep the sound")
+        if self.headers.get("Transfer-Encoding"):
+            raise _Refused(411, "the video's length is needed")
+        sent = self.headers.get_all("Content-Length") or []
+        if len(sent) != 1 or not sent[0].isascii() or not sent[0].isdigit() or int(sent[0]) <= 0:
+            raise _Refused(411 if not sent else 400, "the video's length is needed")
+        try:
+            doc = self.gui.library.video_receive(take_id, self.rfile, int(sent[0]),
+                                                 asked["sound"] == ["1"])
+        except VideoRefused as refused:
+            if (refused.status in (409, 507) and refused.why != "cancelled"
+                    and int(sent[0]) <= _VIDEO_MAX_BYTES):
+                # A browser still sending cannot read an answer: it sees the line drop, and
+                # she is told nothing she can use.  So what is left is read, and let go of.
+                left = int(sent[0])
+                while left > 0:
+                    chunk = self.rfile.read(min(_CHUNK_BYTES, left))
+                    if not chunk:
+                        break
+                    left -= len(chunk)
+            self._video_refuse(refused)
+            return
+        self._json(doc, 202)
+
+    def _video_op(self, op: str, body: dict) -> None:
+        library = self.gui.library
+        wanted = {"take", "start_s", "sound"} if op == "video/place" else {"take"}
+        if set(body) != wanted or not isinstance(body["take"], str):
+            raise _Refused(400, "body needs a take" + (", a place and a choice" if len(wanted) > 1 else ", and only a take"))
+        take_id = body["take"]
+        try:
+            if op == "video/place":
+                start, sound = body["start_s"], body["sound"]
+                if (isinstance(start, bool) or not isinstance(start, (int, float)) or not math.isfinite(start)
+                        or not isinstance(sound, bool)):
+                    raise _Refused(400, "a place is a number, and the choice is true or false")
+                doc = library.video_place(take_id, float(start), sound)
+                if doc is None:
+                    raise _Refused(404, "no such take")
+                self._json(doc, 202)
+            elif op == "video/cancel":
+                doc = library.video_cancel(take_id)
+                if doc is None:
+                    raise _Refused(404, "no such take")
+                self._json(doc)
+            else:
+                folder = library.path_of(take_id)
+                if folder is None or not takevideo.is_own_video(folder / REC_VIDEO):
+                    raise _Refused(404, "no video for that take")
+                try:
+                    self.gui.revealer(folder, REC_VIDEO)
+                except (OSError, GuiError):
+                    raise _Refused(500, "could not open the folder") from None
+                self._json({"shown": True})
+        except VideoRefused as refused:
+            self._json({"error": "that could not be done", "why": refused.why}, refused.status)
+
+    def _video_preview(self, take_id: str, query: str) -> None:
+        if self.gui.library.path_of(take_id) is None:
+            raise _Refused(404, "no such take")
+        values = parse_qs(query, keep_blank_values=True).get("at", [])
+        if len(values) != 1 or not _NUMBER_RE.fullmatch(values[0]):
+            raise _Refused(400, "a place is a number")
+        try:
+            wav = self.gui.library.video_preview(take_id, float(values[0]))
+        except VideoRefused:
+            raise _Refused(400, "that place is outside the video") from None
+        if wav is None:
+            raise _Refused(404, "nothing to listen to")
+        self._send(200, wav, "audio/wav")
 
     # -- routes
 
@@ -1238,8 +1786,8 @@ class GuiServer:
 
     def __init__(self, *, roots=(), pinned=None, log=None, write_state: bool = True,
                  spawner=None, lister=None, sessions=None, stopper=None, revealer=None,
-                 **take_options):
-        self.library = Library(roots, pinned)
+                 ffmpeg=None, **take_options):
+        self.library = Library(roots, pinned, ffmpeg)
         #: ``(folder, file name or None)``: opens the system's file manager.  Tests pass a fake.
         self.revealer = _reveal if revealer is None else revealer
         self.takes = guitake.TakeRunner(
@@ -1286,6 +1834,7 @@ class GuiServer:
 
     def close(self) -> None:
         self.takes.shutdown()
+        self.library.close_videos()
         if self.httpd is not None:
             self.httpd.shutdown()
             self.httpd.server_close()

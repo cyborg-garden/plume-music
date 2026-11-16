@@ -68,7 +68,7 @@ def run_page(tmp_path, docs, body, **options):
     """Run ``body`` against the real app.js.  Only the import paths change, for Node."""
     work = tmp_path / "page"
     work.mkdir(exist_ok=True)
-    for name in ("app", "stone", "layout", "session", "live", "guide"):
+    for name in ("app", "stone", "layout", "session", "live", "guide", "video"):
         source = (STATIC / f"{name}.js").read_text()
         (work / f"{name}.mjs").write_text(re.sub(r"'/static/(\w+)\.js'", r"'./\1.mjs'", source))
     assert "/static/" not in (work / "app.mjs").read_text()

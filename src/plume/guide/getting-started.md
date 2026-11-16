@@ -49,6 +49,13 @@ share. From a mic, the band may be in the mix twice, because the mic may have he
 too, and the page says so. A take with only one recording gets no mix, and the page says
 that too. If you keep a `mix.wav` of your own in the folder, plume leaves it alone.
 
+**Add a video** is for a video you filmed of yourself playing the take. Your camera
+heard you and not the band. Choose the video, or drop it on the page, and plume finds
+where you start playing, lays the band and your recording in, and saves it as `video.mp4`
+in the take's folder. **Keep the video's sound** keeps what the camera heard, such as you
+talking before and after. Turn it off to hear only the band and your recording. If plume
+isn't sure where you start, it asks you to slide it into place by ear.
+
 Each take gets its own new folder, under `~/Music/Plume` unless `plume gui --takes DIR`
 names another. Settings shows where they go.
 

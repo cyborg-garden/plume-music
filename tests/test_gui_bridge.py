@@ -451,8 +451,8 @@ def test_the_route_table_is_exactly_what_the_page_needs():
     assert gui.GET_ROUTES == ("/", "/auth", "/static/{name}", "/api/session", "/api/takes",
                               "/api/take/{id}", "/api/take/{id}/audio/{track}",
                               "/api/home", "/api/live", "/api/setup", "/api/guide")
-    assert sorted(gui.POST_OPS) == ["cue", "keep", "rename", "setup/answer", "setup/cancel", "setup/listen",
-                                    "setup/reset", "start", "stop"]
+    assert sorted(gui.POST_OPS) == ["cue", "keep", "rename", "reveal", "setup/answer", "setup/cancel",
+                                    "setup/listen", "setup/reset", "start", "stop"]
 
 
 @pytest.mark.parametrize("op", ["calibrate", "play", "lead", "jam", "voice", "delete", "record",
@@ -780,17 +780,35 @@ def test_plume_gui_url_prints_a_link_that_works(server, anon, capsys):
     assert anon.get(url.split(str(server.port), 1)[1])[0].status == 303
 
 
-def test_the_real_command_serves_then_quits_cleanly_on_ctrl_c(tmp_path):
-    """The whole command, as its own process, with a private home."""
+def _real_command(tmp_path):
     take = write_take(tmp_path / "take", song(5), ending=ending_doc())
     env = {**os.environ, "HOME": str(tmp_path), "PLUME_GUI_STATE_DIR": str(tmp_path / "state"),
            "PYTHONPATH": str(Path(gui.__file__).parents[1])}
     env.pop("PLUME_ALLOW_AUDIO", None)
     # Windows: its own process group, so Ctrl-Break (Windows' Ctrl-C) reaches only it.
-    proc = subprocess.Popen([sys.executable, "-m", "plume", "gui", "--take", str(take), "--no-open"],
+    # POSIX: a test run started in the background has Ctrl-C ignored, and a child keeps
+    # what it was given.  The command is the thing under test, so it gets the default back.
+    how = oscompat.detached_kwargs() if WINDOWS else {
+        "preexec_fn": lambda: signal.signal(signal.SIGINT, signal.SIG_DFL)}
+    return subprocess.Popen([sys.executable, "-m", "plume", "gui", "--take", str(take), "--no-open"],
                             stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                            text=True, env=env,
-                            **(oscompat.detached_kwargs() if WINDOWS else {}))
+                            text=True, env=env, **how)
+
+
+def _end(proc, timeout=15):
+    """Ask it to quit, and whatever it does, do not leave it running."""
+    try:
+        proc.send_signal(oscompat.interrupt_signal())
+        return proc.communicate(timeout=timeout)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.communicate()
+
+
+def test_the_real_command_serves_then_quits_cleanly_on_ctrl_c(tmp_path):
+    """The whole command, as its own process, with a private home."""
+    proc = _real_command(tmp_path)
     try:
         url = proc.stdout.readline().strip()
         found = re.fullmatch(r"http://127\.0\.0\.1:(\d+)(/auth\?token=\S+)", url)
@@ -802,11 +820,37 @@ def test_the_real_command_serves_then_quits_cleanly_on_ctrl_c(tmp_path):
         assert conn.getresponse().status == 303
         conn.close()
     finally:
-        proc.send_signal(oscompat.interrupt_signal())
-        out, err = proc.communicate(timeout=15)
+        out, err = _end(proc)
     assert proc.returncode == 0
     assert "token=" not in out + err, "the one-time link must only be printed once"
     assert not (tmp_path / "state" / "gui.json").exists()
+
+
+@pytest.mark.skipif(WINDOWS, reason="POSIX signal dispositions")
+def test_the_real_command_still_quits_when_the_test_run_ignores_ctrl_c(tmp_path):
+    before = signal.signal(signal.SIGINT, signal.SIG_IGN)
+    try:
+        proc = _real_command(tmp_path)
+    finally:
+        signal.signal(signal.SIGINT, before)
+    try:
+        assert proc.stdout.readline().startswith("http://127.0.0.1:")
+    finally:
+        _end(proc)
+    assert proc.returncode == 0
+
+
+def test_a_command_that_will_not_quit_is_not_left_running():
+    proc = subprocess.Popen([sys.executable, "-c", "import signal, time\n"
+                             "for s in (signal.SIGINT, getattr(signal, 'SIGBREAK', signal.SIGINT)):\n"
+                             "    signal.signal(s, signal.SIG_IGN)\n"
+                             "print('up', flush=True)\ntime.sleep(600)"],
+                            stdout=subprocess.PIPE, text=True,
+                            **(oscompat.detached_kwargs() if WINDOWS else {}))
+    assert proc.stdout.readline().strip() == "up"
+    with pytest.raises(subprocess.TimeoutExpired):
+        _end(proc, timeout=1)
+    assert proc.poll() is not None
 
 
 def test_the_bridge_itself_never_handles_consent_to_play():

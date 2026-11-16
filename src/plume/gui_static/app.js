@@ -281,6 +281,7 @@ function refreshHead() {
   const ended = endedNote(S.live, t.id);
   $('rec-note').hidden = !ended;
   $('rec-note').textContent = ended;
+  drawFilesNote();
   $('keep-panel').hidden = !t.kept;
   if (t.kept) {
     const box = $('take-name');
@@ -536,6 +537,37 @@ async function setKept(kept) {
     if (turn !== S.keepTurn[id]) return;
     keepProblem(id, title, err.status === 401 ? lostWords(!!S.csrf).text : 'That was not saved. Can plume write in this take\'s folder?', 'Keep was not saved for ');
   }
+}
+/* The take's folder, in the system's file manager. The bridge is told which take and nothing
+   else: it opens that take's own folder, with you and the band saved there as one file. */
+function filesWords(doc) {
+  if (doc && doc.why === 'theirs') return 'This folder already has a mix.wav that plume can\'t replace. Move or rename it to get a new one.';
+  if (doc && doc.why === 'in_use') return 'mix.wav is open in another program, so it could not be updated. Close it there and try again.';
+  if (!doc || doc.mix !== true) return 'No mix was saved for this take. Your recordings are in the folder.';
+  if (doc.band_twice === true) return 'Saved as mix.wav. Your mic may have heard the band too, so the band could be in it twice.';
+  return '';
+}
+/* What Show files had to say, on the take it said it about and nowhere else. */
+function drawFilesNote() {
+  const words = S.filesNote && S.take && S.filesNote.id === S.take.id ? S.filesNote.text : '';
+  $('files-note').hidden = !words;
+  $('files-note').textContent = words;
+}
+async function showFiles() {
+  const b = $('show-files'), id = S.take.id, title = titleOf(S.take), where = S.take.where;
+  clearProblem();
+  S.filesNote = null;
+  drawFilesNote();
+  b.disabled = true;
+  let answer = null;
+  try { answer = await send('reveal', { take: id }); } catch (err) { /* said below */ }
+  b.disabled = false;
+  if (answer && answer.ok) {
+    S.filesNote = { id: id, text: filesWords(answer.doc) };
+    drawFilesNote();
+    return;
+  }
+  keepProblem(id, title, answer && answer.status === 401 ? lostWords(!!S.csrf).text : 'The folder did not open. It is ' + where, 'The folder did not open for ');
 }
 async function rename(id, name) {
   const title = titleOf(S.take), turn = ticket(S.nameTurn, id);
@@ -1448,6 +1480,7 @@ $('nav-takes').addEventListener('click', goShelf);
   });
   ['day', 'night'].forEach(function (n) { $('theme-' + n).addEventListener('click', function () { setTheme(n); }); });
   $('keep').addEventListener('click', function () { setKept(!S.take.kept); });
+  $('show-files').addEventListener('click', showFiles);
   $('take-name').addEventListener('change', saveName);
   $('roast-toggle').addEventListener('click', function () {
     S.roastOn = !S.roastOn;

@@ -74,6 +74,8 @@ function store() {
 export async function start(html, { takes, docs, guide = null, home = null, live = null, address = '#k=' + 'ab'.repeat(32), pinned = null, stored = null, setup = null }) {
   const page = { byId: new Map(), activeElement: null, calls: [], held: [], frames: [], rects: {}, failNext: {}, saved: {},
     home, live: live || { state: 'idle' }, replies: {}, down: false, later: new Map(),
+    /* What the bridge says of a take's video until a test says otherwise. */
+    video: { state: 'idle', can: true, ready: true, have: false, theirs: false, max_bytes: 1000 },
     /* A person who has been through setup, unless a test says otherwise. */
     setup: setup || { step: 'count', line: 'Knock or clap 8 even beats.', note: null, choices: [], done: true, seconds: 4,
       device: null, device_name: null, mode: 'room', channel: 1, hear_me: false } };
@@ -103,10 +105,14 @@ export async function start(html, { takes, docs, guide = null, home = null, live
   if (stored) page.session.map.set('plume-key', stored);
   const reply = (status, doc) => ({ ok: status < 400, status, json: async () => doc });
   async function bridge(path, opts = {}) {
-    const method = opts.method || 'GET', body = opts.body ? JSON.parse(opts.body) : null;
-    const call = { method, path, body, key: opts.headers && opts.headers['X-Plume-Token'], keepalive: !!opts.keepalive };
+    /* A video is handed over as the file itself, not as JSON: kept as it was given. */
+    const method = opts.method || 'GET', body = typeof opts.body === 'string' ? JSON.parse(opts.body) : null;
+    const call = { method, path, body, key: opts.headers && opts.headers['X-Plume-Token'], keepalive: !!opts.keepalive,
+      file: typeof opts.body === 'string' ? null : opts.body || null, type: opts.headers && opts.headers['Content-Type'] };
     page.calls.push(call);
-    const op = path.replace('/api/', '').split('?')[0];
+    let op = path.replace('/api/', '').split('?')[0];
+    if (/^video\/[0-9a-f]{16}$/.test(op)) op = 'video/upload';
+    if (/^take\/[0-9a-f]{16}\/video$/.test(op)) op = 'video/status';
     const liveWhenAsked = page.live;   // a held answer still says what was true when it was asked
     const held = page.held.find((h) => h.op === op && !h.taken);
     if (held) { held.taken = true; await held.until; }
@@ -123,6 +129,7 @@ export async function start(html, { takes, docs, guide = null, home = null, live
     if (op === 'cue') return reply(200, { ok: true, cue: body.cue });
     if (path === '/api/session') return reply(200, { csrf: 'ab'.repeat(32), open_take: pinned });
     if (path === '/api/takes') return reply(200, { takes: takes.map((t) => Object.assign({}, t, page.saved[t.id])) });
+    if (op.startsWith('video/')) return reply(op === 'video/upload' ? 202 : 200, page.video);
     if (path.startsWith('/api/take/')) {
       const id = path.split('/')[3], doc = docs[id];
       return doc ? reply(200, Object.assign({}, doc, page.saved[id])) : reply(404, { error: 'no' });

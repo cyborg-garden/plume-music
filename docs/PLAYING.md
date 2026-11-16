@@ -619,6 +619,33 @@ The page says nothing when the mix is plain. Otherwise it says one line:
 
 If the file manager does not open, the page says where the folder is.
 
+### A video of your take
+
+Add a video takes a video you filmed while you played, which heard you and not the band in
+your headphones, and saves it again as `video.mp4` in the take's folder with the band and
+your recording in its sound. Choose the file or drop it on the take's page.
+
+- Plume finds where the take begins by matching `human.wav` against the video's own
+  sound. The video can be longer than the take, shorter, or start part way through it.
+- Your recording goes in at that place and the band's the round trip later, balanced the
+  way Together and `mix.wav` are. With **Keep the video's sound** on, the camera's sound
+  stays under them at its own level for the whole video. Off, only the band and your
+  recording are heard.
+- The picture is copied as it is. The sound is AAC. Tags the camera wrote, such as where
+  and on what it was filmed, are left out.
+- If the match is not clear, or the video has no sound, nothing is saved yet. The page
+  shows a slider to put the take in place, with a few seconds to listen to first when the
+  video has sound.
+- Only plume's own `video.mp4` is ever replaced. One of yours is left, and the page says so.
+- The video is copied into the take's folder while plume works, so the disk needs room for
+  it twice. The copy is removed when the work ends, is cancelled, or fails.
+
+This needs ffmpeg. Installing plume brings one. Without it, plume uses one on your PATH,
+and with neither the page says so.
+
+Checked on made-up takes and tiny made-up videos. The whole path has not yet been run in
+a real browser with a real video.
+
 This page has only been checked on made-up take folders, in headless Chromium with the
 sound muted. Play has not been pressed in a real browser, and the page has not been tried
 on a take from a real mic or interface, or in Firefox or Safari.

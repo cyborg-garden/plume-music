@@ -8,6 +8,7 @@ import { clearStones, cssVar, queueStone, rng, stonesIdle, tok } from '/static/s
 import { audioTime, axisSpans, axisTime, axisX, hitBoxes, lineSpans, nextIndex, takeTime } from '/static/layout.js';
 import { lostWords, pinnedRoute, routeOf } from '/static/session.js';
 import { pageTitle, parseGuide, renderGuide } from '/static/guide.js';
+import { isWorking, placeWords, videoView } from '/static/video.js';
 import { BAND_IN_INPUT_LINE, BAND_IN_MIC_LINE, DIRECT_LINE, FADING_LINE, NO_ENDING, ROOM_END_LINE, PHONES_OUTPUT_LINE, ROOM_OUTPUT_LINE, SEND_LINE, WIRELESS_LINE, askingLine, bandInInput, bandInMic, countWords, delayLine, endLine, endedNote, isFading, isRunning, keyLine, landing, meterShare, movedOutput, routeLine, sendDelayLine, settledLine, setupTrouble, setupView, signView, stageWords, watchEnding, youView } from '/static/live.js';
 
 const $ = function (id) { return document.getElementById(id); };
@@ -18,7 +19,7 @@ const S = { csrf: '', take: null, selected: null, roastOn: true, screen: 'loadin
   trackButtons: {}, track: null, audioOn: false, seekTo: null, axis: null, frame: 0, scrub: null,
   home: null, homeTurn: 0, homeNote: '', settingsNote: '', form: { device: null, channel: null },
   setup: null, setupTurn: 0, listening: false, listenSlow: false, answering: false, ending: NO_ENDING,
-  guide: null };
+  guide: null, video: null, videoTurn: 0, videoSending: null, videoTimer: 0, dropping: false };
 
 function load(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
 function save(k, v) { try { localStorage.setItem(k, v); } catch (e) { /* private window */ } }
@@ -370,6 +371,7 @@ function stopAudio() {
   p.removeAttribute('src');
   p.load();
   S.audioOn = false; S.seekTo = null;
+  stopVideoPreview();
   endScrub();
   $('listen-seek').value = '0';
   $('listen-time').textContent = '';
@@ -499,6 +501,7 @@ async function openRecord(id) {
   S.selected = first.id;
   drawSheet(); selectEvent(S.selected); drawRoast(); drawListen(); paintPortrait();
   $('record').focus({ preventScroll: true });
+  loadVideo(id);
 }
 
 /* A response belongs to the take it was sent for, and only the newest of its kind for
@@ -568,6 +571,153 @@ async function showFiles() {
     return;
   }
   keepProblem(id, title, answer && answer.status === 401 ? lostWords(!!S.csrf).text : 'The folder did not open. It is ' + where, 'The folder did not open for ');
+}
+/* A video of the take, with the band laid in. The page hands the file to the bridge as it is,
+   never its name, and never reads it: the browser streams it from the disk. What happens next
+   the bridge says, and video.js puts into words. One video per take is ever under way. */
+function videoFor(id) { return S.video && S.video.id === id ? S.video.doc : null; }
+function stopVideoPreview() {
+  const p = $('video-player');
+  if (!p) return;
+  p.pause();
+  p.removeAttribute('src');
+}
+function drawVideo() {
+  const here = S.screen === 'record' && S.take, doc = here ? videoFor(S.take.id) : null;
+  const view = videoView(doc, S.dropping);
+  $('video').hidden = !view.shown;
+  $('video').classList.toggle('dropping', S.dropping);
+  $('video-add').disabled = !view.add;
+  $('video-add').hidden = view.stop;
+  $('video-sound-row').hidden = view.stop && !view.nudge;
+  $('video-show').hidden = !view.show;
+  $('video-say').hidden = !view.say;
+  $('video-say').textContent = view.say;
+  $('video-say').classList.toggle('warn', view.warn);
+  $('video-bar').hidden = view.bar === null;
+  $('video-bar').classList.toggle('busy', view.bar === 'busy');
+  $('video-bar-fill').style.transform = typeof view.bar === 'number' ? 'scaleX(' + view.bar + ')' : '';
+  $('video-stop').hidden = !view.stop;
+  $('video-listen').hidden = !view.listen;
+  const was = $('video-nudge').hidden;
+  $('video-nudge').hidden = !view.nudge;
+  if (view.nudge && was) {
+    const slide = $('video-slide');
+    slide.min = String(doc.min_s); slide.max = String(doc.max_s); slide.step = String(doc.step_s);
+    slide.value = String(doc.start_s);
+    $('video-at').textContent = placeWords(doc.start_s);
+  }
+  if (!view.nudge) stopVideoPreview();
+}
+function setVideo(id, doc) {
+  S.video = { id: id, doc: doc };
+  if (S.take && S.take.id === id) drawVideo();
+  clearTimeout(S.videoTimer);
+  if (isWorking(doc)) S.videoTimer = setTimeout(function () { pollVideo(id); }, 700);
+}
+async function pollVideo(id) {
+  if (!showing(id) && !S.videoSending) return;
+  const turn = ++S.videoTurn;
+  let doc = null;
+  try { doc = await api('/api/take/' + encodeURIComponent(id) + '/video'); } catch (err) { /* asked again below */ }
+  if (turn !== S.videoTurn) return;
+  /* While the file is still on its way, the bridge may not have heard of it yet. */
+  if (doc && S.videoSending === id && !isWorking(doc)) doc = null;
+  setVideo(id, doc || videoFor(id));
+}
+async function loadVideo(id) {
+  if (S.videoSending === id) { drawVideo(); return; }
+  const turn = ++S.videoTurn;
+  S.video = null;
+  drawVideo();
+  let doc = null;
+  try { doc = await api('/api/take/' + encodeURIComponent(id) + '/video'); } catch (err) { return; }
+  if (turn === S.videoTurn) setVideo(id, doc);
+}
+function videoFailed(id, why) {
+  const was = videoFor(id) || {};
+  setVideo(id, { state: 'failed', why: why, can: true, ready: was.ready !== false, have: was.have === true, theirs: was.theirs === true, max_bytes: was.max_bytes });
+}
+async function addVideo(file) {
+  if (!file || !S.take || S.videoSending) return;
+  const id = S.take.id, was = videoFor(id);
+  if (!was || was.can !== true || was.ready !== true || isWorking(was)) return;
+  if (was.theirs === true) { videoFailed(id, 'theirs'); return; }
+  if (was.max_bytes && file.size > was.max_bytes) { videoFailed(id, 'too_big'); return; }
+  const sound = $('video-sound').checked !== false;
+  const stop = typeof AbortController === 'function' ? new AbortController() : null;
+  S.videoSending = id;
+  S.videoAbort = stop;
+  ++S.videoTurn;
+  setVideo(id, Object.assign({}, was, { state: 'receiving', progress: 0 }));
+  let answer = null, doc = null;
+  try {
+    /* The file itself is the body. Its name stays here. */
+    answer = await fetch('/api/video/' + encodeURIComponent(id) + '?sound=' + (sound ? '1' : '0'), {
+      method: 'POST', credentials: 'same-origin', body: file, signal: stop ? stop.signal : undefined,
+      headers: { 'Content-Type': 'application/octet-stream', 'X-Plume-Token': S.csrf }
+    });
+    try { doc = await answer.json(); } catch (e) { /* the status says enough */ }
+  } catch (err) { /* stopped, or the bridge went away: said below */ }
+  const stopped = stop && stop.signal.aborted;
+  S.videoSending = null;
+  S.videoAbort = null;
+  ++S.videoTurn;
+  if (stopped) { loadVideo(id); return; }
+  if (answer && answer.ok && doc) { setVideo(id, doc); return; }
+  videoFailed(id, answer && answer.status === 401 ? 'lost' : doc && doc.why || 'failed');
+}
+async function videoOp(op, body) {
+  const id = body.take;
+  ++S.videoTurn;
+  let answer = null;
+  try { answer = await send(op, body); } catch (err) { /* said below */ }
+  ++S.videoTurn;
+  if (answer && answer.ok && answer.doc) { setVideo(id, answer.doc); return; }
+  videoFailed(id, answer && answer.status === 401 ? 'lost' : answer && answer.doc && answer.doc.why || 'failed');
+}
+function stopVideo() {
+  const id = S.take.id;
+  if (S.videoSending === id && S.videoAbort) S.videoAbort.abort();
+  videoOp('video/cancel', { take: id });
+}
+function saveVideo() {
+  const at = Number($('video-slide').value);
+  stopVideoPreview();
+  videoOp('video/place', { take: S.take.id, start_s: at, sound: $('video-sound').checked !== false });
+}
+/* Sound starts only from this click, and it is a few seconds long. */
+function listenVideo() {
+  const p = $('video-player'), at = Number($('video-slide').value);
+  $('player').pause();
+  p.src = '/api/take/' + encodeURIComponent(S.take.id) + '/video/preview?at=' + at.toFixed(3) + '&k=' + S.csrf;
+  p.play().catch(function () { /* nothing to say: the button is still there */ });
+}
+async function showVideo() {
+  const id = S.take.id, title = titleOf(S.take), where = S.take.where;
+  clearProblem();
+  let answer = null;
+  try { answer = await send('video/show', { take: id }); } catch (err) { /* said below */ }
+  if (answer && answer.ok) return;
+  if (answer && answer.status === 404) { loadVideo(id); return; }
+  keepProblem(id, title, answer && answer.status === 401 ? lostWords(!!S.csrf).text : 'The folder did not open. It is ' + where, 'The folder did not open for ');
+}
+function hasFiles(ev) {
+  const types = ev && ev.dataTransfer && ev.dataTransfer.types;
+  return !!types && Array.prototype.indexOf.call(types, 'Files') >= 0;
+}
+function videoDrag(ev, over) {
+  if (S.screen !== 'record' || !hasFiles(ev)) return;
+  /* Always, on this screen: a file let go anywhere must never replace the page. */
+  ev.preventDefault();
+  if (S.dropping !== over) { S.dropping = over; drawVideo(); }
+}
+function videoDrop(ev) {
+  if (S.screen !== 'record' || !hasFiles(ev)) return;
+  ev.preventDefault();
+  S.dropping = false;
+  drawVideo();
+  addVideo(ev.dataTransfer.files && ev.dataTransfer.files[0]);
 }
 async function rename(id, name) {
   const title = titleOf(S.take), turn = ticket(S.nameTurn, id);
@@ -1468,6 +1618,10 @@ $('nav-takes').addEventListener('click', goShelf);
      this outlast the page. If it never arrives the child still ends by itself within seconds. */
   window.addEventListener('pagehide', function () {
     if (S.listening) send('setup/cancel', {}, { keepalive: true }).catch(function () { /* see above */ });
+    /* A video waiting for a nudge is a copy plume is holding. Nobody is coming back to this page for it. */
+    if (S.video && S.video.doc && S.video.doc.state === 'unsure') {
+      send('video/cancel', { take: S.video.id }, { keepalive: true }).catch(function () { /* the bridge clears it when it closes */ });
+    }
   });
   $('events').addEventListener('keydown', function (ev) {
     const list = S.take ? S.take.events : [];
@@ -1481,6 +1635,25 @@ $('nav-takes').addEventListener('click', goShelf);
   ['day', 'night'].forEach(function (n) { $('theme-' + n).addEventListener('click', function () { setTheme(n); }); });
   $('keep').addEventListener('click', function () { setKept(!S.take.kept); });
   $('show-files').addEventListener('click', showFiles);
+  $('video-sound').checked = load('plume-video-sound') !== 'off';
+  $('video-sound').addEventListener('change', function () { save('plume-video-sound', $('video-sound').checked ? 'on' : 'off'); });
+  $('video-add').addEventListener('click', function () { $('video-file').click(); });
+  $('video-file').addEventListener('change', function () {
+    const box = $('video-file'), file = box.files && box.files[0];
+    box.value = '';
+    addVideo(file);
+  });
+  $('video-stop').addEventListener('click', stopVideo);
+  $('video-show').addEventListener('click', showVideo);
+  $('video-listen').addEventListener('click', listenVideo);
+  $('video-save').addEventListener('click', saveVideo);
+  $('video-slide').addEventListener('input', function () {
+    stopVideoPreview();
+    $('video-at').textContent = placeWords(Number($('video-slide').value));
+  });
+  window.addEventListener('dragover', function (ev) { videoDrag(ev, true); });
+  window.addEventListener('dragleave', function (ev) { if (!ev.relatedTarget) videoDrag(ev, false); });
+  window.addEventListener('drop', videoDrop);
   $('take-name').addEventListener('change', saveName);
   $('roast-toggle').addEventListener('click', function () {
     S.roastOn = !S.roastOn;

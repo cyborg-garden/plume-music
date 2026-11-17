@@ -169,22 +169,36 @@ STALL_GUARD_S = 30.0
 
 
 class Stalled(list):
-    """Every tool started in a test, each one a real child that never ends by itself."""
+    """Every tool started in a test, each one a real child that never ends by itself.
+
+    Once the guard trips it stays tripped: every tool alive then is ended, and any tool
+    asked for afterwards is refused at once, so nothing started late can hang the run.
+    """
 
     def __init__(self, guard_s: float):
         super().__init__()
-        self.guard_s, self.tripped = guard_s, False
+        self.guard_s = guard_s
+        self.has_tripped = threading.Event()
+        self._lock = threading.Lock()
         self._timer = threading.Timer(guard_s, self._trip)
         self._timer.daemon = True
         self._timer.start()
 
+    @property
+    def tripped(self) -> bool:
+        return self.has_tripped.is_set()
+
     def spawn(self, cmd, **kw):  # noqa: ARG002 - what plume asked to run is not run
-        proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(3600)"], **kw)
-        self.append(proc)
-        return proc
+        with self._lock:
+            if self.tripped:
+                raise OSError("the stall guard has tripped: no more tools in this test")
+            proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(3600)"], **kw)
+            self.append(proc)
+            return proc
 
     def _trip(self) -> None:
-        self.tripped = True
+        with self._lock:
+            self.has_tripped.set()
         self.end()
 
     def end(self) -> None:

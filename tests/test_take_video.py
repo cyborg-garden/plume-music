@@ -633,3 +633,20 @@ def test_the_sound_is_handed_over_a_decibel_under_full_scale_and_kept_there(monk
         cmd = " ".join(takevideo.write_command("ffmpeg", "in.mp4", "out.mp4", rate=48000, duration_s=1.0,
                                                keep_sound=keep_sound))
         assert f"{one_db:.3f}" in cmd
+
+
+def test_once_the_stall_guard_has_tripped_no_new_tool_can_hang():
+    """A guard that ends only the tools alive when it trips leaves the next one to hang the
+    job.  After it trips, any tool asked for is refused at once."""
+    import subprocess
+
+    from video_fixture import Stalled
+
+    tools = Stalled(0.01)
+    try:
+        assert tools.has_tripped.wait(60.0)
+        with pytest.raises(OSError):
+            tools.spawn(["ffmpeg"], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE)
+        assert all(proc.poll() is not None for proc in tools)
+    finally:
+        tools.close()

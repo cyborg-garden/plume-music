@@ -1585,3 +1585,16 @@ def test_a_take_says_how_far_ahead_of_the_player_the_band_was_recorded(tmp_path,
     # The mix of both recordings lines them up by the same figure, from the same place.
     assert record.playing_delay_s(folder) == got
     assert record.playing_delay_frames(folder, 48000) == round((want or 0.0) * 48000)
+
+
+@pytest.mark.parametrize("extra,chosen,guess", [
+    ({"style": "folk", "style_chosen": True, "style_guess": False}, True, False),
+    ({"style": "folk", "style_chosen": False, "style_guess": True}, False, True),
+    ({"style": "folk"}, False, False),          # an older take says neither
+    ({}, False, False),
+])
+def test_the_take_says_whether_she_chose_the_style_or_plume_guessed(tmp_path, extra, chosen, guess):
+    rows = [{**make_row(b), **extra} for b in range(4)]
+    take = record.read_take(write_take(tmp_path / "t", rows, ending=ending_doc()))
+    assert (take["style_chosen"], take["style_guess"]) == (chosen, guess)
+    assert record.summary(take)["style_chosen"] is chosen

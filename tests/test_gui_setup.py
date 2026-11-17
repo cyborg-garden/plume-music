@@ -1226,3 +1226,106 @@ def test_a_setup_post_needs_an_origin_and_json_and_a_get_does_nothing(meter, pag
 
 # A machine with no unix sockets is no longer refused: the cue transport falls back to
 # loopback TCP.  tests/test_cross_platform.py serves the gui with AF_UNIX taken away.
+
+
+# ------------------------------------------------------------------ the style she picks
+
+def test_the_style_starts_on_let_plume_guess(rig, runner):
+    assert runner.home()["style"] is None
+    runner.start({})
+    assert "--" not in rig.spawned[-1], "no style named: plume guesses"
+
+
+def test_a_chosen_style_is_remembered_by_a_new_bridge(rig, runner, meter, setup_file):
+    assert runner.choose_style({"style": "folk"}) == {"style": "folk"}
+    again = rig.runner(meter=meter, setup_path=lambda: setup_file)
+    assert again.home()["style"] == "folk"
+    # Back to guessing is one more choice, and that is remembered too.
+    assert again.choose_style({"style": ""}) == {"style": None}
+    assert rig.runner(meter=meter, setup_path=lambda: setup_file).home()["style"] is None
+
+
+def test_a_style_a_take_started_with_is_the_one_remembered(rig, runner, meter, setup_file):
+    runner.choose_style({"style": "folk"})
+    runner.start({"style": "jazz"})
+    assert rig.spawned[-1][-2:] == ["--", "jazz"]
+    assert rig.runner(meter=meter, setup_path=lambda: setup_file).home()["style"] == "jazz"
+
+
+def test_a_start_that_names_no_style_plays_and_keeps_the_saved_one(rig, runner, meter, setup_file):
+    """A page that has not loaded yet does not know her style, so it says none."""
+    runner.choose_style({"style": "folk"})
+    runner.start({})
+    assert rig.spawned[-1][-2:] == ["--", "folk"]
+    assert runner.live()["style"] == "folk"
+    assert rig.runner(meter=meter, setup_path=lambda: setup_file).home()["style"] == "folk"
+
+
+def test_an_empty_style_at_start_is_let_plume_guess_and_is_remembered(rig, runner, meter, setup_file):
+    runner.choose_style({"style": "folk"})
+    runner.start({"style": ""})
+    assert "--" not in rig.spawned[-1]
+    assert rig.runner(meter=meter, setup_path=lambda: setup_file).home()["style"] is None
+
+
+def test_set_up_again_keeps_the_style(runner, meter):
+    runner.choose_style({"style": "folk"})
+    runner.reset_setup()
+    assert runner.home()["style"] == "folk"
+
+
+@pytest.mark.parametrize("body", [{"style": "polka"}, {"style": "--device=x"}, {"style": 7},
+                                  {"style": ["folk"]}, {}, {"style": "folk", "key": "F major"}])
+def test_a_style_plume_does_not_have_is_refused_and_nothing_changes(rig, runner, body):
+    runner.choose_style({"style": "folk"})
+    with pytest.raises(guitake.Refused) as e:
+        runner.choose_style(body)
+    assert e.value.status == 400
+    assert runner.home()["style"] == "folk"
+    assert rig.spawned == []
+
+
+def test_unknown_style_words_are_kind_and_plain():
+    with pytest.raises(guitake.Refused) as e:
+        guitake.canonical_style("polka")
+    assert e.value.message == guitake.UNKNOWN_STYLE
+    assert "polka" not in e.value.message
+
+
+@pytest.mark.parametrize("stored", ['"polka"', '"--device=x"', "7", '["folk"]'])
+def test_a_hand_edited_style_is_let_plume_guess(rig, meter, setup_file, stored):
+    setup_file.parent.mkdir(parents=True)
+    setup_file.write_text('{"version": 1, "last": null, "devices": {}, "style": %s}' % stored)
+    assert rig.runner(meter=meter, setup_path=lambda: setup_file).home()["style"] is None
+
+
+def test_the_style_over_http(rig, page):
+    resp, out = page.post("/api/style", {"style": "folk"})
+    assert resp.status == 200 and json.loads(out) == {"style": "folk"}
+    assert json.loads(page.get("/api/home")[1])["style"] == "folk"
+    resp, out = page.post("/api/style", {"style": "polka"})
+    assert resp.status == 400 and json.loads(out)["error"] == guitake.UNKNOWN_STYLE
+    assert json.loads(page.get("/api/home")[1])["style"] == "folk"
+    # Start refuses it the same way, and says which choice to fix.
+    resp, out = page.post("/api/start", {"style": "polka"})
+    assert resp.status == 400 and json.loads(out) == {"error": guitake.UNKNOWN_STYLE, "field": "style"}
+    assert rig.spawned == []
+    assert page.post("/api/start", {"style": "folk"})[0].status == 200
+    assert rig.spawned[-1][-2:] == ["--", "folk"]
+
+
+def test_the_style_route_has_the_same_checks(page):
+    token = page.csrf
+    assert _ask(page, "POST", "/api/style", Host="evil.example") == 403
+    assert _ask(page, "POST", "/api/style", Origin="http://evil.example") == 403
+    assert _ask(page, "POST", "/api/style", Origin=None) == 403
+    assert _ask(page, "POST", "/api/style", **{"Sec-Fetch-Site": "cross-site"}) == 403
+    assert _ask(page, "POST", "/api/style", **{"Content-Type": "text/plain"}) == 415
+    page.csrf = "0" * 64
+    assert _ask(page, "POST", "/api/style") in (401, 403)
+    page.csrf = token
+    jar, page.cookie = page.cookie, None
+    assert _ask(page, "POST", "/api/style") == 401
+    page.cookie = jar
+    assert page.get("/api/style")[0].status == 404
+    assert json.loads(page.get("/api/home")[1])["style"] is None

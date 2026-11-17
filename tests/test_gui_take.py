@@ -736,11 +736,11 @@ def test_the_real_listener_reads_a_real_take(rig):
     (rig.folder / "session.json").write_text(json.dumps({"input": {"source": "direct"}}))
     (rig.folder / "decisions.ndjson").write_text(json.dumps(
         {"bar": 0, "t_s": 0.0, "bpm": 120.0, "entry": "drums", "key": "F major", "style": "midwest",
-         "style_guess": True, "key_guess": False}) + "\n")
+         "style_guess": False, "style_chosen": True, "key_guess": False}) + "\n")
     runner.tick()
     row = runner.live()["row"]
     assert (row["bar"], row["stage"], row["style"], row["input"]) == (0, "drums", "midwest", "direct")
-    assert row["style_guess"] is True and row["key_guess"] is False
+    assert row["style_guess"] is False and row["style_chosen"] is True and row["key_guess"] is False
     assert row["you_trusted"] == ["you_db", "you_busy", "you_notes"]
 
 

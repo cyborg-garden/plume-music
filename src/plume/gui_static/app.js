@@ -9,7 +9,7 @@ import { audioTime, axisSpans, axisTime, axisX, hitBoxes, lineSpans, nextIndex, 
 import { lostWords, pinnedRoute, routeOf } from '/static/session.js';
 import { pageTitle, parseGuide, renderGuide } from '/static/guide.js';
 import { isWorking, placeWords, videoView } from '/static/video.js';
-import { BAND_IN_INPUT_LINE, BAND_IN_MIC_LINE, DIRECT_LINE, FADING_LINE, NO_ENDING, ROOM_END_LINE, PHONES_OUTPUT_LINE, ROOM_OUTPUT_LINE, SEND_LINE, WIRELESS_LINE, askingLine, bandInInput, bandInMic, countWords, delayLine, endLine, endedNote, isFading, isRunning, keyLine, landing, meterShare, movedOutput, routeLine, sendDelayLine, settledLine, setupTrouble, setupView, signView, stageWords, watchEnding, youView } from '/static/live.js';
+import { BAND_IN_INPUT_LINE, BAND_IN_MIC_LINE, DIRECT_LINE, FADING_LINE, NO_ENDING, ROOM_END_LINE, PHONES_OUTPUT_LINE, ROOM_OUTPUT_LINE, SEND_LINE, WIRELESS_LINE, askingLine, bandInInput, bandInMic, countWords, delayLine, endLine, endedNote, isFading, isRunning, keyLine, landing, meterShare, movedOutput, routeLine, sendDelayLine, settledLine, setupTrouble, setupView, signView, stageWords, styleName, watchEnding, youView } from '/static/live.js';
 
 const $ = function (id) { return document.getElementById(id); };
 const S = { csrf: '', take: null, selected: null, roastOn: true, screen: 'loading', nav: 0,
@@ -768,7 +768,10 @@ function buildShelf(doc) {
     const name = document.createElement('span'); name.className = 't'; name.id = 'shelf-name-' + t.id;
     name.textContent = shelfName(t);
     const m = document.createElement('span'); m.className = 'm';
-    m.textContent = [fmtDate(t.started_at)].concat(metaOf(t), [t.bytes ? fmtSize(t.bytes) : '']).filter(Boolean).join('  ');
+    /* The key and style have a line of their own, so they do not run into the tempo. */
+    const meta = metaOf(t), line = t.key || t.style ? meta.shift() : '';
+    m.textContent = [fmtDate(t.started_at), line, meta.concat([t.bytes ? fmtSize(t.bytes) : '']).filter(Boolean).join(' \u00b7 ')]
+      .filter(Boolean).join('\n');
     b.appendChild(c); b.appendChild(name); b.appendChild(m);
     b.addEventListener('click', function () { goTake(t.id); });
     g.appendChild(b);
@@ -893,9 +896,7 @@ function drawSettings() {
   for (let n = 1; n <= most; n++) channels.push({ value: String(n), label: String(n) });
   drawOptions($('set-channel'), channels, String(channelNow()));
   $('set-channel').hidden = $('channel-label').hidden = most < 2;
-  const styles = $('style-list');
-  styles.textContent = '';
-  doc.styles.forEach(function (name) { const o = document.createElement('option'); o.value = name; styles.appendChild(o); });
+  drawStyle();
   $('set-folder').textContent = doc.folder;
   drawOutput();
   drawHear();
@@ -1009,7 +1010,32 @@ function drawSettingsNote() {
   $('settings-note').textContent = note;
 }
 function drawSummary() {
-  if (S.home) $('home-gear').textContent = routeLine(chosenDevice(), channelNow(), $('set-key').value.trim(), $('set-style').value.trim(), outputName(), bandInPhones());
+  /* The style is not repeated here: its own control says it, just above. */
+  if (S.home) $('home-gear').textContent = routeLine(chosenDevice(), channelNow(), $('set-key').value.trim(), '', outputName(), bandInPhones());
+}
+/* The style beside Start: what she chose last, as the bridge remembers it, or Let plume guess. */
+function drawStyle() {
+  const doc = S.home;
+  if (!doc) return;
+  const options = [{ value: '', label: 'Let plume guess' }].concat((doc.styles || []).map(function (id) {
+    return { value: id, label: styleName(id) };
+  }));
+  drawOptions($('home-style'), options, doc.style || '');
+}
+/* Saved as it changes, so the next Start, a reload or another day finds it. */
+async function sendStyle(value) {
+  const select = $('home-style');
+  select.disabled = true;
+  S.homeNote = '';
+  S.homeTurn += 1;
+  let answer = null;
+  try { answer = await send('style', { style: value }); } catch (err) { /* said below */ }
+  select.disabled = false;
+  if (answer && answer.status === 401) { problem(answer); return; }
+  if (answer && answer.ok) { if (S.home) S.home.style = answer.doc.style || null; }
+  else S.homeNote = (answer && answer.doc && answer.doc.error) || 'That did not reach plume gui. Is it still running in your terminal?';
+  drawStyle();
+  drawHomeState();
 }
 /* A terminal's take is the only thing that takes Start's place. */
 function drawHomeState() {
@@ -1017,6 +1043,8 @@ function drawHomeState() {
   $('start').hidden = there;
   $('home-elsewhere').hidden = !there;
   $('home-gear').hidden = there;
+  /* Until home has loaded the page does not know her saved style, so it shows none rather than a wrong one. */
+  $('home-style-row').hidden = there || !S.home;
   if (there) {
     $('elsewhere-text').textContent = S.live.message;
     $('elsewhere-stop').disabled = !!S.live.stopping;
@@ -1114,9 +1142,10 @@ function drawGuide(id) {
    changed it, and the device setup just heard, so the bridge does not choose again. It checks
    every field again, and a device that has gone is refused rather than swapped for another. */
 function startBody(heard) {
-  const body = {}, key = $('set-key').value.trim(), style = $('set-style').value.trim();
+  const body = {}, key = $('set-key').value.trim(), style = $('home-style').value;
   if (key) body.key = key;
-  if (style) body.style = style;
+  /* Always said once the choice is shown: "" is Let plume guess. Before that the bridge uses the saved one. */
+  if (S.home) body.style = style;
   const shown = S.home ? chosenDevice() : null, changed = S.form.channel !== null;
   const device = S.form.device ? shown && shown.id : heard || (changed && shown ? shown.id : null);
   if (device) body.device = device;
@@ -1160,6 +1189,7 @@ async function startTake(heard) {
     /* Nothing started, as far as this page knows. The next look at the bridge corrects that. */
     S.live = { state: 'idle' };
     if (!answer) backHome('Plume could not reach plume gui. Is it still running in your terminal?');
+    else if (answer.status === 400 && answer.doc && answer.doc.field === 'style') { drawStyle(); backHome(answer.doc.error); }
     else if (answer.status === 400 && answer.doc && answer.doc.error) backHome(answer.doc.error, true);
     else backHome('The take did not start.');
     return;
@@ -1615,9 +1645,8 @@ $('nav-takes').addEventListener('click', goShelf);
     drawHear();
   });
   /* Typing a fix answers the complaint about what was there. */
-  ['set-key', 'set-style'].forEach(function (id) {
-    $(id).addEventListener('input', function () { S.homeNote = ''; S.settingsNote = ''; drawSummary(); drawHomeState(); drawSettingsNote(); });
-  });
+  $('set-key').addEventListener('input', function () { S.homeNote = ''; S.settingsNote = ''; drawSummary(); drawHomeState(); drawSettingsNote(); });
+  $('home-style').addEventListener('change', function () { sendStyle($('home-style').value); });
   window.addEventListener('popstate', showRoute);
   /* A reload or a closed tab leaves no screen behind to come through leaveSetup. keepalive lets
      this outlast the page. If it never arrives the child still ends by itself within seconds. */

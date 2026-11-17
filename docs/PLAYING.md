@@ -487,8 +487,18 @@ chip with a name plume does not know can pass as an interface, because its mic d
 you. When the guess is wrong, a take that hears the band in a direct input says so on the
 first view and tells you to try another device.
 
-Key and style say Detect until you type over them. What plume settles on is marked: "F
-major, midwest (a guess)". A key or style you typed is never called a guess.
+One small choice sits under Start: Style, on Let plume guess until you pick one. A picked
+style is passed to the take as the prompt, the same as naming it in a terminal, so the band
+plays it from the first bar and the live guess never runs. The pick is saved in
+`setup.json` with the rest of setup (Set up again keeps it), and picking Let plume guess
+goes back to guessing. A style plume does not have is refused in plain words, and the
+choice goes back to what was saved.
+
+Key, in Settings, says Detect until you type over it. The screens say what was chosen and
+what was guessed: "F major (a guess) · Folk, plume's guess", or "F major · Folk, chosen".
+Each take records it too: `style_chosen` in `session.json` and on each row of
+`decisions.ndjson`, beside `style_guess`. An older take that says neither shows just the
+style.
 
 ### During a take
 

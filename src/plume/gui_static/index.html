@@ -37,6 +37,7 @@
   <main id="home" hidden tabindex="-1">
     <div class="column">
       <button id="start" class="solid" type="button">Start</button>
+      <p id="home-style-row" hidden><label for="home-style">Style</label> <select id="home-style"></select></p>
       <div id="home-elsewhere" hidden>
         <p id="elsewhere-text"></p>
         <button id="elsewhere-stop" class="quiet" type="button">Stop it</button>
@@ -54,9 +55,6 @@
       <div id="settings-body">
         <label for="set-key">Key</label>
         <input id="set-key" type="text" autocomplete="off" spellcheck="false" maxlength="80" placeholder="Detect">
-        <label for="set-style">Style</label>
-        <input id="set-style" type="text" autocomplete="off" spellcheck="false" maxlength="80" placeholder="Detect" list="style-list">
-        <datalist id="style-list"></datalist>
         <label for="set-device">Device</label>
         <select id="set-device"></select>
         <label id="channel-label" for="set-channel">Channel</label>

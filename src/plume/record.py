@@ -1316,6 +1316,8 @@ def _take_doc(rows, cue_log, take_dir, ending, manifest, seed, sizes, keep, live
         "key_guess": key_row is not None and key_row.get("key_guess") is True,
         "style": None if style_row is None else _style(style_row),
         "style_guess": style_row is not None and style_row.get("style_guess") is True,
+        # Chosen at Start (or named in the prompt): never a guess.  An older take says neither.
+        "style_chosen": style_row is not None and style_row.get("style_chosen") is True,
         "bpm": None if bpm is None else round(bpm),
         "seconds": round(_length_s(rows, ending), 2),
         "bars": len(rows),
@@ -1347,6 +1349,6 @@ def _take_doc(rows, cue_log, take_dir, ending, manifest, seed, sizes, keep, live
 def summary(take: dict) -> dict:
     """The shelf's view of :func:`read_take`."""
     names = ("folder", "kept", "name", "started_at", "key", "key_guess", "style", "style_guess",
-             "bpm", "seconds", "bars",
+             "style_chosen", "bpm", "seconds", "bars",
              "bytes", "portrait")
     return {name: take[name] for name in names}

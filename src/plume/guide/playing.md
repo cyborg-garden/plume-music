@@ -13,18 +13,23 @@ drums keep playing alone and the band keeps waiting.
 
 ## Key and style
 
-In Settings, Key and Style say **Detect** until you type over them. With Detect, plume
-works both out as you play, and the live screen marks what it chose as a guess, for
-example "F major, midwest (a guess)". A key or style you typed is never called a guess,
-and a key you named never moves. Plume plays major and minor keys.
+Under Start, **Style** says **Let plume guess** until you pick one. Pick a style and the
+band plays it from the first bar, and nothing you play changes it. Plume remembers your
+pick for next time. To go back to guessing, pick **Let plume guess** again.
 
-With Style on Detect, plume does not know your style yet when you start, so it plays
+Key is in Settings and says **Detect** until you type over it. Plume works out whatever
+you left to it as you play, and the screens say which is which, for example "F major (a
+guess) · Folk, plume's guess", or "F major · Folk, chosen". A key you named never moves.
+Plume plays major and minor keys.
+
+While plume is guessing the style, it does not know it yet when you start, so it plays
 only a quiet click on each beat, a little stronger on the one, like a metronome. The
 style's own drums come in with the bass and chords, at the start of a bar. A style you
-typed plays its own drums from the first bar.
+picked plays its own drums from the first bar.
 
-The styles are `lofi`, `midwest`, `trap`, `synthwave`, `jazz`, `house`, `hiphop`, `rnb`
-and `folk`. You can also type `boom bap` for hiphop, or `r&b` or `neo soul` for rnb.
+The styles are Folk, Hip hop, House, Jazz, Lo-fi, Midwest emo, R&B, Synthwave and Trap.
+From a terminal, name one in the prompt: `lofi`, `midwest`, `trap`, `synthwave`, `jazz`,
+`house`, `hiphop` (or `boom bap`), `rnb` (or `r&b`, `neo soul`) or `folk`.
 
 Folk is a light acoustic band: brushes and a cajon, an upright bass on the root and fifth,
 and a piano playing plain open chords. It plays in 4/4 only for now, so a waltz is not
@@ -37,7 +42,7 @@ Midwest changes with tempo: below 70 it plays a swung breakbeat with the snare o
 and from 70 up it plays half-time with the snare on 3.
 
 A guessed style is only a guess from your tempo, key and how busy you are. Plume never
-guesses jazz below 150 bpm, so name it if that is what you want.
+guesses jazz below 150 bpm, so pick it if that is what you want.
 
 Plume guesses folk only when it hears you strumming, on a direct input, between 60 and 132
 bpm. A strum drags the pick across the strings, and plume hears the attack last longer

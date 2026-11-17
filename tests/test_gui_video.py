@@ -1033,3 +1033,21 @@ def test_a_video_can_be_added_the_moment_cancel_answers(root, take, stalled, tmp
         assert stalled[0].poll() is not None and len(temps(take)) == 1
     finally:
         srv.close()
+
+
+def test_one_leftover_that_cannot_be_removed_does_not_keep_the_rest(server, client, take, monkeypatch):
+    names = [take / (f".video-in.{c * 16}.tmp") for c in "abc"] + [take / f".video.mp4.{'d' * 16}.tmp"]
+    for path in names:
+        path.write_bytes(b"x")
+        os.utime(path, (LONG_AGO, LONG_AGO))
+    real, refused = gui._unlink_in, []
+
+    def stuck_once(where, name):
+        if not refused:                              # whichever is tried first: held open elsewhere
+            refused.append(name)
+            raise PermissionError(name)
+        real(where, name)
+
+    monkeypatch.setattr(gui, "_unlink_in", stuck_once)
+    client.get("/api/takes")
+    assert temps(take) == refused

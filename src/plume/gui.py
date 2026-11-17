@@ -1134,15 +1134,20 @@ def _sweep_video_leftovers(path: Path, folder) -> None:
     As for mixes: only names this module makes, only plain files, only old ones.
     """
     try:
-        now = time.time()
-        for name in os.listdir(path):
-            if not (_VIDEO_IN_RE.fullmatch(name) or _VIDEO_OUT_RE.fullmatch(name)):
-                continue
+        names = os.listdir(path)
+    except OSError:
+        return
+    now = time.time()
+    for name in names:
+        if not (_VIDEO_IN_RE.fullmatch(name) or _VIDEO_OUT_RE.fullmatch(name)):
+            continue
+        # Each on its own: one held open elsewhere, or gone already, keeps none of the rest.
+        try:
             st = os.lstat(path / name)
             if stat.S_ISREG(st.st_mode) and now - st.st_mtime > _VIDEO_TMP_STALE_S:
                 _unlink_in(folder, name)
-    except OSError:
-        pass
+        except OSError:
+            continue
 
 
 def _something_inside(folder: Path) -> str | None:

@@ -24,7 +24,7 @@ from plume import gui, takevideo
 from test_gui_bridge import Client
 from test_gui_files import make_take, take_id
 from video_fixture import (FFMPEG, heard_by_camera, make_video, needs_ffmpeg, picture_md5, placed, playing,
-                           talking)
+                           stalled_tools, talking)
 
 RATE = 48000
 TAKE_S, VIDEO_S = 8.0, 14.0
@@ -777,23 +777,9 @@ def test_the_only_names_ever_written_are_plumes_own(server, client, take, film):
 
 @pytest.fixture
 def stalled(monkeypatch):
-    """Every tool plume starts hangs for ever.  Real children; any left running are stopped here."""
-    import subprocess
-    import sys
-
-    started = []
-
-    def spawn(cmd, **kw):
-        proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(3600)"], **kw)
-        started.append(proc)
-        return proc
-
-    monkeypatch.setattr(takevideo, "_spawn", spawn)
-    yield started
-    for proc in started:
-        if proc.poll() is None:
-            proc.kill()
-        proc.wait(timeout=60)
+    """Every tool plume starts hangs for ever: real children, all ended by the end of the
+    test, and the test fails rather than hangs if plume stops ending them itself."""
+    yield from stalled_tools(monkeypatch)
 
 
 def hanging_server(root, tmp_path, monkeypatch):

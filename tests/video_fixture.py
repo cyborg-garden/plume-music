@@ -6,6 +6,8 @@ black square, written by ffmpeg itself, so no file is fetched and none is kept.
 from __future__ import annotations
 
 import subprocess
+import sys
+import threading
 
 import numpy as np
 import pytest
@@ -159,3 +161,51 @@ def described(path) -> str:
     done = subprocess.run([FFMPEG, "-hide_banner", "-i", str(path)], capture_output=True, timeout=120,
                           stdin=subprocess.DEVNULL)
     return done.stderr.decode("utf-8", errors="replace")
+
+
+#: The most a test with a tool that hangs may take.  Plume ends such a tool in a moment;
+#: past this, it has stopped doing so, and the test fails here instead of hanging the run.
+STALL_GUARD_S = 30.0
+
+
+class Stalled(list):
+    """Every tool started in a test, each one a real child that never ends by itself."""
+
+    def __init__(self, guard_s: float):
+        super().__init__()
+        self.guard_s, self.tripped = guard_s, False
+        self._timer = threading.Timer(guard_s, self._trip)
+        self._timer.daemon = True
+        self._timer.start()
+
+    def spawn(self, cmd, **kw):  # noqa: ARG002 - what plume asked to run is not run
+        proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(3600)"], **kw)
+        self.append(proc)
+        return proc
+
+    def _trip(self) -> None:
+        self.tripped = True
+        self.end()
+
+    def end(self) -> None:
+        for proc in list(self):
+            if proc.poll() is None:
+                proc.kill()
+
+    def close(self) -> None:
+        self._timer.cancel()
+        self.end()
+        for proc in self:
+            proc.wait(timeout=60)
+
+
+def stalled_tools(monkeypatch, guard_s: float = STALL_GUARD_S):
+    """For a fixture: tools that hang for ever, every one of them ended by the end of the test."""
+    tools = Stalled(guard_s)
+    monkeypatch.setattr(takevideo, "_spawn", tools.spawn)
+    try:
+        yield tools
+    finally:
+        tools.close()
+    assert not tools.tripped, (f"a tool that hangs was still running after {tools.guard_s:.0f} s: "
+                               "plume no longer ends it")

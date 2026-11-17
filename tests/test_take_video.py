@@ -15,7 +15,7 @@ import pytest
 
 from plume import takevideo
 from video_fixture import (CAMERA_SECRETS, FFMPEG, PLACE, described, float_sound, heard_by_camera,
-                           make_camera_video, make_video, needs_ffmpeg, placed, playing, talking)
+                           make_camera_video, make_video, needs_ffmpeg, placed, playing, stalled_tools, talking)
 
 R = takevideo.ALIGN_RATE
 #: How close the start must be found.  Half a video frame at 100 frames a second,
@@ -531,26 +531,9 @@ def test_an_ffmpeg_on_the_path_proper_is_found_by_its_whole_address(tmp_path, mo
 
 @pytest.fixture
 def stalled(monkeypatch):
-    """Every tool plume starts is one that never does anything and never ends by itself.
-
-    Real children, so that stopping them is really tested; the list holds each one, and
-    whatever a test leaves running is stopped here.
-    """
-    import subprocess
-
-    started = []
-
-    def spawn(cmd, **kw):
-        proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(3600)"], **kw)
-        started.append(proc)
-        return proc
-
-    monkeypatch.setattr(takevideo, "_spawn", spawn)
-    yield started
-    for proc in started:
-        if proc.poll() is None:
-            proc.kill()
-        proc.wait(timeout=60)
+    """Every tool plume starts hangs for ever: real children, all ended by the end of the
+    test, and the test fails rather than hangs if plume stops ending them itself."""
+    yield from stalled_tools(monkeypatch)
 
 
 @pytest.fixture

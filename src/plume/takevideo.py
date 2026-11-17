@@ -31,6 +31,8 @@ import shutil
 import stat
 import subprocess
 import sys
+import threading
+import time
 from dataclasses import dataclass
 
 import numpy as np
@@ -58,6 +60,16 @@ _FINE_FLOOR = 6.0
 _FINE_AGREE_S = 0.005
 #: ... and from here up it is as sure as it gets.
 _FINE_SURE = 20.0
+#: Another place within this of the best is the same place.
+_SAME_PLACE_S = 0.25
+#: Other places are looked at when their outline fits this much as well as the best's ...
+_RUNNER_OUTLINE = 0.5
+#: ... at most this many of them ...
+_RUNNERS_UP = 4
+#: ... and one whose sound fits this much as well as the best's makes the answer a guess.
+_RUNNER_SOUND = 0.5
+#: What a guess between places that fit alike is worth.
+_AMBIGUOUS = 0.2
 #: At or above this, the place is trusted and nobody is asked.
 CONFIDENT = 0.5
 #: Quieter than this at its loudest, a sound is nothing to line up with.
@@ -65,8 +77,14 @@ _SILENT_PEAK = 10 ** (-60 / 20)
 _DRIFT_MIN_S = 40.0
 _PCM_BLOCK = 1 << 16
 _LIMITER_AHEAD_MS = 5
+#: The level the loudest moment is handed to the encoder at: 1 dB under full scale.
+_HEADROOM = 0.891
+#: A video whose decoded sound passes this (half a decibel under full scale) is written
+#: again, quieter, at most this many times.
+_CEILING = 0.944
+_LOUD_TRIES = 2
 _DURATION_RE = re.compile(r"Duration:\s*(\d+):(\d\d):(\d\d(?:\.\d+)?)")
-_STREAM_RE = re.compile(r"Stream #0:\d+.*?: (Video|Audio): (.*)")
+_STREAM_RE = re.compile(r"Stream #0:(\d+).*?: (Video|Audio): (.*)")
 
 
 #: The file a finished video is saved as, in the take's folder.
@@ -134,6 +152,8 @@ class Probe:
     has_audio: bool
     #: The picture's format, as ffmpeg names it: "h264", "hevc".
     codec: str = ""
+    #: Which of the file's tracks the picture is.  Not always the first: a still can sit ahead of it.
+    picture: int = 0
 
 
 @dataclass(frozen=True)
@@ -164,7 +184,69 @@ def find_ffmpeg() -> str | None:
             return exe
     except Exception:  # noqa: BLE001 - not installed, or installed with no binary for this machine
         pass
-    return shutil.which("ffmpeg")
+    return _on_path()
+
+
+def _same_folder(a: str, b: str) -> bool:
+    return os.path.normcase(os.path.abspath(a)) == os.path.normcase(os.path.abspath(b))
+
+
+def _on_path() -> str | None:
+    """An ffmpeg the PATH names by a whole address, and no other.
+
+    Windows looks in the folder a program runs in before it looks along the PATH, and a
+    PATH can hold "." or an empty entry that means the same.  A take's folder, or a
+    download, must never be where the tool plume runs comes from.  So one found in the
+    current folder counts only if the PATH names that folder in full.
+    """
+    entries = [e for e in os.environ.get("PATH", "").split(os.pathsep) if e and os.path.isabs(e)]
+    found = shutil.which("ffmpeg")
+    if found:
+        folder = os.path.dirname(found)
+        loose = folder in ("", ".") or not os.path.isabs(found)
+        if not loose and (not _same_folder(folder, os.getcwd())
+                          or any(_same_folder(folder, entry) for entry in entries)):
+            return found
+    if not found:
+        return None
+    # The one found first was not to be trusted.  There may still be a proper one behind it.
+    names = ["ffmpeg"]
+    if sys.platform == "win32":
+        names = ["ffmpeg" + ext for ext in os.environ.get("PATHEXT", ".EXE").split(os.pathsep) if ext]
+    for entry in entries:
+        for name in names:
+            path = os.path.join(entry, name)
+            if os.path.isfile(path) and os.access(path, os.X_OK):
+                return path
+    return None
+
+
+#: The pictures an mp4 can hold as they are, by ffmpeg's names for them.
+_COPIES = frozenset({"h264", "hevc", "mpeg4", "av1", "vp9"})
+
+
+def can_copy(codec: str) -> bool:
+    """Whether a picture in this form can go into the saved file without being made again."""
+    return codec in _COPIES
+
+
+#: Every run of the tool is given this long ...
+_TIME_BASE_S = 120.0
+#: ... and this much more for each second of what it is reading or writing.  Slower
+#: than that, on any machine that can play a video, it has stopped doing anything.
+_TIME_PER_S = 1.0
+#: How often a running tool is looked in on.
+_WATCH_S = 0.05
+
+
+def time_limit(duration_s: float | None) -> float:
+    """How long a run of the tool may take for media this long, before it is given up on."""
+    seconds = MAX_VIDEO_S if duration_s is None else max(0.0, float(duration_s))
+    return _TIME_BASE_S + _TIME_PER_S * seconds
+
+
+#: How a child is started.  Tests put a tool that hangs here.
+_spawn = subprocess.Popen
 
 
 def _quiet() -> dict:
@@ -172,6 +254,56 @@ def _quiet() -> dict:
     if sys.platform == "win32":
         return {"creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0)}
     return {}
+
+
+class _Child:
+    """A run of the tool that cannot outlive its welcome.
+
+    A tool that has stopped doing anything gives no sign of it: a read from it, or a
+    write to it, just never comes back.  So each run is looked in on from another
+    thread, and ended there when it has been cancelled or has had its time.  The read
+    or write then comes back at once, and :meth:`check` says why.
+    """
+
+    def __init__(self, cmd, *, limit_s: float, cancelled=None, **pipes):
+        self.why: str | None = None
+        self._cancelled, self._limit_s = cancelled, limit_s
+        self._over = threading.Event()
+        try:
+            self.proc = _spawn(cmd, **pipes, **_quiet())
+        except OSError:
+            raise VideoError("failed") from None
+        self._watcher = threading.Thread(target=self._watch, name="plume-video-watch", daemon=True)
+        self._watcher.start()
+
+    def _watch(self) -> None:
+        end = time.monotonic() + self._limit_s
+        while not self._over.wait(_WATCH_S):
+            if self._cancelled is not None and self._cancelled():
+                self.why = "cancelled"
+            elif time.monotonic() > end:
+                self.why = "stalled"
+            if self.why is not None:
+                try:
+                    self.proc.kill()
+                except OSError:
+                    pass
+                return
+
+    def check(self) -> None:
+        """Raise if this run was ended from outside: cancelled, or out of time."""
+        if self.why == "cancelled" or (self._cancelled is not None and self._cancelled()):
+            raise Cancelled
+        if self.why == "stalled":
+            raise VideoError("failed")
+
+    def __enter__(self) -> "_Child":
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self._over.set()
+        _stop(self.proc)
+        self._watcher.join(timeout=30)
 
 
 def _stop(proc) -> None:
@@ -192,18 +324,27 @@ def _stop(proc) -> None:
         pass
 
 
-def probe(ffmpeg: str, path) -> Probe:
+def probe(ffmpeg: str, path, *, cancelled=None) -> Probe:
     """What a file holds.  Raises ``VideoError("not_video")`` for anything but a video."""
-    try:
-        done = subprocess.run([ffmpeg, "-hide_banner", "-nostdin", "-i", os.fspath(path)],
-                              stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                              stderr=subprocess.PIPE, timeout=120, check=False, **_quiet())
-    except (OSError, subprocess.TimeoutExpired):
-        raise VideoError("not_video") from None
-    text = done.stderr.decode("utf-8", errors="replace")
-    kinds = [(kind, rest) for kind, rest in _STREAM_RE.findall(text)]
+    with _Child([ffmpeg, "-hide_banner", "-nostdin", "-i", os.fspath(path)], limit_s=time_limit(0.0),
+                cancelled=cancelled, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE) as child:
+        try:
+            said = child.proc.stderr.read()
+        except (OSError, ValueError):
+            said = b""
+        child.check()
+    return read_probe(said.decode("utf-8", errors="replace"))
+
+
+def read_probe(text: str) -> Probe:
+    """What ffmpeg's account of a file says it holds."""
+    tracks = _STREAM_RE.findall(text)
+    kinds = [(kind, rest) for _, kind, rest in tracks]
     # A song's cover art is a picture, not a film.
-    video = [rest for kind, rest in kinds if kind == "Video" and "attached pic" not in rest]
+    films = [(int(index), rest) for index, kind, rest in tracks
+             if kind == "Video" and "attached pic" not in rest]
+    video = [rest for _, rest in films]
     found = _DURATION_RE.search(text)
     if not video or not found:
         raise VideoError("not_video")
@@ -212,16 +353,22 @@ def probe(ffmpeg: str, path) -> Probe:
     if not 0 < duration <= MAX_VIDEO_S:
         raise VideoError("not_video" if duration <= 0 else "too_long")
     codec = re.match(r"[a-z0-9_]+", video[0])
-    return Probe(duration, any(kind == "Audio" for kind, _ in kinds), codec.group(0) if codec else "")
+    codec = codec.group(0) if codec else ""
+    if not can_copy(codec):
+        # Said now, in the words for a file plume cannot use, and not after minutes of work.
+        raise VideoError("not_video")
+    return Probe(duration, any(kind == "Audio" for kind, _ in kinds), codec, films[0][0])
 
 
 def decode(ffmpeg: str, source, *, rate: int = ALIGN_RATE, cancelled=None,
-           start_s: float | None = None, seconds: float | None = None) -> np.ndarray:
+           start_s: float | None = None, seconds: float | None = None,
+           duration_s: float | None = None) -> np.ndarray:
     """A file's first sound as mono floats at ``rate``, on the file's own clock.
 
     ``source`` is a path, or an open binary file, which is piped in so that a file
     opened safely stays the file that is read.  Sound that begins late in a video is
-    padded so that sample 0 is the video's time 0.
+    padded so that sample 0 is the video's time 0.  ``duration_s`` is how long the file
+    is, if that is known: it sets how long the tool is given.
     """
     piped = not isinstance(source, (str, os.PathLike))
     cmd = [ffmpeg, "-hide_banner", "-loglevel", "error"]
@@ -234,25 +381,24 @@ def decode(ffmpeg: str, source, *, rate: int = ALIGN_RATE, cancelled=None,
         cmd += ["-t", f"{seconds:.6f}"]
     cmd += ["-map", "0:a:0", "-vn", "-sn", "-dn", "-af", "aresample=async=1:first_pts=0",
             "-ac", "1", "-ar", str(rate), "-f", "s16le", "pipe:1"]
-    try:
-        proc = subprocess.Popen(cmd, stdin=source if piped else subprocess.DEVNULL,
-                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, **_quiet())
-    except OSError:
-        raise VideoError("failed") from None
     blocks, limit, got = [], int(MAX_VIDEO_S * rate) * 2, 0
-    try:
+    with _Child(cmd, limit_s=time_limit(seconds if duration_s is None else duration_s), cancelled=cancelled,
+                stdin=source if piped else subprocess.DEVNULL, stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL) as child:
         while True:
             if cancelled is not None and cancelled():
                 raise Cancelled
-            block = proc.stdout.read(1 << 20)
+            try:
+                block = child.proc.stdout.read(1 << 20)
+            except (OSError, ValueError):
+                block = b""
             if not block:
                 break
             blocks.append(block)
             got += len(block)
             if got > limit:
                 raise VideoError("too_long")
-    finally:
-        _stop(proc)
+        child.check()
     data = b"".join(blocks)
     return np.frombuffer(data[:len(data) // 2 * 2], dtype="<i2").astype(np.float32) / 32768.0
 
@@ -414,8 +560,32 @@ def align(video: np.ndarray, take: np.ndarray) -> Alignment:
     start_s = (int(lags[best]) + _peak(score, best) - best) / ENV_RATE
     start_s, strength = _fine(video, take, start_s)
     confidence = float(np.clip((strength - _FINE_FLOOR) / (_FINE_SURE - _FINE_FLOOR), 0.0, 1.0))
+    if confidence >= CONFIDENT and _fits_elsewhere(video, take, lags, score, best, strength):
+        confidence = _AMBIGUOUS
     drift = _drift(video, take, start_s) if confidence > 0 else None
     return Alignment(float(start_s), confidence, drift)
+
+
+def _fits_elsewhere(video: np.ndarray, take: np.ndarray, lags: np.ndarray, score: np.ndarray,
+                    best: int, strength: float) -> bool:
+    """True when the take fits another place in the video about as well as the best one.
+
+    A hand never plays a phrase twice the same, so a second round of it fits in outline
+    and not in sound.  A looper's rounds are the same samples: every round fits in both,
+    and which one the take is cannot be heard.  Then the answer is a guess, however sharp.
+    """
+    others = score.copy()
+    apart = int(_SAME_PLACE_S * ENV_RATE)
+    others[max(0, best - apart):best + apart + 1] = -np.inf
+    for _ in range(_RUNNERS_UP):
+        at = int(np.argmax(others))
+        if not others[at] >= _RUNNER_OUTLINE * score[best]:
+            return False
+        _, other = _fine(video, take, (int(lags[at]) + _peak(score, at) - at) / ENV_RATE)
+        if other >= _RUNNER_SOUND * strength:
+            return True
+        others[max(0, at - apart):at + apart + 1] = -np.inf
+    return False
 
 
 def first_sound_s(take: np.ndarray) -> float:
@@ -449,29 +619,36 @@ def laid_in(mixed, band_at: int, begin: int, count: int) -> bytes:
     return _silence(lead) + (mixed(first + lead, count - lead) if count > lead else b"")
 
 
-def _graph(keep_sound: bool, rate: int) -> list[str]:
-    """What the child does with the two sounds.  Input 0 is the video, input 1 the take."""
+def _graph(keep_sound: bool, rate: int, gain: float = 0.0) -> list[str]:
+    """What the child does with the two sounds.  Input 0 is the video, input 1 the take.
+
+    ``gain`` is the level the loudest moment is handed to the encoder at, as a share of
+    full scale; none given means :data:`_HEADROOM`.
+    """
+    gain = gain or _HEADROOM
     if not keep_sound:
-        return ["-map", "0:v:0", "-map", "1:a:0", "-af", "pan=stereo|c0=c0|c1=c0"]
+        return ["-map", "1:a:0", "-af", f"pan=stereo|c0={gain:.4f}*c0|c1={gain:.4f}*c0"]
     # Summed at full level, then held under full scale only where the sum would pass it.
     # amerge and pan rather than amix: every ffmpeg adds these the same way.
     graph = (f"[0:a:0]aresample={rate}:async=1:first_pts=0,aformat=channel_layouts=stereo,apad[cam];"
              "[1:a:0]pan=stereo|c0=c0|c1=c0[take];"
              "[cam][take]amerge=inputs=2,pan=stereo|c0=c0+c2|c1=c1+c3,"
-             f"alimiter=limit=0.891:attack={_LIMITER_AHEAD_MS}:release=80:level=disabled,"
+             f"alimiter=limit={_HEADROOM}:attack={_LIMITER_AHEAD_MS}:release=80:level=disabled,"
              # The limiter looks ahead, and hands its sound over that much late.  Taken back
              # off here, or the band would trail the picture by it.
-             f"atrim=start={_LIMITER_AHEAD_MS / 1000.0},asetpts=PTS-STARTPTS[out]")
-    return ["-filter_complex", graph, "-map", "0:v:0", "-map", "[out]"]
+             f"atrim=start={_LIMITER_AHEAD_MS / 1000.0},asetpts=PTS-STARTPTS,"
+             f"volume={gain / _HEADROOM:.4f}[out]")
+    return ["-filter_complex", graph, "-map", "[out]"]
 
 
 def write_command(ffmpeg: str, source, out, *, rate: int, duration_s: float, keep_sound: bool,
-                  codec: str = "") -> list[str]:
+                  codec: str = "", gain: float = 0.0, picture: int | None = None) -> list[str]:
     """The child's command line: the video in, the take on its standard input, an mp4 out."""
     cmd = [ffmpeg, "-hide_banner", "-loglevel", "error", "-y",
            "-i", os.fspath(source),
            "-f", "s16le", "-ar", str(rate), "-ac", "1", "-i", "pipe:0",
-           *_graph(keep_sound, rate), "-c:v", "copy"]
+           "-map", "0:v:0" if picture is None else f"0:{int(picture)}",
+           *_graph(keep_sound, rate, gain), "-c:v", "copy"]
     if codec == "hevc":
         # This format has two names in an mp4, and some players only know this one.
         cmd += ["-tag:v", "hvc1"]
@@ -481,23 +658,65 @@ def write_command(ffmpeg: str, source, out, *, rate: int, duration_s: float, kee
 
 
 def write_video(ffmpeg: str, source, out, *, mixed, rate: int, band_at: int, duration_s: float,
-                keep_sound: bool, codec: str = "", cancelled=None, progress=None) -> None:
+                keep_sound: bool, codec: str = "", picture: int | None = None, cancelled=None,
+                progress=None) -> None:
     """Write ``source`` again at ``out`` with the take in its sound.
 
     The picture is copied as it is.  The sound is the video's own, if kept, with the
     take's mix on top, as AAC.  Nothing the camera wrote about itself comes along:
     no tags, no place, no chapters, no data tracks.
+
+    An encoder's copy of a sound overshoots the sound it was given, and by more the
+    harder that sound was driven.  So the result is listened to (by the child, as
+    numbers): a video whose sound would pass full scale is written again, turned down
+    by as much as it passed.
     """
+    gain = _HEADROOM
+    for again in range(_LOUD_TRIES + 1):
+        _write_once(ffmpeg, source, out, mixed=mixed, rate=rate, band_at=band_at, duration_s=duration_s,
+                    keep_sound=keep_sound, codec=codec, gain=gain, picture=picture, cancelled=cancelled,
+                    progress=progress)
+        peak = loudest(ffmpeg, out, cancelled=cancelled, duration_s=duration_s)
+        if peak <= _CEILING or again == _LOUD_TRIES:
+            return
+        gain *= _HEADROOM / peak
+
+
+def loudest(ffmpeg: str, path, *, cancelled=None, duration_s: float | None = None) -> float:
+    """The largest sample in a file's sound once decoded, where 1.0 is full scale."""
+    cmd = [ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin", "-i", os.fspath(path),
+           "-map", "0:a:0", "-vn", "-sn", "-dn", "-f", "f32le", "pipe:1"]
+    peak, rest = 0.0, b""
+    with _Child(cmd, limit_s=time_limit(duration_s), cancelled=cancelled, stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL) as child:
+        while True:
+            if cancelled is not None and cancelled():
+                raise Cancelled
+            try:
+                block = child.proc.stdout.read(1 << 20)
+            except (OSError, ValueError):
+                block = b""
+            if not block:
+                break
+            block = rest + block
+            whole = len(block) // 4 * 4
+            rest = block[whole:]
+            if whole:
+                peak = max(peak, float(np.max(np.abs(np.frombuffer(block[:whole], dtype="<f4")))))
+        child.check()
+    return peak if math.isfinite(peak) else 0.0
+
+
+def _write_once(ffmpeg: str, source, out, *, mixed, rate: int, band_at: int, duration_s: float,
+                keep_sound: bool, codec: str, gain: float, picture: int | None = None, cancelled=None,
+                progress=None) -> None:
     # A little past the end, so the sound never stops short of the picture.
     total = max(1, math.ceil((duration_s + 0.1) * rate))
     cmd = write_command(ffmpeg, source, out, rate=rate, duration_s=duration_s, keep_sound=keep_sound,
-                        codec=codec)
-    try:
-        proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
-                                stderr=subprocess.DEVNULL, **_quiet())
-    except OSError:
-        raise VideoError("failed") from None
-    try:
+                        codec=codec, gain=gain, picture=picture)
+    with _Child(cmd, limit_s=time_limit(duration_s), cancelled=cancelled, stdin=subprocess.PIPE,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) as child:
+        proc = child.proc
         try:
             for begin in range(0, total, _PCM_BLOCK):
                 if cancelled is not None and cancelled():
@@ -507,20 +726,14 @@ def write_video(ffmpeg: str, source, out, *, mixed, rate: int, band_at: int, dur
                 if progress is not None:
                     progress((begin + count) / total)
             proc.stdin.close()
-        except (BrokenPipeError, OSError):
+        except (OSError, ValueError):
+            # The tool went away: stopped from outside, or it failed by itself.
+            child.check()
             raise VideoError("failed") from None
-        while True:
-            if cancelled is not None and cancelled():
-                raise Cancelled
-            try:
-                code = proc.wait(timeout=0.2)
-                break
-            except subprocess.TimeoutExpired:
-                continue
+        code = proc.wait()                  # ended by itself, or by the watcher: never for ever
+        child.check()
         if code != 0:
             raise VideoError("failed")
-    finally:
-        _stop(proc)
 
 
 def preview(ffmpeg: str, source, *, mixed, rate: int, band_at: int, from_s: float, seconds: float,
@@ -530,7 +743,7 @@ def preview(ffmpeg: str, source, *, mixed, rate: int, band_at: int, from_s: floa
     take = np.frombuffer(laid_in(mixed, band_at, begin, count), dtype="<i2").astype(np.float32) / 32768.0
     if not has_audio:
         return take
-    cam = decode(ffmpeg, source, rate=rate, start_s=begin / rate, seconds=seconds)[:count]
+    cam = decode(ffmpeg, source, rate=rate, start_s=begin / rate, seconds=seconds, duration_s=seconds)[:count]
     out = take.copy()
     out[:len(cam)] += cam
     return out

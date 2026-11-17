@@ -14,7 +14,8 @@ import numpy as np
 import pytest
 
 from plume import takevideo
-from video_fixture import FFMPEG, heard_by_camera, make_video, needs_ffmpeg, placed, playing, talking
+from video_fixture import (CAMERA_SECRETS, FFMPEG, PLACE, described, float_sound, heard_by_camera,
+                           make_camera_video, make_video, needs_ffmpeg, placed, playing, talking)
 
 R = takevideo.ALIGN_RATE
 #: How close the start must be found.  Half a video frame at 100 frames a second,
@@ -295,3 +296,327 @@ def test_stopping_part_way_stops_the_tool(tmp_path):
     with pytest.raises(takevideo.Cancelled):
         takevideo.write_video(FFMPEG, path, out, mixed=lambda frame, count: bytes(2 * count), rate=48000,
                               band_at=0, duration_s=2.0, keep_sound=True, cancelled=lambda: True)
+
+
+# ------------------------------------------------------------------ a loop
+
+def phrase(seed, jitter=None):
+    """Four seconds of the same eight notes.  ``jitter`` plays them as a hand would: each
+    note a little early or late and a little louder or softer, never twice the same."""
+    rng = np.random.default_rng(seed)
+    times = np.sort(rng.uniform(0.1, 3.4, 8))
+    pitches = rng.choice((110.0, 146.8, 164.8, 196.0, 220.0, 293.7, 329.6), 8)
+    out = np.zeros(4 * R)
+    for at, pitch in zip(times, pitches):
+        level = 0.2
+        if jitter is not None:
+            at, level = at + jitter.uniform(-0.02, 0.02), level * jitter.uniform(0.7, 1.3)
+        t = np.arange(int(0.5 * R)) / R
+        note = sum(np.sin(2 * np.pi * pitch * k * t) / k for k in (1, 2, 3)) * np.exp(-t / 0.2)
+        begin = int(at * R)
+        out[begin:begin + len(note)] += (note * np.minimum(1.0, t / 0.003) * level)[:len(out) - begin]
+    return out
+
+
+def test_an_exact_loop_that_also_sounds_outside_the_take_is_not_trusted():
+    """A looper plays the same samples every time round.  Where the take sits among
+    ten identical rounds cannot be heard, so plume must ask and not guess."""
+    one = phrase(51)
+    take = np.tile(one, 5)                           # rounds three to seven of ten
+    start = 2 * R + 2 * len(one)
+    heard = (placed(heard_by_camera(np.tile(one, 10), R), 2 * R, 50 * R)
+             + talking(50.0, R, 52, 0.05)).astype(np.float32)
+    found = takevideo.align(heard, take.astype(np.float32))
+    assert not found.confident, f"placed {found.start_s - start / R:+.2f} s off at confidence {found.confidence:.2f}"
+
+
+def test_a_loop_played_by_hand_is_still_found():
+    hand = np.random.default_rng(53)
+    take = np.concatenate([phrase(54, hand) for _ in range(5)])
+    start = 3 * R + 777
+    found = takevideo.align(camera(take, start, 30 * R), take.astype(np.float32))
+    assert found.confident and found.start_s == pytest.approx(start / R, abs=TOLERANCE_S)
+
+
+def test_a_loop_played_by_hand_is_found_among_more_rounds_of_it():
+    hand = np.random.default_rng(55)
+    rounds = [phrase(56, hand) for _ in range(10)]
+    take = np.concatenate(rounds[3:8])
+    start = 2 * R + 3 * 4 * R
+    heard = (placed(heard_by_camera(np.concatenate(rounds), R), 2 * R, 50 * R)
+             + talking(50.0, R, 57, 0.05)).astype(np.float32)
+    found = takevideo.align(heard, take.astype(np.float32))
+    assert found.confident and found.start_s == pytest.approx(start / R, abs=TOLERANCE_S)
+
+
+# ------------------------------------------------------------------- headroom
+
+@needs_ffmpeg
+@pytest.mark.parametrize("keep_sound", [True, False])
+def test_a_loud_take_does_not_clip_once_it_is_a_video(tmp_path, keep_sound):
+    """The encoder's copy of a sound overshoots the sound it was given.  A mix handed
+    over at full scale comes back over it, and a player clips that."""
+    rate, seconds = 48000, 4.0
+    rng = np.random.default_rng(61)
+    # As loud as a mix gets: playing driven hard into full scale, and bursts of hiss at it.
+    loud = np.clip(playing(seconds, rate, seed=62) * 20.0, -1.0, 1.0)
+    loud[rate:2 * rate] = np.clip(rng.normal(0.0, 0.6, rate), -1.0, 1.0)
+    pcm = (loud * 32767).astype("<i2")
+    source = make_video(tmp_path / "in.mp4", seconds=seconds, sound=np.clip(talking(seconds, rate, 63, 0.6), -1, 1))
+    out = tmp_path / "out.mp4"
+
+    def mixed(frame, count):
+        got = pcm[frame:frame + count]
+        return got.tobytes() + bytes(2 * (count - len(got)))
+
+    takevideo.write_video(FFMPEG, source, out, mixed=mixed, rate=rate, band_at=0, duration_s=seconds,
+                          keep_sound=keep_sound)
+    sound = float_sound(out)
+    assert float(np.max(np.abs(sound))) <= 1.0
+    assert float(np.sqrt(np.mean(sound ** 2))) > 0.2            # and it is still loud, not turned down to nothing
+
+
+# -------------------------------------------------- what the camera wrote about itself
+
+#: What each kind of file must be carrying going in, or the test proves nothing.
+MUST_CARRY = {"mp4": ("secret-title", "secret-artist", "secret-comment", "secret-picture-handler",
+                      "secret-sound-handler", "secret-chapter", "secret-subtitle"),
+              "mov": CAMERA_SECRETS[:8] + ("secret-chapter", "secret-subtitle")}
+#: What ffmpeg's account of a file says when it holds each kind of thing.
+TELLS = ("Chapter", "Subtitle", "Data:", "timecode", "creation_time", "location", "(fra)", "secret")
+
+
+@needs_ffmpeg
+@pytest.mark.parametrize("keep_sound", [True, False])
+@pytest.mark.parametrize("container", ["mp4", "mov"])
+def test_nothing_the_camera_wrote_about_itself_is_in_the_saved_video(tmp_path, container, keep_sound):
+    """Where it was filmed, on what, when, and every name on every track.  A phone writes
+    all of it, and a video shared with a band in it must carry none of it."""
+    source = make_camera_video(tmp_path / "camera", container)
+    before, told = source.read_bytes(), described(source)
+    for secret in MUST_CARRY[container]:
+        assert secret.encode() in before, f"the made-up video does not carry {secret}"
+    # An mp4 keeps the place in a box of numbers, so the text of it is not there to find.
+    assert b"loci" in before and PLACE in told and "rotation of 90" in told
+    assert (PLACE.encode() in before) is (container == "mov")
+    for tell in TELLS:
+        assert tell in told, f"the made-up video has no {tell}"
+    found = takevideo.probe(FFMPEG, source)
+    out = tmp_path / "video.mp4"
+    takevideo.write_video(FFMPEG, source, out, mixed=lambda frame, count: bytes(2 * count), rate=48000,
+                          band_at=0, duration_s=found.duration_s, keep_sound=keep_sound, codec=found.codec)
+    after, told = out.read_bytes(), described(out)
+    # (The encoder's own name is not looked for: the made-up picture carries it inside its
+    # frames, and the frames are copied as they are.)
+    for secret in CAMERA_SECRETS + ("loci", PLACE, PLACE.strip("+/"), "2001", "01:02:03", "FFMP", "Lavf"):
+        assert secret.encode() not in after, f"{secret} is in the saved video"
+    for tell in TELLS + ("(deu)", "(eng)"):
+        assert tell not in told, f"the saved video has a {tell}"
+    tracks = [line.split(": ", 2)[1] for line in told.splitlines() if line.lstrip().startswith("Stream #")]
+    assert tracks == ["Video", "Audio"]
+    # The one thing kept: which way up the picture is.
+    assert "rotation of 90" in told
+
+
+# ------------------------------------------------------- which picture, and which tool
+
+def make_with_cover(tmp_path):
+    """A video whose first picture track is a still: cover art, ahead of the film."""
+    import subprocess
+
+    film = make_video(tmp_path / "film.mp4", seconds=2.0, sound=playing(2.0, 48000))
+    cover = tmp_path / "cover.jpg"
+    subprocess.run([FFMPEG, "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "color=c=red:s=32x32",
+                    "-frames:v", "1", str(cover)], check=True, timeout=120, stdin=subprocess.DEVNULL)
+    out = tmp_path / "covered.mp4"
+    subprocess.run([FFMPEG, "-hide_banner", "-loglevel", "error", "-y", "-i", str(cover), "-i", str(film),
+                    "-map", "0:v", "-map", "1:v", "-map", "1:a", "-c", "copy", "-disposition:v:0", "attached_pic",
+                    "-f", "mp4", str(out)], check=True, timeout=120, stdin=subprocess.DEVNULL)
+    return film, out
+
+
+@needs_ffmpeg
+def test_the_film_is_copied_and_never_its_cover_art(tmp_path):
+    from video_fixture import picture_md5
+
+    film, covered = make_with_cover(tmp_path)
+    found = takevideo.probe(FFMPEG, covered)
+    told = [line for line in described(covered).splitlines() if "Stream #0:" in line and "Video" in line]
+    assert len(told) == 2, "the made-up video has no cover art"
+    film_track = next(i for i, line in enumerate(described(covered).splitlines()) if "mpeg4" in line)
+    assert found.codec == "mpeg4"
+    assert f"Stream #0:{found.picture}" in described(covered).splitlines()[film_track]
+    out = tmp_path / "video.mp4"
+    takevideo.write_video(FFMPEG, covered, out, mixed=lambda frame, count: bytes(2 * count), rate=48000,
+                          band_at=0, duration_s=found.duration_s, keep_sound=True, codec=found.codec,
+                          picture=found.picture)
+    assert picture_md5(out) == picture_md5(film)
+    assert takevideo.probe(FFMPEG, out).duration_s == pytest.approx(2.0, abs=0.3)
+
+
+def test_a_still_ahead_of_the_film_is_passed_over():
+    """Where the cover art sits depends on the kind of file.  When it comes first, the
+    film is still the track that is copied."""
+    told = """Input #0, matroska,webm, from 'in.mkv':
+  Duration: 00:00:07.50, start: 0.000000, bitrate: 900 kb/s
+  Stream #0:0: Video: mjpeg (Baseline), yuvj420p(pc), 600x600, 90k tbr, 90k tbn (attached pic)
+  Stream #0:1(und): Audio: aac (LC), 48000 Hz, stereo, fltp (default)
+  Stream #0:2(und): Video: h264 (High), yuv420p, 1280x720, 30 fps, 30 tbr, 1k tbn (default)
+"""
+    found = takevideo.read_probe(told)
+    assert found == takevideo.Probe(7.5, True, "h264", 2)
+    cmd = takevideo.write_command("ffmpeg", "in.mkv", "out.tmp", rate=48000, duration_s=7.5, keep_sound=True,
+                                  codec=found.codec, picture=found.picture)
+    assert "0:2" in cmd and "0:v:0" not in cmd
+    with pytest.raises(takevideo.VideoError):
+        takevideo.read_probe(told.replace("h264 (High)", "vp8"))
+    with pytest.raises(takevideo.VideoError):                 # a song with its cover is not a film
+        takevideo.read_probe("\n".join(told.splitlines()[:4]))
+
+
+@needs_ffmpeg
+def test_a_picture_that_cannot_be_copied_into_the_saved_file_is_refused_at_once(tmp_path):
+    import subprocess
+
+    odd = tmp_path / "odd.avi"                        # a film, but in a form an mp4 cannot hold as it is
+    subprocess.run([FFMPEG, "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi",
+                    "-i", "color=c=black:s=32x32:r=5:d=1", "-c:v", "huffyuv", str(odd)], check=True, timeout=120,
+                   stdin=subprocess.DEVNULL)
+    with pytest.raises(takevideo.VideoError) as refused:
+        takevideo.probe(FFMPEG, odd)
+    assert refused.value.why == "not_video"
+
+
+@pytest.mark.parametrize("codec,fits", [("h264", True), ("hevc", True), ("mpeg4", True), ("av1", True),
+                                        ("vp9", True), ("vp8", False), ("theora", False), ("huffyuv", False),
+                                        ("prores", False), ("", False)])
+def test_which_pictures_an_mp4_can_hold_as_they_are(codec, fits):
+    assert takevideo.can_copy(codec) is fits
+
+
+def fake_tool(folder):
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / ("ffmpeg.exe" if sys.platform == "win32" else "ffmpeg")
+    path.write_bytes(b"")
+    path.chmod(0o755)
+    return path
+
+
+def test_an_ffmpeg_in_the_folder_plume_runs_in_is_never_the_one_used(tmp_path, monkeypatch):
+    """Windows looks in the current folder before the PATH, and a PATH can name it too.
+    A take folder, or a download, must not be able to supply the tool plume runs."""
+    monkeypatch.setitem(sys.modules, "imageio_ffmpeg", None)
+    here, empty = tmp_path / "here", tmp_path / "empty"
+    fake_tool(here)
+    empty.mkdir()
+    monkeypatch.chdir(here)
+    for path in (str(empty), "." + os.pathsep + str(empty), os.pathsep + str(empty), "", "sub" + os.pathsep + "."):
+        monkeypatch.setenv("PATH", path)
+        assert takevideo.find_ffmpeg() is None, path
+
+
+def test_an_ffmpeg_on_the_path_proper_is_found_by_its_whole_address(tmp_path, monkeypatch):
+    monkeypatch.setitem(sys.modules, "imageio_ffmpeg", None)
+    real = fake_tool(tmp_path / "tools")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("PATH", "." + os.pathsep + str(tmp_path / "tools"))
+    found = takevideo.find_ffmpeg()
+    assert found is not None and os.path.isabs(found) and os.path.samefile(found, real)
+    # The folder plume runs in is fine when the PATH names it in full: that is a choice someone made.
+    monkeypatch.chdir(tmp_path / "tools")
+    assert os.path.samefile(takevideo.find_ffmpeg(), real)
+
+
+# ------------------------------------------------------------ a tool that hangs
+
+@pytest.fixture
+def stalled(monkeypatch):
+    """Every tool plume starts is one that never does anything and never ends by itself.
+
+    Real children, so that stopping them is really tested; the list holds each one, and
+    whatever a test leaves running is stopped here.
+    """
+    import subprocess
+
+    started = []
+
+    def spawn(cmd, **kw):
+        proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(3600)"], **kw)
+        started.append(proc)
+        return proc
+
+    monkeypatch.setattr(takevideo, "_spawn", spawn)
+    yield started
+    for proc in started:
+        if proc.poll() is None:
+            proc.kill()
+        proc.wait(timeout=60)
+
+
+@pytest.fixture
+def no_patience(monkeypatch):
+    """The time a tool is given, cut to a moment, so a test of running out of it need not wait."""
+    monkeypatch.setattr(takevideo, "_TIME_BASE_S", 0.05)
+    monkeypatch.setattr(takevideo, "_TIME_PER_S", 0.0)
+
+
+def after(n):
+    """A cancel that comes once the work has been asked ``n`` times whether to go on."""
+    asked = iter([False] * n)
+    return lambda: next(asked, True)
+
+
+def silence(frame, count):
+    return bytes(2 * count)
+
+
+def all_stopped(started):
+    return bool(started) and all(proc.poll() is not None for proc in started)
+
+
+def test_a_tool_is_given_time_for_the_media_it_has(monkeypatch):
+    assert takevideo.time_limit(0.0) == takevideo._TIME_BASE_S
+    assert takevideo.time_limit(600.0) == takevideo._TIME_BASE_S + 600.0 * takevideo._TIME_PER_S
+    assert takevideo.time_limit(600.0) > takevideo.time_limit(60.0) >= 60.0
+    assert takevideo.time_limit(None) == takevideo.time_limit(takevideo.MAX_VIDEO_S)
+
+
+def test_a_tool_that_hangs_reading_a_file_is_stopped(tmp_path, stalled, no_patience):
+    with pytest.raises(takevideo.VideoError) as failed:
+        takevideo.probe("ffmpeg", tmp_path / "a.mp4")
+    assert failed.value.why == "failed" and all_stopped(stalled)
+
+
+def test_a_tool_that_hangs_decoding_is_stopped(tmp_path, stalled, no_patience):
+    with pytest.raises(takevideo.VideoError) as failed:
+        takevideo.decode("ffmpeg", tmp_path / "a.mp4", duration_s=5.0)
+    assert failed.value.why == "failed" and all_stopped(stalled)
+    with open(__file__, "rb") as f, pytest.raises(takevideo.VideoError):          # and when the file is piped in
+        takevideo.decode("ffmpeg", f, duration_s=5.0)
+    assert all_stopped(stalled)
+
+
+def test_a_tool_that_hangs_writing_is_stopped(tmp_path, stalled, no_patience):
+    with pytest.raises(takevideo.VideoError) as failed:
+        takevideo.write_video("ffmpeg", tmp_path / "a.mp4", tmp_path / "out.mp4", mixed=silence, rate=48000,
+                              band_at=0, duration_s=30.0, keep_sound=True)
+    assert failed.value.why == "failed" and all_stopped(stalled)
+
+
+def test_a_tool_that_hangs_measuring_is_stopped(tmp_path, stalled, no_patience):
+    with pytest.raises(takevideo.VideoError):
+        takevideo.loudest("ffmpeg", tmp_path / "a.mp4", duration_s=5.0)
+    assert all_stopped(stalled)
+
+
+def test_cancel_stops_a_tool_that_hangs_wherever_it_hangs(tmp_path, stalled):
+    with pytest.raises(takevideo.Cancelled):
+        takevideo.probe("ffmpeg", tmp_path / "a.mp4", cancelled=after(2))
+    with pytest.raises(takevideo.Cancelled):
+        takevideo.decode("ffmpeg", tmp_path / "a.mp4", cancelled=after(2))
+    with pytest.raises(takevideo.Cancelled):
+        takevideo.write_video("ffmpeg", tmp_path / "a.mp4", tmp_path / "out.mp4", mixed=silence, rate=48000,
+                              band_at=0, duration_s=30.0, keep_sound=False, cancelled=after(2))
+    with pytest.raises(takevideo.Cancelled):
+        takevideo.loudest("ffmpeg", tmp_path / "a.mp4", cancelled=after(2))
+    assert len(stalled) == 4 and all_stopped(stalled)

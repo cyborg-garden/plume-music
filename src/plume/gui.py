@@ -137,6 +137,8 @@ _VIDEO_NUDGE_STEP_S = 0.01
 #: With no sound to match, the nudge covers the whole video, in coarser steps.
 _VIDEO_PLACE_STEP_S = 0.05
 _VIDEO_WORKING = ("receiving", "listening", "making")
+#: How long cancel waits for work under way to let go.
+_VIDEO_CANCEL_WAIT_S = 1.0
 
 _CSP = ("default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; font-src 'self'; "
         "connect-src 'self'; media-src 'self'; base-uri 'none'; form-action 'none'; "
@@ -475,7 +477,9 @@ class Library:
     def shelf(self) -> list[dict]:
         out = []
         live = _live_folders()
-        for take_id in self._scan():
+        found = self._scan()
+        self.sweep_leftovers(found)
+        for take_id in found:
             doc = self.take(take_id, live)
             if doc is not None:
                 out.append({"id": take_id, **record.summary(doc)})
@@ -630,6 +634,27 @@ class Library:
 
     # ---------------------------------------------------------------- a video
 
+    def sweep_leftovers(self, found: dict[str, Path] | None = None) -> None:
+        """Remove copies of videos that a run which died left in any take's folder.
+
+        Such a copy is the film as it was handed over, where it was filmed and all,
+        under a hidden name.  Left there, it goes wherever the folder goes.  Only names
+        plume makes, only plain files, only old ones, and never in a take this bridge is
+        working on or holding a video for: one waiting for a nudge can wait all day.
+        """
+        for take_id, path in (self._scan() if found is None else found).items():
+            with self._lock:
+                if take_id in self._videos:
+                    continue
+            try:
+                folder = _open_folder(path)
+            except OSError:
+                continue
+            try:
+                _sweep_video_leftovers(path, folder)
+            finally:
+                _close_folder(folder)
+
     def ffmpeg(self) -> str | None:
         with self._lock:
             if self._ffmpeg is None:
@@ -764,12 +789,15 @@ class Library:
         try:
             ffmpeg, source = self.ffmpeg(), job.folder / job.source
             cancelled = job.cancel.is_set
-            job.probe = takevideo.probe(ffmpeg, source)
+            job.probe = takevideo.probe(ffmpeg, source, cancelled=cancelled)
             if cancelled():
                 raise takevideo.Cancelled
             with _open_track(job.folder, REC_HUMAN) as f:
-                take = takevideo.decode(ffmpeg, f, cancelled=cancelled)
-            heard = (takevideo.decode(ffmpeg, source, cancelled=cancelled) if job.probe.has_audio
+                # Never shorter than the recording is: two bytes a sample at a low rate.
+                long = os.fstat(f.fileno()).st_size / 16000.0
+                take = takevideo.decode(ffmpeg, f, cancelled=cancelled, duration_s=long)
+            heard = (takevideo.decode(ffmpeg, source, cancelled=cancelled, duration_s=job.probe.duration_s)
+                     if job.probe.has_audio
                      else np.zeros(0, dtype=np.float32))
             found = takevideo.align(heard, take)
             if cancelled():
@@ -838,7 +866,7 @@ class Library:
                         ffmpeg, path / job.source, path / tmp, mixed=mixed, rate=rate,
                         band_at=takevideo.video_frame_of(job.start_s, shift, rate),
                         duration_s=job.probe.duration_s, keep_sound=job.keep_sound and job.probe.has_audio,
-                        codec=job.probe.codec,
+                        codec=job.probe.codec, picture=job.probe.picture,
                         cancelled=job.cancel.is_set, progress=progress)
                     fd = _open_in(folder, tmp, os.O_WRONLY | os.O_APPEND | oscompat.O_BINARY, 0o600)
                     with os.fdopen(fd, "ab") as f:
@@ -939,8 +967,8 @@ class Library:
     def video_cancel(self, take_id: str) -> dict | None:
         """Stop a take's video, wherever it has got to, and remove what was taken in.
 
-        A finished ``video.mp4`` is not touched: it is hers now.  Work under way stops
-        at its next step and cleans up after itself; this does not wait for that.
+        A finished ``video.mp4`` is not touched: it is hers now.  Work under way is
+        stopped where it stands, tool and all, and cleans up after itself.
         """
         if self.path_of(take_id) is None:
             return None
@@ -954,6 +982,10 @@ class Library:
         if job is not None and not working:
             self._video_drop_source(job)
             job.settled.set()
+        elif job is not None:
+            # The tool is ended from outside, so this is a moment.  Waited for, so that
+            # "stopped" is true by the time it is said, and the next video is not refused.
+            job.settled.wait(_VIDEO_CANCEL_WAIT_S)
         # Asked to stop is stopped, as far as the page is concerned.
         doc = self.video_status(take_id)
         return {**{k: doc[k] for k in ("can", "ready", "have", "theirs", "max_bytes")}, "state": "idle"}
@@ -1827,6 +1859,9 @@ class GuiServer:
             except OSError:
                 httpd.server_close()
                 raise
+        # A run that died may have left a copy of a video in any take.  None waits for
+        # her next video to that take to be cleared.
+        self.library.sweep_leftovers()
         self._thread = threading.Thread(target=httpd.serve_forever, name="plume-gui",
                                         kwargs={"poll_interval": 0.1}, daemon=True)
         self._thread.start()

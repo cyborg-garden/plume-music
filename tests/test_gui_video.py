@@ -13,6 +13,7 @@ import json
 import os
 import socket
 import threading
+import time
 
 import numpy as np
 import pytest
@@ -938,3 +939,87 @@ def test_a_video_being_worked_on_is_never_swept(server, client, take, film, held
     assert temps(take) == [working]
     held.go.set()
     assert finished(server, client, tid)["state"] == "done"
+
+
+# ------------------------------------------- two plumes, one library
+
+#: Long enough for the holder to have said it is still there, on any machine.
+HEARTBEAT_WAIT_S = 20.0
+
+
+@pytest.fixture
+def quick_heartbeat(monkeypatch):
+    """A holder says it is still there every moment, not every minute.  Asked for before
+    the server, which reads this as it starts."""
+    monkeypatch.setattr(gui, "_VIDEO_HEARTBEAT_S", 0.02)
+
+
+@pytest.fixture
+def second(root, tmp_path, monkeypatch):
+    """Another plume on the same takes: a second terminal, or one left running."""
+    servers = []
+
+    def start():
+        srv = gui.GuiServer(roots=[root], log=lambda line: None, write_state=False).start()
+        servers.append(srv)
+        return Client(srv).login()
+
+    yield start
+    for srv in servers:
+        srv.close()
+
+
+def refreshed(path, since=LONG_AGO + 1):
+    """Wait until something has told ``path`` it is still in use, or give up."""
+    end = time.monotonic() + HEARTBEAT_WAIT_S
+    while time.monotonic() < end:
+        if os.stat(path).st_mtime > since:
+            return True
+        time.sleep(0.02)
+    return False
+
+
+@needs_ffmpeg
+def test_another_plume_never_sweeps_a_video_held_for_a_nudge(quick_heartbeat, server, client, take, strange,
+                                                               second):
+    """She left a video waiting for a nudge for over an hour.  Another plume listing the
+    takes in that time must not take it away, or her Save fails."""
+    tid = take_id(client, "t")
+    upload(client, tid, strange)
+    assert finished(server, client, tid)["state"] == "unsure"
+    (held,) = temps(take)
+    os.utime(take / held, (LONG_AGO, LONG_AGO))                     # as if it had waited all day
+    assert refreshed(take / held), "the plume holding it never said so"
+    other = second()
+    assert other.get("/api/takes")[0].status == 200
+    assert temps(take) == [held]
+    client.post("/api/video/place", {"take": tid, "start_s": 1.5, "sound": True})
+    assert finished(server, client, tid)["state"] == "done"
+
+
+@needs_ffmpeg
+def test_another_plume_never_sweeps_a_video_still_being_made(quick_heartbeat, server, client, take, film,
+                                                               held, second):
+    tid = take_id(client, "t")
+    upload(client, tid, film)
+    assert held.reached.wait(WAIT_S)
+    (working,) = temps(take)
+    os.utime(take / working, (LONG_AGO, LONG_AGO))                  # a very long job
+    assert refreshed(take / working)
+    second().get("/api/takes")
+    assert temps(take) == [working]
+    held.go.set()
+    assert finished(server, client, tid)["state"] == "done"
+
+
+def test_a_copy_nobody_holds_is_still_swept_by_another_plume(quick_heartbeat, server, client, take, second):
+    made = leftovers(take)
+    second().get("/api/takes")
+    assert temps(take) == [] and not any(p.exists() for p in made)
+
+
+def test_a_holder_stops_saying_so_once_it_has_closed(root, take, tmp_path, monkeypatch, quick_heartbeat):
+    monkeypatch.setenv(gui.STATE_DIR_ENV, str(tmp_path / "state"))
+    srv = gui.GuiServer(roots=[root], log=lambda line: None).start()
+    srv.close()
+    assert srv.library._heartbeat is None or not srv.library._heartbeat.is_alive()

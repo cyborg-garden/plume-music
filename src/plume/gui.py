@@ -124,6 +124,9 @@ _VIDEO_OUT_RE = re.compile(r"\." + re.escape(REC_VIDEO) + r"\.[0-9a-f]{16}\.tmp"
 #: Either of those that nothing has touched for this long was left by a run that died.
 #: Long, because a video waiting for a nudge is one nothing is touching.
 _VIDEO_TMP_STALE_S = 3600.0
+#: While a bridge holds a copy, it says so this often by touching the copy, so that
+#: another bridge on the same takes never takes it for a leftover, however long it is held.
+_VIDEO_HEARTBEAT_S = 60.0
 #: The largest video taken in: an hour of a phone's best.
 _VIDEO_MAX_BYTES = 16 * 1024 ** 3
 #: Room the disk must have beyond the video and the copy made of it.
@@ -210,6 +213,8 @@ class _VideoJob:
         self.why: str | None = None
         #: The video as it was handed over, by its name in the take's folder.
         self.source: str | None = None
+        #: The video being written, by its name in the take's folder, while it is.
+        self.writing: str | None = None
         self.cancel = threading.Event()
         self.thread: threading.Thread | None = None
         #: Set when nothing more will happen to this job without being asked.
@@ -386,6 +391,8 @@ class Library:
         self._find_ffmpeg = takevideo.find_ffmpeg if ffmpeg is None else ffmpeg
         self._ffmpeg: tuple | None = None
         self._videos: dict[str, _VideoJob] = {}
+        self._heartbeat: threading.Thread | None = None
+        self._heartbeat_stop = threading.Event()
         self.roots = [Path(r) for r in roots]
         self.pinned = None if pinned is None else Path(pinned).resolve()
         self._lock = threading.Lock()
@@ -634,13 +641,39 @@ class Library:
 
     # ---------------------------------------------------------------- a video
 
+    def start_heartbeat(self) -> None:
+        """Keep every copy this bridge holds looking fresh, for as long as it holds it."""
+        if self._heartbeat is None:
+            self._heartbeat_stop.clear()
+            self._heartbeat = threading.Thread(target=self._beat, name="plume-video-held", daemon=True)
+            self._heartbeat.start()
+
+    def stop_heartbeat(self) -> None:
+        if self._heartbeat is not None:
+            self._heartbeat_stop.set()
+            self._heartbeat.join(timeout=30)
+            self._heartbeat = None
+
+    def _beat(self) -> None:
+        while not self._heartbeat_stop.wait(_VIDEO_HEARTBEAT_S):
+            self.say_held()
+
+    def say_held(self) -> None:
+        """Touch each copy a job here holds: the video taken in, and one being written."""
+        with self._lock:
+            held = [(job.folder, name) for job in self._videos.values()
+                    for name in (job.source, job.writing) if name is not None]
+        for folder, name in held:
+            _touch(folder / name)
+
     def sweep_leftovers(self, found: dict[str, Path] | None = None) -> None:
         """Remove copies of videos that a run which died left in any take's folder.
 
         Such a copy is the film as it was handed over, where it was filmed and all,
         under a hidden name.  Left there, it goes wherever the folder goes.  Only names
         plume makes, only plain files, only old ones, and never in a take this bridge is
-        working on or holding a video for: one waiting for a nudge can wait all day.
+        working on or holding a video for: one waiting for a nudge can wait all day.  A
+        copy another bridge holds is never old: that bridge touches it while it holds it.
         """
         for take_id, path in (self._scan() if found is None else found).items():
             with self._lock:
@@ -858,6 +891,7 @@ class Library:
 
             folder = _open_folder(path)
             tmp = f".{REC_VIDEO}.{secrets.token_hex(8)}.tmp"
+            job.writing = tmp
             try:
                 # Made here first, so the name the tool is given is a plain file of plume's.
                 os.close(_open_in(folder, tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600))
@@ -1080,6 +1114,17 @@ def _sweep_mix_leftovers(path: Path, folder) -> None:
                 _unlink_in(folder, name)
     except OSError:
         pass
+
+
+def _touch(path: Path) -> None:
+    """Mark a copy of plume's as in use now.  Never through a link, where that can be asked."""
+    try:
+        if os.utime in os.supports_follow_symlinks:
+            os.utime(path, follow_symlinks=False)
+        elif not os.path.islink(path):
+            os.utime(path)
+    except OSError:
+        pass            # gone already: the work it belonged to has ended
 
 
 def _sweep_video_leftovers(path: Path, folder) -> None:
@@ -1862,6 +1907,7 @@ class GuiServer:
         # A run that died may have left a copy of a video in any take.  None waits for
         # her next video to that take to be cleared.
         self.library.sweep_leftovers()
+        self.library.start_heartbeat()
         self._thread = threading.Thread(target=httpd.serve_forever, name="plume-gui",
                                         kwargs={"poll_interval": 0.1}, daemon=True)
         self._thread.start()
@@ -1870,6 +1916,7 @@ class GuiServer:
     def close(self) -> None:
         self.takes.shutdown()
         self.library.close_videos()
+        self.library.stop_heartbeat()
         if self.httpd is not None:
             self.httpd.shutdown()
             self.httpd.server_close()

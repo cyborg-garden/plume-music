@@ -140,8 +140,9 @@ _VIDEO_NUDGE_STEP_S = 0.01
 #: With no sound to match, the nudge covers the whole video, in coarser steps.
 _VIDEO_PLACE_STEP_S = 0.05
 _VIDEO_WORKING = ("receiving", "listening", "making")
-#: How long cancel waits for work under way to let go.
-_VIDEO_CANCEL_WAIT_S = 1.0
+#: The most cancel waits for work under way to let go.  Its tool is ended at once, so this
+#: is a moment on any machine; the bound is only for a machine that has stopped.
+_VIDEO_CANCEL_WAIT_S = 30.0
 
 _CSP = ("default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; font-src 'self'; "
         "connect-src 'self'; media-src 'self'; base-uri 'none'; form-action 'none'; "

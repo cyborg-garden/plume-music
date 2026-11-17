@@ -594,16 +594,23 @@ def test_anything_unexpected_is_a_plain_failure_not_a_stuck_job(server, client, 
 
 @pytest.fixture
 def held(monkeypatch):
-    """The work, stopped as it starts to read the video, until ``held.go`` is set."""
+    """The work, stopped as it starts to read the video, until ``held.go`` is set.
+
+    Like the real tool, it stops at once when the work is cancelled.
+    """
     class Held:
         reached, go = threading.Event(), threading.Event()
 
     real = takevideo.probe
 
-    def probe(*a, **kw):
+    def probe(*a, cancelled=None, **kw):
         Held.reached.set()
-        assert Held.go.wait(WAIT_S)
-        return real(*a, **kw)
+        end = time.monotonic() + WAIT_S
+        while not Held.go.wait(0.01):
+            if cancelled is not None and cancelled():
+                raise takevideo.Cancelled
+            assert time.monotonic() < end
+        return real(*a, cancelled=cancelled, **kw)
 
     monkeypatch.setattr(takevideo, "probe", probe)
     yield Held
@@ -1023,3 +1030,20 @@ def test_a_holder_stops_saying_so_once_it_has_closed(root, take, tmp_path, monke
     srv = gui.GuiServer(roots=[root], log=lambda line: None).start()
     srv.close()
     assert srv.library._heartbeat is None or not srv.library._heartbeat.is_alive()
+
+
+def test_a_video_can_be_added_the_moment_cancel_answers(root, take, stalled, tmp_path, monkeypatch):
+    """What she does next: cancel, then drop the right video straight away.  Cancel must
+    not answer until the take is free, or that second video is refused."""
+    srv = hanging_server(root, tmp_path, monkeypatch)
+    try:
+        client = Client(srv).login()
+        tid = take_id(client, "t")
+        assert upload(client, tid, b"x" * 5000)[0] == 202
+        resp, out = client.post("/api/video/cancel", {"take": tid})
+        assert resp.status == 200 and json.loads(out)["state"] == "idle"
+        code, doc = upload(client, tid, b"x" * 5000)                # no waiting in between
+        assert code == 202, doc
+        assert stalled[0].poll() is not None and len(temps(take)) == 1
+    finally:
+        srv.close()

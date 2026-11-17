@@ -374,9 +374,57 @@ def test_a_video_for_another_take_while_one_is_on_its_way_says_so(tmp_path, docs
         const told = {VIEW};
         page.replies['video/upload'] = [202, {json.dumps({**IDLE, "state": "listening"})}];
         open(); await page.settle();
-        return {{ before, told, after: {VIEW} }};""")
+        const after = {VIEW};
+        // Then she does what it said: adds this one now that the other is done.
+        page.replies['video/upload'] = [202, {json.dumps({**IDLE, "state": "listening"})}];
+        $('video-file').files = [{{ name: 'second.mp4', size: 10 }}]; $('video-file').fire('change'); await page.settle();
+        const last = page.calls.filter((c) => c.path.startsWith('/api/video/') && c.file).pop();
+        return {{ before, told, after, retried: {VIEW}, path: last.path }};""")
     assert out["before"]["say"] == "" and out["before"]["add"]
     told = out["told"]
     assert told["say"] == "Plume is still bringing in your other video. Add this one when it's done."
     assert told["uploads"] == 1 and told["add"] and not told["warn"] and not told["bar"]
     assert out["after"]["say"] == "" and out["after"]["uploads"] == 1    # said only while it is true
+    assert out["after"]["shown"] and out["after"]["add"]
+    assert out["retried"]["uploads"] == 2, "adding it once the other was done did nothing"
+    assert out["path"] == f"/api/video/{docs['ids']['other']}?sound=1"
+    assert out["retried"]["say"] == "Finding where you start playing."
+
+
+def test_the_line_for_another_take_shows_on_a_take_whose_last_video_failed(tmp_path, docs):
+    out = run_page(tmp_path, docs, f"""
+        await page.open(ids.tap);
+        page.hold('video/upload');
+        {CHOOSE}
+        await page.shelf();
+        {video(state="failed", why="not_video")}
+        await page.open(ids.other);
+        const before = {VIEW};
+        $('video-file').files = [{{ name: 'second.mp4', size: 10 }}]; $('video-file').fire('change'); await page.settle();
+        return {{ before, told: {VIEW} }};""")
+    assert out["before"]["say"] == "Plume couldn't read that as a video. Try another file?"
+    assert out["told"]["say"] == "Plume is still bringing in your other video. Add this one when it's done."
+    assert not out["told"]["warn"] and out["told"]["uploads"] == 1
+
+
+def test_stop_says_it_is_stopping_and_is_pressed_only_once(tmp_path, docs):
+    """A tool that is slow to end leaves cancel waiting.  She sees that plume heard her,
+    and pressing again sends nothing more."""
+    out = run_page(tmp_path, docs, f"""
+        await page.open(ids.tap);
+        page.replies['video/upload'] = [202, {json.dumps({**IDLE, "state": "listening"})}];
+        {CHOOSE}
+        const open = page.hold('video/cancel');
+        $('video-stop').click(); await page.settle();
+        const stopping = {VIEW};
+        $('video-stop').click(); $('video-stop').click(); await page.settle();
+        {video(state="stopping", progress=None)}
+        await page.poll();
+        const polled = {VIEW};
+        page.replies['video/cancel'] = [200, {json.dumps(IDLE)}];
+        open(); await page.settle();
+        return {{ stopping, polled, cancels: page.posts('video/cancel').length, done: {VIEW} }};""")
+    for view in (out["stopping"], out["polled"]):
+        assert view["say"] == "Stopping." and not view["stop"] and view["bar"] and not view["add"]
+    assert out["cancels"] == 1
+    assert out["done"]["say"] == "" and out["done"]["add"] and not out["done"]["stop"]

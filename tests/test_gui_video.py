@@ -1051,3 +1051,41 @@ def test_one_leftover_that_cannot_be_removed_does_not_keep_the_rest(server, clie
     monkeypatch.setattr(gui, "_unlink_in", stuck_once)
     client.get("/api/takes")
     assert temps(take) == refused
+
+
+@pytest.fixture
+def stubborn(monkeypatch):
+    """Work that will not stop when asked until ``stubborn.go`` is set: a tool slow to die."""
+    class Stubborn:
+        reached, go = threading.Event(), threading.Event()
+
+    def probe(*a, **kw):
+        Stubborn.reached.set()
+        assert Stubborn.go.wait(WAIT_S)
+        raise takevideo.Cancelled
+
+    monkeypatch.setattr(takevideo, "probe", probe)
+    yield Stubborn
+    Stubborn.go.set()
+
+
+@needs_ffmpeg
+def test_a_cancel_already_waiting_is_not_joined_by_another(server, client, take, film, stubborn):
+    """She presses Stop, the tool is slow to end, and she presses again (or another tab
+    does).  The second answers at once that plume is stopping; one wait per video."""
+    tid = take_id(client, "t")
+    upload(client, tid, film)
+    assert stubborn.reached.wait(WAIT_S)
+    first = {}
+    waiting = threading.Thread(target=lambda: first.update(answer=client.post("/api/video/cancel", {"take": tid})))
+    waiting.start()
+    while status(client, tid)["state"] != "stopping":          # the first cancel has been heard
+        assert waiting.is_alive()
+        time.sleep(0.01)
+    resp, out = client.post("/api/video/cancel", {"take": tid})
+    assert resp.status == 200 and json.loads(out)["state"] == "stopping"
+    assert waiting.is_alive(), "the second cancel waited for the first"
+    stubborn.go.set()
+    waiting.join(WAIT_S)
+    assert first["answer"][0].status == 200 and json.loads(first["answer"][1])["state"] == "idle"
+    assert status(client, tid)["state"] == "idle" and temps(take) == []

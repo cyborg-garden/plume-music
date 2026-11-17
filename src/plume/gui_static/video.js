@@ -9,7 +9,8 @@ export const DROP_HINT = 'Drop your video anywhere here.';
 const WORKING = {
   receiving: 'Bringing your video in.',
   listening: 'Finding where you start playing.',
-  making: 'Laying the band in.'
+  making: 'Laying the band in.',
+  stopping: 'Stopping.'
 };
 const FAILED = {
   theirs: 'This take\'s folder already has a video.mp4 that plume didn\'t make. Move or rename it, then add your video again.',
@@ -52,7 +53,8 @@ export function videoView(doc, dropping, again) {
     view.say = again === 'here' ? FAILED.busy : WORKING[state];
     /* A share when the bridge knows one; otherwise a bar that only says something is happening. */
     view.bar = typeof doc.progress === 'number' ? Math.max(0, Math.min(1, doc.progress)) : 'busy';
-    view.stop = true;
+    /* Once asked to stop, there is nothing more to press. */
+    view.stop = state !== 'stopping';
     return view;
   }
   if (state === 'unsure') {
@@ -65,8 +67,9 @@ export function videoView(doc, dropping, again) {
   view.add = doc.ready === true;
   view.show = doc.have === true;
   if (doc.ready !== true) { view.say = FAILED.no_tool; return view; }
-  if (state === 'failed') { view.say = FAILED[doc.why] || FAILED_PLAINLY; view.warn = true; }
-  else if (again === 'elsewhere') view.say = ELSEWHERE;
+  /* Why this one is waiting is the newer news, so it is said even over a last failure. */
+  if (again === 'elsewhere') view.say = ELSEWHERE;
+  else if (state === 'failed') { view.say = FAILED[doc.why] || FAILED_PLAINLY; view.warn = true; }
   else if (state === 'done') view.say = DONE;
   else if (dropping) view.say = DROP_HINT;
   return view;

@@ -19,7 +19,7 @@ const S = { csrf: '', take: null, selected: null, roastOn: true, screen: 'loadin
   trackButtons: {}, track: null, audioOn: false, seekTo: null, axis: null, frame: 0, scrub: null,
   home: null, homeTurn: 0, homeNote: '', settingsNote: '', form: { device: null, channel: null },
   setup: null, setupTurn: 0, listening: false, listenSlow: false, answering: false, ending: NO_ENDING,
-  guide: null, video: null, videoTurn: 0, videoSending: null, videoTimer: 0, dropping: false };
+  guide: null, videos: {}, videoTurns: {}, videoTimers: {}, videoSending: null, dropping: false };
 
 function load(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
 function save(k, v) { try { localStorage.setItem(k, v); } catch (e) { /* private window */ } }
@@ -576,7 +576,8 @@ async function showFiles() {
 /* A video of the take, with the band laid in. The page hands the file to the bridge as it is,
    never its name, and never reads it: the browser streams it from the disk. What happens next
    the bridge says, and video.js puts into words. One video per take is ever under way. */
-function videoFor(id) { return S.video && S.video.id === id ? S.video.doc : null; }
+/* What the bridge last said of each take's video, by take: one take's news never wipes another's. */
+function videoFor(id) { return S.videos[id] || null; }
 function stopVideoPreview() {
   const p = $('video-player');
   if (!p) return;
@@ -613,30 +614,30 @@ function drawVideo() {
 }
 function setVideo(id, doc, again) {
   /* Said until the bridge next says where the work has got to. */
-  S.videoTwice = again ? { id: id, where: again } : null;
-  S.video = { id: id, doc: doc };
+  if (again) S.videoTwice = { id: id, where: again };
+  else if (S.videoTwice && S.videoTwice.id === id) S.videoTwice = null;
+  if (doc) S.videos[id] = doc; else delete S.videos[id];
   if (S.take && S.take.id === id) drawVideo();
-  clearTimeout(S.videoTimer);
-  if (isWorking(doc)) S.videoTimer = setTimeout(function () { pollVideo(id); }, 700);
+  clearTimeout(S.videoTimers[id]);
+  if (isWorking(doc)) S.videoTimers[id] = setTimeout(function () { pollVideo(id); }, 700);
 }
 async function pollVideo(id) {
-  if (!showing(id) && !S.videoSending) return;
-  const turn = ++S.videoTurn;
+  if (!showing(id) && S.videoSending !== id) return;
+  const turn = ticket(S.videoTurns, id);
   let doc = null;
   try { doc = await api('/api/take/' + encodeURIComponent(id) + '/video'); } catch (err) { /* asked again below */ }
-  if (turn !== S.videoTurn) return;
+  if (turn !== S.videoTurns[id]) return;
   /* While the file is still on its way, the bridge may not have heard of it yet. */
   if (doc && S.videoSending === id && !isWorking(doc)) doc = null;
   setVideo(id, doc || videoFor(id));
 }
 async function loadVideo(id) {
   if (S.videoSending === id) { drawVideo(); return; }
-  const turn = ++S.videoTurn;
-  S.video = null;
+  const turn = ticket(S.videoTurns, id);
   drawVideo();
   let doc = null;
   try { doc = await api('/api/take/' + encodeURIComponent(id) + '/video'); } catch (err) { return; }
-  if (turn === S.videoTurn) setVideo(id, doc);
+  if (turn === S.videoTurns[id]) setVideo(id, doc);
 }
 function videoFailed(id, why) {
   const was = videoFor(id) || {};
@@ -655,7 +656,7 @@ async function addVideo(file) {
   const stop = typeof AbortController === 'function' ? new AbortController() : null;
   S.videoSending = id;
   S.videoAbort = stop;
-  ++S.videoTurn;
+  ticket(S.videoTurns, id);
   setVideo(id, Object.assign({}, was, { state: 'receiving', progress: 0 }));
   let answer = null, doc = null;
   try {
@@ -671,23 +672,26 @@ async function addVideo(file) {
   S.videoAbort = null;
   /* "Still bringing in your other video" is over: on whichever take it was said, it goes. */
   if (S.videoTwice && S.videoTwice.where === 'elsewhere') { S.videoTwice = null; drawVideo(); }
-  ++S.videoTurn;
+  ticket(S.videoTurns, id);
   if (stopped) { loadVideo(id); return; }
   if (answer && answer.ok && doc) { setVideo(id, doc); return; }
   videoFailed(id, answer && answer.status === 401 ? 'lost' : doc && doc.why || 'failed');
 }
 async function videoOp(op, body) {
   const id = body.take;
-  ++S.videoTurn;
+  ticket(S.videoTurns, id);
   let answer = null;
   try { answer = await send(op, body); } catch (err) { /* said below */ }
-  ++S.videoTurn;
+  ticket(S.videoTurns, id);
   if (answer && answer.ok && answer.doc) { setVideo(id, answer.doc); return; }
   videoFailed(id, answer && answer.status === 401 ? 'lost' : answer && answer.doc && answer.doc.why || 'failed');
 }
 function stopVideo() {
-  const id = S.take.id;
+  const id = S.take.id, was = videoFor(id);
+  /* Asked once is enough: the page says it heard, and a second press sends nothing. */
+  if (was && was.state === 'stopping') return;
   if (S.videoSending === id && S.videoAbort) S.videoAbort.abort();
+  setVideo(id, Object.assign({}, was, { state: 'stopping', progress: null }));
   videoOp('video/cancel', { take: id });
 }
 function saveVideo() {
@@ -1628,9 +1632,10 @@ $('nav-takes').addEventListener('click', goShelf);
   window.addEventListener('pagehide', function () {
     if (S.listening) send('setup/cancel', {}, { keepalive: true }).catch(function () { /* see above */ });
     /* A video waiting for a nudge is a copy plume is holding. Nobody is coming back to this page for it. */
-    if (S.video && S.video.doc && S.video.doc.state === 'unsure') {
-      send('video/cancel', { take: S.video.id }, { keepalive: true }).catch(function () { /* the bridge clears it when it closes */ });
-    }
+    Object.keys(S.videos).forEach(function (id) {
+      if (S.videos[id].state !== 'unsure') return;
+      send('video/cancel', { take: id }, { keepalive: true }).catch(function () { /* the bridge clears it when it closes */ });
+    });
   });
   $('events').addEventListener('keydown', function (ev) {
     const list = S.take ? S.take.events : [];

@@ -715,7 +715,10 @@ class Library:
         if job is None:
             return doc
         doc.update(state=job.state, keep_sound=job.keep_sound)
-        if job.state in _VIDEO_WORKING:
+        if job.state in _VIDEO_WORKING and job.cancel.is_set():
+            # Asked to stop, and its tool not yet ended: said, so nobody presses Stop again.
+            doc.update(state="stopping", progress=None)
+        elif job.state in _VIDEO_WORKING:
             doc["progress"] = job.progress
         elif job.state == "failed":
             doc["why"] = job.why
@@ -1010,6 +1013,9 @@ class Library:
         with self._lock:
             job = self._videos.get(take_id)
             working = job is not None and job.state in _VIDEO_WORKING
+            # One request waits for a video to stop.  Any other asking meanwhile is told it
+            # is stopping, and does not wait too.
+            waits = working and not job.cancel.is_set()
             if job is not None:
                 job.cancel.set()
                 if not working:
@@ -1017,13 +1023,14 @@ class Library:
         if job is not None and not working:
             self._video_drop_source(job)
             job.settled.set()
-        elif job is not None:
+        stopped = True
+        if working:
             # The tool is ended from outside, so this is a moment.  Waited for, so that
             # "stopped" is true by the time it is said, and the next video is not refused.
-            job.settled.wait(_VIDEO_CANCEL_WAIT_S)
-        # Asked to stop is stopped, as far as the page is concerned.
+            stopped = waits and job.settled.wait(_VIDEO_CANCEL_WAIT_S)
         doc = self.video_status(take_id)
-        return {**{k: doc[k] for k in ("can", "ready", "have", "theirs", "max_bytes")}, "state": "idle"}
+        return {**{k: doc[k] for k in ("can", "ready", "have", "theirs", "max_bytes")},
+                "state": "idle" if stopped else "stopping"}
 
     def video_wait(self, take_id: str, timeout: float | None = None) -> bool:
         """Wait until a take's video needs nothing more done.  True if that came."""

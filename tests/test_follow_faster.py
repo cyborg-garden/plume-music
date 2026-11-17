@@ -7,13 +7,16 @@ move was heard sixteen seconds later, after she had come back up.  The patience 
 direction", but it is counted in half bars and seconds, the planner reads her half a
 bar sooner, and the answer is bigger and quicker.  Pure, so no device.
 """
+import threading
+
+import numpy as np
 import pytest
 from conftest import needs_laptop_speed  # noqa: E402
 
 from plume.bandentry import (FOLLOW_GAIN_MIN_DB, FOLLOW_GAIN_RETURN_STEP_DB,
                              FOLLOW_GAIN_STEP_DB, FOLLOW_HOLD_MIN_S, FOLLOW_LEARN_BARS,
                              BandFollow, follow_hold_bars)
-from plume.realtime import follow_parts, plan_lead_s, read_window_by_s
+from plume.realtime import follow_parts, plan_lead_s, read_window_by_s, wait_for_ear
 
 NORMAL_DB = -21.0
 
@@ -175,6 +178,32 @@ def test_a_bar_waits_for_the_ear_at_most_half_its_lead():
     assert read_window_by_s(10.0, ahead_s=2.0, need_s=0.1) == pytest.approx(9.0)
     # Never into the time planning needs.
     assert read_window_by_s(10.0, ahead_s=2.0, need_s=1.6) == pytest.approx(8.4)
+
+
+def test_the_bar_is_read_as_soon_as_the_ear_has_heard_it():
+    stop = threading.Event()
+    assert wait_for_ear(lambda: 5.0, 5.0, lambda: 0.0, 9.0, stop) < 0.5
+
+
+def test_a_dead_ear_holds_the_bar_only_until_the_playhead_says_so():
+    """An analysis thread that never reads again: the bar is planned from what came."""
+    stop = threading.Event()
+    playhead = iter(np.arange(0.0, 100.0, 0.5))
+    reads = []
+
+    def at():
+        reads.append(1)
+        return float(next(playhead))
+
+    wait_for_ear(lambda: 0.0, 5.0, at, 3.0, stop, poll_s=0.0)
+    assert len(reads) == 7              # 0.0 .. 3.0, and not a read past it
+
+
+def test_a_stop_ends_the_wait_at_once():
+    stop = threading.Event()
+    threading.Timer(0.05, stop.set).start()
+    waited = wait_for_ear(lambda: 0.0, 5.0, lambda: 0.0, 9.0, stop)
+    assert 0.04 <= waited < 1.0
 
 
 # ------------------------------------------------------------ her take, in numbers

@@ -770,6 +770,35 @@ def test_the_folk_band_comes_in_whatever_the_input_level(tmp_path, consent, monk
         hop = HOP / SR
         assert len(heard) > 6 * (240.0 / 96.0) / hop, "fewer than six bars reached the guess"
         assert float(np.max(np.diff(heard))) < 1.5 * hop, "frames of her playing were dropped"
+        assert np.all(np.diff(heard) > 0), "a frame was read twice, or out of order"
+
+
+def test_waiting_for_the_ear_is_not_counted_as_planning(tmp_path, consent, monkeypatch):
+    """The lead a take plans by comes from what planning costs.  A wait for a late ear
+    counted as planning would push the lead to a whole bar, the band would follow her a
+    bar later, and the wait's own deadline would fall behind the playhead and end it."""
+    import time
+
+    wait = realtime.wait_for_ear
+    long_wait_s = 0.3                    # longer than any bar's planning, by far
+
+    def slow_wait(*a, **kw):
+        time.sleep(long_wait_s)
+        return wait(*a, **kw) + long_wait_s
+
+    costs: list = []
+    lead = realtime.plan_lead_s
+
+    def plan_lead_s(bar_s, *, plan_cost_s, pace, comp_s):
+        if plan_cost_s is not None:
+            costs.append(plan_cost_s)
+        return lead(bar_s, plan_cost_s=plan_cost_s, pace=pace, comp_s=comp_s)
+
+    monkeypatch.setattr(realtime, "wait_for_ear", slow_wait)
+    monkeypatch.setattr(realtime, "plan_lead_s", plan_lead_s)
+    _detect_take(tmp_path, _folk_take(96.0), max_minutes=0.1)
+    assert costs, "no bar was planned"
+    assert max(costs) < long_wait_s
 
 
 def test_four_downstrokes_a_bar_at_120_bring_in_the_folk_band(tmp_path, consent):

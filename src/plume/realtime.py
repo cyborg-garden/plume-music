@@ -390,6 +390,19 @@ def read_window_by_s(t_bar: float, *, ahead_s: float, need_s: float) -> float:
     return float(t_bar) - max(0.5 * float(ahead_s), float(need_s))
 
 
+def wait_for_ear(heard_to, w_end: float, playhead_s, give_up_s: float, stop, *,
+                 poll_s: float = 0.002) -> float:
+    """Wait until the ear has heard up to ``w_end`` (``heard_to()``, stream seconds), the
+    playhead reaches ``give_up_s`` (``playhead_s()``), or ``stop`` is set.  Returns the
+    wall seconds spent, which are waiting and not planning."""
+    t0 = time.perf_counter()
+    while not stop.is_set():
+        if heard_to() >= w_end or playhead_s() >= give_up_s:
+            break
+        stop.wait(poll_s)
+    return time.perf_counter() - t0
+
+
 def _median_s(costs_us) -> float | None:
     """Median of the last planning costs, in seconds; None before there are any."""
     recent = sorted(costs_us[-32:])
@@ -5211,13 +5224,14 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
         # and a bar can read as silent.  Bounded, so a late ear never makes a late bar.
         give_up = read_window_by_s(t_bar, ahead_s=state.get("ahead_s", bar_len),
                                    need_s=state.get("need_s", 0.0))
-        while not stop.is_set():
+
+        def heard_to() -> float:
             with state_lock:
-                if shared["heard_to"] >= w_end:
-                    break
-            if timeline.playhead / SR >= give_up:
-                break
-            stop.wait(0.002)
+                return shared["heard_to"]
+
+        # Not planning: the planning cost that sets the lead must not count it.
+        state["ear_wait_s"] = wait_for_ear(heard_to, w_end, lambda: timeline.playhead / SR,
+                                           give_up, stop)
         with state_lock:
             beat_state = shared["beat"]
             harm_state = shared["harmony"]
@@ -5664,8 +5678,9 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
                 stop.wait(0.01)
                 continue
             t0_wall = time.perf_counter()
+            state["ear_wait_s"] = 0.0
             bpm = plan_one_bar(clock, state, bpm)
-            plan_us.append((time.perf_counter() - t0_wall) * 1e6)
+            plan_us.append((time.perf_counter() - t0_wall - state["ear_wait_s"]) * 1e6)
             if state["ended"]:
                 ending.set()
         tail = duet.flush_tail()

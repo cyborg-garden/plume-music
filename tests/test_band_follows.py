@@ -282,6 +282,11 @@ def test_the_start_of_a_soft_passage_does_not_teach_it_her_normal():
     f = learned()
     play(f, SLIGHT_BARS - 1, db=NORMAL_DB - 5)
     play(f, 1)                           # back before it landed
-    assert play(f, SLIGHT_BARS, db=NORMAL_DB - 5)[-1].moved == ("softer",)
+    again = play(f, SLIGHT_BARS, db=NORMAL_DB - 5)
+    # One bar back near her normal no longer starts the wait over (it did, and a soft
+    # passage that wandered could keep starting it over): three of her last four bars
+    # were soft, so the band answers on the first soft bar after it, and once.
+    assert again[0].moved == ("softer",)
+    assert not any(s.moved for s in again[1:])
     back = play(f, 12)
     assert back[-1].gain_db == 0.0       # back to normal exactly, not a hair above it

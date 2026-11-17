@@ -863,6 +863,96 @@ class PhraseHold:
         return self._held
 
 
+#: Each section's own density in the arc (its first time through).
+_ARC_DENSITY = {name: d for name, _, d in reversed(SONG_ARC)}
+#: Parts that sit out as she plays softer than her normal: the first group when the
+#: band has come down to meet her, the second when it has come well down.  The kick,
+#: snare and bass never do: the groove stays, lighter.  Names a style has no part for
+#: are ignored.
+FOLLOW_THIN = (("shimmer", "lead", "arp", "openhat"), ("clap", "keys", "crackle"))
+#: How far the band has leaned with her (its follow gain in dB, its density multiple)
+#: before the song's shape gives way: softer, much softer, louder.  A lean releases
+#: only half way back to neutral, so one hovering at an edge does not flip the song.
+YIELD_SOFTER = (-2.0, 0.85)
+YIELD_MUCH_SOFTER = (-4.5, 0.72)
+YIELD_LOUDER = (1.5, 1.12)
+#: The kit, played lighter while the band has come down to meet her: dB on each drum
+#: part, softer and much softer.  The groove keeps its shape, and her guitar is not
+#: fighting the loudest thing in the band.
+DRUM_ROLES = ("kick", "snare", "hat", "openhat", "clap", "foot", "tick")
+FOLLOW_DRUM_DB = (-2.0, -4.0)
+_LEANS = {-2: "much softer", -1: "softer", 0: "neutral", 1: "louder"}
+
+
+@dataclass(frozen=True)
+class YieldState:
+    section: str
+    density: float
+    resting: tuple[str, ...]
+    lean: str
+    reason: str
+    drums: float = 1.0           # linear level on each of :data:`DRUM_ROLES`
+
+
+class PlanYield:
+    """The song's shape gives way to her.
+
+    The arc (:data:`SONG_ARC`) is a default, not a cage.  While the band has come down
+    to meet her (:class:`BandFollow`), a lift is played as a verse and the lighter
+    parts sit out; further down, more of them; while it has come up with her, a verse
+    or a break is played as a lift.  It reads the follow's own lean, which already
+    waited out a single odd bar, so one quiet bar changes nothing here either."""
+
+    def __init__(self):
+        self._lean = 0
+
+    def _read(self, gain_db: float, density_x: float) -> int:
+        def past(edge, scale=1.0):
+            g, d = edge
+            if g < 0:
+                return gain_db <= g * scale or density_x <= 1.0 - (1.0 - d) * scale
+            return gain_db >= g * scale or density_x >= 1.0 + (d - 1.0) * scale
+        raw = (-2 if past(YIELD_MUCH_SOFTER) else -1 if past(YIELD_SOFTER)
+               else 1 if past(YIELD_LOUDER) else 0)
+        cur = self._lean
+        if raw == cur or (raw < cur < 0) or (0 < cur < raw):
+            return raw                      # further the same way: at once
+        # Back towards neutral (or across it): only once past the release.
+        edges = {-2: YIELD_MUCH_SOFTER, -1: YIELD_SOFTER, 1: YIELD_LOUDER}
+        if cur != 0 and past(edges[cur], 0.5):
+            return cur
+        if cur == -2 and raw == 0 and past(YIELD_SOFTER, 0.5):
+            return -1
+        return raw
+
+    def bar(self, section: str, density: float, resting, *, gain_db: float,
+            density_x: float) -> YieldState:
+        """This bar's section, density and resting parts, given the song's own and the
+        band's lean."""
+        self._lean = self._read(float(gain_db), float(density_x))
+        lean = self._lean
+        resting = tuple(resting)
+        played, notes, drums = section, [], 1.0
+        if lean < 0:
+            drums = 10.0 ** (FOLLOW_DRUM_DB[0 if lean == -1 else 1] / 20.0)
+            if section == "lift":
+                played = "verse"
+            thin = FOLLOW_THIN[0] + (FOLLOW_THIN[1] if lean <= -2 else ())
+            if played != section:
+                density, resting = _ARC_DENSITY[played], _SECTION_RESTS[played]
+            resting = (*resting, *(r for r in thin if r not in resting))
+            notes.append("lighter parts resting, drums lighter")
+        elif lean > 0 and section in ("verse", "break"):
+            played = "lift"
+            density, resting = _ARC_DENSITY[played], _SECTION_RESTS[played]
+        if played != section:
+            notes.insert(0, f"{section} played as {played}")
+        reason = (f"yield: {_LEANS[lean]}" + (f", {', '.join(notes)}" if notes else "")
+                  if lean else "yield: the song's own shape")
+        return YieldState(played, float(density), resting, _LEANS[lean], reason,
+                          round(drums, 4))
+
+
 def song_section(bars_in: int) -> tuple[str, float, tuple[str, ...]]:
     """(section name, density, roles resting) ``bars_in`` bars after the band came
     in.  The arc repeats, so a long take keeps moving."""
@@ -962,6 +1052,13 @@ FOLLOW_CUE_HOLD_BARS = 16
 #: keeps half of it and lets her playing do the rest.
 FOLLOW_ARC_DEPTH = 0.5
 _ARC_MEAN = sum(bars * d for _, bars, d in SONG_ARC) / sum(bars for _, bars, _ in SONG_ARC)
+#: Bars of her recent readings that can re-centre the band's lean, and the share of
+#: them that must sit plainly to one side of it (see ``_Patience._drift``).  Four bars,
+#: three quarters: a soft passage that comes back near her normal for one bar is
+#: still a soft passage, and two odd bars in four are not a move.  After it moves the
+#: band it waits for four new bars, so it never re-centres every bar.
+FOLLOW_DRIFT_BARS = 4.0
+FOLLOW_DRIFT_SHARE = 0.75
 #: A learned normal keeps adapting this slowly, and only while the band is not leaning,
 #: so a long soft passage is still soft at its end.
 _NORMAL_ALPHA = 0.05
@@ -1017,6 +1114,8 @@ class _Patience:
         self._fast: list[float] = []
         self._fast_bars = 0.0
         self._side = 0
+        #: Her last :data:`FOLLOW_DRIFT_BARS` of readings, ``(reading, bars)``.
+        self._recent: list[tuple[float, float]] = []
 
     def _reset(self) -> None:
         self._run, self._run_bars, self._fast, self._fast_bars = [], 0.0, [], 0.0
@@ -1030,6 +1129,52 @@ class _Patience:
 
     def heard(self, reading: float, bars: float = 1.0) -> int:
         """-1 or +1 when this reading commits a move that way, else 0."""
+        self._recent.append((float(reading), float(bars)))
+        while sum(b for _, b in self._recent[1:]) >= FOLLOW_DRIFT_BARS - 1e-9:
+            self._recent.pop(0)
+        return self._patience(reading, bars) or self._drift()
+
+    def _drift(self) -> int:
+        """Where she has sat over the last :data:`FOLLOW_DRIFT_BARS`, when that is
+        plainly not where the band is.
+
+        A real player's level wanders a few dB from bar to bar.  A bar that wanders
+        back inside the deadband ends a run, so a soft passage that wanders can keep
+        starting its patience over and never commit, or commit to its first shallow
+        bars and stay there.  Here most of the recent bars (by
+        :data:`FOLLOW_DRIFT_SHARE`) sit past the deadband's half on one side, and their
+        median, by more than that from what is committed, becomes the lean."""
+        total = sum(b for _, b in self._recent)
+        if total < FOLLOW_DRIFT_BARS - 1e-9:
+            return 0
+        edge = 0.5 * self._deadband
+        ordered = sorted(self._recent)
+        acc, lower, upper = 0.0, None, None
+        for r, b in ordered:
+            acc += b
+            if lower is None and acc >= 0.5 * total - 1e-9:
+                lower = r
+            if acc > 0.5 * total + 1e-9:
+                upper = r
+                break
+        median = 0.5 * (lower + (lower if upper is None else upper))
+        off = median - self.value
+        if abs(off) <= edge:
+            return 0
+        side = 1 if off > 0 else -1
+        past = sum(b for r, b in self._recent if side * (r - self.value) > edge)
+        if past < FOLLOW_DRIFT_SHARE * total - 1e-9:
+            return 0
+        value = 0.0 if abs(median) <= self._deadband else median
+        if value == self.value:
+            return 0
+        self.value = value
+        self._reset()
+        self._side = 0
+        self._recent = []
+        return side
+
+    def _patience(self, reading: float, bars: float) -> int:
         off = reading - self.value
         side = 0 if abs(off) <= self._deadband else (1 if off > 0 else -1)
         if side == 0:

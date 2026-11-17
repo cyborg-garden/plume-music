@@ -9,7 +9,6 @@ bar sooner, and the answer is bigger and quicker.  Pure, so no device.
 """
 import threading
 
-import numpy as np
 import pytest
 from conftest import needs_laptop_speed  # noqa: E402
 
@@ -180,29 +179,41 @@ def test_a_bar_waits_for_the_ear_at_most_half_its_lead():
     assert read_window_by_s(10.0, ahead_s=2.0, need_s=1.6) == pytest.approx(8.4)
 
 
+def _wait_or_fail(*args, within_s: float = 2.0, **kw) -> float:
+    """``wait_for_ear`` on its own thread: a wait that never ends fails the test in
+    ``within_s`` instead of hanging the run."""
+    out: list = []
+    t = threading.Thread(target=lambda: out.append(wait_for_ear(*args, **kw)), daemon=True)
+    t.start()
+    t.join(timeout=within_s)
+    assert out, f"the wait for the ear did not end within {within_s} s"
+    return out[0]
+
+
 def test_the_bar_is_read_as_soon_as_the_ear_has_heard_it():
     stop = threading.Event()
-    assert wait_for_ear(lambda: 5.0, 5.0, lambda: 0.0, 9.0, stop) < 0.5
+    assert _wait_or_fail(lambda: 5.0, 5.0, lambda: 0.0, 9.0, stop) < 0.5
 
 
 def test_a_dead_ear_holds_the_bar_only_until_the_playhead_says_so():
     """An analysis thread that never reads again: the bar is planned from what came."""
     stop = threading.Event()
-    playhead = iter(np.arange(0.0, 100.0, 0.5))
     reads = []
 
     def at():
         reads.append(1)
-        return float(next(playhead))
+        return 0.5 * (len(reads) - 1)    # the playhead moves on, 0.0, 0.5, 1.0, ...
 
-    wait_for_ear(lambda: 0.0, 5.0, at, 3.0, stop, poll_s=0.0)
+    _wait_or_fail(lambda: 0.0, 5.0, at, 3.0, stop, poll_s=0.0)
     assert len(reads) == 7              # 0.0 .. 3.0, and not a read past it
 
 
 def test_a_stop_ends_the_wait_at_once():
     stop = threading.Event()
-    threading.Timer(0.05, stop.set).start()
-    waited = wait_for_ear(lambda: 0.0, 5.0, lambda: 0.0, 9.0, stop)
+    timer = threading.Timer(0.05, stop.set)
+    timer.start()
+    waited = _wait_or_fail(lambda: 0.0, 5.0, lambda: 0.0, 9.0, stop)
+    timer.cancel()
     assert 0.04 <= waited < 1.0
 
 

@@ -358,3 +358,25 @@ def test_a_second_video_while_one_is_on_its_way_is_told_plume_is_still_working(t
     assert told["say"] == "Plume is still working on a video for this take."
     assert told["uploads"] == 1 and told["bar"] and told["stop"] and not told["warn"]
     assert later["say"] == "Bringing your video in." and later["uploads"] == 1
+
+
+def test_a_video_for_another_take_while_one_is_on_its_way_says_so(tmp_path, docs):
+    """One video on its way at a time, from this page.  Offered one for another take
+    meanwhile, the page says why it is waiting instead of doing nothing."""
+    out = run_page(tmp_path, docs, f"""
+        await page.open(ids.tap);
+        const open = page.hold('video/upload');
+        {CHOOSE}
+        await page.shelf();
+        await page.open(ids.other);
+        const before = {VIEW};
+        $('video-file').files = [{{ name: 'second.mp4', size: 10 }}]; $('video-file').fire('change'); await page.settle();
+        const told = {VIEW};
+        page.replies['video/upload'] = [202, {json.dumps({**IDLE, "state": "listening"})}];
+        open(); await page.settle();
+        return {{ before, told, after: {VIEW} }};""")
+    assert out["before"]["say"] == "" and out["before"]["add"]
+    told = out["told"]
+    assert told["say"] == "Plume is still bringing in your other video. Add this one when it's done."
+    assert told["uploads"] == 1 and told["add"] and not told["warn"] and not told["bar"]
+    assert out["after"]["say"] == "" and out["after"]["uploads"] == 1    # said only while it is true

@@ -585,7 +585,8 @@ function stopVideoPreview() {
 }
 function drawVideo() {
   const here = S.screen === 'record' && S.take, doc = here ? videoFor(S.take.id) : null;
-  const view = videoView(doc, S.dropping, !!doc && S.videoTwice === (S.take && S.take.id));
+  const twice = !!doc && S.videoTwice && S.take && S.videoTwice.id === S.take.id ? S.videoTwice.where : false;
+  const view = videoView(doc, S.dropping, twice);
   $('video').hidden = !view.shown;
   $('video').classList.toggle('dropping', S.dropping);
   $('video-add').disabled = !view.add;
@@ -612,7 +613,7 @@ function drawVideo() {
 }
 function setVideo(id, doc, again) {
   /* Said until the bridge next says where the work has got to. */
-  S.videoTwice = again ? id : null;
+  S.videoTwice = again ? { id: id, where: again } : null;
   S.video = { id: id, doc: doc };
   if (S.take && S.take.id === id) drawVideo();
   clearTimeout(S.videoTimer);
@@ -645,7 +646,8 @@ async function addVideo(file) {
   if (!file || !S.take) return;
   const id = S.take.id, was = videoFor(id);
   /* One at a time. Doing nothing would leave her wondering whether the second one took. */
-  if (was && isWorking(was)) { setVideo(id, was, true); return; }
+  if (was && isWorking(was)) { setVideo(id, was, 'here'); return; }
+  if (S.videoSending && was && was.can === true && was.ready === true) { setVideo(id, was, 'elsewhere'); return; }
   if (S.videoSending || !was || was.can !== true || was.ready !== true) return;
   if (was.theirs === true) { videoFailed(id, 'theirs'); return; }
   if (was.max_bytes && file.size > was.max_bytes) { videoFailed(id, 'too_big'); return; }
@@ -667,6 +669,8 @@ async function addVideo(file) {
   const stopped = stop && stop.signal.aborted;
   S.videoSending = null;
   S.videoAbort = null;
+  /* "Still bringing in your other video" is over: on whichever take it was said, it goes. */
+  if (S.videoTwice && S.videoTwice.where === 'elsewhere') { S.videoTwice = null; drawVideo(); }
   ++S.videoTurn;
   if (stopped) { loadVideo(id); return; }
   if (answer && answer.ok && doc) { setVideo(id, doc); return; }

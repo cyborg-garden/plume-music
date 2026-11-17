@@ -22,6 +22,7 @@ const FAILED = {
   no_tool: 'Adding a video needs ffmpeg, and plume couldn\'t find it. Install ffmpeg, then open plume again.',
   lost: 'This page\'s link has stopped working. Run plume gui url in a terminal and open the new link.'
 };
+const ELSEWHERE = 'Plume is still bringing in your other video. Add this one when it\'s done.';
 const FAILED_PLAINLY = 'That didn\'t work, and your take is untouched. Try again?';
 const UNSURE = 'Plume isn\'t sure where you start playing. Listen, and slide until you and the band sit together.';
 const SILENT = 'This video has no sound to line up with. Slide to the moment you start playing, then save it and watch.';
@@ -37,8 +38,9 @@ export function placeWords(seconds) {
 }
 
 /* What to show for a take's video. doc is the bridge's answer, or null before one has come.
-   dropping is true while a file is held over the page; again, just after a second video was
-   offered while the first is still being worked on. */
+   dropping is true while a file is held over the page. again says a second video was just
+   offered while another is under way: 'here' for one on this take, 'elsewhere' for one this
+   page is still sending for another take. */
 export function videoView(doc, dropping, again) {
   const view = { shown: false, say: '', warn: false, add: false, bar: null, nudge: false, listen: false,
     show: false, stop: false };
@@ -47,7 +49,7 @@ export function videoView(doc, dropping, again) {
   const state = doc.state || 'idle';
   if (state in WORKING) {
     /* again: she offered another video while this one is under way. */
-    view.say = again ? FAILED.busy : WORKING[state];
+    view.say = again === 'here' ? FAILED.busy : WORKING[state];
     /* A share when the bridge knows one; otherwise a bar that only says something is happening. */
     view.bar = typeof doc.progress === 'number' ? Math.max(0, Math.min(1, doc.progress)) : 'busy';
     view.stop = true;
@@ -64,6 +66,7 @@ export function videoView(doc, dropping, again) {
   view.show = doc.have === true;
   if (doc.ready !== true) { view.say = FAILED.no_tool; return view; }
   if (state === 'failed') { view.say = FAILED[doc.why] || FAILED_PLAINLY; view.warn = true; }
+  else if (again === 'elsewhere') view.say = ELSEWHERE;
   else if (state === 'done') view.say = DONE;
   else if (dropping) view.say = DROP_HINT;
   return view;

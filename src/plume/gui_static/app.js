@@ -768,7 +768,10 @@ function buildShelf(doc) {
     const name = document.createElement('span'); name.className = 't'; name.id = 'shelf-name-' + t.id;
     name.textContent = shelfName(t);
     const m = document.createElement('span'); m.className = 'm';
-    m.textContent = [fmtDate(t.started_at)].concat(metaOf(t), [t.bytes ? fmtSize(t.bytes) : '']).filter(Boolean).join('  ');
+    /* The key and style have a line of their own, so they do not run into the tempo. */
+    const meta = metaOf(t), line = t.key || t.style ? meta.shift() : '';
+    m.textContent = [fmtDate(t.started_at), line, meta.concat([t.bytes ? fmtSize(t.bytes) : '']).filter(Boolean).join(' \u00b7 ')]
+      .filter(Boolean).join('\n');
     b.appendChild(c); b.appendChild(name); b.appendChild(m);
     b.addEventListener('click', function () { goTake(t.id); });
     g.appendChild(b);
@@ -1040,7 +1043,8 @@ function drawHomeState() {
   $('start').hidden = there;
   $('home-elsewhere').hidden = !there;
   $('home-gear').hidden = there;
-  $('home-style-row').hidden = there;
+  /* Until home has loaded the page does not know her saved style, so it shows none rather than a wrong one. */
+  $('home-style-row').hidden = there || !S.home;
   if (there) {
     $('elsewhere-text').textContent = S.live.message;
     $('elsewhere-stop').disabled = !!S.live.stopping;
@@ -1140,7 +1144,8 @@ function drawGuide(id) {
 function startBody(heard) {
   const body = {}, key = $('set-key').value.trim(), style = $('home-style').value;
   if (key) body.key = key;
-  if (style) body.style = style;
+  /* Always said once the choice is shown: "" is Let plume guess. Before that the bridge uses the saved one. */
+  if (S.home) body.style = style;
   const shown = S.home ? chosenDevice() : null, changed = S.form.channel !== null;
   const device = S.form.device ? shown && shown.id : heard || (changed && shown ? shown.id : null);
   if (device) body.device = device;

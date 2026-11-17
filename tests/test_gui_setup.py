@@ -1252,6 +1252,22 @@ def test_a_style_a_take_started_with_is_the_one_remembered(rig, runner, meter, s
     assert rig.runner(meter=meter, setup_path=lambda: setup_file).home()["style"] == "jazz"
 
 
+def test_a_start_that_names_no_style_plays_and_keeps_the_saved_one(rig, runner, meter, setup_file):
+    """A page that has not loaded yet does not know her style, so it says none."""
+    runner.choose_style({"style": "folk"})
+    runner.start({})
+    assert rig.spawned[-1][-2:] == ["--", "folk"]
+    assert runner.live()["style"] == "folk"
+    assert rig.runner(meter=meter, setup_path=lambda: setup_file).home()["style"] == "folk"
+
+
+def test_an_empty_style_at_start_is_let_plume_guess_and_is_remembered(rig, runner, meter, setup_file):
+    runner.choose_style({"style": "folk"})
+    runner.start({"style": ""})
+    assert "--" not in rig.spawned[-1]
+    assert rig.runner(meter=meter, setup_path=lambda: setup_file).home()["style"] is None
+
+
 def test_set_up_again_keeps_the_style(runner, meter):
     runner.choose_style({"style": "folk"})
     runner.reset_setup()

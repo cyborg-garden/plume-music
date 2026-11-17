@@ -716,22 +716,6 @@ def test_a_strummed_folk_tune_on_a_direct_input_brings_in_the_folk_band(tmp_path
     assert doc["style"] == "detect" and doc["style_chosen"] is False
 
 
-def test_a_style_she_chose_holds_where_plume_would_have_guessed_another(tmp_path, consent):
-    """The same strummed tune plume brings the folk band in for, with jazz chosen at Start:
-    jazz from the count to the end, never a guess, and nothing about folk."""
-    rec = _detect_take(tmp_path, _folk_take(96.0), prompt="jazz", max_minutes=0.6)
-    rows = _rows(rec)
-    band = [r for r in rows if r["entry"] != "drums"]
-    assert band, "the band never came in"
-    assert {r["style"] for r in rows} == {"jazz"}
-    assert all(r["style_chosen"] and not r["style_guess"] for r in rows)
-    assert not any("style_why" in r for r in rows)
-    # Its own drums from the first bar: no plain click waiting on a guess.
-    assert {r["intro_beat"] for r in rows} == {"style"}
-    doc = json.loads((rec / "session.json").read_text())
-    assert doc["style"] == "jazz" and doc["style_chosen"] is True and doc["detect"] is True
-
-
 @pytest.mark.parametrize("gain_db", [-6.0, -30.0])
 def test_the_folk_band_comes_in_whatever_the_input_level(tmp_path, consent, gain_db):
     """The interface's gain turned up or down: the same strumming, the same band."""
@@ -761,10 +745,13 @@ def test_a_style_she_named_is_not_a_guess(tmp_path, consent):
     rows = _rows(rec)
     assert {r["style"] for r in rows} == {"trap"}
     assert not any(r["style_guess"] for r in rows)
+    # Chosen, so the live guess never runs: no reasons for one, and its own drums from bar 1.
     assert all(r["style_chosen"] for r in rows)
+    assert not any("style_why" in r for r in rows)
+    assert {r["intro_beat"] for r in rows} == {"style"}
     assert all(r["key_guess"] for r in rows)
     doc = json.loads((rec / "session.json").read_text())
-    assert doc["style"] == "trap" and doc["detect"] is True
+    assert doc["style"] == "trap" and doc["detect"] is True and doc["style_chosen"] is True
 
 
 def test_a_key_she_named_is_not_a_guess(tmp_path, consent):

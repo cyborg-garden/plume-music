@@ -99,7 +99,7 @@ FLAT_MIC_HOME = "Plume heard nothing. Check this computer lets it use the microp
 KEPT_NOTHING = "The band had not come in yet, so plume kept nothing."
 BAD_KEY = "Plume did not understand that key. Try F major or A minor."
 ONLY_MAJOR_MINOR = "Plume plays major and minor keys. Try F major or A minor."
-UNKNOWN_STYLE = "Plume does not have that style. Pick one from the list, or let plume guess."
+UNKNOWN_STYLE = "Plume does not have that style, so Style is back to what it was."
 NO_HEAR_ME = "Hear me needs headphones on. Through speakers it would feed back."
 OUTPUT_MISSING = "Plume could not find that output. Plug it back in, or choose another."
 OUTPUT_REFUSED = "Plume could not open that input and output together. Try another output."
@@ -1641,7 +1641,9 @@ class TakeRunner:
         if others:
             raise Refused(409, TERMINAL_TAKE, live=self._elsewhere(others))
         key = canonical_key(_text_field(body, "key"))
-        style = canonical_style(_text_field(body, "style"))
+        # No word about the style (a page that has not loaded her choice yet): the saved one.
+        said_style = "style" in body
+        style = canonical_style(_text_field(body, "style")) if said_style else self._setup.style()
         sound = _sound_field(body)
         try:
             devices, rows, mark = self._look()
@@ -1675,7 +1677,8 @@ class TakeRunner:
         except (TakeError, OSError, ValueError):
             _clear_fresh_folder(folder)
             return self._failed(DID_NOT_START)
-        self._setup.put_style(style)
+        if said_style:
+            self._setup.put_style(style)
         now = self._clock()
         take = _Take(proc, folder, route, key, style, started=now, grew=now)
         with self._lock:

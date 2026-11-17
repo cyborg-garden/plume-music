@@ -280,7 +280,7 @@ header { display: flex; flex-wrap: wrap; align-items: center; gap: 0 16px; paddi
 .shelf-take { background: none; border: 0; padding: 0; text-align: left; display: block; width: 100%; }
 .shelf-take canvas { display: block; width: 100%; height: auto; aspect-ratio: 8 / 9; }
 .shelf-take .t { display: block; font-weight: 500; margin-top: 7px; overflow-wrap: anywhere; }
-.shelf-take .m { display: block; font: 400 12px/1.5 var(--mono); color: var(--secondary); }
+.shelf-take .m { display: block; font: 400 12px/1.5 var(--mono); color: var(--secondary); white-space: pre-line; }
 .shelf-take:hover .t { text-decoration: underline; text-underline-offset: 3px; }
 
 @media (max-width: 899px) {

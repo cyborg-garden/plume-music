@@ -15,7 +15,7 @@ All pure except the last test, which drives the real transport on a fake device.
 """
 import numpy as np
 import pytest
-from conftest import needs_laptop_speed  # noqa: E402
+from conftest import needs_laptop_speed, playhead_rate  # noqa: E402
 
 from plume import herchords as hc
 from plume.bandentry import (FOLLOW_LEARN_BARS, SONG_ARC, BandFollow, PlanYield,
@@ -93,9 +93,92 @@ def _band(states, *, start=16):
     out = []
     for i, s in enumerate(states):
         section, density, resting = song_section(start + i)
-        got = y.bar(section, density, resting, gain_db=s.gain_db, density_x=s.density)
+        got = y.bar(section, density, resting, gain_db=s.gain_db, density_x=s.density,
+                    bars_in=start + i)
         out.append(got)
     return out
+
+
+def _arc_run(offsets, busy=None, *, start=0):
+    """Her bars (dB from her normal) through the follow and the yield, from ``start``
+    bars after the band came in: ``(follow state, yield state, the arc's own)``."""
+    f = learned()
+    y = PlanYield()
+    out = []
+    for i, d in enumerate(offsets):
+        s = f.bar(NORMAL_DB + d, NORMAL_BUSY if busy is None else busy[i], playing=True)
+        own = song_section(start + i)
+        out.append((s, y.bar(*own, gain_db=s.gain_db, density_x=s.density,
+                             bars_in=start + i), own))
+    return out
+
+
+def test_a_loud_sparse_player_keeps_a_full_band_and_its_sections():
+    """Whole-note strumming at full level is not playing softer.  Fewer notes thin the
+    band's own patterns, but the parts, the drums and the song's sections stay: only
+    her level takes the band down."""
+    for level in (0.0, 3.0):
+        run = _arc_run([level] * 40, [0.7] * 40, start=12)
+        for s, got, own in run:
+            assert (got.section, got.resting) == (own[0], own[2]), (level, got)
+            assert got.drums == 1.0 and got.lean in ("neutral", "louder"), (level, got)
+        assert run[-1][0].density < 1.0          # ... but the patterns are thinner
+
+
+@pytest.mark.parametrize("offset", [4.0, -4.0])
+def test_a_steady_slight_offset_becomes_her_new_normal(offset):
+    """Her first bars set her normal.  If she then settles a few dB above or below it
+    and stays there, that is her normal now: the band comes back to its own level
+    and the song's sections come back with it, instead of every verse becoming a lift
+    (or no lift ever coming) for the rest of the take."""
+    run = _arc_run([offset] * 112)
+    own = sum(got.section == arc[0] for _, got, arc in run)
+    assert own >= 0.8 * len(run), own
+    assert run[-1][0].gain_db == 0.0 and run[-1][1].lean == "neutral"
+    assert all(got.drums == 1.0 for _, got, _ in run[40:])
+    assert sum(got.section == "lift" for _, got, _ in run[40:]) == \
+        sum(arc[0] == "lift" for _, _, arc in run[40:])
+
+
+def test_a_big_lean_is_still_followed_however_long_it_lasts():
+    """Only a slight, steady offset becomes her new normal.  Playing well under her
+    normal is a choice, and the band stays down with her."""
+    run = _arc_run([-12] * 60, [1.0] * 60)
+    assert run[-1][0].gain_db <= -5.0 and run[-1][1].lean == "much softer"
+
+
+def test_the_songs_sections_and_parts_change_only_on_phrase_lines():
+    """A section or a part changing in the middle of a phrase was heard as the band
+    changing tempo: what yields waits for the next phrase line.  The drums' level may
+    still move on any bar."""
+    run = _arc_run([0] * 4 + [-8] * 12 + [0] * 12, [NORMAL_BUSY] * 4 + [1.0] * 12
+                   + [NORMAL_BUSY] * 12, start=13)
+    moved = 0
+    for i in range(1, len(run)):
+        a, b = run[i - 1][1], run[i][1]
+        if (a.section, a.resting) != (b.section, b.resting):
+            moved += 1
+            assert (13 + i) % 4 == 0, (13 + i, a, b)
+    assert moved >= 2                      # it did yield, and come back
+
+
+def test_two_soft_bars_then_two_loud_ones_do_not_make_the_band_pump():
+    """A player alternating two soft bars and two loud ones: the band two bars behind
+    would be fullest on her soft bars and thinnest on her loud ones.  It settles
+    instead: its level steadies and the song does not flip back and forth."""
+    run = _arc_run([-8, -8, 0, 0] * 10, start=12)
+    late = run[12:]
+    gains = [s.gain_db for s, _, _ in late]
+    assert max(gains) - min(gains) <= 1.5, gains
+    flips = sum((a[1].section, a[1].resting) != (b[1].section, b[1].resting)
+                for a, b in zip(late, late[1:]) if a[2] == b[2])
+    assert flips <= 1
+
+
+def test_one_soft_bar_in_two_is_not_a_soft_passage():
+    """Every other bar soft is her phrasing, not a quieter player."""
+    f = learned()
+    assert all(s.gain_db == 0.0 for s in wander(f, [0, -8] * 10))
 
 
 ALL_PARTS = ("kick", "snare", "hat", "openhat", "clap", "bass", "sub", "keys", "pad",
@@ -199,6 +282,15 @@ def test_a_power_chord_names_the_keys_own_chord_on_its_root(root, fifth, sym):
 
 def test_two_strings_root_and_third_name_the_chord():
     r = hc.read_bar(_chroma({7: 1.0, 11: 0.7}), hc.candidates(KEY, STYLE), notes=3.0)
+    assert r.sym is not None and r.sym.startswith("G"), r
+
+
+def test_a_strummed_chord_with_passing_notes_is_still_named():
+    """A G strummed with a passing A and C#: the triad holds 0.57 of the bar, clearly
+    ahead of any other chord."""
+    c = _chroma({7: 1.0, 11: 0.75, 2: 0.85, 9: 1.0, 1: 0.95})
+    r = hc.read_bar(c, hc.candidates(KEY, STYLE), notes=4.0)
+    assert 0.55 <= r.fit < 0.6, r
     assert r.sym is not None and r.sym.startswith("G"), r
 
 
@@ -331,3 +423,41 @@ def test_a_direct_take_thins_out_when_she_plays_softly_and_fills_back_in(tmp_pat
     assert all(r["yield"]["lean"] in ("softer", "much softer") for r in soft)
     assert min(r["gain_db"] for r in after) > max(r["gain_db"] for r in soft)
     assert max(n_parts(r) for r in after) > max(n_parts(r) for r in soft)
+
+
+def test_on_the_real_transport_the_song_yields_and_the_ending_does_not(tmp_path, consent):
+    """The planner's own path, on the fake device, at a pace a shared runner keeps up
+    with: she plays softly from 45 s, and the song ends on a timer.  The band comes
+    down to meet her (lighter drums, the yield logged), and the ending's own shape is
+    never yielded or ducked."""
+    import json
+
+    from conftest import fake_audio, patched_module, short_socket_path
+    from test_bandentry import _take
+
+    from plume import realtime
+    from plume import roles as roles_mod
+
+    bpm, soft_at, seconds = 115.0, 45.0, 100.0
+    rate = playhead_rate(12.0)
+    human = _take(bpm=bpm, seconds=seconds)
+    human[int(soft_at * 48000):] *= 0.25            # 12 dB softer from here on
+    with patched_module("sounddevice", fake_audio(human, devices=RIG, rate_x=rate)):
+        realtime.lead(prompt="midwest emo in C major", seed=0, tap_start=True, direct=True,
+                      role=roles_mod.RoleParams(role="lead"), record_dir=str(tmp_path / "rec"),
+                      status=False, socket_path=short_socket_path("yield"),
+                      max_minutes=(seconds / rate + 8.0) / 60.0, wind_down_s=68.0,
+                      input_device="audio interface", input_channel=1)
+    rows = [json.loads(x) for x in (tmp_path / "rec" / "decisions.ndjson").read_text().splitlines()]
+    rows = [r for r in rows if isinstance(r.get("bar"), int) and r.get("entry") == "full"]
+    bar_s = 240.0 / bpm
+    before = [r for r in rows if r["t_s"] < soft_at and r["section"] != "outro"]
+    soft = [r for r in rows if soft_at + 5 * bar_s <= r["t_s"] and r["section"] != "outro"]
+    ending = [r for r in rows if r["section"] == "outro"]
+    assert before and soft and ending, "the take did not reach every stretch"
+    assert all(r["yield"]["lean"] == "neutral" for r in before)
+    assert all(r["yield"]["lean"] in ("softer", "much softer") for r in soft)
+    assert max(r["roles"]["kick"] for r in soft) < min(r["roles"]["kick"] for r in before)
+    assert max(r["gain_db"] for r in soft) < min(r["gain_db"] for r in before)
+    for r in ending:                    # the ending is the song's own, whatever she does
+        assert "yield" not in r and r["roles"].get("kick", 1.0) == 1.0, r

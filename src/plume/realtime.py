@@ -4862,7 +4862,7 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
                                 song_section)
         density_hold = PhraseHold(int(params.entry_boundary_bars))
         # The song's shape gives way to her (bandentry.PlanYield).
-        plan_yield = PlanYield()
+        plan_yield = PlanYield(int(params.entry_boundary_bars))
         entry_ramp = EntryRamp(under_db=params.enter_under_db, ramp_bars=params.ramp_bars)
         guitar_ear = GuitarEar()
         from .herchords import ChordFollower, clean_bar  # noqa: PLC0415
@@ -5387,13 +5387,17 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
                 section, density, resting = "intro", TAP_START_MIN_DENSITY, ()
             else:
                 section, density, resting = song_section(entry.bars_in)
-                # The arc is a default: while the band has come down to meet her, a
-                # lift is a verse and the lighter parts rest; up with her, a lift.
-                yielded = plan_yield.bar(section, density, resting,
-                                         gain_db=follow.gain_db, density_x=follow.density)
                 arc_section = section
-                section, density, resting = (yielded.section, yielded.density,
-                                             yielded.resting)
+                if follow.trusted:
+                    # The arc is a default: while the band has come down to meet her, a
+                    # lift is a verse and the lighter parts rest; up with her, a lift.
+                    # Not on a room mic: fewer parts there would read as her softer.
+                    yielded = plan_yield.bar(section, density, resting,
+                                             gain_db=follow.gain_db,
+                                             density_x=follow.density,
+                                             bars_in=entry.bars_in)
+                    section, density, resting = (yielded.section, yielded.density,
+                                                 yielded.resting)
                 density = follow.shape(density) * follow.density
             crash = False
             if ending_now is not None:

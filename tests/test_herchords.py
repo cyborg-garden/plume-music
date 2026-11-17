@@ -598,6 +598,12 @@ def test_a_bright_power_chord_takes_the_keys_chord_on_its_root(root, key):
             continue
         assert parse_chord(d["chord"]).root % 12 == root % 12, d
         assert d["her_chord"] in mine, d
+    fits = [c for c in hc.candidates(key, STYLE)
+            if c.root == root % 12 and (root + 7) % 12 in c.triad]
+    if fits:                              # the key has a chord there: it is followed
+        assert all(d["source"] == "her_hold" for d in got), got
+    else:                                 # it has none (B and F# in C major)
+        assert all(d["source"] == "template" for d in got), got
 
 
 def test_a_minor_third_that_another_note_overtones_is_not_her_string():
@@ -738,6 +744,9 @@ def test_live_room_mic_she_holds_am_and_the_band_says_it_cannot_tell(tmp_path, c
     assert all(r["chords"]["source"] == "template" for r in band)
     assert all(r["chord"] == r["chords"]["template"] for r in band)
     assert all("room mic" in r["chords"]["reason"] for r in band)
+    # Nor does the song yield to what a room mic hears: fewer parts there would read
+    # as her playing softer, and take the band down further (bandentry.PlanYield).
+    assert all("yield" not in r for r in band)
 
 
 def test_live_room_mic_melody_over_bleed_keeps_the_template(tmp_path, consent):

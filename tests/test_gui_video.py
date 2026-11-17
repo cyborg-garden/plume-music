@@ -1089,3 +1089,105 @@ def test_a_cancel_already_waiting_is_not_joined_by_another(server, client, take,
     waiting.join(WAIT_S)
     assert first["answer"][0].status == 200 and json.loads(first["answer"][1])["state"] == "idle"
     assert status(client, tid)["state"] == "idle" and temps(take) == []
+
+
+@needs_ffmpeg
+def test_another_plume_never_sweeps_the_video_being_written(quick_heartbeat, server, client, take, film, second,
+                                                            monkeypatch):
+    """The new video.mp4 is written under a hidden name of its own first.  A long write
+    keeps that one held too, not only the video it is made from."""
+    reached, go = threading.Event(), threading.Event()
+    real = takevideo.write_video
+
+    def slow_write(*a, cancelled=None, **kw):
+        reached.set()
+        end = time.monotonic() + WAIT_S
+        while not go.wait(0.01):
+            assert time.monotonic() < end and not (cancelled and cancelled())
+        return real(*a, cancelled=cancelled, **kw)
+
+    monkeypatch.setattr(takevideo, "write_video", slow_write)
+    tid = take_id(client, "t")
+    upload(client, tid, film)
+    assert reached.wait(WAIT_S)
+    (writing,) = [name for name in temps(take) if name.startswith(".video.mp4.")]
+    os.utime(take / writing, (LONG_AGO, LONG_AGO))
+    assert refreshed(take / writing), "the video being written was not held"
+    second().get("/api/takes")
+    assert writing in temps(take)
+    go.set()
+    assert finished(server, client, tid)["state"] == "done"
+
+
+@needs_symlinks
+def test_saying_a_copy_is_held_never_reaches_through_a_link(tmp_path):
+    target, plain = tmp_path / "elsewhere.mp4", tmp_path / "plain.tmp"
+    for path in (target, plain):
+        path.write_bytes(b"x")
+        os.utime(path, (LONG_AGO, LONG_AGO))
+    link = tmp_path / (".video-in." + "e" * 16 + ".tmp")
+    os.symlink(target, link)
+    gui._touch(link)
+    gui._touch(plain)
+    assert os.stat(target).st_mtime == LONG_AGO, "a link was followed"
+    assert os.stat(plain).st_mtime > LONG_AGO
+
+
+def test_one_bad_moment_does_not_stop_the_heartbeat(quick_heartbeat, root, take, tmp_path, monkeypatch):
+    """If saying "held" ever fails, the next beat must still come, or the hour-old sweep
+    is back for every held copy, silently."""
+    monkeypatch.setenv(gui.STATE_DIR_ENV, str(tmp_path / "state"))
+    calls, again, logged = [], threading.Event(), []
+    real = gui.Library.say_held
+
+    def flaky(self):
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("a disk went away for a moment")
+        again.set()
+        return real(self)
+
+    monkeypatch.setattr(gui.Library, "say_held", flaky)
+    srv = gui.GuiServer(roots=[root], log=logged.append).start()
+    try:
+        assert again.wait(HEARTBEAT_WAIT_S), "the heartbeat died with the first error"
+        assert srv.library._heartbeat.is_alive()
+        assert any("held" in line for line in logged)
+    finally:
+        srv.close()
+
+
+@needs_ffmpeg
+def test_closing_plume_asks_every_video_to_stop_before_waiting_on_any(root, human, film, tmp_path, monkeypatch):
+    """Two videos whose tools are slow to end.  Closing must not wait on the first before
+    the second has even been asked, or closing takes a full wait per video."""
+    monkeypatch.setenv(gui.STATE_DIR_ENV, str(tmp_path / "state"))
+    monkeypatch.setattr(gui, "_VIDEO_CANCEL_WAIT_S", 0.5)
+    root.mkdir()
+    for name in ("one", "two"):
+        make_take(root / name, human=human, machine=band())
+    asked, seen, go, both = [], [], threading.Event(), threading.Barrier(2, timeout=WAIT_S)
+
+    def probe(*a, cancelled=None, **kw):
+        asked.append(cancelled)
+        both.wait()
+        end = time.monotonic() + WAIT_S
+        while not go.wait(0.005):
+            if cancelled() and not seen:
+                seen.append([c() for c in asked])                # the moment the first is told
+            assert time.monotonic() < end
+        raise takevideo.Cancelled
+
+    monkeypatch.setattr(takevideo, "probe", probe)
+    srv = gui.GuiServer(roots=[root], log=lambda line: None).start()
+    client = Client(srv).login()
+    for name in ("one", "two"):
+        assert upload(client, take_id(client, name), film)[0] == 202
+    while len(asked) < 2:
+        time.sleep(0.005)
+    closer = threading.Thread(target=srv.library.close_videos, kwargs={"timeout": 0.5})
+    closer.start()
+    closer.join(WAIT_S)
+    go.set()
+    srv.close()
+    assert seen == [[True, True]], "a video was still running unasked while plume waited on another"

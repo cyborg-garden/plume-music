@@ -393,6 +393,8 @@ class Library:
         self._ffmpeg: tuple | None = None
         self._videos: dict[str, _VideoJob] = {}
         self._heartbeat: threading.Thread | None = None
+        #: Where a line about something that went wrong goes.  The bridge sets its own.
+        self.log = lambda line: None
         self._heartbeat_stop = threading.Event()
         self.roots = [Path(r) for r in roots]
         self.pinned = None if pinned is None else Path(pinned).resolve()
@@ -657,7 +659,10 @@ class Library:
 
     def _beat(self) -> None:
         while not self._heartbeat_stop.wait(_VIDEO_HEARTBEAT_S):
-            self.say_held()
+            try:
+                self.say_held()
+            except Exception:  # noqa: BLE001 - one bad moment must not end the heartbeat for good
+                self.log("video: could not mark held copies; trying again")
 
     def say_held(self) -> None:
         """Touch each copy a job here holds: the video taken in, and one being written."""
@@ -1039,13 +1044,24 @@ class Library:
         return True if job is None else job.settled.wait(timeout)
 
     def close_videos(self, timeout: float = 30.0) -> None:
-        """Stop every video under way and remove every one that was waiting."""
+        """Stop every video under way and remove every one that was waiting.
+
+        Every one is told first, which ends each tool at once, and then all are waited
+        for together, against one deadline: never a full wait per video.
+        """
         with self._lock:
             jobs = list(self._videos.values())
+            for job in jobs:
+                job.cancel.set()
+            waiting = [job for job in jobs if job.state not in _VIDEO_WORKING]
+            for job in waiting:
+                del self._videos[job.take_id]
+        for job in waiting:
+            self._video_drop_source(job)
+            job.settled.set()
+        deadline = time.monotonic() + timeout
         for job in jobs:
-            self.video_cancel(job.take_id)
-        for job in jobs:
-            job.settled.wait(timeout)
+            job.settled.wait(max(0.0, deadline - time.monotonic()))
 
 
 def _mix_rule() -> str:
@@ -1878,6 +1894,7 @@ class GuiServer:
                  spawner=None, lister=None, sessions=None, stopper=None, revealer=None,
                  ffmpeg=None, **take_options):
         self.library = Library(roots, pinned, ffmpeg)
+        self.library.log = lambda line: self.log(line)
         #: ``(folder, file name or None)``: opens the system's file manager.  Tests pass a fake.
         self.revealer = _reveal if revealer is None else revealer
         self.takes = guitake.TakeRunner(

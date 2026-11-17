@@ -726,70 +726,50 @@ def test_a_strummed_folk_tune_on_a_direct_input_brings_in_the_folk_band(tmp_path
     assert doc["style"] == "detect" and doc["style_chosen"] is False
 
 
-@pytest.mark.parametrize("gain_db", [-6.0, -30.0])
-def test_the_folk_band_comes_in_whatever_the_input_level(tmp_path, consent, gain_db):
-    """The interface's gain turned up or down: the same strumming, the same band."""
+def _ear_late_on_every_read(monkeypatch) -> list:
+    """Slow the analysis on every read, as a starved machine does, and return the times of
+    the frames that reach the folk guess, as they arrive."""
+    import time
+
+    analyse = realtime.analysis_step
+
+    def slow_ear(**kw):
+        time.sleep(0.02)
+        return analyse(**kw)
+
+    monkeypatch.setattr(realtime, "analysis_step", slow_ear)
+    heard: list = []
+    real = StylePick.heard_bar
+
+    def heard_bar(self, onsets, frames=None):
+        heard.extend(f.t_s for f in frames or [])
+        return real(self, onsets, frames)
+
+    monkeypatch.setattr(StylePick, "heard_bar", heard_bar)
+    return heard
+
+
+@pytest.mark.parametrize("gain_db,late_ear", [(-6.0, False), (-30.0, True)])
+def test_the_folk_band_comes_in_whatever_the_input_level(tmp_path, consent, monkeypatch,
+                                                         gain_db, late_ear):
+    """The interface's gain turned up or down: the same strumming, the same band.
+
+    Turned down, the take clears the folk guess's minimum by about a stroke, so it is
+    also heard by an ear running late, as on a busy machine.  Each bar is read as it
+    ends, and frames that came after used to be dropped: strokes went uncounted and the
+    quiet take read as not enough heard.  None of her playing may be lost."""
+    heard = _ear_late_on_every_read(monkeypatch) if late_ear else None
     rec = _detect_take(tmp_path, _folk_take(96.0, gain_db=gain_db), max_minutes=0.6,
                        wait_for_ear=True)
     band = [r for r in _rows(rec) if r["entry"] != "drums"]
     assert band, "the band never came in"
     assert {r["style"] for r in band} == {"folk"}, band[0]["style_why"]
-
-
-def test_a_slow_ear_still_hears_every_stroke_of_the_bars_before_the_band(
-        tmp_path, consent, monkeypatch):
-    """A busy machine leaves the analysis behind the playhead.  Each bar is read as it
-    ends, so its last frames could arrive too late and be dropped: fewer strokes counted,
-    and a quiet folk take read as not enough heard.  Every frame of her playing has to
-    reach the folk guess, however late it arrives."""
-    import threading
-    import time
-
-    from plume.listen.features import HOP
-
-    analyse = realtime.analysis_step
-
-    def slow_ear(**kw):
-        time.sleep(0.02)                 # on every read, as on a starved runner
-        return analyse(**kw)
-
-    monkeypatch.setattr(realtime, "analysis_step", slow_ear)
-    sock = short_socket_path("slowear")
-    heard: list = []
-    real_heard, real_entry = StylePick.heard_bar, StylePick.at_entry
-
-    def heard_bar(self, onsets, frames=None):
-        heard.extend(f.t_s for f in frames or [])
-        return real_heard(self, onsets, frames)
-
-    def at_entry(self, bpm, key):
-        # The band is in, so the take has said what it can: end it rather than play on.
-        def stop():
-            try:
-                realtime.send_stop(socket_path=sock)
-            except (OSError, realtime.RealtimeError):
-                pass                     # already ending on its own
-        threading.Thread(target=stop, daemon=True).start()
-        return real_entry(self, bpm, key)
-
-    monkeypatch.setattr(StylePick, "heard_bar", heard_bar)
-    monkeypatch.setattr(StylePick, "at_entry", at_entry)
-    # The device still waits for an ear far behind it (_detect_take): late by a read,
-    # not by bars, as on a real device.
-    conftest._watch_the_ear()
-    with patched_module("sounddevice", fake_audio(_folk_take(96.0, gain_db=-30.0),
-                                                  devices=RIG, hold=conftest.ear_behind)):
-        realtime.lead(prompt=None, seed=0, tap_start=True, detect=True,
-                      role=roles_mod.RoleParams(role="lead"), record_dir=str(tmp_path / "rec"),
-                      status=False, socket_path=sock, direct=True,
-                      input_device="audio interface", input_channel=1, max_minutes=0.6)
-    band = [r for r in _rows(tmp_path / "rec") if r["entry"] != "drums"]
-    assert band, "the band never came in"
-    assert {r["style"] for r in band} == {"folk"}, band[0]["style_why"]
-    # One unbroken run of hops from her first heard frame to her last: none dropped.
-    hop = HOP / SR
-    assert len(heard) > 6 * (240.0 / 96.0) / hop, "fewer than six bars reached the guess"
-    assert float(np.max(np.diff(heard))) < 1.5 * hop, "frames of her playing were dropped"
+    if heard is not None:
+        # One unbroken run of hops from her first heard frame to her last.
+        from plume.listen.features import HOP
+        hop = HOP / SR
+        assert len(heard) > 6 * (240.0 / 96.0) / hop, "fewer than six bars reached the guess"
+        assert float(np.max(np.diff(heard))) < 1.5 * hop, "frames of her playing were dropped"
 
 
 def test_four_downstrokes_a_bar_at_120_bring_in_the_folk_band(tmp_path, consent):

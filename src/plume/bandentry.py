@@ -365,6 +365,10 @@ class StylePick:
         self.folk_ear = FolkEar() if hear_technique else None
         self.why = ""
 
+    def distrust(self) -> None:
+        """The input turned out to hold the band: how busy it sounds is no longer hers."""
+        self._trust_busy = False
+
     def heard_bar(self, onsets: int, frames=None) -> None:
         self._onsets += int(onsets)
         self._beats += 4
@@ -411,8 +415,9 @@ TONAL_TOP3 = 0.42
 
 
 class GuitarEar:
-    """Hear a guitar over drums alone.  It only works before the band comes in: once
-    bass and chords are in the room, the mic's pitches are mostly theirs."""
+    """Hear a guitar over drums alone.  On a mic the band can reach it only works before
+    the band comes in: once bass and chords are in the room, the mic's pitches are mostly
+    theirs.  An input the band cannot reach goes on being read under the band."""
 
     def __init__(self):
         self._heard = np.zeros(12)
@@ -448,6 +453,158 @@ class GuitarEar:
             return ()
         order = np.argsort(self._heard)[::-1][:count]
         return tuple(int(i) for i in order if self._heard[i] > 0.0)
+
+
+#: How much of a mic must be the band, by :func:`band_share`, for a stretch of it to count
+#: as the band being in the mic.  A guess, set against the fake device and made-up speakers
+#: and rooms: a clean mic reads up to 0.15 there, held notes on the band's own partials
+#: 0.03, and the band through a small speaker and a lively room 0.43 and up, with or
+#: without a player over it.  No real headphones, speakers or mic have been measured.
+BAND_IN_MIC_SHARE = 0.3
+#: Each stretch judged, and how many more of them must say yes than no before the take
+#: stops believing the mic: about eight seconds of evidence, so two or three bars.
+BAND_IN_MIC_WINDOW_S = 2.0
+BAND_IN_MIC_WINDOWS = 4
+#: A stretch counts either way only when the band is sounding and the mic is not empty.
+BAND_IN_MIC_BAND_FLOOR_DB = -50.0
+BAND_IN_MIC_MIC_FLOOR_DB = -60.0
+#: Output latency, air and input latency, generously.
+BAND_IN_MIC_MAX_DELAY_S = 0.7
+#: What a small speaker reproduces and a mic picks up well.  Most of a band's power is
+#: bass, which a small speaker never plays, so the bass says nothing about a leak.
+BAND_IN_MIC_LOW_HZ = 300.0
+BAND_IN_MIC_HIGH_HZ = 4000.0
+#: Nothing above :data:`BAND_IN_MIC_HIGH_HZ` is listened to, so both signals are brought
+#: down to a rate that just holds it before anything else is done: a fifth of the samples,
+#: and so a fifth of the work.
+BAND_IN_MIC_RATE_HZ = 9600
+#: The filter the band may reach the mic through, in samples at that rate: 107 ms, which
+#: holds a speaker's response and the early part of a room.
+BAND_IN_MIC_FILTER = 1024
+#: Only where the band itself has something to say: this far under its strongest frequency.
+BAND_IN_MIC_BAND_RANGE_DB = 30.0
+
+
+def band_share(mic, band, sr: int, max_delay_s: float = BAND_IN_MIC_MAX_DELAY_S) -> float:
+    """How much of ``mic`` is ``band``, come through a speaker and a room, 0 to 1.
+
+    Not a delayed copy: a speaker drops the bass and a room adds its tail, so the band in
+    a mic is the band through a short filter nobody knows.  So this lines the two up on
+    their best delay, and then asks, frequency by frequency between
+    :data:`BAND_IN_MIC_LOW_HZ` and :data:`BAND_IN_MIC_HIGH_HZ`, how much of the mic there
+    is explained by the band through any filter up to :data:`BAND_IN_MIC_FILTER` long
+    (the coherence of the two, averaged over short pieces of the stretch).  The answer is
+    the middle value over the frequencies where the band is sounding.
+
+    The middle, not the mean: a player's notes sit on a few frequencies, however loud, and
+    leave the rest to whatever else is in the mic.  So a band under a louder player still
+    reads high, and a player holding the band's own notes on a clean mic reads low.
+
+    A stretch holding a sample that is not a number says nothing, and reads 0.
+    """
+    n = min(len(mic), len(band))
+    mic = np.asarray(mic[:n], dtype=np.float64)
+    band = np.asarray(band[:n], dtype=np.float64)
+    if n == 0 or not (np.all(np.isfinite(mic)) and np.all(np.isfinite(band))):
+        return 0.0
+    if float(np.sum(mic ** 2)) <= 1e-9 or float(np.sum(band ** 2)) <= 1e-9:
+        return 0.0
+    step = max(1, int(sr) // BAND_IN_MIC_RATE_HZ)
+    if step > 1:
+        # A short low-pass and every ``step``-th sample.  Short on purpose: both signals
+        # go through the same one, so what it lets fold over is still the band in both.
+        from scipy.signal import firwin, upfirdn  # noqa: PLC0415
+        low = firwin(61, 1.1 * BAND_IN_MIC_HIGH_HZ, fs=float(sr))
+        mic, band = upfirdn(low, mic, 1, step), upfirdn(low, band, 1, step)
+    rate = float(sr) / step
+    n = len(mic)
+    seg, hop = BAND_IN_MIC_FILTER, BAND_IN_MIC_FILTER // 2
+    if n < 8 * seg:
+        return 0.0
+    # The delay, from the phase alone and only in the range a speaker plays: loud bass
+    # would otherwise decide it, and the bass may not be in the mic at all.
+    from scipy.fft import next_fast_len  # noqa: PLC0415
+    size = int(next_fast_len(2 * n, real=True))     # an awkward length costs several times over
+    cross = np.fft.rfft(mic, size) * np.conj(np.fft.rfft(band, size))
+    freqs = np.fft.rfftfreq(size, 1.0 / rate)
+    size_of = np.abs(cross)
+    keep = (freqs >= BAND_IN_MIC_LOW_HZ) & (freqs <= BAND_IN_MIC_HIGH_HZ) & (size_of > 0.0)
+    cross = np.where(keep, cross / np.maximum(size_of, 1e-30), 0.0)
+    lag = int(np.argmax(np.abs(np.fft.irfft(cross, size)[:max(1, int(max_delay_s * rate))])))
+    mic, band = mic[lag:], band[:n - lag]
+    pieces = (len(mic) - seg) // hop + 1
+    if pieces < 8:
+        return 0.0
+    at = np.arange(seg)[None, :] + hop * np.arange(pieces)[:, None]
+    window = np.hanning(seg)
+    m = np.fft.rfft(mic[at] * window, axis=1)
+    b = np.fft.rfft(band[at] * window, axis=1)
+    freqs = np.fft.rfftfreq(seg, 1.0 / rate)
+    keep = (freqs >= BAND_IN_MIC_LOW_HZ) & (freqs <= BAND_IN_MIC_HIGH_HZ)
+    both = np.mean(m * np.conj(b), axis=0)[keep]
+    band_power = np.mean(np.abs(b) ** 2, axis=0)[keep]
+    mic_power = np.mean(np.abs(m) ** 2, axis=0)[keep]
+    explained = np.abs(both) ** 2 / np.maximum(band_power * mic_power, 1e-30)
+    sounding = band_power >= float(np.max(band_power)) * 10.0 ** (-BAND_IN_MIC_BAND_RANGE_DB / 10.0)
+    if int(np.sum(sounding)) < 8:
+        return 0.0
+    return min(1.0, float(np.median(explained[sounding])))
+
+
+class BandInMic:
+    """Is the band in a mic the player said it could not reach?
+
+    The safety net under her word: headphones come out, or the yes was wrong, and nothing
+    else can see it.  Fed the mic and what the band played, block by block, off the audio
+    callback, for as long as the take runs.  Every :data:`BAND_IN_MIC_WINDOW_S` it asks how much of the mic is the band.  A
+    stretch that says yes counts one up, one that says no counts one down, and at
+    :data:`BAND_IN_MIC_WINDOWS` it latches: one loud bar cannot trip it, and once tripped
+    it never goes back, because a take that flips between believing and not is worse than
+    either.
+    """
+
+    def __init__(self, sr: int):
+        self._sr = int(sr)
+        self._size = int(BAND_IN_MIC_WINDOW_S * self._sr)
+        self._mic: list = []
+        self._band: list = []
+        self._held = 0
+        self._count = 0
+        self.latched = False
+        #: The band's share of the mic in the stretch that latched it.
+        self.share: float | None = None
+
+    def feed(self, mic, band) -> None:
+        if self.latched:
+            return
+        self._mic.append(np.asarray(mic, dtype=np.float32))
+        self._band.append(np.asarray(band, dtype=np.float32))
+        self._held += len(mic)
+        if self._held < self._size:
+            return
+        mic, band = np.concatenate(self._mic), np.concatenate(self._band)
+        self._mic, self._band, self._held = [], [], 0
+        for at in range(0, len(mic) - self._size + 1, self._size):
+            self._judge(mic[at:at + self._size], band[at:at + self._size])
+            if self.latched:
+                return
+
+    def _judge(self, mic, band) -> None:
+        def db(x):
+            return 10.0 * math.log10(float(np.mean(x.astype(np.float64) ** 2)) + 1e-12)
+        if not (np.all(np.isfinite(mic)) and np.all(np.isfinite(band))):
+            return                  # a stretch with a sample that is no number is not judged
+        if db(band) < BAND_IN_MIC_BAND_FLOOR_DB or db(mic) < BAND_IN_MIC_MIC_FLOOR_DB:
+            return                  # nothing to hear, so it says nothing either way
+        share = band_share(mic, band, self._sr)
+        if share >= BAND_IN_MIC_SHARE:
+            self._count += 1
+            if self._count >= BAND_IN_MIC_WINDOWS:
+                # The share first: another thread reads it as soon as it sees the latch.
+                self.share = share
+                self.latched = True
+        else:
+            self._count = max(0, self._count - 1)
 
 
 class BandEntry:
@@ -1143,6 +1300,16 @@ class SilenceEnding:
         self._played = False
         self._fade = 0
         self._bars_of_fade = self._fade_bars
+        #: A fade that will run to its end whatever is heard (see long_wait).
+        self._finish = False
+
+    def long_wait(self) -> None:
+        """From here it cannot tell the player stopped after all, so it waits as a room
+        mic's ending does.  A fade already running was begun on an input that could
+        tell, so it is kept and runs to its end: the band is in the mic now, the mic
+        will not go silent again, and "not silent" must not bring the band back."""
+        self._end_after_s = None
+        self._finish = self._fade > 0
 
     def _timing(self, bar_s: float | None) -> tuple[float, int]:
         """(seconds to wait, bars to fade over)."""
@@ -1155,6 +1322,7 @@ class SilenceEnding:
     def update(self, t_bar: float, playing: bool,
                bar_s: float | None = None) -> tuple[float, bool]:
         """(gain offset in dB for this bar, whether the take should end)."""
+        playing = bool(playing) and not self._finish
         self._played = self._played or bool(playing)
         if playing or self._last_heard is None:
             self._last_heard = float(t_bar)

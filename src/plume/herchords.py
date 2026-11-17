@@ -42,7 +42,8 @@ room (speakers 6 dB down) it put the band at under half the mic while she was
 silent and the band was all it heard, and at a fifth of it with no bleed at all.
 Taking that share of the band's chord out leaves the band's chord standing, and
 it read as hers: a held Em from the band's own Cmaj7.  So a follower made with
-``band_in_mic`` (any input but a direct one or MIDI) keeps the template and says
+``band_in_mic`` (any input the band can reach: not a direct one, MIDI, or a mic with
+the band only in headphones) keeps the template and says
 why.
 
 Pure: plain numbers in, a plain dict out, no clock, no device, no rng.

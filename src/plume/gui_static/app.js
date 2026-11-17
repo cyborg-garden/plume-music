@@ -9,7 +9,7 @@ import { audioTime, axisSpans, axisTime, axisX, hitBoxes, lineSpans, nextIndex, 
 import { lostWords, pinnedRoute, routeOf } from '/static/session.js';
 import { pageTitle, parseGuide, renderGuide } from '/static/guide.js';
 import { isWorking, placeWords, videoView } from '/static/video.js';
-import { BAND_IN_INPUT_LINE, DIRECT_LINE, FADING_LINE, NO_ENDING, ROOM_END_LINE, ROOM_OUTPUT_LINE, SEND_LINE, WIRELESS_LINE, askingLine, bandInInput, countWords, delayLine, endLine, endedNote, isFading, isRunning, keyLine, landing, meterShare, movedOutput, routeLine, sendDelayLine, settledLine, setupTrouble, setupView, signView, stageWords, watchEnding, youView } from '/static/live.js';
+import { BAND_IN_INPUT_LINE, BAND_IN_MIC_LINE, DIRECT_LINE, FADING_LINE, NO_ENDING, ROOM_END_LINE, PHONES_OUTPUT_LINE, ROOM_OUTPUT_LINE, SEND_LINE, WIRELESS_LINE, askingLine, bandInInput, bandInMic, countWords, delayLine, endLine, endedNote, isFading, isRunning, keyLine, landing, meterShare, movedOutput, routeLine, sendDelayLine, settledLine, setupTrouble, setupView, signView, stageWords, watchEnding, youView } from '/static/live.js';
 
 const $ = function (id) { return document.getElementById(id); };
 const S = { csrf: '', take: null, selected: null, roastOn: true, screen: 'loading', nav: 0,
@@ -165,8 +165,9 @@ function drawSheet() {
   const tap = !empty && take.tap_start;
   [hl, tick, yes, no].forEach(function (el) { el.hidden = !tap; });
   if (tap) {
-    /* Only a room mic loses the player to the band. On direct input or MIDI the line runs on. */
-    const hearsOn = take.route === 'direct' || take.route === 'midi';
+    /* Only a room mic loses the player to the band. On direct input or MIDI the line runs on,
+       and on a mic when the band was only in her headphones. */
+    const hearsOn = take.route === 'direct' || take.route === 'midi' || take.route === 'headphones';
     const end = take.band_t_s !== null && !hearsOn ? take.band_t_s : take.end_t_s, xEnd = g.xAt(end), xStart = g.xAt(take.start_t_s);
     hl.style.left = xStart + 'px'; hl.style.top = hearY + 'px'; hl.style.width = Math.max(0, xEnd - xStart) + 'px';
     tick.style.left = xEnd + 'px'; tick.style.top = (hearY - 4) + 'px';
@@ -896,6 +897,11 @@ function drawSettings() {
   drawHear();
   drawSummary();
 }
+/* Whether she has said the band is only in her headphones, for the input and output chosen now. */
+function bandInPhones() {
+  const device = chosenDevice();
+  return !!S.home && !!(device ? device.band_in_headphones : S.home.band_in_headphones);
+}
 function drawHear() {
   /* Any input, once a person says headphones are on: ticking this says so, to the bridge, there
      and then. Plume cannot tell headphones from speakers, and the bridge refuses it without that yes. */
@@ -915,7 +921,7 @@ function drawHear() {
   $('send-words').hidden = !offer;
   $('send-words').textContent = SEND_LINE;
   $('room-output').hidden = !(elsewhere && !direct);
-  $('room-output').textContent = ROOM_OUTPUT_LINE;
+  $('room-output').textContent = bandInPhones() ? PHONES_OUTPUT_LINE : ROOM_OUTPUT_LINE;
 }
 /* Her sound on Hear me. Kept by this browser, and sent with Start only while Hear me is on. */
 function soundNow() { return load('plume-sound') || 'off'; }
@@ -999,7 +1005,7 @@ function drawSettingsNote() {
   $('settings-note').textContent = note;
 }
 function drawSummary() {
-  if (S.home) $('home-gear').textContent = routeLine(chosenDevice(), channelNow(), $('set-key').value.trim(), $('set-style').value.trim(), outputName());
+  if (S.home) $('home-gear').textContent = routeLine(chosenDevice(), channelNow(), $('set-key').value.trim(), $('set-style').value.trim(), outputName(), bandInPhones());
 }
 /* A terminal's take is the only thing that takes Start's place. */
 function drawHomeState() {
@@ -1294,6 +1300,8 @@ function setOff(b) { b.disabled = true; }
 async function setupAnswer(step, value) {
   const turn = S.setupTurn, body = { step: step, answer: value };
   if (S.setup.device) body.device = S.setup.device;
+  /* The band question names no output, so the answer says which one it was asked of. */
+  if (step === 'band') body.output = S.setup.band_output;
   S.answering = true;
   Array.from($('setup-choices').children).forEach(setOff);
   let answer = null;
@@ -1366,7 +1374,7 @@ function drawLive() {
   $('live-stop').disabled = stopping;
   $('live-stop').textContent = stopping ? 'Stopping' : 'Stop';
   const inInput = bandInInput(row);
-  const hint = S.liveLost ? 'Lost touch with plume gui. If it has closed, plume stop still ends the take.' : doc.message || doc.hint || (inInput ? BAND_IN_INPUT_LINE : '');
+  const hint = S.liveLost ? 'Lost touch with plume gui. If it has closed, plume stop still ends the take.' : doc.message || doc.hint || (inInput ? BAND_IN_INPUT_LINE : bandInMic(row) ? BAND_IN_MIC_LINE : '');
   $('live-hint').hidden = !hint;
   $('live-hint').textContent = hint;
   const hasLevel = you.level !== null, sign = signView(you, row, doc);

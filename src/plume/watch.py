@@ -67,6 +67,10 @@ def you_trust(source: str, stage: str | None, band_db: float,
             return [], ("declared direct, but the band is in this input: check for "
                         "loopback routing or a mic on this channel")
         return list(_YOU_FIELDS), "direct input: the band does not reach it"
+    if source == "headphones":
+        # No check of its own here: the take measures the mic and decides once, and a line
+        # read after that decision is a room mic's (see Listener._group).
+        return list(_YOU_FIELDS), "the band is only in headphones: it does not reach this mic"
     if stage == "drums":
         return ["you_notes"], ("room mic over drums alone: drums barely favour a note, "
                                "but level and onsets include them")
@@ -117,8 +121,13 @@ class Listener:
             doc = json.loads((self._dir / "session.json").read_text())
         except (OSError, ValueError):
             return "room"          # not written yet, or from before this existed
-        source = doc.get("input", {}).get("source") if isinstance(doc, dict) else None
-        self._source = "direct" if source == "direct" else "room"
+        audio = doc.get("input") if isinstance(doc, dict) else None
+        source = audio.get("source") if isinstance(audio, dict) else None
+        if source == "room" and audio.get("isolated") is True:
+            # A mic the player said the band cannot reach, so it is measured like one.
+            self._source = "headphones"
+        else:
+            self._source = "direct" if source == "direct" else "room"
         return self._source
 
     def _new_midi(self) -> None:
@@ -258,11 +267,16 @@ class Listener:
         bleed = _bleed_power(human, band, sr)
         source = self._input_source()
         last = rows[-1]
+        # The take's own decision, from its log: it heard the band in a mic said to be
+        # out of its reach, and has gone by a room mic's rules since.  So does this.
+        withdrawn = source == "headphones" and bool(last.get("band_in_mic"))
+        if withdrawn:
+            source = "room"
         trusted, why = you_trust(source, last.get("entry"), band_db,
                                  bleed / heard if heard > 1e-9 else 0.0)
-        # A direct input has nothing to subtract, and over a real instrument the
-        # correlation would only ever remove some of the player.
-        you_db = heard_db if source == "direct" else _db(max(heard - bleed, 0.0))
+        # An input the band cannot reach has nothing to subtract, and over a real
+        # instrument the correlation would only ever remove some of the player.
+        you_db = heard_db if source in ("direct", "headphones") else _db(max(heard - bleed, 0.0))
         busy = onsets / beats
         you_source = "mic"
         midi_changes: list[str] = []
@@ -286,6 +300,7 @@ class Listener:
             "playing": last.get("playing"), "playing_trusted": last.get("playing_trusted"),
             "fade_db": last.get("fade_db"),
             "input_fault": last.get("input_fault"),
+            "band_in_mic": withdrawn,
         }
 
     def _changes(self, row: dict, you_db: float, busy: float) -> list[str]:

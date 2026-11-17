@@ -10,13 +10,19 @@ sound. Sound only starts from Start.
 device setup heard you on, or else the only audio interface it can find, or else the
 computer's own mic. The small line under Start says what it will use.
 
-Plume treats each input one of two ways:
+Plume treats each input one of three ways:
 
 - **A room mic** hears you and the band together. Once the band is in, plume cannot tell
   your notes from its own, so it shows less about you and cannot always hear you stop.
   Press Stop when you are done.
 - **A plugged-in instrument** (a direct input, through an audio interface) hears only you.
   Plume can follow you for the whole take, and the band finishes by itself when you stop.
+- **A mic with the band only in your headphones** hears you and the room, but not the
+  band. Plume can't tell that by itself, so setup asks. If you can hear the band in the
+  room at all, say No. After a yes, plume follows you for
+  the whole take and the band finishes by itself when you stop. If a take then hears the
+  band in the mic after all, it goes back to treating it as a room mic for the rest of
+  that take, and the live screen says so.
 
 Plume decides which from the device's name, and a name can mislead it. If a take hears
 the band coming back through a direct input, the live screen says so and suggests another

@@ -2550,6 +2550,8 @@ def cmd_voice(args):
             extra += [flag, str(value)]
     if args.direct:
         extra.append("--direct")
+    if args.band_in_headphones:
+        extra.append("--band-in-headphones")
     midi_args = _midi_args(args)
     try:
         realtime.check_audio_consent()
@@ -2608,6 +2610,8 @@ def _route_kwargs(args) -> dict:
             extra[name] = getattr(args, name)
     if getattr(args, "direct", False):
         extra["direct"] = True
+    if getattr(args, "band_in_headphones", False):
+        extra["band_in_headphones"] = True
     sound = getattr(args, "sound", None)
     if sound is None and getattr(args, "monitor", False):
         sound = os.environ.get("PLUME_SOUND") or None
@@ -2628,9 +2632,17 @@ def _add_route_flags(p, *, voice: bool = True) -> None:
                        metavar="N", help="a mic on this channel of the same device, recorded "
                                          "to voice.wav; what 'plume voice' listens to")
     p.add_argument("--direct", action="store_true", default=False,
-                   help="the band cannot reach this input (instrument plugged in, or "
-                        "headphones): turns off self-masking and trusts its level. Thresholds "
-                        "are from a room mic and uncalibrated here")
+                   help="an instrument plugged in, which the band cannot reach: turns off "
+                        "self-masking and trusts its level. Thresholds are from a room mic "
+                        "and uncalibrated here. For a mic, see --band-in-headphones")
+    p.add_argument("--band-in-headphones", dest="band_in_headphones", action="store_true",
+                   default=False,
+                   help="a mic, with the band only in your headphones, so the band cannot "
+                        "reach it: turns off self-masking and believes what it hears once "
+                        "the band is in, unless the take hears the band in the mic, when "
+                        "it goes back to a room mic for good. If the band can be heard "
+                        "in the room at all, leave this off. With --midi the band listens "
+                        "to the keys, so this changes nothing")
 
 
 def cmd_midi(args):  # noqa: ARG001

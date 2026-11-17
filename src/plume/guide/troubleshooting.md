@@ -13,7 +13,8 @@ Count the one you want to feel.
 band waits until it hears a key, so typing one in Settings helps.
 
 **It doesn't fade when I stop.** On a room mic, plume can't hear you stop over the band.
-Press Stop. A plugged-in instrument fixes this.
+Press Stop. A plugged-in instrument fixes this, and so do headphones: with the band only
+in your headphones, say yes when setup asks.
 
 **"Nothing came in."** Check the cable, the gain and the channel. Setup offers any other
 device it can try.

@@ -179,10 +179,9 @@ def test_a_room_mic_does_not_chase_its_own_band():
 
 
 def test_a_room_mic_moves_less_far():
-    # 16 bars, not 40: a lean that outlasts the bars at her normal becomes her normal.
     near, room = learned(), learned(trusted=False)
-    a = play(near, 16, db=NORMAL_DB - 30)[-1]
-    b = play(room, 16, db=NORMAL_DB - 30)[-1]
+    a = play(near, 40, db=NORMAL_DB - 30)[-1]
+    b = play(room, 40, db=NORMAL_DB - 30)[-1]
     assert b.gain_db > a.gain_db and b.density > a.density
 
 

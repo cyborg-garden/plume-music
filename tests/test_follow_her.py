@@ -136,16 +136,35 @@ NORMAL_STRETCH = [0] * 32
 
 
 @pytest.mark.parametrize("offset", [4.0, -4.0, -9.0])
-def test_an_offset_held_since_her_opening_bars_becomes_her_normal(offset):
-    """Her first bars set her normal, and they can simply be off: a player warming up
-    softly, or loudly, and then playing at her real level from there on.  An offset she
-    has held since the band came in is her normal, at any depth, and the song's sections
-    come back with it."""
+def test_an_offset_held_for_a_very_long_time_becomes_her_normal(offset):
+    """Above or below her first bars from the band's entry, and for the whole take:
+    followed as a passage for a long while (louder for a section, softer for longer
+    than any passage), then it is her normal, the song plays as written, and nothing
+    leans for the rest of the take."""
     run = _arc_run([offset] * 112)
-    own = sum(got.section == arc[0] for _, got, arc in run)
-    assert own >= 0.8 * len(run), own
     assert run[-1][0].gain_db == 0.0 and run[-1][1].lean == "neutral"
-    assert all(got.drums == 1.0 for _, got, _ in run[40:])
+    assert all((got.section, got.resting, got.drums) == (arc[0], arc[2], 1.0)
+               for _, got, arc in run[-24:])
+
+
+def _back(run, at):
+    """The band's gains from bar ``at`` on, where she is back at her normal."""
+    return [s.gain_db for s, _, _ in run[at:]]
+
+
+@pytest.mark.parametrize("pre", [8, 16])
+@pytest.mark.parametrize("depth", [-6.0, -9.0])
+def test_an_early_long_passage_is_followed_to_its_end_and_back(pre, depth):
+    """A few bars at her normal, then 48 soft bars, then her normal again: followed
+    for the whole passage, as it always was, and when she comes back the band comes
+    back to its own level and no further: never louder than her."""
+    run = _opening([0.0] * (4 + pre) + [depth] * 48 + [0.0] * 24)
+    soft = run[pre + 3:pre + 48]
+    assert all(s.gain_db <= -2.5 for s, _, _ in soft), [s.gain_db for s, _, _ in soft]
+    back = run[pre + 48:]
+    assert all(g <= 0.5 for g in _back(run, pre + 48)), _back(run, pre + 48)
+    assert all(got.lean != "louder" for _, got, _ in back)
+    assert all(g == 0.0 for g in _back(run, pre + 48 + 6))
 
 
 @pytest.mark.parametrize("depth", [-5.0, -6.5, -7.5, -9.0])
@@ -214,14 +233,12 @@ def test_when_the_mic_turns_out_to_hold_the_band_the_song_comes_back_on_a_phrase
     assert run[-1][1].resting == run[-1][2][2] and run[-1][1].drums == 1.0
 
 
-def test_a_take_played_at_one_level_from_its_first_bars_is_her_normal():
-    """Well under her first bars from the start, and for the whole take: the band
-    comes down with her at first, but a take played at one level is her normal, and
-    nothing leans for the rest of it, either way."""
+def test_a_big_lean_from_the_first_bar_is_still_followed_however_long_it_lasts():
+    """Well under her first bars from the band's entry: a soft opening that turns out
+    to be a passage, and the band stays down with her while it lasts."""
     run = _arc_run([-12] * 60, [1.0] * 60)
-    assert run[8][0].gain_db <= -5.0                       # followed at first
-    assert run[-1][0].gain_db == 0.0 and run[-1][0].density == 1.0
-    assert all(got.lean == "neutral" for _, got, _ in run[-16:])
+    assert all(s.gain_db <= -5.0 for s, _, _ in run[6:]), [s.gain_db for s, _, _ in run]
+    assert run[-1][1].lean == "much softer"
 
 
 def _opening(offsets):
@@ -240,31 +257,73 @@ def _opening(offsets):
     return out
 
 
-@pytest.mark.parametrize("intro,depth", [(8, -6.0), (8, -10.0), (24, -6.0), (8, 6.0)])
-def test_an_intro_off_her_real_level_gives_way_to_it(intro, depth):
-    """A soft (or loud) intro, then her real level for the rest of the take.  The band
-    reads her real level against the intro for a while (about as long as the intro and
-    the bars its first bars count for), then it is her normal: no permanent lift or
-    duck, and the song plays as written from there on."""
+@pytest.mark.parametrize("intro,depth", [(8, -6.0), (8, -10.0), (16, -6.0), (24, -6.0)])
+def test_a_soft_intro_gives_way_to_her_real_level(intro, depth):
+    """A soft intro, then her real level for the rest of the take.  The band reads her
+    real level as louder for a while, then it is her normal: no lift for the rest of
+    the take, and within a section of her starting to play it."""
     run = _opening([depth] * intro + [0.0] * 72)
-    leaning = [i for i, (_, got, _) in enumerate(run) if got.lean != "neutral"]
-    assert leaning and leaning[-1] <= 2 * intro + FOLLOW_NORMAL_SEED_BARS + 4, leaning[-3:]
-    tail = run[-24:]
-    assert all(s.gain_db == 0.0 for s, _, _ in tail)
+    louder = [i for i, (_, got, _) in enumerate(run) if got.lean == "louder"]
+    start = intro - FOLLOW_LEARN_BARS
+    assert louder and louder[-1] - start <= 16 + 4, (louder[0], louder[-1])
+    assert all(s.gain_db == 0.0 for s, _, _ in run[-24:])
     assert all((got.section, got.resting, got.drums) == (arc[0], arc[2], 1.0)
-               for _, got, arc in tail)
+               for _, got, arc in run[-24:])
+
+
+def test_a_loud_intro_gives_way_to_her_real_level_in_the_end():
+    """A loud intro, then her real level.  Played under her first bars for long, it
+    reads as a soft passage for as long as a long passage is followed, and is then
+    her normal: no duck for the rest of the take."""
+    run = _opening([6.0] * 8 + [0.0] * 100)
+    softer = [i for i, (_, got, _) in enumerate(run)
+              if got.lean in ("softer", "much softer")]
+    assert softer and softer[-1] <= 4 + 72, softer[-1]
+    assert all(s.gain_db == 0.0 and got.lean == "neutral" for s, got, _ in run[-24:])
 
 
 @pytest.mark.parametrize("depth", [-7.0, -12.0])
 def test_a_soft_first_verse_then_her_chorus(depth):
     """Her normal over the drums, a soft first verse from the band's entry, then her
-    chorus at her real level: the verse is followed, and the chorus ends up as her
-    normal with the song as written, not lifted for the rest of the take."""
+    chorus at her real level: the whole verse is followed, and the chorus is her normal
+    again at once, never lifted past it."""
     run = _opening([0.0] * 4 + [depth] * 24 + [0.0] * 40)
-    verse = run[4:16]
-    assert all(s.gain_db <= -2.0 for s, _, _ in verse), [s.gain_db for s, _, _ in verse]
-    tail = run[-16:]
-    assert all(s.gain_db == 0.0 and got.lean == "neutral" for s, got, _ in tail)
+    verse = run[3:24]
+    assert all(s.gain_db <= -2.5 for s, _, _ in verse), [s.gain_db for s, _, _ in verse]
+    assert all(g <= 0.5 for g in _back(run, 24)), _back(run, 24)
+    assert all(got.lean != "louder" for _, got, _ in run[24:])
+    assert all(g == 0.0 for g in _back(run, 30))
+
+
+def test_after_a_passage_long_enough_to_become_her_normal_her_return_is_not_louder():
+    """She stays soft so long it becomes her normal, then comes back to the level she
+    played at before: the band knows that level, and is back with her within two bars,
+    never lifting past her."""
+    run = _opening([0.0] * 12 + [-9.0] * 90 + [0.0] * 16)
+    back = run[8 + 90:]
+    assert run[8 + 85][0].gain_db == 0.0              # it had become her normal
+    louder = [i for i, (s, got, _) in enumerate(back) if s.gain_db > 0.5 or got.lean == "louder"]
+    assert len(louder) <= 2, [s.gain_db for s, _, _ in back]
+    assert all(s.gain_db == 0.0 for s, _, _ in back[4:])
+
+
+@pytest.mark.parametrize("step", [0.1, -0.1])
+def test_her_normal_follows_her_as_it_drifts_slowly(step):
+    """Her level drifts 8 dB over 80 bars, a tenth of a dB a bar: never a passage, just
+    where she plays now.  Her normal goes with her, and the band never leans."""
+    f = learned()
+    states = wander(f, [step * i for i in range(80)] + [80 * step] * 20)
+    assert all(s.gain_db == 0.0 for s in states), max((s.gain_db for s in states), key=abs)
+
+
+def test_mildest_depth_of_a_held_phrase_sets_the_parts():
+    """A phrase that is softer, then much softer, thins the band to softer at its line:
+    the depth it held all through, not the depth it reached."""
+    y = PlanYield(4)
+    for b, g in zip(range(0, 8), (0.0, 0.0, 0.0, 0.0, 0.0, -2.5, -5.0, -5.0)):
+        y.bar(*song_section(0), gain_db=g, bars_in=b)
+    got = y.bar(*song_section(0), gain_db=-5.0, bars_in=8)
+    assert "clap" not in got.resting and "shimmer" in got.resting, got.resting
 
 
 def test_a_player_who_never_returns_to_her_opening_level():

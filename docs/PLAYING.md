@@ -39,18 +39,19 @@ band. A longer one can: from about 6 to 11 seconds depending on the tempo and wh
 you stop, later at very slow tempos. It can take two or three bars to come back up.
 
 Once it is in, the band keeps listening for the whole take, measured against how you
-normally play rather than against any fixed level. Your normal is where you have mostly
-been playing over the last few minutes, and it keeps moving with you. Play softer for a couple of bars and it
+normally play rather than against any fixed level. Your normal is where you have been
+playing when you are not in a softer or louder passage, and it moves with you. Play softer for a couple of bars and it
 comes down to meet you: quieter, fewer notes, the drums played lighter, and once you have
 held it through a phrase the lighter parts sitting out, though the kick, snare and bass
 keep going. Come back
 up and so does the band. Playing fewer notes at your usual level only thins the band's own
 patterns. One quiet bar, or one loud one, moves nothing. Answer yourself soft and loud a
 few bars at a time and the band settles rather than pumping, with the song's parts and
-lifts as written. If your first bars were off from the level you then keep playing at,
-that becomes your normal after a while; a softer or louder passage later on is followed
-until it has lasted longer than the playing around it, and when you come back the band
-comes back to its own level. The song's own shape is only a
+lifts as written. A softer passage is followed for as long as it lasts, and when you come
+back to your normal the band comes back to its own level with you, not past it. If your
+first bars were softer than the level you then keep playing at, that becomes your normal
+within about 16 bars; if they were louder, or you stay softer for well over a minute or
+two, it takes about 64. The song's own shape is only a
 default: a lift you play softly under is played as a verse, and a verse you drive is played
 as a lift, always from a phrase line. The `yield` field in each decision row says when that
 happened. On a room mic the song keeps its own shape, since the mic hears the band too. Chords follow

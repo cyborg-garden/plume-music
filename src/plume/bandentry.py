@@ -1116,17 +1116,24 @@ FOLLOW_REVERSAL_BARS = 4.5
 #: Bars of her latest playing that, all plainly one way, end a settled swing: longer
 #: than any leg of a swing (see FOLLOW_REVERSAL_BARS).
 FOLLOW_SWING_RELEASE_BARS = 6.0
-#: Her normal is the median of her last :data:`FOLLOW_NORMAL_BARS` played bars, both
-#: ways, at every point in the take: nothing about it is ever locked.  A lean is how
-#: far she is from it.  A passage is followed until it outlasts the bars at her normal
-#: around it, so a 32-bar soft passage after 32 bars at her normal is followed to its
-#: end, and one longer than half the window becomes her normal.  The window starts
-#: with her first bars counted :data:`FOLLOW_NORMAL_SEED_BARS` times, as if she had
-#: played that long at that level: a passage soon after she starts is still followed
-#: for that long, and an intro that was simply off from her real level (soft or
-#: loud) gives way to it within about as many bars.
-FOLLOW_NORMAL_BARS = 72
+#: Her normal is the median of her last :data:`FOLLOW_NORMAL_BARS` bars played at her
+#: normal: a bar the band is leaning on (a passage it is following, or a swing) never
+#: moves it, so a passage is followed for as long as it lasts and she comes back to the
+#: same normal.  Short enough to follow her normal as it drifts slowly over a take (a
+#: few dB over a few minutes).  The window starts with her first bars counted
+#: :data:`FOLLOW_NORMAL_SEED_BARS` times, so a few odd bars early on do not move it.
+FOLLOW_NORMAL_BARS = 32
 FOLLOW_NORMAL_SEED_BARS = 16
+#: Bars a lean has to hold, steady, before that level is her normal: louder (a soft
+#: intro, then her real level) after a section; softer after longer than any passage
+#: the band follows (a loud intro, or a very long soft stretch).
+FOLLOW_ABSORB_LOUDER_BARS = 16
+FOLLOW_ABSORB_SOFTER_BARS = 64
+#: After a lean becomes her normal, bars back at her old normal that put her normal back
+#: at once, so the band never reads her own level as louder or softer than normal; and
+#: bars for which the old normal is remembered.
+FOLLOW_RECENTRE_BARS = 2
+FOLLOW_RECENTRE_MEMORY_BARS = 64
 
 
 @dataclass(frozen=True)
@@ -1389,6 +1396,10 @@ class BandFollow:
         #: Her played bars' levels and busyness, oldest first (see FOLLOW_NORMAL_BARS).
         self._levels: list[float] = []
         self._busies: list[float] = []
+        self._held = 0                # bars she has held the band's lean (see _absorb)
+        self._prior: float | None = None   # her normal before a lean became it
+        self._prior_age = 0
+        self._prior_near = 0
 
     @property
     def hold_bars(self) -> float:
@@ -1400,9 +1411,13 @@ class BandFollow:
         return _ARC_MEAN + FOLLOW_ARC_DEPTH * (float(arc_density) - _ARC_MEAN)
 
     def _learn(self, db: float, busy: float | None) -> None:
-        """One more played bar into her normal (see :data:`FOLLOW_NORMAL_BARS`)."""
-        self._levels.append(float(db))
-        if busy is not None:
+        """One more played bar into her normal (see :data:`FOLLOW_NORMAL_BARS`): only a
+        bar at her normal, once it is known."""
+        known = self._learned >= FOLLOW_LEARN_BARS
+        level_at_normal = self._level.value == 0.0 and not self._level._averaged
+        if not known or level_at_normal:
+            self._levels.append(float(db))
+        if busy is not None and (not known or self._busy.value == 0.0):
             self._busies.append(float(busy))
         self._learned += 1
         if self._learned == FOLLOW_LEARN_BARS:
@@ -1463,6 +1478,8 @@ class BandFollow:
                 if step:
                     moved.append("busier" if step > 0 else "sparser")
             self._learn(float(rms_db) - own, busy)
+            if known:
+                self._absorb(float(rms_db) - own, bool(moved))
         gain_t, dens_t = self._targets()
         # A move is reported only when the band's own target went that way: at a limit,
         # or thinned by the torrent cap on a "busier" bar, the log and the after-take
@@ -1480,6 +1497,40 @@ class BandFollow:
         else:
             self.density = _toward(self.density, dens_t, FOLLOW_DENSITY_STEP)
         return self._state(tuple(moved))
+
+    def _reseed(self, db: float) -> None:
+        self._levels = [float(db)] * FOLLOW_NORMAL_SEED_BARS
+        self._normal_db = float(db)
+        lvl = self._level
+        lvl.value, lvl._averaged, lvl._recent, lvl._latest = 0.0, False, [], []
+        lvl._reset()
+        lvl._side = 0
+        self._held = 0
+
+    def _absorb(self, db: float, moved: bool) -> None:
+        """A lean held long enough becomes her normal (:data:`FOLLOW_ABSORB_LOUDER_BARS`,
+        :data:`FOLLOW_ABSORB_SOFTER_BARS`); and back at the normal it replaced, that is
+        her normal again at once (:data:`FOLLOW_RECENTRE_BARS`)."""
+        if self._prior is not None:
+            self._prior_age += 1
+            near = abs(db - self._prior) <= FOLLOW_LEVEL_DEADBAND_DB
+            self._prior_near = self._prior_near + 1 if near else 0
+            if self._prior_near >= FOLLOW_RECENTRE_BARS:
+                self._reseed(self._prior)
+                self._prior = None
+                return
+            if self._prior_age > FOLLOW_RECENTRE_MEMORY_BARS:
+                self._prior = None
+        lean = self._level.value
+        if lean == 0.0 or self._level._averaged or moved:
+            self._held = 0
+            return
+        if abs(db - self._normal_db - lean) <= FOLLOW_LEVEL_DEADBAND_DB:
+            self._held += 1
+        limit = FOLLOW_ABSORB_LOUDER_BARS if lean > 0 else FOLLOW_ABSORB_SOFTER_BARS
+        if self._held >= limit:
+            self._prior, self._prior_age, self._prior_near = self._normal_db, 0, 0
+            self._reseed(self._normal_db + lean)
 
     @property
     def yield_db(self) -> float:

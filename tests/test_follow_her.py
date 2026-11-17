@@ -19,7 +19,7 @@ from conftest import needs_laptop_speed, playhead_rate  # noqa: E402
 
 from plume import herchords as hc
 from plume.bandentry import (FOLLOW_LEARN_BARS, SONG_ARC, BandFollow, PlanYield,
-                             song_section)
+                             song_section, yield_to)
 
 NORMAL_DB, NORMAL_BUSY = -27.0, 2.8
 #: Her bar-to-bar wander, in dB, as a real player's level moves: never the same twice,
@@ -99,17 +99,20 @@ def _band(states, *, start=16):
     return out
 
 
-def _arc_run(offsets, busy=None, *, start=0):
+def _arc_run(offsets, busy=None, *, start=0, trusted=None):
     """Her bars (dB from her normal) through the follow and the yield, from ``start``
-    bars after the band came in: ``(follow state, yield state, the arc's own)``."""
+    bars after the band came in: ``(follow state, yield state, the arc's own)``, as the
+    planner does it (:func:`plume.bandentry.yield_to`).  ``trusted``: per bar, whether
+    the input still hears only her (a mic found to hold the band turns False)."""
     f = learned()
     y = PlanYield()
     out = []
     for i, d in enumerate(offsets):
+        if trusted is not None and not trusted[i]:
+            f.trusted = False
         s = f.bar(NORMAL_DB + d, NORMAL_BUSY if busy is None else busy[i], playing=True)
         own = song_section(start + i)
-        out.append((s, y.bar(*own, gain_db=s.gain_db, density_x=s.density,
-                             bars_in=start + i), own))
+        out.append((s, yield_to(y, f, *own, bars_in=start + i), own))
     return out
 
 
@@ -125,25 +128,93 @@ def test_a_loud_sparse_player_keeps_a_full_band_and_its_sections():
         assert run[-1][0].density < 1.0          # ... but the patterns are thinner
 
 
-@pytest.mark.parametrize("offset", [4.0, -4.0])
-def test_a_steady_slight_offset_becomes_her_new_normal(offset):
-    """Her first bars set her normal.  If she then settles a few dB above or below it
-    and stays there, that is her normal now: the band comes back to its own level
-    and the song's sections come back with it, instead of every verse becoming a lift
-    (or no lift ever coming) for the rest of the take."""
+#: Bars of her own normal before a passage: long enough to count as settled.
+SETTLED = [0] * 8
+
+
+@pytest.mark.parametrize("offset", [4.0, -4.0, -9.0])
+def test_an_offset_held_since_her_opening_bars_becomes_her_normal(offset):
+    """Her first bars set her normal, and they can simply be off: a player warming up
+    softly, or loudly, and then playing at her real level from there on.  An offset she
+    has held since the band came in is her normal, at any depth, and the song's sections
+    come back with it."""
     run = _arc_run([offset] * 112)
     own = sum(got.section == arc[0] for _, got, arc in run)
     assert own >= 0.8 * len(run), own
     assert run[-1][0].gain_db == 0.0 and run[-1][1].lean == "neutral"
     assert all(got.drums == 1.0 for _, got, _ in run[40:])
-    assert sum(got.section == "lift" for _, got, _ in run[40:]) == \
-        sum(arc[0] == "lift" for _, _, arc in run[40:])
+
+
+@pytest.mark.parametrize("depth", [-5.0, -6.5, -7.5, -9.0])
+def test_a_long_soft_passage_after_her_normal_stays_followed_to_its_end(depth):
+    """A passage is not a new normal.  After a settled stretch at her normal, a soft
+    passage of two song sections is followed for its whole length, whatever its depth,
+    and when she comes back the band comes back to its own level, not past it."""
+    run = _arc_run(SETTLED + [depth] * 32 + [0] * 12, start=8)
+    soft = run[len(SETTLED) + 4:len(SETTLED) + 32]
+    assert all(s.gain_db <= -2.0 for s, _, _ in soft), [s.gain_db for s, _, _ in soft]
+    assert all(got.lean in ("softer", "much softer") for _, got, _ in soft)
+    back = run[len(SETTLED) + 32:]
+    assert all(s.gain_db <= 0.5 for s, _, _ in back), [s.gain_db for s, _, _ in back]
+    assert all(got.lean != "louder" for _, got, _ in back)
+    assert all(got.section == arc[0] for _, got, arc in back[4:])
+
+
+def test_a_swell_then_a_drop_is_answered_like_a_sudden_drop():
+    """She plays louder for a few bars, then drops well under her normal.  That is one
+    swell and one drop, not a player swinging back and forth: the band answers the
+    drop as quickly and as deeply as it answers a sudden one."""
+    sudden = _arc_run(SETTLED + [-8] * 14)
+    swell = _arc_run(SETTLED[:5] + [4, 6, 6] + [-8] * 14)
+    drop_at = len(SETTLED)
+    target = sudden[-1][0].gain_db
+    assert target <= -3.0
+    reached = next(i for i in range(drop_at, len(swell)) if swell[i][0].gain_db <= target + 0.5)
+    assert reached - drop_at <= 3, [s.gain_db for s, _, _ in swell]
+    assert swell[-1][0].gain_db == pytest.approx(target, abs=0.1)
+    assert swell[-1][1].lean == sudden[-1][1].lean
+
+
+def test_a_noisy_drop_after_a_swell_is_not_held_at_the_average():
+    """Real playing wanders: after a swell she drops 5-9 dB, with a bar now and then
+    back near her normal.  The band must not lock onto the average of her loud bars
+    and her soft ones: within four bars of the drop it has come down past -2 dB."""
+    noisy = [-5, -2, -6, -5, -9, -2, -5, -9, -5, -5, -4, -8]
+    run = _arc_run(SETTLED[:5] + [4, 6, 6] + noisy)
+    drop_at = len(SETTLED)
+    reached = next(i for i in range(drop_at, len(run)) if run[i][0].gain_db <= -2.0)
+    assert reached - drop_at <= 4, [s.gain_db for s, _, _ in run]
+
+
+def test_a_player_swinging_two_soft_two_loud_keeps_the_songs_shape():
+    """Her level swings every two bars: the band does not pump with it, and an average
+    dip that comes only from the swing does not hold the song down either.  Its lifts
+    come, with every part, as written."""
+    run = _arc_run(SETTLED + [-8, -8, 0, 0] * 16, start=0)
+    late = run[24:]
+    assert all(got.section == arc[0] and got.resting == arc[2] for _, got, arc in late)
+    assert all(got.drums == 1.0 for _, got, _ in late)
+    assert any(got.section == "lift" for _, got, _ in late)
+
+
+def test_when_the_mic_turns_out_to_hold_the_band_the_song_comes_back_on_a_phrase_line():
+    """A mic believed to hear only her can turn out to hear the band too, and from
+    then on the song no longer yields.  Whatever had yielded comes back on the next
+    phrase line, not on the bar the input was found out."""
+    trusted = [True] * 22 + [False] * 10
+    run = _arc_run([0] * 6 + [-8] * 26, start=8, trusted=trusted)
+    assert run[21][1].resting != run[21][2][2]          # it had yielded by then
+    for i in range(22, len(run)):
+        if (8 + i) % 4:
+            assert run[i][1].resting == run[i - 1][1].resting, i
+    assert run[-1][1].resting == run[-1][2][2] and run[-1][1].drums == 1.0
 
 
 def test_a_big_lean_is_still_followed_however_long_it_lasts():
-    """Only a slight, steady offset becomes her new normal.  Playing well under her
-    normal is a choice, and the band stays down with her."""
-    run = _arc_run([-12] * 60, [1.0] * 60)
+    """Playing well under her normal is a choice, and the band stays down with her.
+    (The passage starts after her own normal: an offset held from her very first bars
+    is her normal, see above.)"""
+    run = _arc_run(SETTLED + [-12] * 60, [NORMAL_BUSY] * 8 + [1.0] * 60)
     assert run[-1][0].gain_db <= -5.0 and run[-1][1].lean == "much softer"
 
 

@@ -4859,7 +4859,7 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
                                 BandEntry, BandFollow, GuitarEar, PhraseHold, PlanYield,
                                 SilenceEnding, StylePick, EntryRamp, click_bridge_level,
                                 follow_band_settled, outro, plain_phrase_feel,
-                                song_section)
+                                song_section, yield_to)
         density_hold = PhraseHold(int(params.entry_boundary_bars))
         # The song's shape gives way to her (bandentry.PlanYield).
         plan_yield = PlanYield(int(params.entry_boundary_bars))
@@ -5388,16 +5388,13 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
             else:
                 section, density, resting = song_section(entry.bars_in)
                 arc_section = section
-                if follow.trusted:
-                    # The arc is a default: while the band has come down to meet her, a
-                    # lift is a verse and the lighter parts rest; up with her, a lift.
-                    # Not on a room mic: fewer parts there would read as her softer.
-                    yielded = plan_yield.bar(section, density, resting,
-                                             gain_db=follow.gain_db,
-                                             density_x=follow.density,
-                                             bars_in=entry.bars_in)
-                    section, density, resting = (yielded.section, yielded.density,
-                                                 yielded.resting)
+                # The arc is a default: while the band has come down to meet her, a
+                # lift is a verse and the lighter parts rest; up with her, a lift.
+                # Never on a room mic, where fewer parts would read as her softer.
+                yielded = yield_to(plan_yield, follow, section, density, resting,
+                                   bars_in=entry.bars_in)
+                section, density, resting = (yielded.section, yielded.density,
+                                             yielded.resting)
                 density = follow.shape(density) * follow.density
             crash = False
             if ending_now is not None:
@@ -5543,7 +5540,7 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
             if state["tempo_from_loop"]:
                 doc["tempo_from"] = "loop"
             doc["section"] = section
-            if yielded is not None and ending_now is None:
+            if yielded is not None and ending_now is None and follow.trusted:
                 # The song's own section, and how far it gave way to her.
                 doc["yield"] = {"arc": arc_section, "lean": yielded.lean,
                                 "reason": yielded.reason}

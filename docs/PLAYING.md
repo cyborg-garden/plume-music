@@ -43,9 +43,11 @@ normally play rather than against any fixed level. Play softer for a couple of b
 comes down to meet you: quieter, fewer notes, the drums played lighter, and from the next
 phrase the lighter parts sitting out, though the kick, snare and bass keep going. Come back
 up and so does the band. Playing fewer notes at your usual level only thins the band's own
-patterns. One quiet bar, or one loud one, moves nothing, and nor does swinging between soft
-and loud every couple of bars. If you settle a little above or below where you started and
-stay there, after about 16 bars that becomes your normal. The song's own shape is only a
+patterns. One quiet bar, or one loud one, moves nothing. Swing between soft and loud every
+couple of bars and the band settles rather than pumping, with the song's lifts as written.
+If your first bars were off from the level you then keep playing at, after about 16 bars
+that becomes your normal; a softer or louder passage later on is followed for as long as it
+lasts, and when you come back the band comes back to its own level. The song's own shape is only a
 default: a lift you play softly under is played as a verse, and a verse you drive is played
 as a lift, always from a phrase line. The `yield` field in each decision row says when that
 happened. On a room mic the song keeps its own shape, since the mic hears the band too. Chords follow

@@ -18,8 +18,8 @@ import pytest
 from conftest import needs_laptop_speed, playhead_rate  # noqa: E402
 
 from plume import herchords as hc
-from plume.bandentry import (FOLLOW_LEARN_BARS, SONG_ARC, BandFollow, PlanYield,
-                             song_section, yield_to)
+from plume.bandentry import (FOLLOW_LEARN_BARS, FOLLOW_NORMAL_SEED_BARS, SONG_ARC,
+                             BandFollow, PlanYield, song_section, yield_to)
 
 NORMAL_DB, NORMAL_BUSY = -27.0, 2.8
 #: Her bar-to-bar wander, in dB, as a real player's level moves: never the same twice,
@@ -121,7 +121,8 @@ def test_a_loud_sparse_player_keeps_a_full_band_and_its_sections():
     band's own patterns, but the parts, the drums and the song's sections stay: only
     her level takes the band down."""
     for level in (0.0, 3.0):
-        run = _arc_run([level] * 40, [0.7] * 40, start=12)
+        run = _arc_run(NORMAL_STRETCH + [level] * 32,
+                       [NORMAL_BUSY] * len(NORMAL_STRETCH) + [0.7] * 32, start=12)
         for s, got, own in run:
             assert (got.section, got.resting) == (own[0], own[2]), (level, got)
             assert got.drums == 1.0 and got.lean in ("neutral", "louder"), (level, got)
@@ -130,6 +131,8 @@ def test_a_loud_sparse_player_keeps_a_full_band_and_its_sections():
 
 #: Bars of her own normal before a passage: long enough to count as settled.
 SETTLED = [0] * 8
+#: A verse and more at her normal: what a passage after it is measured against.
+NORMAL_STRETCH = [0] * 32
 
 
 @pytest.mark.parametrize("offset", [4.0, -4.0, -9.0])
@@ -147,17 +150,18 @@ def test_an_offset_held_since_her_opening_bars_becomes_her_normal(offset):
 
 @pytest.mark.parametrize("depth", [-5.0, -6.5, -7.5, -9.0])
 def test_a_long_soft_passage_after_her_normal_stays_followed_to_its_end(depth):
-    """A passage is not a new normal.  After a settled stretch at her normal, a soft
-    passage of two song sections is followed for its whole length, whatever its depth,
-    and when she comes back the band comes back to its own level, not past it."""
-    run = _arc_run(SETTLED + [depth] * 32 + [0] * 12, start=8)
-    soft = run[len(SETTLED) + 4:len(SETTLED) + 32]
+    """A passage is not a new normal.  After 32 bars at her normal, a soft passage of
+    two song sections is followed for its whole length, whatever its depth, and when
+    she comes back the band comes back to its own level, not past it."""
+    n = len(NORMAL_STRETCH)
+    run = _arc_run(NORMAL_STRETCH + [depth] * 32 + [0] * 16, start=0)
+    soft = run[n + 4:n + 32]
     assert all(s.gain_db <= -2.0 for s, _, _ in soft), [s.gain_db for s, _, _ in soft]
     assert all(got.lean in ("softer", "much softer") for _, got, _ in soft)
-    back = run[len(SETTLED) + 32:]
+    back = run[n + 32:]
     assert all(s.gain_db <= 0.5 for s, _, _ in back), [s.gain_db for s, _, _ in back]
     assert all(got.lean != "louder" for _, got, _ in back)
-    assert all(got.section == arc[0] for _, got, arc in back[4:])
+    assert all(got.section == arc[0] for _, got, arc in back[8:])
 
 
 def test_a_swell_then_a_drop_is_answered_like_a_sudden_drop():
@@ -210,12 +214,146 @@ def test_when_the_mic_turns_out_to_hold_the_band_the_song_comes_back_on_a_phrase
     assert run[-1][1].resting == run[-1][2][2] and run[-1][1].drums == 1.0
 
 
-def test_a_big_lean_is_still_followed_however_long_it_lasts():
-    """Playing well under her normal is a choice, and the band stays down with her.
-    (The passage starts after her own normal: an offset held from her very first bars
-    is her normal, see above.)"""
-    run = _arc_run(SETTLED + [-12] * 60, [NORMAL_BUSY] * 8 + [1.0] * 60)
-    assert run[-1][0].gain_db <= -5.0 and run[-1][1].lean == "much softer"
+def test_a_take_played_at_one_level_from_its_first_bars_is_her_normal():
+    """Well under her first bars from the start, and for the whole take: the band
+    comes down with her at first, but a take played at one level is her normal, and
+    nothing leans for the rest of it, either way."""
+    run = _arc_run([-12] * 60, [1.0] * 60)
+    assert run[8][0].gain_db <= -5.0                       # followed at first
+    assert run[-1][0].gain_db == 0.0 and run[-1][0].density == 1.0
+    assert all(got.lean == "neutral" for _, got, _ in run[-16:])
+
+
+def _opening(offsets):
+    """Her bars from her very first (no learned normal first): the follow learns from
+    the first of them, as it does over the drums."""
+    f = BandFollow(trusted=True)
+    y = PlanYield()
+    out = []
+    for i, d in enumerate(offsets):
+        s = f.bar(NORMAL_DB + d, NORMAL_BUSY, playing=True)
+        if i < FOLLOW_LEARN_BARS:
+            continue
+        bi = i - FOLLOW_LEARN_BARS
+        own = song_section(bi)
+        out.append((s, yield_to(y, f, *own, bars_in=bi), own))
+    return out
+
+
+@pytest.mark.parametrize("intro,depth", [(8, -6.0), (8, -10.0), (24, -6.0), (8, 6.0)])
+def test_an_intro_off_her_real_level_gives_way_to_it(intro, depth):
+    """A soft (or loud) intro, then her real level for the rest of the take.  The band
+    reads her real level against the intro for a while (about as long as the intro and
+    the bars its first bars count for), then it is her normal: no permanent lift or
+    duck, and the song plays as written from there on."""
+    run = _opening([depth] * intro + [0.0] * 72)
+    leaning = [i for i, (_, got, _) in enumerate(run) if got.lean != "neutral"]
+    assert leaning and leaning[-1] <= 2 * intro + FOLLOW_NORMAL_SEED_BARS + 4, leaning[-3:]
+    tail = run[-24:]
+    assert all(s.gain_db == 0.0 for s, _, _ in tail)
+    assert all((got.section, got.resting, got.drums) == (arc[0], arc[2], 1.0)
+               for _, got, arc in tail)
+
+
+@pytest.mark.parametrize("depth", [-7.0, -12.0])
+def test_a_soft_first_verse_then_her_chorus(depth):
+    """Her normal over the drums, a soft first verse from the band's entry, then her
+    chorus at her real level: the verse is followed, and the chorus ends up as her
+    normal with the song as written, not lifted for the rest of the take."""
+    run = _opening([0.0] * 4 + [depth] * 24 + [0.0] * 40)
+    verse = run[4:16]
+    assert all(s.gain_db <= -2.0 for s, _, _ in verse), [s.gain_db for s, _, _ in verse]
+    tail = run[-16:]
+    assert all(s.gain_db == 0.0 and got.lean == "neutral" for s, got, _ in tail)
+
+
+def test_a_player_who_never_returns_to_her_opening_level():
+    """Softer than her opening bars, then a little louder than that for good: that is
+    where she plays, and nothing leans for the rest of the take."""
+    run = _opening([-8.0] * 8 + [-4.0] * 56)
+    assert all(s.gain_db == 0.0 and got.lean == "neutral" for s, got, _ in run[-20:])
+
+
+def test_a_noisy_opening_then_a_soft_passage():
+    """Her first bars wander a few dB, she settles, then plays a soft passage: the
+    passage is followed, and the band is back with her after it."""
+    noisy = [3, -2, 4, 0, -4, 3, -3, 4, 0, -2, 4, -3]
+    run = _opening(noisy + [0] * 20 + [-7] * 24 + [0] * 16)
+    soft = run[8 + 20 + 4:8 + 20 + 24]
+    assert all(got.lean in ("softer", "much softer") for _, got, _ in soft)
+    assert all(s.gain_db == 0.0 for s, _, _ in run[-6:])
+
+
+@pytest.mark.parametrize("leg", [2, 3, 4])
+def test_soft_and_loud_phrases_in_turn_neither_pump_nor_flip_the_parts(leg):
+    """Call and response: ``leg`` soft bars, ``leg`` at her normal, over and over.  The
+    band's level settles instead of pumping, and the song's parts are as written on
+    her loud bars and her soft ones alike, never thin on her loud ones."""
+    run = _arc_run(NORMAL_STRETCH + ([-8] * leg + [0] * leg) * 12, start=0)
+    # Its first time round, a phrase of her soft can't yet be told from the start of a
+    # soft verse; from the second it is a swing.
+    late = run[len(NORMAL_STRETCH) + 16:]
+    gains = [s.gain_db for s, _, _ in late]
+    assert max(gains) - min(gains) <= 1.5, gains
+    assert all((got.section, got.resting, got.drums) == (arc[0], arc[2], 1.0)
+               for _, got, arc in late)
+
+
+def test_a_verse_and_chorus_eight_bars_each_are_followed_at_most_a_phrase_late():
+    """Eight soft bars, eight at her normal, in turn: a verse and a chorus.  The parts
+    follow each change within a phrase of it."""
+    n = len(NORMAL_STRETCH)
+    run = _arc_run(NORMAL_STRETCH + ([-8] * 8 + [0] * 8) * 4, start=0)
+    for k in range(4):
+        soft, back = n + 16 * k, n + 16 * k + 8
+        thin = [i for i in range(soft, soft + 16) if run[i][1].resting != run[i][2][2]]
+        assert thin and thin[0] - soft <= 4 + 4, (k, thin)          # a phrase, plus her lag
+        full = [i for i in range(back, min(back + 16, len(run)))
+                if run[i][1].resting == run[i][2][2]]
+        assert full and full[0] - back <= 4 + 4, (k, full)
+
+
+def test_a_lean_that_flips_every_phrase_does_not_flip_the_parts_every_phrase():
+    """Her lean held through a phrase, then the other way through the next, and so on:
+    the song changes on a line only if it did not just flip the other way, so the
+    parts never turn over phrase by phrase, a phrase late each time."""
+    y = PlanYield(4)
+    changes, last = 0, None
+    for b in range(4, 52):
+        gain = -3.0 if (b // 4) % 2 else 0.0
+        got = y.bar(*song_section(0), gain_db=gain, bars_in=b)
+        if last is not None and got.resting != last:
+            changes += 1
+            assert b % 4 == 0
+        last = got.resting
+    assert 0 < changes <= 6, changes          # 12 lines, at most every other one
+
+
+def test_one_dip_and_back_is_not_a_swing():
+    """One soft dip and back: the band comes back with her at once, not to an
+    average of the dip and her normal."""
+    f = learned()
+    wander(f, [0] * 8 + [-8] * 3)
+    back = wander(f, [0] * 6)
+    assert next(i for i, s in enumerate(back) if s.gain_db == 0.0) <= 2
+
+
+def test_a_passage_whose_depth_wobbles_is_still_a_passage():
+    """Well under her normal, sometimes a little less so: never back at her normal, so
+    never a swing.  The song yields for its whole length."""
+    run = _arc_run(NORMAL_STRETCH + [-14, -14, -6, -6] * 6, start=0)
+    soft = run[len(NORMAL_STRETCH) + 4:]
+    assert all(got.lean in ("softer", "much softer") for _, got, _ in soft)
+    assert all(s.gain_db <= -2.0 for s, _, _ in soft)
+
+
+def test_a_swinging_player_who_then_goes_soft_is_followed():
+    """She swings soft and loud, then goes soft and stays there: the band stops
+    treating it as a swing and follows her down within a bar or two of a phrase."""
+    run = _arc_run(NORMAL_STRETCH + [-8, -8, 0, 0] * 6 + [-10] * 16, start=0)
+    start = len(NORMAL_STRETCH) + 24
+    down = next(i for i in range(start, len(run)) if run[i][0].gain_db <= -4.0)
+    assert down - start <= 8, [s.gain_db for s, _, _ in run[start:]]
 
 
 def test_the_songs_sections_and_parts_change_only_on_phrase_lines():
@@ -323,10 +461,11 @@ def test_a_quiet_sparse_stretch_takes_parts_out_within_a_few_bars_and_back():
     whole = _band([type(states[0])(0.0, 1.0, (), "")] * len(states), start=16)
     assert [parts(g) for g in band[:6]] == [parts(g) for g in whole[:6]]
     soft = range(6, 14)
-    assert next(i for i in soft if parts(band[i]) <= parts(whole[i]) - 2) <= 6 + 2
+    # The parts change on the line after a whole phrase of her soft: within two lines.
+    assert next(i for i in soft if parts(band[i]) <= parts(whole[i]) - 2) <= 6 + 8
     assert next(i for i in soft if states[i].gain_db <= -2.0) <= 6 + 2
     back = range(14, len(states))
-    assert next(i for i in back if parts(band[i]) == parts(whole[i])) <= 14 + 4
+    assert next(i for i in back if parts(band[i]) == parts(whole[i])) <= 14 + 8
     assert parts(band[-1]) == parts(whole[-1]) and states[-1].gain_db == 0.0
 
 
@@ -486,8 +625,10 @@ def test_a_direct_take_thins_out_when_she_plays_softly_and_fills_back_in(tmp_pat
         return len([v for v in r["roles"].values() if v > 0.05])
 
     before = [r for r in rows if soft_at - 6 * bar_s < r["t_s"] < soft_at]
-    soft = [r for r in rows if soft_at + 4 * bar_s <= r["t_s"] < back_at]
-    after = [r for r in rows if back_at + 5 * bar_s <= r["t_s"] < 120.0]
+    # Parts change on a phrase line after a whole phrase of her soft: by the second
+    # line after she went soft.
+    soft = [r for r in rows if soft_at + 9 * bar_s <= r["t_s"] < back_at]
+    after = [r for r in rows if back_at + 9 * bar_s <= r["t_s"] < 120.0]
     assert before and soft and after, "the take did not reach every stretch"
     assert max(r["gain_db"] for r in soft) <= min(r["gain_db"] for r in before) - 2.0
     assert max(n_parts(r) for r in soft) <= min(n_parts(r) for r in before) - 1

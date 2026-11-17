@@ -15,7 +15,7 @@ import pytest
 
 from plume import takevideo
 from video_fixture import (CAMERA_SECRETS, FFMPEG, PLACE, described, float_sound, heard_by_camera,
-                           make_camera_video, make_video, needs_ffmpeg, placed, playing, talking)
+                           make_camera_video, make_video, needs_ffmpeg, placed, playing, stalled_tools, talking)
 
 R = takevideo.ALIGN_RATE
 #: How close the start must be found.  Half a video frame at 100 frames a second,
@@ -531,26 +531,9 @@ def test_an_ffmpeg_on_the_path_proper_is_found_by_its_whole_address(tmp_path, mo
 
 @pytest.fixture
 def stalled(monkeypatch):
-    """Every tool plume starts is one that never does anything and never ends by itself.
-
-    Real children, so that stopping them is really tested; the list holds each one, and
-    whatever a test leaves running is stopped here.
-    """
-    import subprocess
-
-    started = []
-
-    def spawn(cmd, **kw):
-        proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(3600)"], **kw)
-        started.append(proc)
-        return proc
-
-    monkeypatch.setattr(takevideo, "_spawn", spawn)
-    yield started
-    for proc in started:
-        if proc.poll() is None:
-            proc.kill()
-        proc.wait(timeout=60)
+    """Every tool plume starts hangs for ever: real children, all ended by the end of the
+    test, and the test fails rather than hangs if plume stops ending them itself."""
+    yield from stalled_tools(monkeypatch)
 
 
 @pytest.fixture
@@ -620,3 +603,50 @@ def test_cancel_stops_a_tool_that_hangs_wherever_it_hangs(tmp_path, stalled):
     with pytest.raises(takevideo.Cancelled):
         takevideo.loudest("ffmpeg", tmp_path / "a.mp4", cancelled=after(2))
     assert len(stalled) == 4 and all_stopped(stalled)
+
+
+def test_the_sound_is_handed_over_a_decibel_under_full_scale_and_kept_there(monkeypatch):
+    """About 1 dB of room, and a peak that comes back over half a decibel under full scale
+    is written again.  Pinned, so neither can drift away quietly."""
+    written, peaks = [], []
+
+    def write_once(*a, gain, **kw):
+        written.append(gain)
+
+    monkeypatch.setattr(takevideo, "_write_once", write_once)
+    monkeypatch.setattr(takevideo, "loudest", lambda *a, **kw: peaks.pop(0))
+
+    def gains(*heard):
+        written.clear()
+        peaks[:] = list(heard)
+        takevideo.write_video("ffmpeg", "in.mp4", "out.mp4", mixed=silence, rate=48000, band_at=0,
+                              duration_s=1.0, keep_sound=True)
+        return list(written)
+
+    one_db = 10 ** (-1 / 20)
+    assert gains(0.80) == [pytest.approx(one_db, abs=0.002)]
+    assert gains(0.94) == [pytest.approx(one_db, abs=0.002)]          # -0.54 dB: kept
+    again = gains(0.97, 0.90)                                         # -0.26 dB: too close, made again
+    assert len(again) == 2 and again[1] == pytest.approx(one_db * one_db / 0.97, abs=0.002)
+    assert len(gains(1.4, 1.2, 1.1)) == 3                             # at most twice more, then kept
+    for keep_sound in (True, False):
+        cmd = " ".join(takevideo.write_command("ffmpeg", "in.mp4", "out.mp4", rate=48000, duration_s=1.0,
+                                               keep_sound=keep_sound))
+        assert f"{one_db:.3f}" in cmd
+
+
+def test_once_the_stall_guard_has_tripped_no_new_tool_can_hang():
+    """A guard that ends only the tools alive when it trips leaves the next one to hang the
+    job.  After it trips, any tool asked for is refused at once."""
+    import subprocess
+
+    from video_fixture import Stalled
+
+    tools = Stalled(0.01)
+    try:
+        assert tools.has_tripped.wait(60.0)
+        with pytest.raises(OSError):
+            tools.spawn(["ffmpeg"], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE)
+        assert all(proc.poll() is not None for proc in tools)
+    finally:
+        tools.close()

@@ -660,7 +660,9 @@ your recording in its sound. Choose the file or drop it on the take's page.
   video has sound.
 - Only plume's own `video.mp4` is ever replaced. One of yours is left, and the page says so.
 - The video is copied into the take's folder while plume works, so the disk needs room for
-  it twice. The copy is removed when the work ends, is cancelled, or fails.
+  it twice. The copy is removed when the work ends, is cancelled, or fails. One left by a
+  plume that closed unexpectedly is removed the next time plume starts or lists your takes,
+  and never while any plume still holds it, however long it waits for a nudge.
 
 This needs ffmpeg. Installing plume brings one. Without it, plume uses one on your PATH,
 and with neither the page says so.

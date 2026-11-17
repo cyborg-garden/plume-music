@@ -710,8 +710,26 @@ def test_a_strummed_folk_tune_on_a_direct_input_brings_in_the_folk_band(tmp_path
     band = [r for r in rows if r["entry"] != "drums"]
     assert band, "the band never came in"
     assert {r["style"] for r in band} == {"folk"}
-    assert all(r["style_guess"] for r in rows)
+    assert all(r["style_guess"] and not r["style_chosen"] for r in rows)
     assert "strummed" in band[0]["style_why"]
+    doc = json.loads((rec / "session.json").read_text())
+    assert doc["style"] == "detect" and doc["style_chosen"] is False
+
+
+def test_a_style_she_chose_holds_where_plume_would_have_guessed_another(tmp_path, consent):
+    """The same strummed tune plume brings the folk band in for, with jazz chosen at Start:
+    jazz from the count to the end, never a guess, and nothing about folk."""
+    rec = _detect_take(tmp_path, _folk_take(96.0), prompt="jazz", max_minutes=0.6)
+    rows = _rows(rec)
+    band = [r for r in rows if r["entry"] != "drums"]
+    assert band, "the band never came in"
+    assert {r["style"] for r in rows} == {"jazz"}
+    assert all(r["style_chosen"] and not r["style_guess"] for r in rows)
+    assert not any("style_why" in r for r in rows)
+    # Its own drums from the first bar: no plain click waiting on a guess.
+    assert {r["intro_beat"] for r in rows} == {"style"}
+    doc = json.loads((rec / "session.json").read_text())
+    assert doc["style"] == "jazz" and doc["style_chosen"] is True and doc["detect"] is True
 
 
 @pytest.mark.parametrize("gain_db", [-6.0, -30.0])
@@ -743,6 +761,7 @@ def test_a_style_she_named_is_not_a_guess(tmp_path, consent):
     rows = _rows(rec)
     assert {r["style"] for r in rows} == {"trap"}
     assert not any(r["style_guess"] for r in rows)
+    assert all(r["style_chosen"] for r in rows)
     assert all(r["key_guess"] for r in rows)
     doc = json.loads((rec / "session.json").read_text())
     assert doc["style"] == "trap" and doc["detect"] is True
@@ -762,6 +781,7 @@ def test_what_the_take_says_about_itself(tmp_path, consent):
     assert doc["detect"] is True and doc["monitor"] is False
     # no placeholder passed off as what is playing
     assert doc["style"] == "detect" and doc["session"] is None
+    assert doc["style_chosen"] is False
 
 
 def test_a_take_without_detect_says_that_too(tmp_path, consent):
@@ -791,6 +811,7 @@ def test_the_feed_passes_the_guesses_on(tmp_path, consent):
     docs = Listener(rec, every=1).poll()
     assert docs
     assert all(d["style_guess"] is True and d["key_guess"] is True for d in docs)
+    assert all(d["style_chosen"] is False for d in docs)
     assert docs[0]["style"] == "lofi"
 
 
@@ -802,3 +823,4 @@ def test_an_older_take_has_nothing_to_pass_on(tmp_path):
         sf.write(str(tmp_path / name), np.zeros(SR * 3, dtype=np.float32), SR)
     doc = Listener(tmp_path, every=1).poll()[0]
     assert doc["style"] is None and doc["style_guess"] is None and doc["key_guess"] is None
+    assert doc["style_chosen"] is None

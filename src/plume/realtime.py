@@ -2093,7 +2093,8 @@ def session_manifest(*, kind: str, style: str, role: str, seed: int,
                      started_at: float | None = None,
                      input_route: "InputRoute | None" = None,
                      midi_port: str | None = None, detect: bool = False,
-                     monitor: bool = False, sound: str | None = None) -> dict:
+                     monitor: bool = False, sound: str | None = None,
+                     style_chosen: bool = False) -> dict:
     """What ``session.json`` says, written before the first bar is planned.
 
     Pure: everything except the pid and the clock is passed in, so the shape
@@ -2112,6 +2113,8 @@ def session_manifest(*, kind: str, style: str, role: str, seed: int,
         "input": (input_route or InputRoute()).describe(),
         "midi_port": midi_port,
         "detect": bool(detect),
+        # The player named the style, so it is not plume's guess.
+        "style_chosen": bool(style_chosen),
         "monitor": bool(monitor),
         "sound": sound,
         "bpm": (None if bpm is None else float(bpm)),
@@ -5028,6 +5031,11 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
     started_mono = time.monotonic()
     # Detect composes a placeholder, whose style and name are not what this take is.
     shown_style = "detect" if style_pick is not None else style
+    # She named it (at Start, in the prompt, or in her session): the band plays it and
+    # nothing she plays moves it.  A placeholder nobody named is neither chosen nor guessed.
+    from .compose import parse_prompt as _parse_prompt  # noqa: PLC0415
+    style_chosen = style_pick is None and (session is not None
+                                           or bool(_parse_prompt(prompt or "").styles))
     sess_name = None if detect else getattr(sess, "name", None)
     cues.info = {"style": shown_style, "role": role.role, "name": sess_name}
     register_session(kind="lead", style=shown_style, role=role.role,
@@ -5043,7 +5051,7 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
             bpm=composed_bpm, params=params, role_params=role,
             started_at=time.time(), input_route=route, midi_port=midi_port,
             detect=detect, monitor=monitor,
-            sound=started_sound))
+            sound=started_sound, style_chosen=style_chosen))
         with cue_log_lock:
             for doc in held_cues:
                 recorder.cue_soon(doc)
@@ -5515,6 +5523,7 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
             # Heard or worked out, rather than named by the player: a page must say so.
             doc["style"] = style
             doc["style_guess"] = style_pick is not None
+            doc["style_chosen"] = style_chosen
             if style_pick is not None and style_pick.why:
                 doc["style_why"] = style_pick.why
             # plain until a detected take knows her style and key, else the style's own

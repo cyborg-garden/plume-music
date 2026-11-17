@@ -99,6 +99,7 @@ FLAT_MIC_HOME = "Plume heard nothing. Check this computer lets it use the microp
 KEPT_NOTHING = "The band had not come in yet, so plume kept nothing."
 BAD_KEY = "Plume did not understand that key. Try F major or A minor."
 ONLY_MAJOR_MINOR = "Plume plays major and minor keys. Try F major or A minor."
+UNKNOWN_STYLE = "Plume does not have that style. Pick one from the list, or let plume guess."
 NO_HEAR_ME = "Hear me needs headphones on. Through speakers it would feed back."
 OUTPUT_MISSING = "Plume could not find that output. Plug it back in, or choose another."
 OUTPUT_REFUSED = "Plume could not open that input and output together. Try another output."
@@ -176,7 +177,7 @@ _TYPED_TONIC = re.compile(r"[A-Ga-g][#sb]?")
 #: saved there, where a change in what is plugged in can take it back.
 _FIELDS = frozenset({"device", "channel", "key", "style", "hear_me", "sound"})
 #: A row may carry more than a page needs.  Only these fields leave the bridge.
-_ROW_FIELDS = ("bar", "t_s", "bpm", "section", "stage", "key", "chord", "style", "style_guess",
+_ROW_FIELDS = ("bar", "t_s", "bpm", "section", "stage", "key", "chord", "style", "style_guess", "style_chosen",
                "key_guess", "you_db", "band_db", "you_busy", "you_notes", "you_source", "input",
                "you_trusted", "playing", "playing_trusted", "fade_db", "input_fault", "band_in_mic")
 _STREAM_FIELDS = ("input_ms", "output_ms", "reported_ms", "block_ms", "calibrated_ms")
@@ -232,9 +233,12 @@ class SoundOff(TakeError):
 class Refused(Exception):
     """A request this bridge turns down, and the state it was turned down in."""
 
-    def __init__(self, status: int, message: str, *, live: dict | None = None):
+    def __init__(self, status: int, message: str, *, live: dict | None = None,
+                 field: str | None = None):
         super().__init__(message)
         self.status, self.message, self.live = status, message, live
+        #: The one choice on the page to fix, where that is not obvious from the words.
+        self.field = field
 
 
 # --------------------------------------------------------------- reaching the real world
@@ -615,7 +619,7 @@ class SetupStore:
         self._doc: dict | None = None
 
     def _read(self) -> dict:
-        empty = {"last": None, "devices": {}}
+        empty = {"last": None, "devices": {}, "style": None}
         if self._path_of is None:
             return empty
         try:
@@ -638,7 +642,9 @@ class SetupStore:
         kept = {k: _clean_entry(v) for k, v in devices.items()
                 if isinstance(k, str) and _DEVICE_KEY.fullmatch(k)}
         last = doc.get("last")
-        return {"last": last if last in kept else None, "devices": kept}
+        style = doc.get("style")
+        return {"last": last if last in kept else None, "devices": kept,
+                "style": style if isinstance(style, str) and style in list_styles() else None}
 
     def _loaded(self) -> dict:
         if self._doc is None:
@@ -685,9 +691,22 @@ class SetupStore:
                 doc["last"] = key
             self._write()
 
-    def forget(self) -> None:
+    def style(self) -> str | None:
+        """The style she last chose, None for letting plume guess."""
         with self._lock:
-            self._doc = {"last": None, "devices": {}}
+            return self._loaded()["style"]
+
+    def put_style(self, style: str | None) -> None:
+        with self._lock:
+            doc = self._loaded()
+            if doc["style"] != style:
+                doc["style"] = style
+                self._write()
+
+    def forget(self) -> None:
+        """Set up again is about her gear: the style she chose stays."""
+        with self._lock:
+            self._doc = {"last": None, "devices": {}, "style": self._loaded()["style"]}
             self._write()
 
 
@@ -796,10 +815,9 @@ def canonical_style(text: str) -> str | None:
     """A style's own name from whatever was typed, None for detect."""
     if _is_detect(text):
         return None
-    known = list_styles()
     styles = parse_prompt(text).styles
-    if not styles or styles[0] not in known:
-        raise Refused(400, f"Plume did not understand that style. Try {', '.join(known)}.")
+    if not styles or styles[0] not in list_styles():
+        raise Refused(400, UNKNOWN_STYLE, field="style")
     return styles[0]
 
 
@@ -1075,6 +1093,8 @@ class TakeRunner:
             **self._output_view(chosen, saved, outputs),
             "folder": pretty_path(self.root),
             "styles": list_styles(),
+            # The one she chose last, or None: plume guesses.
+            "style": self._setup.style(),
             "sounds": [{"id": name, "label": label} for name, label in SOUND_CHOICES],
             "problem": problem,
             "setup": self._setup_doc(chosen, rows, mark, output),
@@ -1433,6 +1453,14 @@ class TakeRunner:
         self._keep(device, entry, rows, mark)
         return self._setup_doc(device, rows, mark, self._output_now())
 
+    def choose_style(self, body: dict) -> dict:
+        """Remember a style for the next Start, or "" to let plume guess.  Nothing plays."""
+        if not isinstance(body, dict) or set(body) != {"style"}:
+            raise Refused(400, "That is not something the style choice understands.")
+        style = canonical_style(_text_field(body, "style"))
+        self._setup.put_style(style)
+        return {"style": style}
+
     def reset_setup(self) -> dict:
         """Set up again.  The next press of Start begins from the first step."""
         self._release(self._call_off_listening())
@@ -1647,6 +1675,7 @@ class TakeRunner:
         except (TakeError, OSError, ValueError):
             _clear_fresh_folder(folder)
             return self._failed(DID_NOT_START)
+        self._setup.put_style(style)
         now = self._clock()
         take = _Take(proc, folder, route, key, style, started=now, grew=now)
         with self._lock:

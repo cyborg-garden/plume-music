@@ -69,7 +69,7 @@ GET_ROUTES = ("/", "/auth", "/static/{name}", "/api/session", "/api/takes",
               "/api/take/{id}", "/api/take/{id}/audio/{track}", "/api/home", "/api/live", "/api/setup",
               "/api/guide", "/api/take/{id}/video", "/api/take/{id}/video/preview")
 POST_OPS = frozenset({"keep", "rename", "start", "stop", "cue", "setup/listen", "setup/answer",
-                      "setup/cancel", "setup/reset", "reveal", "video/place", "video/cancel",
+                      "setup/cancel", "setup/reset", "style", "reveal", "video/place", "video/cancel",
                       "video/show"})
 #: The one POST whose body is not JSON: a video, as its own bytes, for the take named.
 UPLOAD_ROUTE = "/api/video/{id}"
@@ -1453,6 +1453,8 @@ class _Handler(BaseHTTPRequestHandler):
                 self._json(takes.listen(body))
             elif op == "setup/answer":
                 self._json(takes.answer(body))
+            elif op == "style":
+                self._json(takes.choose_style(body))
             elif op in ("setup/cancel", "setup/reset"):
                 if body:
                     raise guitake.Refused(400, "That is not something setup understands.")
@@ -1463,6 +1465,8 @@ class _Handler(BaseHTTPRequestHandler):
             doc = {"error": refused.message}
             if refused.live is not None:
                 doc["live"] = refused.live
+            if refused.field is not None:
+                doc["field"] = refused.field
             self._json(doc, refused.status)
 
     def _keep_or_rename(self, op: str, body: dict) -> None:

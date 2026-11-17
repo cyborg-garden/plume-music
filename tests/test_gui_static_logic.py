@@ -124,19 +124,52 @@ def live_js(tmp_path, expr):
 
 
 @pytest.mark.parametrize("row,doc,want", [
-    ({"key": "F major", "style": "midwest", "key_guess": True, "style_guess": True}, {}, "F major, midwest (a guess)"),
-    ({"key": "F major", "style": "midwest", "key_guess": False, "style_guess": True}, {"key": "F major"}, "F major, midwest (the style is a guess)"),
-    ({"key": "F major", "style": "midwest", "key_guess": True, "style_guess": False}, {"style": "midwest"}, "F major, midwest (the key is a guess)"),
-    ({"key": "F major", "style": "midwest", "key_guess": False, "style_guess": False}, {"key": "F major", "style": "midwest"}, "F major, midwest"),
-    ({"key": None, "style": "lofi", "key_guess": True, "style_guess": True}, {}, "Listening for the key, lofi (the style is a guess)"),
+    ({"key": "F major", "style": "midwest", "key_guess": True, "style_guess": True}, {},
+     "F major (a guess) · Midwest emo, plume's guess"),
+    ({"key": "F major", "style": "midwest", "key_guess": False, "style_guess": True}, {"key": "F major"},
+     "F major · Midwest emo, plume's guess"),
+    ({"key": "F major", "style": "midwest", "key_guess": True, "style_guess": False}, {"style": "midwest"},
+     "F major (a guess) · Midwest emo, chosen"),
+    ({"key": "F major", "style": "midwest", "key_guess": False, "style_guess": False}, {"key": "F major", "style": "midwest"},
+     "F major · Midwest emo, chosen"),
+    ({"key": None, "style": "lofi", "key_guess": True, "style_guess": True}, {}, "Listening for the key · Lo-fi, plume's guess"),
     # A typed value wins, even over a row that calls it a guess.
-    ({"key": "F major", "style": "lofi", "key_guess": True, "style_guess": True}, {"key": "F major", "style": "lofi"}, "F major, lofi"),
+    ({"key": "F major", "style": "lofi", "key_guess": True, "style_guess": True}, {"key": "F major", "style": "lofi"},
+     "F major · Lo-fi, chosen"),
     # A key named by the player but held back until the band comes in.
-    ({"key": None, "style": "lofi", "key_guess": False, "style_guess": True}, {"key": "F major"}, "F major, lofi (the style is a guess)"),
+    ({"key": None, "style": "lofi", "key_guess": False, "style_guess": True}, {"key": "F major"},
+     "F major · Lo-fi, plume's guess"),
+    # The take itself says she chose it, whatever this page was told at Start.
+    ({"key": "G major", "style": "folk", "key_guess": True, "style_guess": False, "style_chosen": True}, {},
+     "G major (a guess) · Folk, chosen"),
+    # A take that says neither: the style, and no claim either way.
+    ({"key": "F major", "style": "midwest", "key_guess": False}, {"key": "F major"}, "F major · Midwest emo"),
     (None, {}, "Listening for the key"),
 ])
 def test_the_key_line_calls_a_guess_a_guess(tmp_path, row, doc, want):
     assert live_js(tmp_path, f"live.keyLine({json.dumps(row)}, {json.dumps(doc)})") == want
+
+
+@pytest.mark.parametrize("take,want", [
+    ({"key": "F major", "key_guess": False, "style": "folk", "style_chosen": True, "style_guess": False},
+     "F major · Folk, chosen"),
+    ({"key": "F major", "key_guess": True, "style": "folk", "style_chosen": False, "style_guess": True},
+     "F major (a guess) · Folk, plume's guess"),
+    ({"key": None, "key_guess": False, "style": "rnb", "style_chosen": False, "style_guess": True}, "R&B, plume's guess"),
+    ({"key": "A minor", "key_guess": False, "style": "midwest", "style_chosen": False, "style_guess": False},
+     "A minor · Midwest emo"),
+    ({"key": "A minor", "key_guess": True, "style": None, "style_chosen": False, "style_guess": False}, "A minor (a guess)"),
+])
+def test_a_take_that_is_over_says_chosen_or_guessed_the_same_way(tmp_path, take, want):
+    assert live_js(tmp_path, f"live.settledLine({json.dumps(take)})") == want
+
+
+def test_every_style_plume_has_a_plain_name(tmp_path):
+    from plume.styles_lib import list_styles
+    names = live_js(tmp_path, f"{json.dumps(list_styles())}.map(live.styleName)")
+    assert names == ["Folk", "Hip hop", "House", "Jazz", "Lo-fi", "Midwest emo", "R&B", "Synthwave", "Trap"]
+    # A style added later still reads as a word, not as nothing.
+    assert live_js(tmp_path, "live.styleName('polka')") == "Polka"
 
 
 @pytest.mark.parametrize("trusted,notes,level", [

@@ -82,6 +82,11 @@ header { display: flex; flex-wrap: wrap; align-items: center; gap: 0 16px; paddi
 #settings h1 { font-size: 22px; font-weight: 500; margin: 0; }
 #settings-note { margin: 0; }
 #home-gear { margin: 0; overflow-wrap: anywhere; }
+/* The one choice beside Start, and only if she wants it: quiet until touched. */
+#home-style-row { margin: 0; display: flex; align-items: baseline; gap: 10px; color: var(--secondary); font-size: 14px; }
+#home-style { min-height: 32px; max-width: 100%; background: none; border: 0; border-bottom: 1px solid var(--hairline); border-radius: 0; font-size: 16px; color: var(--text); padding: 2px 0; cursor: pointer; }
+#home-style:hover { border-bottom-color: var(--text); }
+#home-style option { background: var(--field); color: var(--text); }
 #home, #setup, #live { flex: 1; padding: clamp(40px, 18vh, 180px) 0 40px; }
 .solid { background: var(--text); color: var(--on-solid); border: 0; border-radius: 2px; font-weight: 500; }
 .solid:hover { opacity: .88; }

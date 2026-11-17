@@ -554,18 +554,88 @@ def test_start_works_with_no_device_list_yet(tmp_path, docs):
     assert out == {"line": "", "hear": True, "body": [{}]}
 
 
-def test_typed_key_and_style_and_chosen_channel_go_in_the_body(tmp_path, docs):
+def test_typed_key_and_chosen_style_and_channel_go_in_the_body(tmp_path, docs):
     out = run_page(tmp_path, docs, """
         $('set-key')._value = '  F major ';
-        $('set-style')._value = 'midwest';
         $('set-key').fire('input');
+        $('home-style').value = 'midwest';
+        $('home-style').fire('change'); await page.settle();
         $('set-channel').value = '3';
         $('set-channel').fire('change');
         const summary = $('home-gear').textContent;
         $('start').click(); await page.settle();
         return { summary, body: page.posts('start')[0] };""")
     assert out["body"]["key"] == "F major" and out["body"]["style"] == "midwest" and out["body"]["channel"] == 3
-    assert out["summary"] == "Test Interface, channel 3, F major, midwest"
+    # The style is said once, by its own control, not again in the line under it.
+    assert out["summary"] == "Test Interface, channel 3, F major"
+
+
+# ---------------------------------------------------------------------- the style
+
+STYLE = """{ value: $('home-style').value, labels: $('home-style').children.map((o) => o.textContent),
+  values: $('home-style').children.map((o) => o.value), shown: !$('home-style-row').hidden }"""
+
+
+def test_the_style_starts_on_let_plume_guess_and_start_sends_none(tmp_path, docs):
+    out = run_page(tmp_path, docs, f"""
+        const seen = {STYLE};
+        $('start').click(); await page.settle();
+        return {{ ...seen, body: page.posts('start')[0], saved: page.posts('style') }};""")
+    assert out["value"] == "" and out["shown"] is True
+    assert out["labels"] == ["Let plume guess", "Folk", "Hip hop", "House", "Jazz", "Lo-fi", "Midwest emo",
+                             "R&B", "Synthwave", "Trap"]
+    assert out["values"][1:] == docs["home"]["styles"]
+    assert out["body"] == {} and out["saved"] == []
+
+
+def test_a_remembered_style_is_shown_and_used(tmp_path, docs):
+    docs["home"]["style"] = "folk"
+    out = run_page(tmp_path, docs, f"""
+        const seen = {STYLE};
+        $('start').click(); await page.settle();
+        return {{ ...seen, body: page.posts('start')[0] }};""")
+    assert out["value"] == "folk" and out["body"] == {"style": "folk"}
+
+
+def test_choosing_a_style_is_saved_at_once_and_going_back_to_guessing_too(tmp_path, docs):
+    out = run_page(tmp_path, docs, f"""
+        $('home-style').value = 'jazz'; $('home-style').fire('change'); await page.settle();
+        $('home-style').value = ''; $('home-style').fire('change'); await page.settle();
+        $('start').click(); await page.settle();
+        return {{ ...{STYLE}, saved: page.posts('style'), body: page.posts('start')[0] }};""")
+    assert out["saved"] == [{"style": "jazz"}, {"style": ""}]
+    assert out["value"] == "" and out["body"] == {}
+
+
+def test_a_refused_style_is_said_kindly_and_the_choice_goes_back(tmp_path, docs):
+    docs["home"]["style"] = "folk"
+    out = run_page(tmp_path, docs, f"""
+        page.replies.style = [400, {{ error: {json.dumps(guitake.UNKNOWN_STYLE)} }}];
+        $('home-style').value = 'polka'; $('home-style').fire('change'); await page.settle();
+        return {{ ...{STYLE}, ...{LOOK}, note: $('home-note').textContent, noteShown: !$('home-note').hidden,
+                  disabled: !!$('home-style').disabled }};""")
+    assert out["value"] == "folk" and out["disabled"] is False
+    assert out["note"] == guitake.UNKNOWN_STYLE and out["noteShown"] is True
+    assert out["screen"] == "home"
+
+
+def test_a_style_refused_at_start_is_said_at_home_where_it_can_be_fixed(tmp_path, docs):
+    """A page older than the bridge's list: the choice goes back to what the bridge remembers."""
+    out = run_page(tmp_path, docs, f"""
+        page.replies.start = [400, {{ error: {json.dumps(guitake.UNKNOWN_STYLE)}, field: 'style' }}];
+        $('home-style').value = 'polka';
+        $('start').click(); await page.settle();
+        return {{ ...{STYLE}, ...{LOOK}, note: $('home-note').textContent }};""")
+    assert out["screen"] == "home" and out["hash"] == "#/"
+    assert out["note"] == guitake.UNKNOWN_STYLE and out["value"] == ""
+
+
+def test_a_style_that_did_not_reach_the_bridge_is_said_and_put_back(tmp_path, docs):
+    out = run_page(tmp_path, docs, f"""
+        page.failNext.style = 1;
+        $('home-style').value = 'trap'; $('home-style').fire('change'); await page.settle();
+        return {{ ...{STYLE}, note: $('home-note').textContent }};""")
+    assert out["value"] == "" and out["note"]
 
 
 def test_a_refused_field_goes_to_settings_and_says_so_there(tmp_path, docs):
@@ -660,7 +730,10 @@ def test_the_first_screen_is_one_start_with_hear_me_in_settings():
     html = (STATIC / "index.html").read_text()
     first = html[html.index('<main id="home"'):html.index('<main id="settings"')]
     assert "hear" not in first.lower() and "headphones" not in first.lower()
-    assert "<select" not in first and "<input" not in first and "<details" not in first
+    # One quiet choice beside Start, the style, and nothing else to fill in.
+    assert first.count("<select") == 1 and 'id="home-style"' in first
+    assert "<input" not in first and "<details" not in first
+    assert "set-style" not in html, "one place to choose a style, not two"
     assert 'id="hear-row"' in _settings_html() and 'id="hear-direct"' in _settings_html()
 
 
@@ -1114,7 +1187,7 @@ def test_the_page_moves_from_waiting_to_playing_on_its_own(tmp_path, docs):
         await page.poll();
         return {{ first, ...{FACTS} }};""")
     assert out["first"] != out["say"]
-    assert out["say"] == "F major, midwest (a guess)"
+    assert out["say"] == "F major (a guess) \u00b7 Midwest emo, plume's guess"
     assert out["bar"] == "12" and out["tempo"] == "115 bpm" and out["stage"] == "Bass and chords"
     assert out["notes"] == "F A C" and out["level"] == "-18 dB"
     assert out["cues"] is True and out["why"] == ""
@@ -1122,7 +1195,7 @@ def test_the_page_moves_from_waiting_to_playing_on_its_own(tmp_path, docs):
 
 def test_a_key_the_player_typed_is_not_called_a_guess(tmp_path, docs):
     typed = {**PLAYING, "key": "F major", "style": "midwest", "row": {**ROW, "key_guess": False, "style_guess": False}}
-    assert live_page(tmp_path, docs, typed, f"return {FACTS};")["say"] == "F major, midwest"
+    assert live_page(tmp_path, docs, typed, f"return {FACTS};")["say"] == "F major \u00b7 Midwest emo, chosen"
 
 
 def test_on_a_room_mic_it_hides_what_it_cannot_trust_and_says_so(tmp_path, docs):
@@ -1274,7 +1347,7 @@ def test_a_failed_take_lands_on_home_in_plain_words(tmp_path, docs, message):
 def _guessed_docs(docs, tmp_path, *, key_guess=True, style_guess=True):
     rows = song(20, band_bar=8)
     for row in rows:
-        row.update(key_guess=key_guess, style_guess=style_guess, style="midwest")
+        row.update(key_guess=key_guess, style_guess=style_guess, style_chosen=not style_guess, style="midwest")
     root = tmp_path / "guessed"
     write_take(root / "g", rows, ending=ending_doc(), started_at=1800000009.0)
     srv = gui.GuiServer(roots=[root], log=lambda line: None, lister=lambda: DEVICES,
@@ -1295,8 +1368,8 @@ def test_a_detected_key_and_style_stay_guesses_on_the_record_and_the_shelf(tmp_p
         const shelf = page.$('shelf-' + ids.g).children[2].textContent;
         page.$('shelf-' + ids.g).click(); await page.settle();
         return { shelf, meta: $('rec-meta').textContent, sentence: $('ev-sentence').textContent };""")
-    assert "F major, midwest (a guess)" in out["shelf"]
-    assert "F major, midwest (a guess)" in out["meta"]
+    assert "F major (a guess) \u00b7 Midwest emo, plume's guess" in out["shelf"]
+    assert "F major (a guess) \u00b7 Midwest emo, plume's guess" in out["meta"]
     assert out["sentence"] == "Bar 8. Bass and chords in, in F major (a guess)."
 
 
@@ -1306,7 +1379,7 @@ def test_a_typed_key_and_style_are_stated_plainly_afterwards(tmp_path, docs):
         $('nav-takes').click(); await page.settle();
         page.$('shelf-' + ids.g).click(); await page.settle();
         return { meta: $('rec-meta').textContent, sentence: $('ev-sentence').textContent };""")
-    assert "F major, midwest" in out["meta"] and "guess" not in out["meta"]
+    assert "F major \u00b7 Midwest emo, chosen" in out["meta"] and "guess" not in out["meta"]
     assert out["sentence"] == "Bar 8. Bass and chords in, in F major."
 
 
@@ -2012,7 +2085,8 @@ def test_home_is_start_a_stone_and_a_line(tmp_path, docs):
     html = (STATIC / "index.html").read_text()
     home = html[html.index('<main id="home"'):html.index('<main id="settings"')]
     assert set(re.findall(r'\bid="([^"]+)"', home)) == {"home", "start", "home-elsewhere", "elsewhere-text", "elsewhere-stop",
-                                                        "home-note", "home-gear", "home-stone"}
+                                                        "home-note", "home-gear", "home-stone", "home-style-row",
+                                                        "home-style"}
     out = run_page(tmp_path, docs, "return { screen: page.screen(), gear: $('home-gear').textContent, note: $('home-note').hidden };")
     assert out == {"screen": "home", "gear": "Test Interface, channel 1", "note": True}
 

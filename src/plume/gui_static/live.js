@@ -21,25 +21,34 @@ export function endedNote(doc, id) {
 
 export function stageWords(stage) { return STAGES[stage] || ''; }
 
-/* "F major, midwest (a guess)". A key or style the player typed is never a guess. */
+/* Each style as a person would say it. A style added later reads as its own name. */
+const STYLE_NAMES = { folk: 'Folk', hiphop: 'Hip hop', house: 'House', jazz: 'Jazz', lofi: 'Lo-fi',
+  midwest: 'Midwest emo', rnb: 'R&B', synthwave: 'Synthwave', trap: 'Trap' };
+export function styleName(id) {
+  return STYLE_NAMES[id] || (id ? id.charAt(0).toUpperCase() + id.slice(1) : '');
+}
+
+/* "F major (a guess) \u00b7 Folk, chosen". A key or style the player named is never a guess, and a
+   style she chose at Start says so. */
 export function keyLine(row, doc) {
   const key = (row && row.key) || doc.key, style = (row && row.style) || doc.style;
   const keyGuess = !!(key && row && row.key_guess && !doc.key);
-  const styleGuess = !!(style && row && row.style_guess && !doc.style);
-  return guessLine(key || 'Listening for the key', style, keyGuess, styleGuess);
+  const chosen = !!(style && (doc.style || (row && row.style_chosen)));
+  const styleGuess = !!(style && !chosen && row && row.style_guess);
+  return guessLine(key || 'Listening for the key', style, keyGuess, chosen, styleGuess);
 }
 
-function guessLine(key, style, keyGuess, styleGuess) {
-  const line = [key, style].filter(Boolean).join(', ');
-  if (keyGuess && styleGuess) return line + ' (a guess)';
-  if (keyGuess) return line + ' (the key is a guess)';
-  if (styleGuess) return line + ' (the style is a guess)';
-  return line;
+function guessLine(key, style, keyGuess, chosen, styleGuess) {
+  const bits = [];
+  if (key) bits.push(key + (keyGuess ? ' (a guess)' : ''));
+  if (style) bits.push(styleName(style) + (chosen ? ', chosen' : styleGuess ? ', plume\'s guess' : ''));
+  return bits.join(' \u00b7 ');
 }
 
 /* The same words for a take that is over, so the screens she keeps say it too. */
 export function settledLine(take) {
-  return guessLine(take.key, take.style, !!(take.key && take.key_guess), !!(take.style && take.style_guess));
+  return guessLine(take.key, take.style, !!(take.key && take.key_guess), !!(take.style && take.style_chosen),
+    !!(take.style && take.style_guess));
 }
 
 /* What can be said about the player right now. null means plume can't say, so don't show it.

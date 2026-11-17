@@ -13,7 +13,7 @@ from conftest import needs_laptop_speed  # noqa: E402
 from plume.bandentry import (FOLLOW_GAIN_MIN_DB, FOLLOW_GAIN_RETURN_STEP_DB,
                              FOLLOW_GAIN_STEP_DB, FOLLOW_HOLD_MIN_S, FOLLOW_LEARN_BARS,
                              BandFollow, follow_hold_bars)
-from plume.realtime import follow_parts, plan_lead_s
+from plume.realtime import follow_parts, plan_lead_s, read_window_by_s
 
 NORMAL_DB = -21.0
 
@@ -168,6 +168,13 @@ def test_the_planner_keeps_a_whole_bar_when_planning_is_slow_for_the_pace():
 
 def test_the_lead_is_never_more_than_a_bar():
     assert plan_lead_s(1.5, plan_cost_s=5.0, pace=1.0, comp_s=0.1) == 1.5
+
+
+def test_a_bar_waits_for_the_ear_at_most_half_its_lead():
+    # A whole bar ahead, the bar read ends where the playhead is: half a bar to catch up.
+    assert read_window_by_s(10.0, ahead_s=2.0, need_s=0.1) == pytest.approx(9.0)
+    # Never into the time planning needs.
+    assert read_window_by_s(10.0, ahead_s=2.0, need_s=1.6) == pytest.approx(8.4)
 
 
 # ------------------------------------------------------------ her take, in numbers

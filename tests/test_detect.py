@@ -6,6 +6,7 @@ Nothing here has heard a real guitar.  Everything live runs on the fake device.
 import argparse
 import json
 
+import conftest
 import numpy as np
 import pytest
 from conftest import needs_laptop_speed  # noqa: E402
@@ -529,10 +530,19 @@ def _rows(rec):
     return [r for r in rows if isinstance(r.get("bar"), int)]
 
 
-def _detect_take(tmp_path, human, *, name="rec", prompt=None, rate_x=12.0, **kw):
+def _detect_take(tmp_path, human, *, name="rec", prompt=None, rate_x=12.0,
+                 wait_for_ear=False, **kw):
+    """``wait_for_ear``: the fake device pauses while the ear is behind it, as it always
+    does on a shared runner (conftest), for a test of what was heard rather than of
+    keeping up with a fast playhead.  A real device leaves the ear time to spare."""
     route = {"direct": True, "input_device": "audio interface", "input_channel": 1}
     route.update(kw.pop("route", {}))
-    with patched_module("sounddevice", fake_audio(human, devices=RIG, rate_x=rate_x)):
+    hold = None
+    if wait_for_ear:
+        conftest._watch_the_ear()
+        hold = conftest.ear_behind
+    with patched_module("sounddevice", fake_audio(human, devices=RIG, rate_x=rate_x,
+                                                  hold=hold)):
         realtime.lead(prompt=prompt, seed=0, tap_start=True, detect=True,
                       role=roles_mod.RoleParams(role="lead"), record_dir=str(tmp_path / name),
                       status=False, socket_path=short_socket_path(name), **route, **kw)
@@ -705,7 +715,7 @@ def _folk_take(bpm, *, bars=28, kind="strum", gain_db=-18.0, strums=None):
 
 
 def test_a_strummed_folk_tune_on_a_direct_input_brings_in_the_folk_band(tmp_path, consent):
-    rec = _detect_take(tmp_path, _folk_take(96.0), max_minutes=0.6)
+    rec = _detect_take(tmp_path, _folk_take(96.0), max_minutes=0.6, wait_for_ear=True)
     rows = _rows(rec)
     band = [r for r in rows if r["entry"] != "drums"]
     assert band, "the band never came in"
@@ -719,22 +729,81 @@ def test_a_strummed_folk_tune_on_a_direct_input_brings_in_the_folk_band(tmp_path
 @pytest.mark.parametrize("gain_db", [-6.0, -30.0])
 def test_the_folk_band_comes_in_whatever_the_input_level(tmp_path, consent, gain_db):
     """The interface's gain turned up or down: the same strumming, the same band."""
-    rec = _detect_take(tmp_path, _folk_take(96.0, gain_db=gain_db), max_minutes=0.6)
+    rec = _detect_take(tmp_path, _folk_take(96.0, gain_db=gain_db), max_minutes=0.6,
+                       wait_for_ear=True)
     band = [r for r in _rows(rec) if r["entry"] != "drums"]
     assert band, "the band never came in"
     assert {r["style"] for r in band} == {"folk"}, band[0]["style_why"]
 
 
+def test_a_slow_ear_still_hears_every_stroke_of_the_bars_before_the_band(
+        tmp_path, consent, monkeypatch):
+    """A busy machine leaves the analysis behind the playhead.  Each bar is read as it
+    ends, so its last frames could arrive too late and be dropped: fewer strokes counted,
+    and a quiet folk take read as not enough heard.  Every frame of her playing has to
+    reach the folk guess, however late it arrives."""
+    import threading
+    import time
+
+    from plume.listen.features import HOP
+
+    analyse = realtime.analysis_step
+
+    def slow_ear(**kw):
+        time.sleep(0.02)                 # on every read, as on a starved runner
+        return analyse(**kw)
+
+    monkeypatch.setattr(realtime, "analysis_step", slow_ear)
+    sock = short_socket_path("slowear")
+    heard: list = []
+    real_heard, real_entry = StylePick.heard_bar, StylePick.at_entry
+
+    def heard_bar(self, onsets, frames=None):
+        heard.extend(f.t_s for f in frames or [])
+        return real_heard(self, onsets, frames)
+
+    def at_entry(self, bpm, key):
+        # The band is in, so the take has said what it can: end it rather than play on.
+        def stop():
+            try:
+                realtime.send_stop(socket_path=sock)
+            except (OSError, realtime.RealtimeError):
+                pass                     # already ending on its own
+        threading.Thread(target=stop, daemon=True).start()
+        return real_entry(self, bpm, key)
+
+    monkeypatch.setattr(StylePick, "heard_bar", heard_bar)
+    monkeypatch.setattr(StylePick, "at_entry", at_entry)
+    # The device still waits for an ear far behind it (_detect_take): late by a read,
+    # not by bars, as on a real device.
+    conftest._watch_the_ear()
+    with patched_module("sounddevice", fake_audio(_folk_take(96.0, gain_db=-30.0),
+                                                  devices=RIG, hold=conftest.ear_behind)):
+        realtime.lead(prompt=None, seed=0, tap_start=True, detect=True,
+                      role=roles_mod.RoleParams(role="lead"), record_dir=str(tmp_path / "rec"),
+                      status=False, socket_path=sock, direct=True,
+                      input_device="audio interface", input_channel=1, max_minutes=0.6)
+    band = [r for r in _rows(tmp_path / "rec") if r["entry"] != "drums"]
+    assert band, "the band never came in"
+    assert {r["style"] for r in band} == {"folk"}, band[0]["style_why"]
+    # One unbroken run of hops from her first heard frame to her last: none dropped.
+    hop = HOP / SR
+    assert len(heard) > 6 * (240.0 / 96.0) / hop, "fewer than six bars reached the guess"
+    assert float(np.max(np.diff(heard))) < 1.5 * hop, "frames of her playing were dropped"
+
+
 def test_four_downstrokes_a_bar_at_120_bring_in_the_folk_band(tmp_path, consent):
     import folk_fixtures as ff
-    rec = _detect_take(tmp_path, _folk_take(120.0, strums=ff.QUARTER_STRUMS), max_minutes=0.6)
+    rec = _detect_take(tmp_path, _folk_take(120.0, strums=ff.QUARTER_STRUMS), max_minutes=0.6,
+                       wait_for_ear=True)
     band = [r for r in _rows(rec) if r["entry"] != "drums"]
     assert band, "the band never came in"
     assert {r["style"] for r in band} == {"folk"}, band[0]["style_why"]
 
 
 def test_the_same_tune_fingerpicked_is_not_called_folk(tmp_path, consent):
-    rec = _detect_take(tmp_path, _folk_take(96.0, kind="pick"), max_minutes=0.6)
+    rec = _detect_take(tmp_path, _folk_take(96.0, kind="pick"), max_minutes=0.6,
+                       wait_for_ear=True)
     band = [r for r in _rows(rec) if r["entry"] != "drums"]
     assert band, "the band never came in"
     assert "folk" not in {r["style"] for r in band}

@@ -620,3 +620,33 @@ def test_cancel_stops_a_tool_that_hangs_wherever_it_hangs(tmp_path, stalled):
     with pytest.raises(takevideo.Cancelled):
         takevideo.loudest("ffmpeg", tmp_path / "a.mp4", cancelled=after(2))
     assert len(stalled) == 4 and all_stopped(stalled)
+
+
+def test_the_sound_is_handed_over_a_decibel_under_full_scale_and_kept_there(monkeypatch):
+    """About 1 dB of room, and a peak that comes back over half a decibel under full scale
+    is written again.  Pinned, so neither can drift away quietly."""
+    written, peaks = [], []
+
+    def write_once(*a, gain, **kw):
+        written.append(gain)
+
+    monkeypatch.setattr(takevideo, "_write_once", write_once)
+    monkeypatch.setattr(takevideo, "loudest", lambda *a, **kw: peaks.pop(0))
+
+    def gains(*heard):
+        written.clear()
+        peaks[:] = list(heard)
+        takevideo.write_video("ffmpeg", "in.mp4", "out.mp4", mixed=silence, rate=48000, band_at=0,
+                              duration_s=1.0, keep_sound=True)
+        return list(written)
+
+    one_db = 10 ** (-1 / 20)
+    assert gains(0.80) == [pytest.approx(one_db, abs=0.002)]
+    assert gains(0.94) == [pytest.approx(one_db, abs=0.002)]          # -0.54 dB: kept
+    again = gains(0.97, 0.90)                                         # -0.26 dB: too close, made again
+    assert len(again) == 2 and again[1] == pytest.approx(one_db * one_db / 0.97, abs=0.002)
+    assert len(gains(1.4, 1.2, 1.1)) == 3                             # at most twice more, then kept
+    for keep_sound in (True, False):
+        cmd = " ".join(takevideo.write_command("ffmpeg", "in.mp4", "out.mp4", rate=48000, duration_s=1.0,
+                                               keep_sound=keep_sound))
+        assert f"{one_db:.3f}" in cmd

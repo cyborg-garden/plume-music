@@ -436,12 +436,12 @@ def clip_in(clipped, t0: float, t1: float) -> bool:
 
 def follow_bar(human, clipped, w_start: float, w_end: float
                ) -> tuple[float | None, float | None]:
-    """The bar's level (dB) and busyness (onsets per beat) for BandFollow.  ``human`` is
-    the bar ``[w_start, w_end)`` as :func:`bar_features_dict` summed it up (its kwargs
-    or the BarFeatures made of them), and that is what BandFollow gets: unless the bar
-    holds a clip out of character for her (see :class:`ClipWatch`), and then it gets
-    nothing.  What she played under a knock is not known, and a level worked out from
-    the rest of the bar is not her level; no evidence moves nothing."""
+    """The bar's level (dB) and busyness (onsets per beat) with clipped bars left out.
+    ``human`` is the bar ``[w_start, w_end)`` as :func:`bar_features_dict` summed it up
+    (its kwargs or the BarFeatures made of them), and that is what comes back: unless
+    the bar holds a clip out of character for her (see :class:`ClipWatch`), and then
+    nothing does.  This is the second reading of ``bandentry.FollowTwice``, which can
+    only hold a swell back; the first is the bar as it is."""
     if human is None or clip_in(clipped, w_start, w_end):
         return None, None
     if isinstance(human, dict):
@@ -5107,7 +5107,7 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
     if tap_start:
         from .bandentry import (DETECT_KEY_FALLBACK_BARS, END_AFTER_S,  # noqa: PLC0415
                                 CLICK_ROLE, DRUM_ROLES, FOLLOW, PLAIN_INTRO_GAIN_DB,
-                                BandEntry, BandFollow, GuitarEar, PhraseHold, PlanYield,
+                                BandEntry, FollowTwice, GuitarEar, PhraseHold, PlanYield,
                                 SilenceEnding, StylePick, EntryRamp, click_bridge_level,
                                 follow_band_settled, outro, plain_phrase_feel,
                                 song_section, yield_to)
@@ -5123,7 +5123,7 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
         # The band follows how she plays.  FOLLOW is the only mode so far: the seam a
         # "plume leads" mode would come in by.  A room mic hears the band too, so it
         # follows more cautiously (see BandFollow).
-        follow = BandFollow(trusted=hears_only_her or midi_port is not None, mode=FOLLOW)
+        follow = FollowTwice(trusted=hears_only_her or midi_port is not None, mode=FOLLOW)
         from .listen.features import CountInDetector  # noqa: PLC0415
         # The ear confirms the player about a bar after a level would, so a direct input
         # waits one bar longer to give the player the same eight or so before the band.
@@ -5407,8 +5407,8 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
                 shared["beat"] = beat_state
                 shared["harmony"] = harm_state
                 if clipped_now:
-                    # A knock or a crackle, which BandFollow must not take for her
-                    # playing louder (see ClipWatch and follow_bar).
+                    # A knock or a crackle, which must not lift the band as her
+                    # playing louder would (see ClipWatch and FollowTwice).
                     shared["clipped"].extend(clipped_now)
                     del shared["clipped"][:-FOLLOW_CLIP_KEPT]
                 for f in masked_frames:
@@ -5442,7 +5442,7 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
             masker.enable()
             if entry is not None:
                 chord_follow.band_in_mic = True
-                follow = BandFollow(trusted=False, mode=FOLLOW)
+                follow = FollowTwice(trusted=False, mode=FOLLOW)
                 # Not a new ending: one already fading must go on fading, and finish.
                 silence_ending.long_wait()
                 if style_pick is not None:
@@ -5644,19 +5644,26 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
             if ending_now is None:
                 # What she plays is only her on an input that hears nothing else, so a
                 # room mic's bars are weighed by BandFollow with that in mind.
-                parts = None
+                parts = spared_parts = None
                 if hears_only_her and bar >= first_heard_bar:
                     # Her level by the half bar, the newest half as soon as it is
                     # heard.  Only an input that hears nothing but her: off a room
                     # mic a half bar is mostly the band.
+                    halves = dict(fed_until=state.get("follow_fed"),
+                                  heard_until=(later_evs[-1][0] if later_evs else w_end),
+                                  silence_rms_db=params.silence_rms_db,
+                                  ref_db=state["ref_db"])
                     parts, state["follow_fed"] = follow_parts(
-                        evs, later_evs, w_start, w_end, t_bar,
-                        fed_until=state.get("follow_fed"),
-                        heard_until=(later_evs[-1][0] if later_evs else w_end),
-                        silence_rms_db=params.silence_rms_db, ref_db=state["ref_db"],
-                        clipped=clipped)
-                her_db, her_busy = follow_bar(human, clipped, w_start, w_end)
-                followed = follow.bar(her_db, her_busy,
+                        evs, later_evs, w_start, w_end, t_bar, **halves)
+                    spared_parts, _ = follow_parts(
+                        evs, later_evs, w_start, w_end, t_bar, clipped=clipped, **halves)
+                # The band follows the bar as it is, and a second time with the bars
+                # that clipped out of character left out, which can only hold a swell
+                # back (bandentry.FollowTwice).
+                followed = follow.bar(None if human is None else human.rms_db,
+                                      None if human is None else human.onset_density,
+                                      spared=(*follow_bar(human, clipped, w_start, w_end),
+                                              spared_parts),
                                       playing=playing and human is not None,
                                       band_in=entry.band_is_in,
                                       settled=follow_band_settled(
@@ -5844,6 +5851,11 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
                              "gain_db": round(follow.gain_db, 3),
                              "density": round(follow.density, 4),
                              "moved": list(followed.moved) if followed is not None else [],
+                             # a swell the band is not making, since the input
+                             # clipped as she had not been playing (FollowTwice)
+                             **({"held_back": {"gain_db": follow.held_back[0],
+                                               "density": follow.held_back[1]}}
+                                if follow.held_back is not None else {}),
                              "bars": follow.hold_bars,
                              # how far ahead this bar was planned: half a bar when
                              # the band could hear half of the bar before it

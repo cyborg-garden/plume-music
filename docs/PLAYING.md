@@ -46,8 +46,9 @@ held it through a phrase the lighter parts sitting out, though the kick, snare a
 keep going. Come back
 up and so does the band. Playing fewer notes at your usual level only thins the band's own
 patterns. One quiet bar, or one loud one, moves nothing. If you have been playing well
-below full scale, a bar with a knock on the instrument's body or a crackle from the cable
-in it that hits full scale is passed over, so the band doesn't swell for a bump. That
+below full scale, a knock on the instrument's body or a crackle from the cable that hits
+full scale does not make the band swell: it lifts only as far as it would have with
+those bars left out, and the `held_back` field in the decision row says when. That
 covers the odd bump and crackle, not a cable that crackles all the time: clip in most of
 the last half minute, or play near full scale yourself, and it is all read as your
 playing. Answer yourself soft and loud a

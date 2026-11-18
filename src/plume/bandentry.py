@@ -1601,6 +1601,94 @@ class BandFollow:
         return FollowState(round(self.gain_db, 3), round(self.density, 4), moved, why)
 
 
+def swell_bound(heard: float, spared: float, rest: float) -> float:
+    """``heard`` unless it is over ``rest``, and then no further over than ``spared``:
+    never under ``rest``, never over ``heard``."""
+    return heard if heard <= rest else min(heard, max(spared, rest))
+
+
+class FollowTwice:
+    """The band's level and density, following her twice over.
+
+    One :class:`BandFollow` hears everything, as the band always has.  A second hears
+    the same with ``spared`` in place of each bar's readings: the bars in which the
+    input clipped out of character for her (a knock on the instrument, a crackling
+    cable) left out.  The band does what the first says, except that where the first
+    has it over its resting level or density, it goes no further over than the second
+    (:func:`swell_bound`).
+
+    So leaving a clip out can only take away a swell, or a filling out, that hearing
+    everything would have made.  It never has the band quieter or sparser than hearing
+    everything would, nor louder or busier, whatever was left out and whoever was
+    playing.  Nothing here is in the audio callback: it is the planner's, a bar at a
+    time."""
+
+    def __init__(self, *, trusted: bool, mode: str = FOLLOW):
+        self.heard = BandFollow(trusted=trusted, mode=mode)
+        self.spared = BandFollow(trusted=trusted, mode=mode)
+        self.mode, self.trusted = self.heard.mode, self.heard.trusted
+        self.gain_db, self.density = 0.0, 1.0
+
+    hold_bars = property(lambda self: self.heard.hold_bars)
+
+    def shape(self, arc_density: float) -> float:
+        return self.heard.shape(arc_density)
+
+    @property
+    def held_back(self) -> tuple[float, float] | None:
+        """(dB, density) of a swell hearing everything would have made and the band
+        is not making; None when the band is doing just what hearing everything says."""
+        if self.gain_db == self.heard.gain_db and self.density == self.heard.density:
+            return None
+        return (round(self.heard.gain_db - self.gain_db, 3),
+                round(self.heard.density - self.density, 4))
+
+    @property
+    def yield_db(self) -> float:
+        return swell_bound(self.heard.yield_db, self.spared.yield_db, 0.0)
+
+    def _settle(self) -> None:
+        self.gain_db = swell_bound(self.heard.gain_db, self.spared.gain_db, 0.0)
+        self.density = swell_bound(self.heard.density, self.spared.density, 1.0)
+
+    def cue(self, value: str) -> FollowState:
+        state = self.heard.cue(value)
+        self.spared.cue(value)
+        self._settle()
+        return self._state(state, state.moved)
+
+    def bar(self, rms_db: float | None, onsets_per_beat: float | None, *,
+            parts=None, spared=None, **kw) -> FollowState:
+        """This bar's lean.  As :meth:`BandFollow.bar`, with ``spared``: the same
+        ``(rms_db, onsets_per_beat, parts)`` with the clipped bars left out, or None
+        when nothing was."""
+        was = (self.gain_db, self.density, self.held_back)
+        state = self.heard.bar(rms_db, onsets_per_beat, parts=parts, **kw)
+        db, busy, sparts = (rms_db, onsets_per_beat, parts) if spared is None else spared
+        other = self.spared.bar(db, busy, parts=sparts, **kw)
+        self._settle()
+        if was[2] is None and self.held_back is None:
+            return self._state(state, state.moved)
+        # While a swell is held back, a move is one the band made: either reading
+        # called it, and the level or the density went that way.
+        up = {"louder": self.gain_db > was[0] or self.density > was[1],
+              "softer": self.gain_db < was[0] or self.density < was[1],
+              "busier": self.density > was[1], "sparser": self.density < was[1]}
+        called = state.moved + tuple(m for m in other.moved if m not in state.moved)
+        return self._state(state, tuple(m for m in called if up[m]))
+
+    def _state(self, state: FollowState, moved: tuple[str, ...]) -> FollowState:
+        held = self.held_back
+        if held is None and moved == state.moved:
+            return state
+        why = (f"follow: level {self.gain_db:+.1f}dB density x{self.density:.2f}"
+               + (f", {' and '.join(moved)} for {self.hold_bars:g} bars" if moved else ""))
+        if held is not None:
+            why += (f"; a swell of {held[0]:+.1f}dB x{self.heard.density:.2f} held back:"
+                    f" the input clipped as she had not been playing")
+        return FollowState(round(self.gain_db, 3), round(self.density, 4), moved, why)
+
+
 def _toward(now: float, target: float, step: float) -> float:
     return now + max(-step, min(step, target - now))
 

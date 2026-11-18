@@ -79,64 +79,39 @@ SR = realtime.SR
 #: The longest ``hold`` can pause the fake device: a wedge must still fail the test.
 HOLD_MAX_S = 30.0
 #: On a shared runner the fake device waits while the ear is this far behind it: more
-#: than this much of the input not yet heard.  Heard means analysed and handed on, not
-#: only read off the ring: the planner reads a bar once the ear has heard to its end
-#: (realtime.wait_for_ear), and what the ear has read but is still working through is
-#: not there yet.  Counting only the unread part let a slow ear sit half a second
-#: behind a fast playhead, the planner waited that out, and the wait came off the
-#: bar's lead: a twelfth of a second of wall time at 12x, enough to land the costliest
-#: bar late.  Kept short, so the wait costs a fast playhead next to nothing.
-EAR_BEHIND_S = 0.1
-#: ... unless nothing has touched that ring for this long: its reader has finished (a
+#: than this much of the input not yet read by the analysis thread.
+EAR_BEHIND_S = 0.5
+#: ... unless nothing has read that ring for this long: its reader has finished (a
 #: take's tail plays on after the ear has stopped), and waiting would only stall.
 EAR_GONE_S = 1.0
-#: The thread that reads the rings, in both transports.
-EAR_THREAD = "plume-analysis"
 #: Every live ring the transports feed the ear through (in, machine, voice).
 _EAR_RINGS: "weakref.WeakSet" = weakref.WeakSet()
 
 
 def _watch_the_ear() -> None:
-    """Note each ring: when its reader last touched it, how much it has read, and how
-    much of that it has finished with."""
+    """Note each ring, and when its reader last read it."""
     ring = realtime.RingBuffer
     if getattr(ring, "_ear_watched", False):
         return
-    real_init, real_read, real_available = ring.__init__, ring.read, ring.available.fget
+    real_init, real_read = ring.__init__, ring.read
 
     def __init__(self, *a, **kw):
         real_init(self, *a, **kw)
         self._ear_read_at = time.perf_counter()
-        self._ear_read = self._ear_heard = 0
         _EAR_RINGS.add(self)
 
     def read(self, *a, **kw):
-        out = real_read(self, *a, **kw)
         self._ear_read_at = time.perf_counter()
-        self._ear_read += len(out)
-        return out
+        return real_read(self, *a, **kw)
 
-    def available(self):
-        # The ear asks what is waiting at the top of each turn, after handing on all
-        # it read the turn before: so by now it has heard everything it has read.
-        # Every ring it reads, as it only asks about some of them.
-        if threading.current_thread().name == EAR_THREAD:
-            now = time.perf_counter()
-            for r in list(_EAR_RINGS):
-                r._ear_heard, r._ear_read_at = r._ear_read, now
-        return real_available(self)
-
-    ring.__init__, ring.read, ring.available = __init__, read, property(available)
-    ring._ear_watched = True
+    ring.__init__, ring.read, ring._ear_watched = __init__, read, True
 
 
-def ear_behind(rings=None) -> bool:
-    """Whether the analysis thread has fallen behind a fake device's input (on every
-    live ring, or on ``rings``)."""
+def ear_behind() -> bool:
+    """Whether the analysis thread has fallen behind a fake device's input."""
     now = time.perf_counter()
-    for ring in list(_EAR_RINGS if rings is None else rings):
-        unheard = ring.available + ring._ear_read - ring._ear_heard
-        if (unheard > EAR_BEHIND_S * SR
+    for ring in list(_EAR_RINGS):
+        if (ring.available > EAR_BEHIND_S * SR
                 and now - getattr(ring, "_ear_read_at", now) < EAR_GONE_S):
             return True
     return False
@@ -145,6 +120,46 @@ def ear_behind(rings=None) -> bool:
 # Before any transport builds its rings, so every one of them is watched.
 if os.environ.get("PLUME_SKIP_MACHINE_SPEED") == "1":
     _watch_the_ear()
+
+#: The planner's waits for the ear now in progress: when each began (perf_counter).
+_PLANNER_WAITS: dict = {}
+#: The longest the fake device stands still for one of them.  An ear that is running
+#: catches up in milliseconds; one that has stopped must not stop the take with it, as
+#: the wait gives up by the playhead, which a held device does not move.
+PLANNER_WAIT_HOLD_S = 1.0
+
+
+def _watch_the_planner_wait() -> None:
+    """Note when the planner is waiting for the ear to finish a bar (realtime.wait_for_ear)."""
+    real = getattr(realtime, "wait_for_ear", None)
+    if real is None or getattr(real, "_wait_watched", False):
+        return
+
+    def wait_for_ear(*a, **kw):
+        me = object()
+        _PLANNER_WAITS[me] = time.perf_counter()
+        try:
+            return real(*a, **kw)
+        finally:
+            _PLANNER_WAITS.pop(me, None)
+
+    wait_for_ear._wait_watched = True
+    realtime.wait_for_ear = wait_for_ear
+
+
+def planner_waiting() -> bool:
+    """Whether the planner is waiting for the ear, and has not been for too long.
+
+    The fake device stands still while it is, at any speed and on any machine.  The
+    wait spends the bar's lead, and a real device at real time loses milliseconds of
+    seconds to it.  A fake one at 12x would lose twelve times the share: a twelfth of a
+    second of wall time was enough to land the costliest bar late.  Holding the device
+    all the time to the same end instead made it crawl where timers are coarse."""
+    now = time.perf_counter()
+    return any(now - t0 < PLANNER_WAIT_HOLD_S for t0 in list(_PLANNER_WAITS.values()))
+
+
+_watch_the_planner_wait()
 
 #: A device table that satisfies ``_resolve_device``: one duplex device.
 DUPLEX_DEVICES = [{"name": "Fake Duplex", "max_input_channels": 2,
@@ -200,15 +215,18 @@ class FakeAudioStream:
                        else np.asarray(human, dtype=np.float32))
         self._loop_human = bool(loop_human)
         #: while this says so, the device waits, as if the test had paused time.
-        self._hold = hold
+        # Looked up when asked, so a test can stand in for either.
+        holds = [lambda: planner_waiting()]
+        if hold is not None:
+            holds.append(hold)
         if os.environ.get("PLUME_SKIP_MACHINE_SPEED") == "1":
             # A shared runner can starve the ear of CPU until it falls whole bars
             # behind a fast fake playhead: no key settles, the band never comes in,
             # and that reads as a broken band.  A real device at real time leaves
             # the ear seconds to spare, so here the device waits for it instead.
             # A fast machine never waits, so it still runs at full speed.
-            self._hold = (ear_behind if hold is None
-                          else (lambda: hold() or ear_behind()))
+            holds.append(lambda: ear_behind())
+        self._hold = lambda: any(h() for h in holds)
         #: speaker -> room -> mic path.  None = headphones (perfect isolation).
         self._bleed = (None if bleed_db is None
                        else float(10.0 ** (float(bleed_db) / 20.0)))
@@ -634,9 +652,23 @@ NEVER_RERUN_FILES = {"test_audio_consent.py", "test_cross_platform.py",
 NEVER_RERUN_WORDS = ("consent", "symlink", "secret", "token", "private", "refus")
 
 
+#: ... and nor does a take that ends by what was heard and not by the clock: a slow
+#: runner cannot make it fail, only make it slow, and one that reaches its wall-clock
+#: cap (minutes) is a starved runner that two more tries would starve again.
+ENDS_BY_WHAT_WAS_HEARD = "ends_by_what_was_heard"
+
+
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers", f"{ENDS_BY_WHAT_WAS_HEARD}: the take stops by what the ear heard, "
+        "so no slow runner fails it and it is never rerun")
+
+
 def _never_rerun(item) -> bool:
     name = os.path.basename(str(item.fspath))
-    return name in NEVER_RERUN_FILES or any(w in item.name.lower() for w in NEVER_RERUN_WORDS)
+    return (name in NEVER_RERUN_FILES
+            or any(w in item.name.lower() for w in NEVER_RERUN_WORDS)
+            or item.get_closest_marker(ENDS_BY_WHAT_WAS_HEARD) is not None)
 
 
 def pytest_collection_modifyitems(config, items):

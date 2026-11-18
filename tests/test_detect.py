@@ -6,6 +6,7 @@ Nothing here has heard a real guitar.  Everything live runs on the fake device.
 import argparse
 import json
 import threading
+import time
 
 import conftest
 import numpy as np
@@ -603,30 +604,24 @@ def _detect_take(tmp_path, human, *, name="rec", prompt=None, rate_x=12.0,
     return tmp_path / name
 
 
-def test_the_fake_device_waits_for_what_the_ear_has_not_finished():
-    """What holds the fake device on a shared runner (conftest.ear_behind): a third of a
-    second the ear has not read, and the same audio once read but not yet handed on.
-    The planner reads a bar when the ear has handed on its end, so a device that ran on
-    past either would make that wait cost a fast playhead its lead."""
-    conftest._watch_the_ear()
-    ring = realtime.RingBuffer(SR * 2)
-    ring.write(np.zeros(int(0.3 * SR), dtype=np.float32))
-    assert conftest.ear_behind([ring]), "not read, and the device ran on"
-    has_read, go_on, handed_on = threading.Event(), threading.Event(), threading.Event()
-
-    def ear_turn():
-        ring.read()
-        has_read.set()
-        go_on.wait(5.0)
-        ring.available                   # the top of the ear's next turn
-        handed_on.set()
-
-    threading.Thread(target=ear_turn, name=conftest.EAR_THREAD, daemon=True).start()
-    assert has_read.wait(5.0)
-    assert conftest.ear_behind([ring]), "read but not handed on, and the device ran on"
-    go_on.set()
-    assert handed_on.wait(5.0)
-    assert not conftest.ear_behind([ring])
+def test_the_fake_device_stands_still_while_the_planner_waits_for_the_ear():
+    """conftest.planner_waiting: what makes the planner's wait cost a fast fake playhead
+    none of the bar's lead.  Not for ever: an ear that has stopped must not stop the take."""
+    stop, heard = threading.Event(), [0.0]
+    args = (lambda: heard[0], 5.0, lambda: 0.0, 9.0, stop)
+    waiting = threading.Thread(target=lambda: realtime.wait_for_ear(*args), daemon=True)
+    assert not conftest.planner_waiting()
+    waiting.start()
+    assert conftest.wait_until(conftest.planner_waiting, timeout=5.0)
+    heard[0] = 5.0                       # the ear has finished the bar
+    waiting.join(timeout=5.0)
+    assert not waiting.is_alive() and not conftest.planner_waiting()
+    # One that goes on too long is no longer waited for.
+    conftest._PLANNER_WAITS["old"] = time.perf_counter() - 2 * conftest.PLANNER_WAIT_HOLD_S
+    try:
+        assert not conftest.planner_waiting()
+    finally:
+        del conftest._PLANNER_WAITS["old"]
 
 
 def test_a_busy_player_at_85_starts_lofi_and_the_band_arrives_as_midwest(tmp_path, consent):
@@ -794,6 +789,7 @@ def _folk_take(bpm, *, bars=28, kind="strum", gain_db=-18.0, strums=None):
     return x
 
 
+@pytest.mark.ends_by_what_was_heard
 def test_a_strummed_folk_tune_on_a_direct_input_brings_in_the_folk_band(tmp_path, consent):
     rec = _detect_take(tmp_path, _folk_take(96.0), until_band=True)
     rows = _rows(rec)
@@ -811,8 +807,6 @@ def _ear_late_on_every_read(monkeypatch) -> list:
     the frames that reach the folk guess, as they arrive.  Each read costs a sixth of the
     time it holds, so the ear is always behind a 12x playhead by what it is working on
     and never slower than half of it: a fixed cost a read made the take crawl."""
-    import time
-
     analyse = realtime.analysis_step
 
     def slow_ear(**kw):
@@ -831,6 +825,7 @@ def _ear_late_on_every_read(monkeypatch) -> list:
     return heard
 
 
+@pytest.mark.ends_by_what_was_heard
 @pytest.mark.parametrize("gain_db,late_ear", [(-6.0, False), (-30.0, True)])
 def test_the_folk_band_comes_in_whatever_the_input_level(tmp_path, consent, monkeypatch,
                                                          gain_db, late_ear):
@@ -854,12 +849,11 @@ def test_the_folk_band_comes_in_whatever_the_input_level(tmp_path, consent, monk
         assert np.all(np.diff(heard) > 0), "a frame was read twice, or out of order"
 
 
+@pytest.mark.ends_by_what_was_heard
 def test_waiting_for_the_ear_is_not_counted_as_planning(tmp_path, consent, monkeypatch):
     """The lead a take plans by comes from what planning costs.  A wait for a late ear
     counted as planning would push the lead to a whole bar, the band would follow her a
     bar later, and the wait's own deadline would fall behind the playhead and end it."""
-    import time
-
     wait = realtime.wait_for_ear
     long_wait_s = 0.3                    # longer than any bar's planning, by far
 
@@ -877,33 +871,34 @@ def test_waiting_for_the_ear_is_not_counted_as_planning(tmp_path, consent, monke
 
     monkeypatch.setattr(realtime, "wait_for_ear", slow_wait)
     monkeypatch.setattr(realtime, "plan_lead_s", plan_lead_s)
-    _ear_that_stops(monkeypatch, stops_at_s=float("inf"), stopped_for_s=0.0, ends_at_s=22.0)
+    _ear_that_stops(monkeypatch, stop_for=lambda at: None, ends_at_s=22.0)
     _detect_take(tmp_path, _strummed_take(85.0), ends_itself=True)
     assert costs, "no bar was planned"
     # The cost is a median of the bars so far: with the wait counted, never under it.
     assert min(costs) < long_wait_s
 
 
-def _ear_that_stops(monkeypatch, *, stops_at_s, stopped_for_s, ends_at_s, name="rec"):
-    """The ear stops once it has heard to ``stops_at_s`` of the take, until the device
-    has played ``stopped_for_s`` further on, and the take is stopped when the ear has heard
-    to ``ends_at_s``.  All of it in the take's own time, so a slow runner changes nothing.
+def _ear_that_stops(monkeypatch, *, stop_for, ends_at_s, name="rec"):
+    """The ear stops once: ``stop_for(at)`` says for how much of the take, given how far
+    it has heard, or None for not yet.  It stays stopped until the device has played that
+    much further on, and the take is stopped when the ear has heard to ``ends_at_s``.
+    All of it in the take's own time, so a slow runner changes nothing.
 
     A real device plays on whatever the ear is doing, so the fake one does not wait for
     the ear while it is stopped; before and after, it does (:func:`_detect_take`).
-    Returns the take time the ear stopped at, once it has."""
-    import time
-
+    Returns ``[(the take time it stopped at, for how long)]``, once it has."""
     conftest._watch_the_ear()
-    waits_for_ear, analyse = conftest.ear_behind, realtime.analysis_step
+    waits_for_ear, waits_for_planner = conftest.ear_behind, conftest.planner_waiting
+    analyse = realtime.analysis_step
     sock = short_socket_path(name)
     stopped, ended, stopping = [], [], []
 
     def ear(**kw):
         out = analyse(**kw)
         at = out[0][-1].t_s if out[0] else 0.0
-        if not stopped and at >= stops_at_s:
-            stopped.append(at)
+        stopped_for_s = None if stopped else stop_for(at)
+        if stopped_for_s is not None:
+            stopped.append((at, stopped_for_s))
             stopping.append(True)
             rings = list(conftest._EAR_RINGS)
             unread = [r.available for r in rings]
@@ -925,18 +920,20 @@ def _ear_that_stops(monkeypatch, *, stops_at_s, stopped_for_s, ends_at_s, name="
         return out
 
     monkeypatch.setattr(realtime, "analysis_step", ear)
-    monkeypatch.setattr(conftest, "ear_behind",
-                        lambda rings=None: not stopping and waits_for_ear(rings))
+    monkeypatch.setattr(conftest, "ear_behind", lambda: not stopping and waits_for_ear())
+    monkeypatch.setattr(conftest, "planner_waiting",
+                        lambda: not stopping and waits_for_planner())
     return stopped
 
 
+@pytest.mark.ends_by_what_was_heard
 def test_an_ear_that_stops_does_not_hold_the_band_up(tmp_path, consent, monkeypatch):
     """The planner waits for the ear to finish a bar before reading it, but only so long.
     With the ear stopped for more than two bars, every bar still sounds on time."""
     import soundfile as sf
 
-    stopped_for_s = 7.0                              # two and a half bars
-    stopped = _ear_that_stops(monkeypatch, stops_at_s=14.0, stopped_for_s=stopped_for_s,
+    # For two and a half bars.
+    stopped = _ear_that_stops(monkeypatch, stop_for=lambda at: 7.0 if at >= 14.0 else None,
                               ends_at_s=26.0)
     rec = _detect_take(tmp_path, _strummed_take(85.0), ends_itself=True,
                        rate_x=playhead_rate(12.0))
@@ -944,7 +941,8 @@ def test_an_ear_that_stops_does_not_hold_the_band_up(tmp_path, consent, monkeypa
     rows = _rows(rec)
     bar_s = 240.0 / rows[0]["bpm"]
     machine, _ = sf.read(str(rec / "machine.wav"), dtype="float32")
-    through = [r for r in rows if stopped[0] <= r["t_s"] <= stopped[0] + stopped_for_s]
+    (stopped_at, stopped_for_s), = stopped
+    through = [r for r in rows if stopped_at <= r["t_s"] <= stopped_at + stopped_for_s]
     assert len(through) >= 2, "no bar was planned while the ear was stopped"
     for r in through:
         for beat in range(4):
@@ -954,6 +952,7 @@ def test_an_ear_that_stops_does_not_hold_the_band_up(tmp_path, consent, monkeypa
                 f"bar {r['bar']} beat {beat} is silent: it was planned too late")
 
 
+@pytest.mark.ends_by_what_was_heard
 def test_strokes_the_ear_hands_on_after_the_bar_was_read_are_still_counted(
         tmp_path, consent, monkeypatch):
     """The ear stops just before a bar line and for longer than the planner waits, so
@@ -961,12 +960,16 @@ def test_strokes_the_ear_hands_on_after_the_bar_was_read_are_still_counted(
     counts her strokes over the take, and dropping them lost strokes."""
     from plume.listen.features import HOP
 
-    # This take's bar lines fall every 2.82 s from 10.45 s: the ear stops 0.3 s before
-    # the one at 21.72, for longer than the planner waits (half a bar), and is back
-    # before the next at 24.53.
-    stops_at_s, stopped_for_s = 21.4, 2.4
-    stopped = _ear_that_stops(monkeypatch, stops_at_s=stops_at_s,
-                              stopped_for_s=stopped_for_s, ends_at_s=28.0)
+    # This take's bar lines fall every 2.82 s from 10.45 s.  The ear stops within a
+    # second before one of them, until 1.8 s after it: longer than the planner waits
+    # (half a bar and a little), and back before the next line.
+    first_line_s, bar_s, late_by_s = 10.4533, 240.0 / 85.0, 1.8
+
+    def stop_for(at):
+        to_line = (first_line_s - at) % bar_s
+        return to_line + late_by_s if at >= 18.0 and 0.05 < to_line < 1.0 else None
+
+    stopped = _ear_that_stops(monkeypatch, stop_for=stop_for, ends_at_s=32.0)
     heard: list = []
     real = StylePick.heard_bar
 
@@ -979,14 +982,17 @@ def test_strokes_the_ear_hands_on_after_the_bar_was_read_are_still_counted(
                        rate_x=playhead_rate(12.0))
     assert stopped, "the ear never stopped"
     lines = [r["t_s"] for r in _rows(rec)]
-    missed = [t for t in lines if stopped[0] < t < stopped[0] + stopped_for_s]
+    (stopped_at, stopped_for_s), = stopped
+    missed = [t for t in lines if stopped_at < t < stopped_at + stopped_for_s]
     assert len(missed) == 1, "the ear was to stop across one bar line"
+    assert stopped_at + stopped_for_s - missed[0] == pytest.approx(late_by_s, abs=0.05)
     hop = HOP / SR
     assert heard and heard[-1] > missed[0], "nothing was heard after the ear came back"
     assert float(np.max(np.diff(heard))) < 1.5 * hop, "frames of her playing were dropped"
     assert np.all(np.diff(heard) > 0), "a frame was read twice, or out of order"
 
 
+@pytest.mark.ends_by_what_was_heard
 def test_four_downstrokes_a_bar_at_120_bring_in_the_folk_band(tmp_path, consent):
     import folk_fixtures as ff
     rec = _detect_take(tmp_path, _folk_take(120.0, strums=ff.QUARTER_STRUMS),
@@ -996,6 +1002,7 @@ def test_four_downstrokes_a_bar_at_120_bring_in_the_folk_band(tmp_path, consent)
     assert {r["style"] for r in band} == {"folk"}, band[0]["style_why"]
 
 
+@pytest.mark.ends_by_what_was_heard
 def test_the_same_tune_fingerpicked_is_not_called_folk(tmp_path, consent):
     rec = _detect_take(tmp_path, _folk_take(96.0, kind="pick"), until_band=True)
     band = [r for r in _rows(rec) if r["entry"] != "drums"]

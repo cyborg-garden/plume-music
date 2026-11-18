@@ -172,11 +172,14 @@ def test_the_lead_is_never_more_than_a_bar():
     assert plan_lead_s(1.5, plan_cost_s=5.0, pace=1.0, comp_s=0.1) == 1.5
 
 
-def test_a_bar_waits_for_the_ear_at_most_half_its_lead():
-    # A whole bar ahead, the bar read ends where the playhead is: half a bar to catch up.
-    assert read_window_by_s(10.0, ahead_s=2.0, need_s=0.1) == pytest.approx(9.0)
+def test_a_wait_for_the_ear_leaves_the_plan_its_shortest_lead():
+    # A whole bar ahead, the bar read ends where the playhead is: about half a bar to wait.
+    assert read_window_by_s(10.0, bar_s=2.0, need_s=0.1) == pytest.approx(9.1)
+    # Already at the shortest lead, there is nothing to wait with.
+    lead = plan_lead_s(2.0, plan_cost_s=0.01, pace=1.0, comp_s=0.0)
+    assert read_window_by_s(10.0, bar_s=2.0, need_s=0.04) == pytest.approx(10.0 - lead)
     # Never into the time planning needs.
-    assert read_window_by_s(10.0, ahead_s=2.0, need_s=1.6) == pytest.approx(8.4)
+    assert read_window_by_s(10.0, bar_s=2.0, need_s=1.6) == pytest.approx(8.4)
 
 
 def _wait_or_fail(heard_to, w_end, playhead_s, give_up_s, *, within_s: float = 2.0,

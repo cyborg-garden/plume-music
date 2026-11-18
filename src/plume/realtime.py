@@ -379,15 +379,18 @@ def plan_lead_s(bar_s: float, *, plan_cost_s: float | None, pace: float | None,
     return min(bar_s, max(0.5 * bar_s - FOLLOW_READ_MARGIN_S, need))
 
 
-def read_window_by_s(t_bar: float, *, ahead_s: float, need_s: float) -> float:
+def read_window_by_s(t_bar: float, *, bar_s: float, need_s: float) -> float:
     """The playhead time, in stream seconds, after which a bar's plan stops waiting for
     the ear to finish the window it reads, and plans from what has arrived.
 
-    It leaves the plan at least half its lead, and never less than planning needs
-    (``need_s``).  On a real device the ear is only an analysis hop behind, so the
-    wait is that hop at most.
+    It leaves the plan the shortest lead it ever takes by choice (:func:`plan_lead_s`:
+    half a bar, less :data:`FOLLOW_READ_MARGIN_S`), and never less than planning needs
+    (``need_s``).  So a plan a whole bar ahead waits up to half a bar, and one already
+    half a bar ahead, whose bar ended half a bar ago, does not wait: a wait there took
+    the time the bar the band comes in on needs, and it landed late.  On a real device
+    the ear is only an analysis hop behind, so the wait is that hop at most.
     """
-    return float(t_bar) - max(0.5 * float(ahead_s), float(need_s))
+    return float(t_bar) - max(0.5 * float(bar_s) - FOLLOW_READ_MARGIN_S, float(need_s))
 
 
 def wait_for_ear(heard_to, w_end: float, playhead_s, give_up_s: float, stop, *,
@@ -5222,8 +5225,7 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
         # ear to have heard all of it.  An ear that falls behind (a busy machine, a
         # stalled thread) otherwise loses the end of each bar: her strokes go uncounted
         # and a bar can read as silent.  Bounded, so a late ear never makes a late bar.
-        give_up = read_window_by_s(t_bar, ahead_s=state.get("ahead_s", bar_len),
-                                   need_s=state.get("need_s", 0.0))
+        give_up = read_window_by_s(t_bar, bar_s=bar_len, need_s=state.get("need_s", 0.0))
 
         def heard_to() -> float:
             with state_lock:

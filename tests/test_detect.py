@@ -640,7 +640,10 @@ def test_the_old_engine_rings_out_under_the_new_one(tmp_path, consent, monkeypat
             return np.full((tail_n, 2), 0.25, dtype=np.float32)
 
     monkeypatch.setattr(duet_mod, "DuetEngine", Marked)
-    rec = _detect_take(tmp_path, _strummed_take(85.0), max_minutes=0.5)
+    # Where the tail lands, not how fast the bar was planned: the bar the band comes in
+    # on costs the most to plan, and a starved runner at full speed lands it late.
+    rec = _detect_take(tmp_path, _strummed_take(85.0), max_minutes=0.5,
+                       rate_x=playhead_rate(12.0))
     band = [r for r in _rows(rec) if r["entry"] != "drums"]
     assert band and band[0]["style"] == "midwest"
     machine, _ = sf.read(str(rec / "machine.wav"), dtype="float32")

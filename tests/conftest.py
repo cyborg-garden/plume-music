@@ -130,10 +130,11 @@ def _watch_the_ear() -> None:
     ring._ear_watched = True
 
 
-def ear_behind() -> bool:
-    """Whether the analysis thread has fallen behind a fake device's input."""
+def ear_behind(rings=None) -> bool:
+    """Whether the analysis thread has fallen behind a fake device's input (on every
+    live ring, or on ``rings``)."""
     now = time.perf_counter()
-    for ring in list(_EAR_RINGS):
+    for ring in list(_EAR_RINGS if rings is None else rings):
         unheard = ring.available + ring._ear_read - ring._ear_heard
         if (unheard > EAR_BEHIND_S * SR
                 and now - getattr(ring, "_ear_read_at", now) < EAR_GONE_S):

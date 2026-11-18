@@ -863,6 +863,144 @@ class PhraseHold:
         return self._held
 
 
+#: Each section's own density in the arc (its first time through).
+_ARC_DENSITY = {name: d for name, _, d in reversed(SONG_ARC)}
+#: Parts that sit out as she plays softer than her normal: the first group when the
+#: band has come down to meet her, the second when it has come well down.  The kick,
+#: snare and bass never do: the groove stays, lighter.  Names a style has no part for
+#: are ignored.
+FOLLOW_THIN = (("shimmer", "lead", "arp", "openhat"), ("clap", "keys", "crackle"))
+#: How far the band's level has leaned with her, in dB of its follow gain, before the
+#: song's shape gives way: softer, much softer, louder.  Her LEVEL only: fewer notes at
+#: full level is not playing softer, and only thins the band's own patterns (the
+#: follow's density).  A lean releases only half way back to neutral, so one hovering
+#: at an edge does not flip the song.
+YIELD_SOFTER_DB = -2.0
+YIELD_MUCH_SOFTER_DB = -4.5
+YIELD_LOUDER_DB = 1.5
+#: The kit, played lighter while the band has come down to meet her: dB on each drum
+#: part, softer and much softer.  The groove keeps its shape, and her guitar is not
+#: fighting the loudest thing in the band.
+DRUM_ROLES = ("kick", "snare", "hat", "openhat", "clap", "foot", "tick")
+FOLLOW_DRUM_DB = (-2.0, -4.0)
+_LEANS = {-2: "much softer", -1: "softer", 0: "neutral", 1: "louder"}
+
+
+@dataclass(frozen=True)
+class YieldState:
+    section: str
+    density: float
+    resting: tuple[str, ...]
+    lean: str
+    reason: str
+    drums: float = 1.0           # linear level on each of :data:`DRUM_ROLES`
+
+
+class PlanYield:
+    """The song's shape gives way to her.
+
+    The arc (:data:`SONG_ARC`) is a default, not a cage.  While the band's level has
+    come down to meet her (:class:`BandFollow`), a lift is played as a verse and the
+    lighter parts sit out; further down, more of them; while it has come up with her,
+    a verse or a break is played as a lift.  It reads the follow's own level, which
+    already waited out a single odd bar, so one quiet bar changes nothing here either.
+
+    A section or a part changes only on a phrase line (every ``phrase_bars`` from the
+    band's entry): a change inside a phrase was heard as the band changing tempo (see
+    :class:`PhraseHold`).  It changes for a lean held through the whole phrase before
+    the line, and not for one that flipped way at the line before as well: a player
+    answering herself phrase by phrase, soft then loud, is the song's own shape, and a
+    band following each phrase a phrase late would be full on her soft phrases and
+    thin on her loud ones.  The drums' level follows her lean on any bar."""
+
+    def __init__(self, phrase_bars: int = 4):
+        self._phrase = max(1, int(phrase_bars))
+        self._lean = 0
+        self._applied: int | None = None    # the lean the section and parts follow
+        self._heard: list[int] = []         # her lean on each bar since the last line
+        self._changed = False               # the lean flipped way at the last line
+
+    def _read(self, gain_db: float) -> int:
+        def past(edge, scale=1.0):
+            return gain_db <= edge * scale if edge < 0 else gain_db >= edge * scale
+        raw = (-2 if past(YIELD_MUCH_SOFTER_DB) else -1 if past(YIELD_SOFTER_DB)
+               else 1 if past(YIELD_LOUDER_DB) else 0)
+        cur = self._lean
+        if raw == cur or (raw < cur < 0) or (0 < cur < raw):
+            return raw                      # further the same way: at once
+        # Back towards neutral (or across it): only once past the release.
+        edges = {-2: YIELD_MUCH_SOFTER_DB, -1: YIELD_SOFTER_DB, 1: YIELD_LOUDER_DB}
+        if cur != 0 and past(edges[cur], 0.5):
+            return cur
+        if cur == -2 and raw == 0 and past(YIELD_SOFTER_DB, 0.5):
+            return -1
+        return raw
+
+    def bar(self, section: str, density: float, resting, *, gain_db: float,
+            density_x: float = 1.0, bars_in: int | None = None) -> YieldState:
+        """This bar's section, density and resting parts, given the song's own and the
+        band's lean.  ``density_x`` is the follow's density, which thins the band's
+        patterns elsewhere and never moves the song here.  ``bars_in``: bars since the
+        band came in, for the phrase lines; None applies a new lean at once."""
+        self._lean = self._read(float(gain_db))
+        if self._applied is None or bars_in is None:
+            self._applied = self._lean
+        elif int(bars_in) % self._phrase == 0:
+            # The whole phrase, but for its first bar: her lean takes a bar to show.
+            # One way all through, at the mildest it went (softer, then much softer:
+            # softer).
+            held = self._heard[-self._phrase:][1:] if len(self._heard) >= self._phrase else []
+            signs = {(x > 0) - (x < 0) for x in held}
+            whole = bool(held) and len(signs) == 1
+            new = (max(held) if held and held[0] < 0 else min(held)) if whole else None
+            sign = (lambda x: (x > 0) - (x < 0))
+            flip = whole and sign(new) != sign(self._applied)
+            if whole and new != self._applied and not (flip and self._changed):
+                self._applied, self._changed = new, flip
+            else:
+                self._changed = False
+            self._heard = []
+        if bars_in is not None:
+            self._heard.append(self._lean)
+        lean, shape = self._lean, self._applied
+        resting = tuple(resting)
+        played, notes = section, []
+        drums = (10.0 ** (FOLLOW_DRUM_DB[0 if lean == -1 else 1] / 20.0)
+                 if lean < 0 else 1.0)
+        if shape < 0:
+            if section == "lift":
+                played = "verse"
+            thin = FOLLOW_THIN[0] + (FOLLOW_THIN[1] if shape <= -2 else ())
+            if played != section:
+                density, resting = _ARC_DENSITY[played], _SECTION_RESTS[played]
+            resting = (*resting, *(r for r in thin if r not in resting))
+            notes.append("lighter parts resting")
+        elif shape > 0 and section in ("verse", "break"):
+            played = "lift"
+            density, resting = _ARC_DENSITY[played], _SECTION_RESTS[played]
+        if played != section:
+            notes.insert(0, f"{section} played as {played}")
+        if drums < 1.0:
+            notes.append("drums lighter")
+        if shape != lean:
+            notes.append("the song changes at the next phrase line")
+        reason = (f"yield: {_LEANS[lean]}" + (f", {', '.join(notes)}" if notes else "")
+                  if lean or shape else "yield: the song's own shape")
+        return YieldState(played, float(density), resting, _LEANS[lean], reason,
+                          round(drums, 4))
+
+
+def yield_to(plan_yield: "PlanYield", follow: "BandFollow", section: str, density: float,
+             resting, *, bars_in: int) -> YieldState:
+    """The planner's yield for one bar.  On an input that hears only her, the song
+    yields to her settled level (:attr:`BandFollow.yield_db`).  On a room mic it never
+    does, since fewer parts there would read as her softer; a mic found to hold the band
+    partway through hands back whatever had yielded on the next phrase line."""
+    gain = follow.yield_db if follow.trusted else 0.0
+    return plan_yield.bar(section, density, resting, gain_db=gain,
+                          density_x=follow.density, bars_in=bars_in)
+
+
 def song_section(bars_in: int) -> tuple[str, float, tuple[str, ...]]:
     """(section name, density, roles resting) ``bars_in`` bars after the band came
     in.  The arc repeats, so a long take keeps moving."""
@@ -962,9 +1100,45 @@ FOLLOW_CUE_HOLD_BARS = 16
 #: keeps half of it and lets her playing do the rest.
 FOLLOW_ARC_DEPTH = 0.5
 _ARC_MEAN = sum(bars * d for _, bars, d in SONG_ARC) / sum(bars for _, bars, _ in SONG_ARC)
-#: A learned normal keeps adapting this slowly, and only while the band is not leaning,
-#: so a long soft passage is still soft at its end.
-_NORMAL_ALPHA = 0.05
+#: Bars of her recent readings that can re-centre the band's lean, and the share of
+#: them that must sit plainly to one side of it (see ``_Patience._drift``).  Four bars,
+#: three quarters: a soft passage that comes back near her normal for one bar is
+#: still a soft passage, and two odd bars in four are not a move.  After it moves the
+#: band it waits for four new bars, so it never re-centres every bar.
+FOLLOW_DRIFT_BARS = 4.0
+FOLLOW_DRIFT_SHARE = 0.75
+#: A second move straight back the other way, each within this many bars of the last
+#: (about a phrase, counted from one move to the next),
+#: settles on her average over :data:`FOLLOW_DRIFT_BARS` instead (see
+#: ``_Patience._patience``): she is swinging, not going anywhere.  One swell and one
+#: drop is answered like any drop.
+FOLLOW_REVERSAL_BARS = 4.5
+#: Bars of her latest playing that, all plainly one way, end a settled swing: longer
+#: than any leg of a swing (see FOLLOW_REVERSAL_BARS).
+FOLLOW_SWING_RELEASE_BARS = 6.0
+#: Her normal is the median of her last :data:`FOLLOW_NORMAL_BARS` bars played at her
+#: normal: a bar the band is leaning on (a passage it is following, or a swing) never
+#: moves it, so a passage is followed for as long as it lasts and she comes back to the
+#: same normal.  Short enough to follow her normal as it drifts slowly over a take (a
+#: few dB over a few minutes).  A median, so one odd bar among her first does not set it.
+FOLLOW_NORMAL_BARS = 32
+#: Bars a lean has to hold, steady, before that level is her normal.  A lean she has
+#: held since the band came in, louder than her first bars, is an intro that was simply
+#: soft: a section.  Any other (a chorus, a soft passage, a loud intro) only after
+#: longer than any passage the band follows.
+FOLLOW_ABSORB_LOUDER_BARS = 16
+FOLLOW_ABSORB_SOFTER_BARS = 64
+#: Bars over which a lean becomes her normal, a step a bar: a phrase.
+FOLLOW_ABSORB_RAMP_BARS = 4
+#: Bars at her own normal after which a lean is a passage, not her opening: longer
+#: than an intro, shorter than a verse.  A soft intro longer than this is a verse
+#: (her louder playing after it is a chorus, and only after a long while her normal).
+FOLLOW_SETTLED_BARS = 12
+#: After a passage becomes her normal, bars back at her old normal that put her normal
+#: back at once, so the band never reads her own level as louder or softer than normal;
+#: and bars for which the old normal is remembered.
+FOLLOW_RECENTRE_BARS = 2
+FOLLOW_RECENTRE_MEMORY_BARS = 64
 
 
 @dataclass(frozen=True)
@@ -1017,6 +1191,18 @@ class _Patience:
         self._fast: list[float] = []
         self._fast_bars = 0.0
         self._side = 0
+        #: Her last :data:`FOLLOW_DRIFT_BARS` of readings, ``(reading, bars)``.
+        self._recent: list[tuple[float, float]] = []
+        #: The way the last move went, and the bars heard since it.
+        self._last_side = 0
+        self._since = 0.0
+        #: Settled on her average after two quick reversals (see FOLLOW_REVERSAL_BARS).
+        self._averaged = False
+        #: Her last :data:`FOLLOW_SWING_RELEASE_BARS` of readings, for ``_release``.
+        self._latest: list[tuple[float, float]] = []
+        #: Quick reversals in a row, and whether the last move was a whole one.
+        self._reversals = 0
+        self._last_big = False
 
     def _reset(self) -> None:
         self._run, self._run_bars, self._fast, self._fast_bars = [], 0.0, [], 0.0
@@ -1030,6 +1216,98 @@ class _Patience:
 
     def heard(self, reading: float, bars: float = 1.0) -> int:
         """-1 or +1 when this reading commits a move that way, else 0."""
+        self._recent.append((float(reading), float(bars)))
+        while sum(b for _, b in self._recent[1:]) >= FOLLOW_DRIFT_BARS - 1e-9:
+            self._recent.pop(0)
+        self._latest.append((float(reading), float(bars)))
+        while sum(b for _, b in self._latest[1:]) >= FOLLOW_SWING_RELEASE_BARS - 1e-9:
+            self._latest.pop(0)
+        quick = self._since <= FOLLOW_REVERSAL_BARS + 1e-9
+        self._since += float(bars)
+        was = self.value
+        step = self._release() or self._patience(reading, bars) or self._drift()
+        if step:
+            # Only a whole move to or from her normal counts as one leg of a swing, not
+            # a nudge within a lean.
+            big = self._leg(was, self.value)
+            reversal = step == -self._last_side and quick and big and self._last_big
+            self._reversals = self._reversals + 1 if reversal else 0
+            self._last_side, self._since, self._last_big = step, 0.0, big
+        return step
+
+    def _leg(self, was: float, now: float) -> bool:
+        """A move from her normal to a lean, or back: one leg of a swing."""
+        return (abs(now - was) > self._deadband
+                and min(abs(was), abs(now)) <= self._deadband)
+
+    def _release(self) -> int:
+        """A settled swing ends once her last :data:`FOLLOW_SWING_RELEASE_BARS` all sit
+        plainly (half the deadband or more) one way of it: longer than any leg of a
+        swing, so she has stopped swinging, and the band follows where she went."""
+        if not self._averaged:
+            return 0
+        got = sum(b for _, b in self._latest)
+        if got < FOLLOW_SWING_RELEASE_BARS - 1e-9:
+            return 0
+        edge = 0.5 * self._deadband
+        sides = {(1 if r > self.value else -1) if abs(r - self.value) > edge else 0
+                 for r, _ in self._latest}
+        if len(sides) != 1 or 0 in sides:
+            return 0
+        tail = self._latest[-max(1, round(len(self._latest) / 2)):]
+        value = sum(r * b for r, b in tail) / sum(b for _, b in tail)
+        self.value = 0.0 if abs(value) <= self._deadband else value
+        self._averaged = False
+        self._recent = list(tail)
+        self._reset()
+        self._side = 0
+        return sides.pop()
+
+    def _drift(self) -> int:
+        """Where she has sat over the last :data:`FOLLOW_DRIFT_BARS`, when that is
+        plainly not where the band is.
+
+        A real player's level wanders a few dB from bar to bar.  A bar that wanders
+        back inside the deadband ends a run, so a soft passage that wanders can keep
+        starting its patience over and never commit, or commit to its first shallow
+        bars and stay there.  Here, when most of the recent bars (by
+        :data:`FOLLOW_DRIFT_SHARE`) sit on one side of what is committed and their median
+        is more than half the deadband from it, that median becomes the lean."""
+        total = sum(b for _, b in self._recent)
+        if total < FOLLOW_DRIFT_BARS - 1e-9 or self._averaged:
+            return 0                    # a settled swing ends only by _release
+        edge = 0.5 * self._deadband
+        ordered = sorted(self._recent)
+        acc, lower, upper = 0.0, None, None
+        for r, b in ordered:
+            acc += b
+            if lower is None and acc >= 0.5 * total - 1e-9:
+                lower = r
+            if acc > 0.5 * total + 1e-9:
+                upper = r
+                break
+        median = 0.5 * (lower + (lower if upper is None else upper))
+        off = median - self.value
+        if abs(off) <= edge:
+            return 0
+        side = 1 if off > 0 else -1
+        past = sum(b for r, b in self._recent if side * (r - self.value) > 0.0)
+        if past < FOLLOW_DRIFT_SHARE * total - 1e-9:
+            return 0
+        value = 0.0 if abs(median) <= self._deadband else median
+        if value == self.value:
+            return 0
+        self.value = value
+        self._reset()
+        self._side = 0
+        self._recent = []
+        self._averaged = False
+        return side
+
+    def _patience(self, reading: float, bars: float) -> int:
+        if self._averaged:
+            return 0
+        was = self.value
         off = reading - self.value
         side = 0 if abs(off) <= self._deadband else (1 if off > 0 else -1)
         if side == 0:
@@ -1055,6 +1333,17 @@ class _Patience:
         # Where she is now: the run's last ``quick`` worth, not where it began.
         held = held[-max(1, round(self.quick * len(held) / held_bars)):]
         self.value = sum(held) / len(held)
+        if (side == -self._last_side and self._since <= FOLLOW_REVERSAL_BARS + 1e-9
+                and self._reversals >= 1 and self._last_big and self._leg(was, self.value)):
+            # Back the other way within a few bars, for the second time running: two
+            # soft bars and two loud ones, say.  Chasing each would put the band, two
+            # bars behind, at its fullest on her soft bars.  It settles on where she
+            # has been instead.
+            total = sum(b for _, b in self._recent)
+            self.value = sum(r * b for r, b in self._recent) / total
+            # From here a run of a phrase or less is more of the same back and forth;
+            # only her last FOLLOW_SWING_RELEASE_BARS all one way (``_release``) end it.
+            self._averaged = True
         if abs(self.value) <= self._deadband:
             self.value = 0.0          # back inside normal is normal, not a lean
         self._reset()
@@ -1109,6 +1398,16 @@ class BandFollow:
         self.gain_db = 0.0
         self.density = 1.0
         self._cue_hold = 0
+        #: Her played bars' levels and busyness, oldest first (see FOLLOW_NORMAL_BARS).
+        self._levels: list[float] = []
+        self._busies: list[float] = []
+        self._held = 0                # bars she has held the band's lean (see _absorb)
+        self._ramp: tuple[int, float, float] | None = None   # steps left, step, target
+        self._at_normal = 0           # bars in a row at her normal, once it is known
+        self._settled = False         # she has played FOLLOW_SETTLED_BARS at her normal
+        self._prior: float | None = None   # her normal before a lean became it
+        self._prior_age = 0
+        self._prior_near = 0
 
     @property
     def hold_bars(self) -> float:
@@ -1120,19 +1419,19 @@ class BandFollow:
         return _ARC_MEAN + FOLLOW_ARC_DEPTH * (float(arc_density) - _ARC_MEAN)
 
     def _learn(self, db: float, busy: float | None) -> None:
-        if self._learned < FOLLOW_LEARN_BARS:
-            n = self._learned
-            self._normal_db = db if n == 0 else (self._normal_db * n + db) / (n + 1)
-            if busy is not None:
-                self._normal_busy = (busy if self._normal_busy is None
-                                     else (self._normal_busy * n + busy) / (n + 1))
-            self._learned += 1
-        elif self._level.settled and self._busy.settled:
-            # Not from a bar that may be the start of a move: a soft passage's first
-            # bars would pull her normal down to meet it.
-            self._normal_db += _NORMAL_ALPHA * (db - self._normal_db)
-            if busy is not None and self._normal_busy is not None:
-                self._normal_busy += _NORMAL_ALPHA * (busy - self._normal_busy)
+        """One more played bar into her normal (see :data:`FOLLOW_NORMAL_BARS`): only a
+        bar at her normal, once it is known."""
+        known = self._learned >= FOLLOW_LEARN_BARS
+        level_at_normal = self._level.value == 0.0 and not self._level._averaged
+        if not known or level_at_normal:
+            self._levels.append(float(db))
+        if busy is not None and (not known or self._busy.value == 0.0):
+            self._busies.append(float(busy))
+        self._learned += 1
+        del self._levels[:-FOLLOW_NORMAL_BARS]
+        del self._busies[:-FOLLOW_NORMAL_BARS]
+        self._normal_db = float(np.median(self._levels))
+        self._normal_busy = float(np.median(self._busies)) if self._busies else None
 
     def bar(self, rms_db: float | None, onsets_per_beat: float | None, *,
             playing: bool, band_in: bool = True, parts=None,
@@ -1180,6 +1479,8 @@ class BandFollow:
                 if step:
                     moved.append("busier" if step > 0 else "sparser")
             self._learn(float(rms_db) - own, busy)
+            if known:
+                self._absorb(float(rms_db) - own, bool(moved))
         gain_t, dens_t = self._targets()
         # A move is reported only when the band's own target went that way: at a limit,
         # or thinned by the torrent cap on a "busier" bar, the log and the after-take
@@ -1197,6 +1498,79 @@ class BandFollow:
         else:
             self.density = _toward(self.density, dens_t, FOLLOW_DENSITY_STEP)
         return self._state(tuple(moved))
+
+    def _reseed(self, db: float) -> None:
+        self._levels = [float(db)] * FOLLOW_LEARN_BARS
+        self._normal_db = float(db)
+        lvl = self._level
+        lvl.value, lvl._averaged, lvl._recent, lvl._latest = 0.0, False, [], []
+        lvl._reset()
+        lvl._side = 0
+        self._held = 0
+
+    def _absorb(self, db: float, moved: bool) -> None:
+        """A lean held long enough becomes her normal (:data:`FOLLOW_ABSORB_LOUDER_BARS`,
+        :data:`FOLLOW_ABSORB_SOFTER_BARS`); and back at the normal it replaced, that is
+        her normal again at once (:data:`FOLLOW_RECENTRE_BARS`).  Becoming her normal
+        takes :data:`FOLLOW_ABSORB_RAMP_BARS`, a step a bar, so the band eases back to
+        its own level instead of jumping there."""
+        if self._ramp:
+            left, step, target = self._ramp
+            if left <= 1:
+                self._ramp = None
+                self._reseed(target)
+            else:
+                self._ramp = (left - 1, step, target)
+                self._shift(step)
+            return
+        if self._prior is not None:
+            self._prior_age += 1
+            near = abs(db - self._prior) <= FOLLOW_LEVEL_DEADBAND_DB
+            self._prior_near = self._prior_near + 1 if near else 0
+            if self._prior_near >= FOLLOW_RECENTRE_BARS:
+                self._reseed(self._prior)
+                self._prior = None
+                return
+            if self._prior_age > FOLLOW_RECENTRE_MEMORY_BARS:
+                self._prior = None
+        lean = self._level.value
+        if lean == 0.0 and not self._level._averaged:
+            self._at_normal += 1
+            self._settled = self._settled or self._at_normal >= FOLLOW_SETTLED_BARS
+        else:
+            self._at_normal = 0
+        if lean == 0.0 or self._level._averaged or moved:
+            self._held = 0
+            return
+        if abs(db - self._normal_db - lean) <= FOLLOW_LEVEL_DEADBAND_DB:
+            self._held += 1
+        opening = lean > 0 and not self._settled
+        limit = FOLLOW_ABSORB_LOUDER_BARS if opening else FOLLOW_ABSORB_SOFTER_BARS
+        if self._held >= limit:
+            # An opening that was off is forgotten; a passage's old normal is kept, to
+            # come back to.
+            self._prior = None if opening else self._normal_db
+            self._prior_age, self._prior_near = 0, 0
+            step = lean / FOLLOW_ABSORB_RAMP_BARS
+            self._ramp = (FOLLOW_ABSORB_RAMP_BARS - 1, step, self._normal_db + lean)
+            self._shift(step)
+
+    def _shift(self, step: float) -> None:
+        """Her normal ``step`` dB towards a lean, and the lean that much less."""
+        self._normal_db += step
+        self._levels = [self._normal_db] * FOLLOW_LEARN_BARS
+        lvl = self._level
+        lvl.value -= step
+        lvl._recent, lvl._latest = [], []
+        lvl._reset()
+        lvl._side = 0
+
+    @property
+    def yield_db(self) -> float:
+        """The band's level lean as the song's shape should read it: none while she is
+        swinging between soft and loud (the follow has settled on her average), whose
+        dip is the swing's and not a quieter player's."""
+        return 0.0 if self._level._averaged else self.gain_db
 
     def _targets(self) -> tuple[float, float]:
         lvl, busy = self._level.value, self._busy.value

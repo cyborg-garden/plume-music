@@ -13,6 +13,7 @@ import json
 import os
 import socket
 import threading
+import time
 
 import numpy as np
 import pytest
@@ -23,7 +24,7 @@ from plume import gui, takevideo
 from test_gui_bridge import Client
 from test_gui_files import make_take, take_id
 from video_fixture import (FFMPEG, heard_by_camera, make_video, needs_ffmpeg, picture_md5, placed, playing,
-                           talking)
+                           stalled_tools, talking)
 
 RATE = 48000
 TAKE_S, VIDEO_S = 8.0, 14.0
@@ -593,16 +594,23 @@ def test_anything_unexpected_is_a_plain_failure_not_a_stuck_job(server, client, 
 
 @pytest.fixture
 def held(monkeypatch):
-    """The work, stopped as it starts to read the video, until ``held.go`` is set."""
+    """The work, stopped as it starts to read the video, until ``held.go`` is set.
+
+    Like the real tool, it stops at once when the work is cancelled.
+    """
     class Held:
         reached, go = threading.Event(), threading.Event()
 
     real = takevideo.probe
 
-    def probe(*a, **kw):
+    def probe(*a, cancelled=None, **kw):
         Held.reached.set()
-        assert Held.go.wait(WAIT_S)
-        return real(*a, **kw)
+        end = time.monotonic() + WAIT_S
+        while not Held.go.wait(0.01):
+            if cancelled is not None and cancelled():
+                raise takevideo.Cancelled
+            assert time.monotonic() < end
+        return real(*a, cancelled=cancelled, **kw)
 
     monkeypatch.setattr(takevideo, "probe", probe)
     yield Held
@@ -769,23 +777,9 @@ def test_the_only_names_ever_written_are_plumes_own(server, client, take, film):
 
 @pytest.fixture
 def stalled(monkeypatch):
-    """Every tool plume starts hangs for ever.  Real children; any left running are stopped here."""
-    import subprocess
-    import sys
-
-    started = []
-
-    def spawn(cmd, **kw):
-        proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(3600)"], **kw)
-        started.append(proc)
-        return proc
-
-    monkeypatch.setattr(takevideo, "_spawn", spawn)
-    yield started
-    for proc in started:
-        if proc.poll() is None:
-            proc.kill()
-        proc.wait(timeout=60)
+    """Every tool plume starts hangs for ever: real children, all ended by the end of the
+    test, and the test fails rather than hangs if plume stops ending them itself."""
+    yield from stalled_tools(monkeypatch)
 
 
 def hanging_server(root, tmp_path, monkeypatch):
@@ -938,3 +932,262 @@ def test_a_video_being_worked_on_is_never_swept(server, client, take, film, held
     assert temps(take) == [working]
     held.go.set()
     assert finished(server, client, tid)["state"] == "done"
+
+
+# ------------------------------------------- two plumes, one library
+
+#: Long enough for the holder to have said it is still there, on any machine.
+HEARTBEAT_WAIT_S = 20.0
+
+
+@pytest.fixture
+def quick_heartbeat(monkeypatch):
+    """A holder says it is still there every moment, not every minute.  Asked for before
+    the server, which reads this as it starts."""
+    monkeypatch.setattr(gui, "_VIDEO_HEARTBEAT_S", 0.02)
+
+
+@pytest.fixture
+def second(root, tmp_path, monkeypatch):
+    """Another plume on the same takes: a second terminal, or one left running."""
+    servers = []
+
+    def start():
+        srv = gui.GuiServer(roots=[root], log=lambda line: None, write_state=False).start()
+        servers.append(srv)
+        return Client(srv).login()
+
+    yield start
+    for srv in servers:
+        srv.close()
+
+
+def refreshed(path, since=LONG_AGO + 1):
+    """Wait until something has told ``path`` it is still in use, or give up."""
+    end = time.monotonic() + HEARTBEAT_WAIT_S
+    while time.monotonic() < end:
+        if os.stat(path).st_mtime > since:
+            return True
+        time.sleep(0.02)
+    return False
+
+
+@needs_ffmpeg
+def test_another_plume_never_sweeps_a_video_held_for_a_nudge(quick_heartbeat, server, client, take, strange,
+                                                               second):
+    """She left a video waiting for a nudge for over an hour.  Another plume listing the
+    takes in that time must not take it away, or her Save fails."""
+    tid = take_id(client, "t")
+    upload(client, tid, strange)
+    assert finished(server, client, tid)["state"] == "unsure"
+    (held,) = temps(take)
+    os.utime(take / held, (LONG_AGO, LONG_AGO))                     # as if it had waited all day
+    assert refreshed(take / held), "the plume holding it never said so"
+    other = second()
+    assert other.get("/api/takes")[0].status == 200
+    assert temps(take) == [held]
+    client.post("/api/video/place", {"take": tid, "start_s": 1.5, "sound": True})
+    assert finished(server, client, tid)["state"] == "done"
+
+
+@needs_ffmpeg
+def test_another_plume_never_sweeps_a_video_still_being_made(quick_heartbeat, server, client, take, film,
+                                                               held, second):
+    tid = take_id(client, "t")
+    upload(client, tid, film)
+    assert held.reached.wait(WAIT_S)
+    (working,) = temps(take)
+    os.utime(take / working, (LONG_AGO, LONG_AGO))                  # a very long job
+    assert refreshed(take / working)
+    second().get("/api/takes")
+    assert temps(take) == [working]
+    held.go.set()
+    assert finished(server, client, tid)["state"] == "done"
+
+
+def test_a_copy_nobody_holds_is_still_swept_by_another_plume(quick_heartbeat, server, client, take, second):
+    made = leftovers(take)
+    second().get("/api/takes")
+    assert temps(take) == [] and not any(p.exists() for p in made)
+
+
+def test_a_holder_stops_saying_so_once_it_has_closed(root, take, tmp_path, monkeypatch, quick_heartbeat):
+    monkeypatch.setenv(gui.STATE_DIR_ENV, str(tmp_path / "state"))
+    srv = gui.GuiServer(roots=[root], log=lambda line: None).start()
+    srv.close()
+    assert srv.library._heartbeat is None or not srv.library._heartbeat.is_alive()
+
+
+def test_a_video_can_be_added_the_moment_cancel_answers(root, take, stalled, tmp_path, monkeypatch):
+    """What she does next: cancel, then drop the right video straight away.  Cancel must
+    not answer until the take is free, or that second video is refused."""
+    srv = hanging_server(root, tmp_path, monkeypatch)
+    try:
+        client = Client(srv).login()
+        tid = take_id(client, "t")
+        assert upload(client, tid, b"x" * 5000)[0] == 202
+        resp, out = client.post("/api/video/cancel", {"take": tid})
+        assert resp.status == 200 and json.loads(out)["state"] == "idle"
+        code, doc = upload(client, tid, b"x" * 5000)                # no waiting in between
+        assert code == 202, doc
+        assert stalled[0].poll() is not None and len(temps(take)) == 1
+    finally:
+        srv.close()
+
+
+def test_one_leftover_that_cannot_be_removed_does_not_keep_the_rest(server, client, take, monkeypatch):
+    names = [take / (f".video-in.{c * 16}.tmp") for c in "abc"] + [take / f".video.mp4.{'d' * 16}.tmp"]
+    for path in names:
+        path.write_bytes(b"x")
+        os.utime(path, (LONG_AGO, LONG_AGO))
+    real, refused = gui._unlink_in, []
+
+    def stuck_once(where, name):
+        if not refused:                              # whichever is tried first: held open elsewhere
+            refused.append(name)
+            raise PermissionError(name)
+        real(where, name)
+
+    monkeypatch.setattr(gui, "_unlink_in", stuck_once)
+    client.get("/api/takes")
+    assert temps(take) == refused
+
+
+@pytest.fixture
+def stubborn(monkeypatch):
+    """Work that will not stop when asked until ``stubborn.go`` is set: a tool slow to die."""
+    class Stubborn:
+        reached, go = threading.Event(), threading.Event()
+
+    def probe(*a, **kw):
+        Stubborn.reached.set()
+        assert Stubborn.go.wait(WAIT_S)
+        raise takevideo.Cancelled
+
+    monkeypatch.setattr(takevideo, "probe", probe)
+    yield Stubborn
+    Stubborn.go.set()
+
+
+@needs_ffmpeg
+def test_a_cancel_already_waiting_is_not_joined_by_another(server, client, take, film, stubborn):
+    """She presses Stop, the tool is slow to end, and she presses again (or another tab
+    does).  The second answers at once that plume is stopping; one wait per video."""
+    tid = take_id(client, "t")
+    upload(client, tid, film)
+    assert stubborn.reached.wait(WAIT_S)
+    first = {}
+    waiting = threading.Thread(target=lambda: first.update(answer=client.post("/api/video/cancel", {"take": tid})))
+    waiting.start()
+    while status(client, tid)["state"] != "stopping":          # the first cancel has been heard
+        assert waiting.is_alive()
+        time.sleep(0.01)
+    resp, out = client.post("/api/video/cancel", {"take": tid})
+    assert resp.status == 200 and json.loads(out)["state"] == "stopping"
+    assert waiting.is_alive(), "the second cancel waited for the first"
+    stubborn.go.set()
+    waiting.join(WAIT_S)
+    assert first["answer"][0].status == 200 and json.loads(first["answer"][1])["state"] == "idle"
+    assert status(client, tid)["state"] == "idle" and temps(take) == []
+
+
+@needs_ffmpeg
+def test_another_plume_never_sweeps_the_video_being_written(quick_heartbeat, server, client, take, film, second,
+                                                            monkeypatch):
+    """The new video.mp4 is written under a hidden name of its own first.  A long write
+    keeps that one held too, not only the video it is made from."""
+    reached, go = threading.Event(), threading.Event()
+    real = takevideo.write_video
+
+    def slow_write(*a, cancelled=None, **kw):
+        reached.set()
+        end = time.monotonic() + WAIT_S
+        while not go.wait(0.01):
+            assert time.monotonic() < end and not (cancelled and cancelled())
+        return real(*a, cancelled=cancelled, **kw)
+
+    monkeypatch.setattr(takevideo, "write_video", slow_write)
+    tid = take_id(client, "t")
+    upload(client, tid, film)
+    assert reached.wait(WAIT_S)
+    (writing,) = [name for name in temps(take) if name.startswith(".video.mp4.")]
+    os.utime(take / writing, (LONG_AGO, LONG_AGO))
+    assert refreshed(take / writing), "the video being written was not held"
+    second().get("/api/takes")
+    assert writing in temps(take)
+    go.set()
+    assert finished(server, client, tid)["state"] == "done"
+
+
+@needs_symlinks
+def test_saying_a_copy_is_held_never_reaches_through_a_link(tmp_path):
+    target, plain = tmp_path / "elsewhere.mp4", tmp_path / "plain.tmp"
+    for path in (target, plain):
+        path.write_bytes(b"x")
+        os.utime(path, (LONG_AGO, LONG_AGO))
+    link = tmp_path / (".video-in." + "e" * 16 + ".tmp")
+    os.symlink(target, link)
+    gui._touch(link)
+    gui._touch(plain)
+    assert os.stat(target).st_mtime == LONG_AGO, "a link was followed"
+    assert os.stat(plain).st_mtime > LONG_AGO
+
+
+def test_one_bad_moment_does_not_stop_the_heartbeat(quick_heartbeat, root, take, tmp_path, monkeypatch):
+    """If saying "held" ever fails, the next beat must still come, or the hour-old sweep
+    is back for every held copy, silently."""
+    monkeypatch.setenv(gui.STATE_DIR_ENV, str(tmp_path / "state"))
+    calls, again, logged = [], threading.Event(), []
+    real = gui.Library.say_held
+
+    def flaky(self):
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("a disk went away for a moment")
+        again.set()
+        return real(self)
+
+    monkeypatch.setattr(gui.Library, "say_held", flaky)
+    srv = gui.GuiServer(roots=[root], log=logged.append).start()
+    try:
+        assert again.wait(HEARTBEAT_WAIT_S), "the heartbeat died with the first error"
+        assert srv.library._heartbeat.is_alive()
+        assert any("held" in line for line in logged)
+    finally:
+        srv.close()
+
+
+@needs_ffmpeg
+def test_closing_plume_asks_every_video_to_stop_before_waiting_on_any(root, human, film, tmp_path, monkeypatch):
+    """Two videos whose tools are slow to end.  Closing must not wait on the first before
+    the second has even been asked, or closing takes a full wait per video."""
+    monkeypatch.setenv(gui.STATE_DIR_ENV, str(tmp_path / "state"))
+    monkeypatch.setattr(gui, "_VIDEO_CANCEL_WAIT_S", 0.5)
+    root.mkdir()
+    for name in ("one", "two"):
+        make_take(root / name, human=human, machine=band())
+    asked, seen, go, both = [], [], threading.Event(), threading.Barrier(2, timeout=WAIT_S)
+
+    def probe(*a, cancelled=None, **kw):
+        asked.append(cancelled)
+        both.wait()
+        end = time.monotonic() + WAIT_S
+        while not go.wait(0.005):
+            if cancelled() and not seen:
+                seen.append([c() for c in asked])                # the moment the first is told
+            assert time.monotonic() < end
+        raise takevideo.Cancelled
+
+    monkeypatch.setattr(takevideo, "probe", probe)
+    srv = gui.GuiServer(roots=[root], log=lambda line: None).start()
+    client = Client(srv).login()
+    for name in ("one", "two"):
+        assert upload(client, take_id(client, name), film)[0] == 202
+    while len(asked) < 2:
+        time.sleep(0.005)
+    closer = threading.Thread(target=srv.library.close_videos, kwargs={"timeout": 0.5})
+    closer.start()
+    closer.join(WAIT_S)
+    go.set()
+    srv.close()
+    assert seen == [[True, True]], "a video was still running unasked while plume waited on another"

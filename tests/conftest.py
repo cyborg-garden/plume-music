@@ -127,13 +127,20 @@ DUPLEX_DEVICES = [{"name": "Fake Duplex", "max_input_channels": 2,
 
 
 class FakeCallbackFlags:
-    """sounddevice's CallbackFlags as the callback sees it: PortAudio's bits in its one
-    slot (input underflow 1, input overflow 2, output underflow 4, output overflow 8)."""
-
-    __slots__ = ("_flags",)
+    """sounddevice's CallbackFlags as plume uses it: false with no flag set, and one
+    property a flag (PortAudio's bits: input underflow 1, input overflow 2, output
+    underflow 4, output overflow 8)."""
 
     def __init__(self, flags: int = 0):
-        self._flags = int(flags)
+        self.bits = int(flags)
+
+    def __bool__(self):
+        return self.bits != 0
+
+    input_underflow = property(lambda self: (self.bits & 1) != 0)
+    input_overflow = property(lambda self: (self.bits & 2) != 0)
+    output_underflow = property(lambda self: (self.bits & 4) != 0)
+    output_overflow = property(lambda self: (self.bits & 8) != 0)
 
 
 class FakeAudioStream:

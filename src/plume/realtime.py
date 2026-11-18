@@ -2237,25 +2237,28 @@ XRUN_NAMES = ("input_underflow", "input_overflow", "output_underflow", "output_o
 
 
 def note_xruns(counts: list, status) -> None:
-    """Audio callback: count each over- or underrun PortAudio flags on this block.
+    """Audio callback: count each over- or underrun PortAudio flags on this buffer.
 
     ``status`` is sounddevice's CallbackFlags, or None from a device that has none.
-    Its bits are read straight off it (``_flags``, the one slot it has): its own
-    properties are Python calls on every block.  Plain int adds into a list made
-    before the stream opened, so no array is built here.
+    It is false when no flag is set, which is nearly every buffer, so its four flag
+    properties are only read on one that has something to say.  Plain int adds into
+    a list made before the stream opened; no array is built here.  Whatever a status
+    object turns out to be, nothing it does may raise inside the callback: a count
+    is not worth the audio.
     """
-    if status is None:
-        return
-    bits = status._flags  # noqa: SLF001 - the bits, not four property calls per block
-    if bits & 0xF:
-        if bits & 1:
+    try:
+        if not status:
+            return
+        if status.input_underflow:
             counts[0] += 1
-        if bits & 2:
+        if status.input_overflow:
             counts[1] += 1
-        if bits & 4:
+        if status.output_underflow:
             counts[2] += 1
-        if bits & 8:
+        if status.output_overflow:
             counts[3] += 1
+    except Exception:  # noqa: BLE001 - never out of the audio callback
+        return
 
 
 def note_callback(span: list, began: float, ended: float) -> None:
@@ -2272,7 +2275,8 @@ def note_callback(span: list, began: float, ended: float) -> None:
 
 class XrunTally:
     """The stream's health per logged row: PortAudio's over/underruns, the callback's
-    longest call and longest gap against the buffer's own length, and her clipping.
+    longest call and longest gap against the buffer's own length, and how much of
+    her input was at full scale.
 
     The callback only adds into ``counts`` (:func:`note_xruns`) and raises ``span``
     (:func:`note_callback`); the planner reads what each row added since the one
@@ -2286,7 +2290,20 @@ class XrunTally:
         self._period_ms = 1000.0 * float(period_s)
         self._guard = guard
         self._seen = [0, 0, 0, 0]
-        self._clips_seen = [0, 0]
+        self._hops_seen = [0, 0, 0]
+        self._worst = [0.0, 0.0]          # the take's longest call and gap, rows so far
+
+    def totals(self) -> dict:
+        """The whole take's, for ``ending.json``: the rows' sums and worsts, plus what
+        came after the last row, which no row will ever log."""
+        doc = {"xruns": dict(zip(XRUN_NAMES, self.counts)),
+               "callback": {
+                   "worst_ms": round(1000.0 * max(self._worst[0], self.span[0]), 3),
+                   "worst_gap_ms": round(1000.0 * max(self._worst[1], self.span[1]), 3),
+                   "period_ms": round(self._period_ms, 3)}}
+        if self._guard is not None:
+            doc["input_full_scale_hops"] = int(self._guard.full_hops)
+        return doc
 
     def row(self) -> dict:
         now = list(self.counts)
@@ -2296,21 +2313,31 @@ class XrunTally:
         # two lines is lost to the log; it cannot be made exact without a lock.
         took, gap = self.span[0], self.span[1]
         self.span[0] = self.span[1] = 0.0
+        self._worst = [max(self._worst[0], took), max(self._worst[1], gap)]
         doc["callback"] = {"worst_ms": round(1000.0 * took, 3),
                            "worst_gap_ms": round(1000.0 * gap, 3),
                            "period_ms": round(self._period_ms, 3)}
         if self._guard is not None:
-            clips = [int(self._guard.clip_hops), int(self._guard.bump_hops)]
-            doc["input_clip_hops"] = clips[0] - self._clips_seen[0]
-            doc["input_bump_hops"] = clips[1] - self._clips_seen[1]
-            self._clips_seen = clips
+            g = self._guard
+            hops = [int(g.full_hops), int(g.guess_clip_hops), int(g.guess_bump_hops)]
+            full, clip, bump = (a - b for a, b in zip(hops, self._hops_seen))
+            self._hops_seen = hops
+            # Measured: hops of her input at full scale.  Then a guess at the cause,
+            # made a moment later, so a row's guess can be about the row before.
+            doc["input_full_scale_hops"] = full
+            doc["input_cause_guess"] = {"clipping_hops": clip, "bump_hops": bump}
         return doc
 
 
-def heed_input(guard, x, ending: bool = False) -> None:
-    """Analysis thread: look at her input, and say a fault once where a terminal sees it."""
+def heed_input(guard, x, ending: bool = False, counting: bool = False) -> None:
+    """Analysis thread: look at her input, and say a fault once where a terminal sees it.
+
+    ``counting``: a count-in is still being waited for.  Its knocks are meant to be
+    loud, so they are not an overloading input.
+    """
     try:
         guard.ending = ending
+        guard.counting = counting
         line = guard.feed(x)
     except Exception:  # noqa: BLE001 - a look at the input must never stop the band
         return
@@ -2771,9 +2798,9 @@ def jam(*, style: str, seed: int, params, device: str | None = None,
     def _log(doc: dict) -> None:
         """One decision -> the live log, flushed (v1.3)."""
         n_decisions[0] += 1
-        doc.setdefault("input_fault", guard.fault)   # a buzzing, clipping or dead input
-        for k, v in xrun_tally.row().items():        # over/underruns and clipping since
-            doc.setdefault(k, v)                     # the row before
+        doc.setdefault("input_fault", guard.fault)   # buzzing, overloading or dead
+        for k, v in xrun_tally.row().items():        # the stream's health since the
+            doc.setdefault(k, v)                     # row before
         if band_in_mic is not None and band_in_mic.latched and band_in_mic_doc[0] is None:
             # The band is in the mic after all, so it is masked again, for the rest of
             # the take.  The same decision, logged the same way, as in lead.
@@ -3116,7 +3143,8 @@ def jam(*, style: str, seed: int, params, device: str | None = None,
         recorder, cues, lambda: _ending_doc(END_WEDGED,
                                             started_mono=started_mono,
                                             max_minutes=max_minutes,
-                                            bars=n_decisions[0])))
+                                            bars=n_decisions[0],
+                                            stream=xrun_tally.totals())))
     try:
         with GracefulSignals(on_repeat=lambda _s: hard.arm(
                 END_INTERRUPT, seconds=HARD_EXIT_GRACE_S)) as signals, stream:
@@ -3183,7 +3211,8 @@ def jam(*, style: str, seed: int, params, device: str | None = None,
         if recorder is not None:
             recorder.finish(_ending_doc(why, started_mono=started_mono,
                                         max_minutes=max_minutes,
-                                        bars=n_decisions[0]))
+                                        bars=n_decisions[0],
+                                        stream=xrun_tally.totals()))
         unregister_session()
         hard.disarm()
 
@@ -4551,15 +4580,22 @@ def _ending_banner(cues: "CueServer | None", max_minutes: float) -> str:
 
 
 def _ending_doc(reason: str, *, started_mono: float, max_minutes: float,
-                bars: int) -> dict:
-    """The ``ending.json`` payload: why a recording stops where it does."""
-    return {
+                bars: int, stream: dict | None = None) -> dict:
+    """The ``ending.json`` payload: why a recording stops where it does.
+
+    ``stream``: the take's stream health in all (XrunTally.totals), which also holds
+    what happened after the last logged bar.
+    """
+    doc = {
         "reason": reason,
         "capped": reason == END_MAX_MINUTES,
         "max_minutes": float(max_minutes),
         "elapsed_s": round(time.monotonic() - float(started_mono), 2),
         "bars": int(bars),
     }
+    if stream is not None:
+        doc["stream"] = stream
+    return doc
 
 
 # ------------------------------------------------------------------ clock
@@ -5168,6 +5204,7 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
         nonlocal harmony, tap_detector
         from .bandentry import count_start  # noqa: PLC0415
         soft_knocks: list[float] = []
+        heard_samples = 0                   # of her input, so far: the stream's clock
         drain_until = None                  # v1.3: bounded on both paths
         while True:
             if stop.is_set() and drain_until is None:
@@ -5182,7 +5219,13 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
                 continue
             x = in_ring.read(n)
             m = machine_ring.read(n)
-            heed_input(guard, x, ending.is_set() or stop.is_set())
+            # A count is knocked loud on purpose, and four clear knocks land it while
+            # she is still knocking the rest: until the first bar it is all the count.
+            heed_input(guard, x, ending.is_set() or stop.is_set(),
+                       counting=tap_start and (tap_detector is not None
+                                               or song_start[0] <= 0.0
+                                               or heard_samples / SR < song_start[0]))
+            heard_samples += n
             v = None if voice_ring is None else voice_ring.read(n)
             if recorder is not None:
                 recorder.audio(x, m, v)
@@ -5597,7 +5640,7 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
                                 else round(offset_ms, 2)),
             "cue_effects": cue_notes or None,
             "input_fault": guard.fault,
-            # PortAudio's over/underruns in this bar, and her clipping hops.
+            # This bar's over/underruns, callback timing and full-scale input.
             **xrun_tally.row(),
         }
         if looper.active or loop_events:
@@ -5819,7 +5862,8 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
         recorder, cues, lambda: _ending_doc(END_WEDGED,
                                             started_mono=started_mono,
                                             max_minutes=max_minutes,
-                                            bars=n_decisions[0])))
+                                            bars=n_decisions[0],
+                                            stream=xrun_tally.totals())))
     try:
         with GracefulSignals(on_repeat=lambda _s: hard.arm(
                 END_INTERRUPT, seconds=HARD_EXIT_GRACE_S)) as signals, stream:
@@ -5879,7 +5923,8 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
         if recorder is not None:
             recorder.finish(_ending_doc(why, started_mono=started_mono,
                                         max_minutes=max_minutes,
-                                        bars=n_decisions[0]))
+                                        bars=n_decisions[0],
+                                        stream=xrun_tally.totals()))
         unregister_session()
         hard.disarm()
 

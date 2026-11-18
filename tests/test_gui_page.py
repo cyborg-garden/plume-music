@@ -2274,10 +2274,41 @@ def test_a_failed_save_says_so_and_a_take_started_since_takes_over(tmp_path, doc
 
 
 def test_the_take_says_what_it_really_sends(tmp_path, docs):
-    sending = {**PLAYING, "output": "Room Speakers", "hear_me": True, "stream": {"reported_ms": 40.2}}
+    sending = {**PLAYING, "output": "Room Speakers", "hear_me": True, "stream": {"reported_ms": 24.2}}
     out = live_page(tmp_path, docs, sending, "return { delay: $('live-delay').textContent, direct: $('live-direct').hidden };")
-    assert out["delay"] == "Your instrument reaches that output about 40 ms late, by your device's own count, and it could be more."
+    assert out["delay"] == "Your instrument reaches that output about 24 ms late, by your device's own count, and it could be more."
     assert out["direct"] is True, "that button only reaches the interface's own outs"
+
+
+SEND_LATE = ("Your instrument reaches that output about 85 ms late, by your device's own count, and it "
+             "could be more. To hear yourself on time, send the sound out through the same device as "
+             "your input, or turn off Hear me and use that device's own direct monitoring.")
+
+
+def test_a_long_way_round_also_says_the_two_ways_out(tmp_path, docs):
+    sending = {**PLAYING, "output": "Room Speakers", "hear_me": True, "stream": {"reported_ms": 85.3}}
+    out = live_page(tmp_path, docs, sending, f"return {FACTS};")
+    assert out["delay"] == SEND_LATE
+    assert out["hint"] == "", "the delay has its own line, never the hint's"
+
+
+def test_her_own_output_and_a_take_without_hear_me_get_no_ways_out(tmp_path, docs):
+    own = {**PLAYING, "hear_me": True, "stream": {"reported_ms": 85.3}}
+    assert "same device" not in live_page(tmp_path, docs, own, "return $('live-delay').textContent;")
+    off = {**PLAYING, "output": "Room Speakers", "hear_me": False, "stream": {"reported_ms": 85.3}}
+    assert live_page(tmp_path, docs, off, "return $('live-delay').hidden;") is True
+
+
+def test_a_long_way_round_never_hides_the_band_in_her_input_or_a_fault(tmp_path, docs):
+    late = {"output": "Room Speakers", "hear_me": True, "stream": {"reported_ms": 85.3}}
+    out = live_page(tmp_path, docs, {**BLEED, **late}, f"return {FACTS};")
+    assert out["hint"] == BLEED_LINE and out["delay"] == SEND_LATE
+    in_mic = {**PLAYING, **late, "row": {**ROW, "band_in_mic": {"bar": 3}}}
+    out = live_page(tmp_path, docs, in_mic, f"return {FACTS};")
+    assert out["hint"].startswith("Plume hears the band in this mic") and out["delay"] == SEND_LATE
+    fault = "Your input is buzzing. Check the cable."
+    out = live_page(tmp_path, docs, {**PLAYING, **late, "hint": fault}, f"return {FACTS};")
+    assert out["hint"] == fault and out["delay"] == SEND_LATE
 
 
 # ------------------------------------------------- setup moving off the input the output was for

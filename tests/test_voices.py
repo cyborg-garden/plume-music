@@ -119,13 +119,20 @@ def test_preset_info_is_jsonable_and_complete():
             assert "default" in meta
 
 
-def test_the_crackle_stays_a_quiet_scratch_as_the_band_plays_it():
-    # Measured, not changed: at the role's gain its loudest tick sits near -23 dBFS and
-    # its bed near -54, some 18 dB and 48 dB under a full lofi band.  This holds it
-    # there: no louder, and not gone.
+def test_the_crackle_stays_the_scratch_it_is_as_the_band_plays_it():
+    # Measured, not changed: at the role's gain its loudest tick sits at -23 dBFS, its
+    # bed at -53 to -55, some 18 dB and 48 dB under a full lofi band, at 60 to 80
+    # ticks a second.  This holds all three both ways: no louder, no quieter, no
+    # sparser, no denser.
+    from scipy.signal import find_peaks
+
     from plume.duet import _ROLE_GAIN_DB
     gain = 10.0 ** (_ROLE_GAIN_DB["crackle"] / 20.0)
     for seed in range(8):
-        y = _render("crackle", freq_hz=None, seed=seed, dur_s=3.2, velocity=0.7) * gain
-        assert 20.0 * np.log10(float(np.max(np.abs(y)))) <= -22.0
-        assert -58.0 <= 10.0 * np.log10(float(np.mean(y.astype(np.float64) ** 2))) <= -50.0
+        y = np.abs(_render("crackle", freq_hz=None, seed=seed, dur_s=3.2,
+                           velocity=0.7).astype(np.float64)) * gain
+        assert 20.0 * np.log10(float(y.max())) == pytest.approx(-23.04, abs=0.5)
+        assert 10.0 * np.log10(float(np.mean(y ** 2))) == pytest.approx(-54.0, abs=1.5)
+        # Ticks within 30 dB of the loudest, which leaves the filter's ringing out.
+        ticks, _ = find_peaks(y, height=float(y.max()) * 10.0 ** (-30.0 / 20.0), distance=24)
+        assert 55.0 <= len(ticks) / 3.2 <= 87.0

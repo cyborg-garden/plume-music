@@ -34,6 +34,10 @@ from plume import roles as roles_mod
 PLUME_DIR = os.path.dirname(plume.__file__)
 NUMPY_DIR = os.path.dirname(np.__file__)
 THIS_FILE = os.path.abspath(__file__)
+#: The status object PortAudio hands the callback is the device's, not plume's: reading
+#: its flags enters its code, here the fake's.
+STATUS_FILE = os.path.abspath(sys.modules[FakeCallbackFlags.__module__].__file__)
+STATUS_CODE = {"__bool__", "<lambda>"}
 RIG = [{"name": "Audio Interface 4x4", "max_input_channels": 4, "max_output_channels": 4}]
 
 #: A name in callback code that means waiting, or reaching outside the rings.
@@ -110,6 +114,8 @@ class Watcher:
         for code in self.entered:
             where = os.path.abspath(code.co_filename)
             if where == THIS_FILE or where.startswith(NUMPY_DIR):
+                continue
+            if where == STATUS_FILE and code.co_name in STATUS_CODE:
                 continue
             if not where.startswith(PLUME_DIR):
                 out.append(f"entered {where}:{code.co_name}")

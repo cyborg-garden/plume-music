@@ -12,7 +12,7 @@ import numpy as np
 import pytest
 
 from plume import guitake, inputguard, realtime
-from plume.inputguard import BUMP_LINE, BUZZ_LINE, CLIP_LINE, SILENT_LINE, InputGuard
+from plume.inputguard import BUZZ_LINE, OVERLOAD_LINE, SILENT_LINE, InputGuard
 
 SR = realtime.SR
 BLOCK = realtime.BLOCK
@@ -267,12 +267,12 @@ def test_loud_playing_never_ducks(kind, drive):
     x = np.clip(x * drive * 2.0, -1.0, 1.0)      # peaks at 0 dBFS and over
     _, gains, guard, lines = run(x)
     assert np.all(gains == 1.0)
-    assert BUZZ_LINE not in [line for _, line in lines]
-    assert guard.fault in (None, "clip", "bump")
-    if drive >= 2.5:
-        assert guard.fault == "clip", "every note flattened on the ceiling is said"
+    assert [line for _, line in lines] in ([], [OVERLOAD_LINE])
+    assert guard.fault in (None, "overload")
+    if drive >= 1.5:
+        assert guard.fault == "overload", "notes flattened on the ceiling are said"
     if drive == 1.0:
-        assert guard.fault is None, "peaks just touching full scale are not clipping"
+        assert guard.fault is None, "peaks just touching full scale are not an overload"
 
 
 # ------------------------------------------------------------------ a dead input
@@ -340,49 +340,12 @@ def test_a_buzz_then_silence_says_both():
     assert guard.fault == "silent"
 
 
-# ------------------------------------------------------------------ a clipping input
+# ------------------------------------------------------------------ an overloading input
 
 def _hot(x: np.ndarray, drive: float = 3.0) -> np.ndarray:
     """The interface's gain set too hot: every note flattened on full scale."""
     return np.clip(x * drive, -1.0, 1.0).astype(np.float32)
 
-
-def test_an_input_that_keeps_clipping_is_said_once_and_never_ducked():
-    _, gains, guard, lines = run(_hot(strums(6.0, peak_db=-3.0)))
-    assert [line for _, line in lines] == [CLIP_LINE]
-    assert guard.fault == "clip"
-    assert guard.clip_hops > 0
-    assert guard.bump_hops == 0, "her own notes, not bumps"
-    assert np.all(gains == 1.0), "clipping is said, never acted on"
-
-
-def test_one_hot_strum_is_not_clipping():
-    x = np.concatenate([strums(3.0, peak_db=-12.0, every_s=1.0),
-                        _hot(strums(0.5, peak_db=-3.0, every_s=1.0)),
-                        strums(5.0, peak_db=-12.0, every_s=1.0)])
-    _, _, guard, lines = run(x)
-    assert lines == [] and guard.fault is None
-    assert guard.clip_hops + guard.bump_hops > 0, "the strum did clip; it just is not said"
-
-
-def test_clipping_clears_once_she_has_turned_it_down():
-    guard = InputGuard(SR)
-    _, _, guard, _ = run(_hot(strums(5.0, peak_db=-3.0)), guard=guard)
-    assert guard.fault == "clip"
-    _, _, guard, lines = run(strums(5.0, peak_db=-12.0), guard=guard)
-    assert guard.fault == "clip", "not cleared on the first clean bars"
-    _, _, guard, lines = run(strums(6.0, peak_db=-12.0), guard=guard)
-    assert guard.fault is None and lines == []
-    _, _, guard, lines = run(_hot(strums(5.0, peak_db=-3.0)), guard=guard)
-    assert [line for _, line in lines] == [CLIP_LINE], "said again if it comes back"
-
-
-def test_a_midi_take_says_nothing_of_a_clipping_input():
-    _, _, guard, lines = run(_hot(strums(6.0, peak_db=-3.0)), guard=InputGuard(SR, notices=False))
-    assert lines == [] and guard.fault is None
-
-
-# ------------------------------------------------------------------ bumps on a quiet input
 
 def _bumpy(seconds: float, every_s: float = 4.0, *, level_db: float = -28.0,
            seed: int = 3) -> np.ndarray:
@@ -402,47 +365,164 @@ def _bumpy(seconds: float, every_s: float = 4.0, *, level_db: float = -28.0,
     return np.clip(x, -1.0, 1.0).astype(np.float32)
 
 
-def test_bursts_over_quiet_playing_are_bumps_and_never_a_gain_to_turn_down():
-    _, gains, guard, lines = run(_bumpy(16.0))
-    assert [line for _, line in lines] == [BUMP_LINE]
-    assert "gain" not in BUMP_LINE.lower()
-    assert guard.fault == "bump"
-    assert guard.bump_hops > 0 and guard.clip_hops == 0
+def _knocks(count: int = 8, every_s: float = 0.6) -> np.ndarray:
+    """A loud count-in: knocks that hit full scale, as a knock on a pickup does."""
+    rng = np.random.default_rng(9)
+    x = np.zeros(int((count + 0.5) * every_s * SR))
+    t = np.arange(int(0.08 * SR)) / SR
+    for k in range(count):
+        i = int((0.1 + k * every_s) * SR)
+        x[i:i + t.size] += 6.0 * (np.sin(2 * np.pi * 110.0 * t) + rng.standard_normal(t.size)) \
+            * np.exp(-t / 0.015)
+    return np.clip(x, -1.0, 1.0).astype(np.float32)
+
+
+#: Every way the input can keep reaching full scale.  The player is told the same one
+#: thing for all of them: what caused it is not hers to work out from a guess.
+OVERLOADS = {
+    "hot-strums": lambda: _hot(strums(6.0, peak_db=-3.0)),
+    "20-db-over": lambda: _hot(strums(6.0, peak_db=0.0), drive=10.0),
+    "hot-strums-far-apart": lambda: _hot(strums(12.0, peak_db=-3.0, every_s=2.5)),
+    "hot-percussive-hits": lambda: _hot(plucks(6.0, [(82.41, 110.0, 146.83)], every_s=0.5,
+                                               mute_s=0.06, decay=10.0), drive=4.0),
+    "bass-20-db-hot": lambda: _hot(plucks(8.0, [41.2, 55.0, 73.42], every_s=0.6, decay=1.0),
+                                   drive=10.0),
+    "level-near-the-guess-line": lambda: _hot(strums(8.0, peak_db=-12.0, every_s=1.0), drive=4.2),
+    "bursts-over-quiet-playing": lambda: _bumpy(16.0),
+}
+
+
+@pytest.mark.parametrize("kind", list(OVERLOADS))
+def test_an_input_that_keeps_reaching_full_scale_gets_the_one_line(kind):
+    _, gains, guard, lines = run(OVERLOADS[kind]())
+    assert [line for _, line in lines] == [OVERLOAD_LINE], "said once, and never anything else"
+    assert guard.fault == "overload"
+    assert guard.full_hops > 0
+    assert guard.full_hops >= guard.guess_clip_hops + guard.guess_bump_hops
     assert np.all(gains == 1.0), "only said: nothing is done to what she hears"
 
 
-def test_one_or_two_bumps_are_not_said():
+def test_the_one_line_is_true_of_a_hot_gain_and_of_bumps():
+    words = OVERLOAD_LINE.lower()
+    assert "gain down" in words and "cable" in words and "bumps" in words
+    assert len(OVERLOAD_LINE) <= 110
+
+
+def test_the_line_never_flaps_while_the_overload_goes_on():
+    # Bumps ten seconds apart and a level at the guess's edge: said once, and standing
+    # at every look for as long as they keep coming.
+    guard = InputGuard(SR)
+    x = np.concatenate([_bumpy(40.0, every_s=10.0),
+                        _hot(strums(8.0, peak_db=-12.0, every_s=1.0), drive=4.2)])
+    said, standing = [], []
+    for i in range(0, len(x) - SR, SR):
+        _, _, guard, lines = run(x[i:i + SR], guard=guard)
+        said += [line for _, line in lines]
+        standing.append(guard.fault)
+    first = standing.index("overload")
+    assert said == [OVERLOAD_LINE]
+    assert set(standing[first:]) == {"overload"}
+
+
+@pytest.mark.parametrize("kind", list(PLAYING))
+def test_loud_playing_up_to_full_scale_unclipped_says_nothing(kind):
+    x = PLAYING[kind]()
+    x = (x / np.max(np.abs(x))).astype(np.float32)        # its one loudest peak at 0 dBFS
+    _, _, guard, lines = run(np.concatenate([quiet(1.0), x]))
+    assert lines == [] and guard.fault is None
+    assert guard.full_hops <= 2, "the one peak may touch the top; nothing else does"
+
+
+@pytest.mark.parametrize("stray", ["thump", "click", "hot-strum"])
+def test_one_stray_thump_or_click_says_nothing(stray):
+    x = strums(12.0, peak_db=-12.0, every_s=1.0).astype(np.float64)
+    at = 4 * SR
+    if stray == "thump":
+        t = np.arange(int(0.06 * SR)) / SR
+        x[at:at + t.size] += 4.0 * np.sin(2 * np.pi * 40.0 * t) * np.exp(-t / 0.03)
+    elif stray == "click":
+        x[at:at + 24] = 1.0
+    else:
+        x[at:at + SR // 2] = _hot(strums(0.5, peak_db=-3.0, every_s=1.0))
+    _, _, guard, lines = run(np.clip(x, -1.0, 1.0).astype(np.float32))
+    assert lines == [] and guard.fault is None
+    assert guard.full_hops > 0, "it did reach full scale; it just is not said"
+
+
+def test_two_bumps_are_not_said():
     x = np.concatenate([_bumpy(6.0, every_s=3.0), _bumpy(6.0, every_s=1000.0)[SR * 2:]])
     _, _, guard, lines = run(x)
     assert lines == [] and guard.fault is None
-    assert guard.bump_hops > 0 and guard.clip_hops == 0
+    assert guard.full_hops > 0
 
 
-def test_bumps_clear_once_they_stop(monkeypatch):
-    monkeypatch.setattr(inputguard, "BUMP_CLEAR_S", 7.0)
+def test_a_loud_count_in_then_normal_playing_says_nothing():
     guard = InputGuard(SR)
-    _, _, guard, _ = run(_bumpy(16.0), guard=guard)
-    assert guard.fault == "bump"
-    quiet_playing = _bumpy(10.0, every_s=1000.0)[SR * 2:]
-    _, _, guard, lines = run(quiet_playing[:SR], guard=guard)
-    assert guard.fault == "bump", "not cleared at once"
-    _, _, guard, lines = run(quiet_playing, guard=guard)
+    guard.counting = True
+    _, _, guard, lines = run(_knocks(), guard=guard)
+    assert lines == [] and guard.fault is None and guard.full_hops == 0
+    guard.counting = False
+    _, _, guard, lines = run(strums(8.0, peak_db=-6.0), guard=guard)
+    assert lines == [] and guard.fault is None and guard.full_hops == 0
+
+
+def test_the_same_knocks_outside_a_count_are_an_overload():
+    _, _, guard, lines = run(_knocks())
+    assert [line for _, line in lines] == [OVERLOAD_LINE]
+
+
+def test_the_last_knock_still_ringing_when_the_count_lands_is_not_counted():
+    guard = InputGuard(SR)
+    guard.counting = True
+    knocks = _knocks()
+    cut = int((0.1 + 7 * 0.6) * SR) + 480          # 10 ms into the eighth knock
+    run(knocks[:cut - cut % BLOCK], guard=guard)
+    guard.counting = False
+    _, _, guard, _ = run(knocks[cut - cut % BLOCK:], guard=guard)
+    assert guard.full_hops == 0
+
+
+def test_the_transport_tells_the_guard_when_it_is_counting():
+    guard = InputGuard(SR)
+    realtime.heed_input(guard, _knocks()[:BLOCK], counting=True)
+    assert guard.counting is True
+    realtime.heed_input(guard, _knocks()[:BLOCK])
+    assert guard.counting is False
+
+
+def test_the_overload_clears_once_it_stops_and_is_said_again_if_it_returns(monkeypatch):
+    monkeypatch.setattr(inputguard, "OVERLOAD_CLEAR_S", 6.0)
+    guard = InputGuard(SR)
+    _, _, guard, _ = run(_hot(strums(5.0, peak_db=-3.0)), guard=guard)
+    assert guard.fault == "overload"
+    _, _, guard, lines = run(strums(4.0, peak_db=-12.0), guard=guard)
+    assert guard.fault == "overload", "not cleared on the first clean bars"
+    _, _, guard, lines = run(strums(4.0, peak_db=-12.0), guard=guard)
     assert guard.fault is None and lines == []
+    _, _, guard, lines = run(_hot(strums(1.0, peak_db=-3.0, every_s=2.0)), guard=guard)
+    assert guard.fault is None, "one more hot strum starts the count from nothing"
+    _, _, guard, lines = run(_hot(strums(5.0, peak_db=-3.0)), guard=guard)
+    assert [line for _, line in lines] == [OVERLOAD_LINE], "said again if it comes back"
 
 
-def test_a_hot_gain_is_never_called_bumps():
-    _, _, guard, lines = run(_hot(strums(8.0, peak_db=-3.0)))
-    assert [line for _, line in lines] == [CLIP_LINE]
-    assert guard.bump_hops == 0
+def test_the_overload_stands_for_thirty_seconds_by_default():
+    assert inputguard.OVERLOAD_CLEAR_S == 30.0 and inputguard.OVERLOAD_WINDOW_S == 60.0
 
 
-@pytest.mark.parametrize("kind", ["open-chords", "fast-open-chords", "bass-di", "drop-c-chugs"])
-def test_normal_loud_playing_is_neither_clipping_nor_bumps(kind):
-    x = PLAYING[kind]()
-    x = x / np.max(np.abs(x)) * _db_to_lin(-1.0)        # as loud as it goes, unclipped
-    _, _, guard, lines = run(np.concatenate([quiet(1.0), x]))
+def test_a_midi_take_says_nothing_of_an_overloading_input():
+    _, _, guard, lines = run(_hot(strums(6.0, peak_db=-3.0)), guard=InputGuard(SR, notices=False))
     assert lines == [] and guard.fault is None
-    assert guard.clip_hops == guard.bump_hops == 0
+
+
+def test_the_logs_guess_at_the_cause_is_only_a_guess_in_the_log():
+    _, _, hot, _ = run(_hot(strums(8.0, peak_db=-3.0)))
+    assert hot.guess_clip_hops > 0 and hot.guess_bump_hops == 0
+    _, _, bumps, _ = run(_bumpy(16.0))
+    assert bumps.guess_bump_hops > 0 and bumps.guess_clip_hops == 0
+    _, _, heavy, _ = run(OVERLOADS["20-db-over"]())
+    assert heavy.guess_clip_hops > 0 and heavy.guess_bump_hops == 0, \
+        "heavy clipping leaves nothing unclipped to measure, and is still clipping"
+    assert hot.fault == bumps.fault == heavy.fault == "overload", "the player is told one thing"
 
 
 # ------------------------------------------------------------------ the page and the log
@@ -452,9 +532,7 @@ def test_the_live_page_says_the_fault_while_the_band_plays():
         return SimpleNamespace(phase="playing", row={"bar": 9, "input_fault": fault})
     assert guitake.TakeRunner._hint(take("buzz"), 0.0) == BUZZ_LINE
     assert guitake.TakeRunner._hint(take("silent"), 0.0) == SILENT_LINE
-    assert guitake.TakeRunner._hint(take("clip"), 0.0) == CLIP_LINE
-    assert guitake.TakeRunner._hint(take("bump"), 0.0) == BUMP_LINE
-    assert CLIP_LINE == "Your input is clipping. Turn the gain down on your interface."
+    assert guitake.TakeRunner._hint(take("overload"), 0.0) == OVERLOAD_LINE
     assert guitake.TakeRunner._hint(take(None), 0.0) is None
     assert "input_fault" in guitake._ROW_FIELDS
 
@@ -474,12 +552,13 @@ def test_the_live_page_says_nothing_of_silence_while_the_take_stops_or_fades():
 RIG = [{"name": "Audio Interface 4x4", "max_input_channels": 4, "max_output_channels": 4}]
 
 
-def _live_rows(tmp_path, monkeypatch, run, human, status=None, **kw):
+def _live_rows(tmp_path, monkeypatch, run, human, status=None, loop_human=True, **kw):
     from conftest import (FakeMido, fake_audio, patched_module, playhead_rate,
                           short_socket_path)
     monkeypatch.setenv("PLUME_CALIBRATION_FILE", str(tmp_path / "none.json"))
     monkeypatch.setenv(realtime.AUDIO_CONSENT_ENV, "1")   # the FAKE device only
-    sd = fake_audio(human, devices=RIG, rate_x=playhead_rate(6.0), status=status)
+    sd = fake_audio(human, devices=RIG, rate_x=playhead_rate(6.0), status=status,
+                    loop_human=loop_human)
     with patched_module("sounddevice", sd), patched_module("mido", FakeMido()):
         run(tmp_path, short_socket_path("guard"), **kw)
     return [json.loads(line) for line in
@@ -508,7 +587,7 @@ def _humming_take():
 def test_a_buzzing_take_logs_input_fault(tmp_path, monkeypatch, plume_registry, run):
     rows = _live_rows(tmp_path, monkeypatch, run, _humming_take())
     assert rows
-    assert all(r.get("input_fault", "missing") in (None, "buzz", "silent", "clip", "bump")
+    assert all(r.get("input_fault", "missing") in (None, "buzz", "silent", "overload")
                for r in rows)
     assert any(r["input_fault"] == "buzz" for r in rows)
 
@@ -520,7 +599,7 @@ def test_a_midi_take_never_logs_input_fault(tmp_path, monkeypatch, plume_registr
     assert all(r.get("input_fault", "missing") is None for r in rows)
 
 
-def test_a_clipping_take_logs_it_with_each_bars_xruns(tmp_path, monkeypatch, plume_registry):
+def test_an_overloading_take_logs_it_with_each_bars_stream_health(tmp_path, monkeypatch, plume_registry):
     from conftest import FakeCallbackFlags
     flagged = []
 
@@ -532,10 +611,12 @@ def test_a_clipping_take_logs_it_with_each_bars_xruns(tmp_path, monkeypatch, plu
     rows = _live_rows(tmp_path, monkeypatch, _lead, _hot(strums(9.0, peak_db=-3.0)),
                       status=status)
     assert rows
-    assert any(r["input_fault"] == "clip" for r in rows)
-    assert all(isinstance(r.get("input_clip_hops"), int)
-               and isinstance(r.get("input_bump_hops"), int) for r in rows)
-    assert sum(r["input_clip_hops"] for r in rows) > 0
+    assert any(r["input_fault"] == "overload" for r in rows)
+    assert all(isinstance(r.get("input_full_scale_hops"), int) for r in rows)
+    full = sum(r["input_full_scale_hops"] for r in rows)
+    guessed = [r["input_cause_guess"] for r in rows]
+    assert all(set(g) == {"clipping_hops", "bump_hops"} for g in guessed)
+    assert 0 < sum(g["clipping_hops"] + g["bump_hops"] for g in guessed) <= full
     for r in rows:
         timing = r["callback"]
         assert timing["period_ms"] == pytest.approx(1000.0 * BLOCK / SR, abs=1e-3)
@@ -548,6 +629,13 @@ def test_a_clipping_take_logs_it_with_each_bars_xruns(tmp_path, monkeypatch, plu
     assert 0 < over <= len([i for i in flagged if i % 100])
     assert sum(r["xruns"]["input_underflow"] + r["xruns"]["output_overflow"]
                for r in rows) == 0
+    # The take's totals, which also hold what came after the last logged bar.
+    whole = json.loads((tmp_path / "rec" / realtime.REC_ENDING).read_text())["stream"]
+    assert under <= whole["xruns"]["output_underflow"] <= len([i for i in flagged if i % 100 == 0])
+    assert over <= whole["xruns"]["input_overflow"] <= len([i for i in flagged if i % 100])
+    assert whole["xruns"]["output_underflow"] + whole["xruns"]["input_overflow"] >= len(flagged) - 1
+    assert whole["input_full_scale_hops"] >= full
+    assert whole["callback"]["worst_ms"] >= max(r["callback"]["worst_ms"] for r in rows)
 
 
 def test_xruns_are_counted_from_the_flags_and_split_by_row():
@@ -564,6 +652,24 @@ def test_xruns_are_counted_from_the_flags_and_split_by_row():
     assert tally.row()["xruns"]["output_overflow"] == 0, "each row only its own"
 
 
+def test_the_takes_totals_hold_what_no_row_logged():
+    from conftest import FakeCallbackFlags
+    tally = realtime.XrunTally(period_s=0.004)
+    realtime.note_xruns(tally.counts, FakeCallbackFlags(4))
+    realtime.note_callback(tally.span, 1.000, 1.003)
+    tally.row()
+    realtime.note_xruns(tally.counts, FakeCallbackFlags(4 | 2))      # after the last row
+    realtime.note_callback(tally.span, 1.010, 1.011)
+    assert tally.totals() == {
+        "xruns": {"input_underflow": 0, "input_overflow": 1, "output_underflow": 2,
+                  "output_overflow": 0},
+        "callback": {"worst_ms": 3.0, "worst_gap_ms": 10.0, "period_ms": 4.0}}
+    doc = realtime._ending_doc("stop", started_mono=0.0, max_minutes=1.0, bars=3,
+                               stream=tally.totals())
+    assert doc["stream"]["xruns"]["output_underflow"] == 2
+    assert "stream" not in realtime._ending_doc("stop", started_mono=0.0, max_minutes=1.0, bars=3)
+
+
 def test_each_row_holds_its_own_longest_callback_and_gap():
     tally = realtime.XrunTally(period_s=0.004)
     assert tally.row()["callback"] == {"worst_ms": 0.0, "worst_gap_ms": 0.0, "period_ms": 4.0}
@@ -576,10 +682,76 @@ def test_each_row_holds_its_own_longest_callback_and_gap():
 
 
 def test_sounddevices_own_flags_read_the_same():
-    sd = pytest.importorskip("sounddevice")
+    # In a process of its own: importing sounddevice starts PortAudio, which this one
+    # never does, and a machine with no sound server refuses.
+    import subprocess
+    import sys
+    code = """
+import sys
+try:
+    import sounddevice as sd
+except Exception:
+    sys.exit(77)
+from plume import realtime
+counts = [0, 0, 0, 0]
+realtime.note_xruns(counts, sd.CallbackFlags())
+flags = sd.CallbackFlags()
+flags.input_overflow = True
+flags.output_underflow = True
+realtime.note_xruns(counts, flags)
+print(counts)
+"""
+    src = str(__import__("pathlib").Path(realtime.__file__).resolve().parents[1])
+    done = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
+                          timeout=60, env={**__import__("os").environ, "PYTHONPATH": src})
+    if done.returncode == 77:
+        pytest.skip("sounddevice does not load here")
+    assert done.returncode == 0, done.stderr
+    assert done.stdout.strip() == "[0, 1, 1, 0]"
+
+
+class _Surprise:
+    """A status object that is nothing like the one plume expects."""
+
+    def __init__(self, how):
+        self.how = how
+
+    def __bool__(self):
+        if self.how == "bool":
+            raise RuntimeError("no truth here")
+        return True
+
+    def __getattr__(self, name):
+        if self.how == "missing":
+            raise AttributeError(name)
+        raise ValueError("not a flag")
+
+
+@pytest.mark.parametrize("how", ["bool", "missing", "value", "int", "text", "object"])
+def test_a_surprising_status_never_raises_in_the_callback(how):
+    status = {"int": 5, "text": "flags", "object": object()}.get(how) or _Surprise(how)
     counts = [0, 0, 0, 0]
-    flags = sd.CallbackFlags()
-    flags.input_overflow = True
-    flags.output_underflow = True
-    realtime.note_xruns(counts, flags)
-    assert counts == [0, 1, 1, 0]
+    realtime.note_xruns(counts, status)          # must not raise
+    assert all(isinstance(c, int) and c >= 0 for c in counts)
+
+
+def test_the_flags_are_read_by_their_public_names_only():
+    import inspect
+    assert "._flags" not in inspect.getsource(realtime.note_xruns)
+
+
+def test_a_loud_count_in_on_a_live_take_is_never_an_overload(tmp_path, monkeypatch, plume_registry):
+    # Eight knocks at full scale, then playing well under it: the take's own log.
+    # Played once, not looped: a second round of knocks mid-take would be an overload.
+    x = np.concatenate([quiet(0.5), _knocks(), np.tile(strums(8.0, peak_db=-9.0), 6)])
+
+    def lead(tmp, sock, **kw):
+        from plume import roles as roles_mod
+        realtime.lead(prompt="lofi", seed=0, role=roles_mod.RoleParams(role="lead"),
+                      status=False, max_minutes=0.1, socket_path=sock, tap_start=True,
+                      record_dir=str(tmp / "rec"), input_device="audio interface",
+                      input_channel=1, direct=True, **kw)
+    rows = _live_rows(tmp_path, monkeypatch, lead, x, loop_human=False)
+    assert len(rows) >= 2, "the count never landed, so this proves nothing"
+    assert all(r["input_fault"] is None for r in rows)
+    assert sum(r["input_full_scale_hops"] for r in rows) == 0

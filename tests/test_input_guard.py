@@ -505,8 +505,53 @@ def test_the_overload_clears_once_it_stops_and_is_said_again_if_it_returns(monke
     assert [line for _, line in lines] == [OVERLOAD_LINE], "said again if it comes back"
 
 
-def test_the_overload_stands_for_thirty_seconds_by_default():
-    assert inputguard.OVERLOAD_CLEAR_S == 30.0 and inputguard.OVERLOAD_WINDOW_S == 60.0
+_BED = None
+
+
+def _clicks(seconds: float, at) -> np.ndarray:
+    """Quiet strums with one flat-topped click at each of ``at`` seconds: one slot each."""
+    global _BED
+    if _BED is None:
+        _BED = strums(4.0, peak_db=-20.0, every_s=1.0)
+    x = np.tile(_BED, int(seconds // 4) + 1)[:int(seconds * SR)].copy()
+    for t in at:
+        i = int(t * SR)
+        x[i:i + 48] = 1.0
+    return x
+
+
+def _heard(x: np.ndarray):
+    """The guard alone, a second at a time: (guard, [(seconds, line said)])."""
+    guard, lines = InputGuard(SR), []
+    for i in range(0, len(x), SR):
+        said = guard.feed(x[i:i + SR])
+        if said:
+            lines.append((i / SR, said))
+    return guard, lines
+
+
+def test_the_third_slot_at_full_scale_is_the_one_that_says_it():
+    guard, lines = _heard(_clicks(8.0, [1.2, 3.2]))
+    assert lines == [] and guard.fault is None and guard.full_hops == 2
+    guard, lines = _heard(_clicks(8.0, [1.2, 3.2, 5.2]))
+    assert lines == [(5.0, OVERLOAD_LINE)], "in the second the third one lands, not later"
+    assert guard.full_hops == 3
+
+
+def test_three_bumps_most_of_a_minute_apart_still_count_together():
+    # 25 s apart: inside the minute's window, and each before the 30 s that would clear.
+    guard, lines = _heard(_clicks(53.0, [1.2, 26.2, 51.2]))
+    assert [line for _, line in lines] == [OVERLOAD_LINE]
+    assert guard.fault == "overload"
+
+
+def test_an_overload_is_said_over_a_dead_input():
+    guard = InputGuard(SR)
+    guard.bar_s = 2.0
+    _, _, guard, _ = run(_hot(strums(5.0, peak_db=-3.0)), guard=guard)
+    _, _, guard, lines = run(quiet(10.0), guard=guard)
+    assert guard.silent and guard.overload, "both stand"
+    assert guard.fault == "overload"
 
 
 def test_a_midi_take_says_nothing_of_an_overloading_input():
@@ -635,6 +680,7 @@ def test_an_overloading_take_logs_it_with_each_bars_stream_health(tmp_path, monk
     assert over <= whole["xruns"]["input_overflow"] <= len([i for i in flagged if i % 100])
     assert whole["xruns"]["output_underflow"] + whole["xruns"]["input_overflow"] >= len(flagged) - 1
     assert whole["input_full_scale_hops"] >= full
+    assert whole["status_unreadable"] == 0
     assert whole["callback"]["worst_ms"] >= max(r["callback"]["worst_ms"] for r in rows)
 
 
@@ -663,6 +709,7 @@ def test_the_takes_totals_hold_what_no_row_logged():
     assert tally.totals() == {
         "xruns": {"input_underflow": 0, "input_overflow": 1, "output_underflow": 2,
                   "output_overflow": 0},
+        "status_unreadable": 0,
         "callback": {"worst_ms": 3.0, "worst_gap_ms": 10.0, "period_ms": 4.0}}
     doc = realtime._ending_doc("stop", started_mono=0.0, max_minutes=1.0, bars=3,
                                stream=tally.totals())
@@ -693,7 +740,7 @@ try:
 except Exception:
     sys.exit(77)
 from plume import realtime
-counts = [0, 0, 0, 0]
+counts = [0, 0, 0, 0, 0]
 realtime.note_xruns(counts, sd.CallbackFlags())
 flags = sd.CallbackFlags()
 flags.input_overflow = True
@@ -707,7 +754,7 @@ print(counts)
     if done.returncode == 77:
         pytest.skip("sounddevice does not load here")
     assert done.returncode == 0, done.stderr
-    assert done.stdout.strip() == "[0, 1, 1, 0]"
+    assert done.stdout.strip() == "[0, 1, 1, 0, 0]"
 
 
 class _Surprise:
@@ -730,9 +777,23 @@ class _Surprise:
 @pytest.mark.parametrize("how", ["bool", "missing", "value", "int", "text", "object"])
 def test_a_surprising_status_never_raises_in_the_callback(how):
     status = {"int": 5, "text": "flags", "object": object()}.get(how) or _Surprise(how)
-    counts = [0, 0, 0, 0]
-    realtime.note_xruns(counts, status)          # must not raise
-    assert all(isinstance(c, int) and c >= 0 for c in counts)
+    tally = realtime.XrunTally()
+    realtime.note_xruns(tally.counts, status)          # must not raise
+    assert tally.counts[:4] == [0, 0, 0, 0]
+    # ... and the take says so at its end, so it does not read as no xruns at all.
+    assert tally.totals()["status_unreadable"] == 1
+    realtime.note_xruns(tally.counts, status)
+    assert tally.totals()["status_unreadable"] == 2
+    assert tally.row()["xruns"] == dict.fromkeys(realtime.XRUN_NAMES, 0)
+
+
+def test_a_readable_status_is_never_counted_as_unreadable():
+    from conftest import FakeCallbackFlags
+    tally = realtime.XrunTally()
+    for bits in (0, 1, 0xF):
+        realtime.note_xruns(tally.counts, FakeCallbackFlags(bits))
+    realtime.note_xruns(tally.counts, None)
+    assert tally.totals()["status_unreadable"] == 0
 
 
 def test_the_flags_are_read_by_their_public_names_only():

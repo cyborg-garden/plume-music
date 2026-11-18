@@ -3261,3 +3261,34 @@ def test_a_new_click_takes_the_last_line_away_before_its_answer_comes(tmp_path, 
     assert out["first"][0] is False and out["first"][1].startswith("No mix")
     assert out["waiting"] == [True, "", True], "an old line must not sit beside a new click"
     assert out["after"] == [True, False]
+
+
+OVERLOAD_HINT = ("Your input is overloading. Turn its gain down a little. "
+                 "If it is only pops or bumps, check your cable.")
+
+
+def test_the_band_in_her_input_is_said_over_a_standing_overload(tmp_path, docs):
+    """An overload can stand for a whole take, and a howl reads as one: Stop matters more."""
+    late = {"hint": OVERLOAD_HINT}
+    bleed = {**BLEED, **late, "row": {**BLEED["row"], "input_fault": "overload"}}
+    assert live_page(tmp_path, docs, bleed, f"return {FACTS};")["hint"] == BLEED_LINE
+    in_mic = {**PLAYING, **late, "row": {**ROW, "band_in_mic": {"bar": 3}, "input_fault": "overload"}}
+    assert live_page(tmp_path, docs, in_mic, f"return {FACTS};")["hint"].startswith(
+        "Plume hears the band in this mic")
+    alone = {**PLAYING, **late, "row": {**ROW, "input_fault": "overload"}}
+    assert live_page(tmp_path, docs, alone, f"return {FACTS};")["hint"] == OVERLOAD_HINT
+
+
+def test_a_buzz_is_still_said_over_the_band_in_her_input(tmp_path, docs):
+    buzz = "Your input is buzzing. Check the cable."
+    doc = {**BLEED, "hint": buzz, "row": {**BLEED["row"], "input_fault": "buzz"}}
+    assert live_page(tmp_path, docs, doc, f"return {FACTS};")["hint"] == buzz
+
+
+@pytest.mark.parametrize("ms,shown,advice", [(30.4, 30, False), (30.6, 31, True), (45.0, 45, True),
+                                             (29.6, 30, False)])
+def test_the_ways_out_go_by_the_number_she_is_shown(tmp_path, docs, ms, shown, advice):
+    sending = {**PLAYING, "output": "Room Speakers", "hear_me": True, "stream": {"reported_ms": ms}}
+    line = live_page(tmp_path, docs, sending, "return $('live-delay').textContent;")
+    assert f"about {shown} ms late" in line
+    assert ("same device" in line) is advice

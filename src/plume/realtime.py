@@ -2244,7 +2244,8 @@ def note_xruns(counts: list, status) -> None:
     properties are only read on one that has something to say.  Plain int adds into
     a list made before the stream opened; no array is built here.  Whatever a status
     object turns out to be, nothing it does may raise inside the callback: a count
-    is not worth the audio.
+    is not worth the audio.  ``counts[4]`` counts the buffers whose status could not
+    be read.
     """
     try:
         if not status:
@@ -2258,7 +2259,9 @@ def note_xruns(counts: list, status) -> None:
         if status.output_overflow:
             counts[3] += 1
     except Exception:  # noqa: BLE001 - never out of the audio callback
-        return
+        # Said once, at the end of the take (XrunTally.totals): a status that cannot
+        # be read must not look like a take with no over- or underruns.
+        counts[4] += 1
 
 
 def note_callback(span: list, began: float, ended: float) -> None:
@@ -2285,11 +2288,11 @@ class XrunTally:
     """
 
     def __init__(self, guard=None, *, period_s: float = BLOCK / SR):
-        self.counts = [0, 0, 0, 0]
+        self.counts = [0, 0, 0, 0, 0]     # the four flags, then statuses unreadable
         self.span = [0.0, 0.0, 0.0]
         self._period_ms = 1000.0 * float(period_s)
         self._guard = guard
-        self._seen = [0, 0, 0, 0]
+        self._seen = [0, 0, 0, 0, 0]
         self._hops_seen = [0, 0, 0]
         self._worst = [0.0, 0.0]          # the take's longest call and gap, rows so far
 
@@ -2297,6 +2300,9 @@ class XrunTally:
         """The whole take's, for ``ending.json``: the rows' sums and worsts, plus what
         came after the last row, which no row will ever log."""
         doc = {"xruns": dict(zip(XRUN_NAMES, self.counts)),
+               # Over zero, the counts above are not to be trusted: the device's
+               # status was not what note_xruns knows how to read.
+               "status_unreadable": int(self.counts[4]),
                "callback": {
                    "worst_ms": round(1000.0 * max(self._worst[0], self.span[0]), 3),
                    "worst_gap_ms": round(1000.0 * max(self._worst[1], self.span[1]), 3),

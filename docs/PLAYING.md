@@ -45,7 +45,9 @@ comes down to meet you: quieter, fewer notes, the drums played lighter, and once
 held it through a phrase the lighter parts sitting out, though the kick, snare and bass
 keep going. Come back
 up and so does the band. Playing fewer notes at your usual level only thins the band's own
-patterns. One quiet bar, or one loud one, moves nothing. Answer yourself soft and loud a
+patterns. One quiet bar, or one loud one, moves nothing. A knock on the instrument's body
+or a crackle in the cable that hits full scale is left out of your level and your note
+count, so the band doesn't swell for a bump. Answer yourself soft and loud a
 few bars at a time and the band settles rather than pumping, with the song's parts and
 lifts as written. A softer passage is followed for as long as it lasts, and when you come
 back to your normal the band comes back to its own level with you, not past it, and a

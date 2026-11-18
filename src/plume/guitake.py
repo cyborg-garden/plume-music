@@ -64,7 +64,7 @@ from pathlib import Path
 from . import inputfx as _inputfx
 from . import oscompat
 from .compose import parse_prompt
-from .inputguard import BUZZ_LINE, CLIP_LINE, SILENT_LINE
+from .inputguard import LINES as INPUT_FAULT_LINES
 from .realtime import (AUDIO_CONSENT_ENV, AUDIO_CONSENT_OFF, OPEN_TOGETHER_FAILED, REC_CUES,
                        REC_DECISIONS, REC_ENDING, REC_HUMAN, REC_MACHINE, REC_MANIFEST, REC_MIDI, REC_STREAM, REC_VOICE,
                        LiveSession, RealtimeError, list_sessions, send_cue, stop_session)
@@ -87,7 +87,6 @@ NO_COUNT = ("Still waiting for a count. A knock may not reach a pickup, "
 NO_COUNT_ROOM = "Still waiting for a count. Try knocking or clapping louder, closer to the mic."
 OPENING = "Still opening the device. This computer may be asking to use the microphone."
 STALLED = "The audio device stopped answering."
-INPUT_FAULT_LINES = {"buzz": BUZZ_LINE, "silent": SILENT_LINE, "clip": CLIP_LINE}
 ENDED_EARLY = "The take ended early."
 NO_PAGE = "No page was open, so plume stopped this take."
 WEDGED = "Still stopping. Run plume stop in a terminal."
@@ -119,6 +118,11 @@ LATE_GUESS = ("Try wired headphones. This output looks wireless (a guess), "
               "and wireless ones can arrive late.")
 LATE_REPORTED = ("Try wired headphones. This output reports about {ms} ms, "
                  "and wireless ones can arrive late.")
+#: With Hear me on and the sound going out through a device other than her input's, her
+#: own playing comes back after the input's delay and the output's.  The number is the
+#: two devices' own word for it (a stream's reported_ms), not a measurement.
+MONITOR_LATE = ("You hear yourself about {ms} ms late. Send the sound out through the same device "
+                "as your input, or turn off Hear me and use that device's own direct monitoring.")
 COUNT_LINE = "Knock or clap 8 even beats."
 COUNT_PICKUP = "A knock may not reach a pickup, so chuck muted strings."
 
@@ -161,6 +165,8 @@ LOOK_RECENT_S = 20.0
 #: An output this late is hard to play to.  A guess too: wired ones report far less than this.
 #: The output's own number: a stream's reported_ms adds the input's to it.
 LATE_MS = 80.0
+#: Past this, hearing herself through plume reads as an echo of her own playing.  A guess.
+MONITOR_LATE_MS = 30.0
 SETUP_VERSION = 1
 
 LIST_TIMEOUT_S = 5.0
@@ -1884,7 +1890,20 @@ class TakeRunner:
             self._ask_stop(take, stop_note)
 
     @staticmethod
-    def _hint(take: _Take, now: float) -> str | None:
+    def _monitor_late(take: _Take) -> str | None:
+        """One line when she hears herself late: Hear me on, the sound going out through a
+        device that is not her input's, and the two reporting more than MONITOR_LATE_MS."""
+        route, stream = getattr(take, "route", None), getattr(take, "stream", None)
+        if (route is None or not stream or not route.hear_me
+                or route.output is None or route.output == route.name):
+            return None
+        ms = stream.get("reported_ms")
+        if ms is None or ms <= MONITOR_LATE_MS:
+            return None
+        return MONITOR_LATE.format(ms=round(ms))
+
+    @classmethod
+    def _hint(cls, take: _Take, now: float) -> str | None:
         if take.phase == "starting":
             return OPENING if now - take.started >= OPENING_AFTER_S else None
         if take.phase == "playing":
@@ -1894,7 +1913,7 @@ class TakeRunner:
             fading = isinstance(row.get("fade_db"), (int, float)) and row["fade_db"] < 0
             if getattr(take, "stop_asked", False) or (fading and row.get("input_fault") == "silent"):
                 return None
-            return INPUT_FAULT_LINES.get(row.get("input_fault"))
+            return INPUT_FAULT_LINES.get(row.get("input_fault")) or cls._monitor_late(take)
         if take.phase != "waiting":
             return None
         waited = now - take.opened
@@ -1902,7 +1921,7 @@ class TakeRunner:
             return (FLAT_CHANNEL.format(channel=take.route.channel) if take.route.channels > 1
                     else FLAT_MIC)
         if waited < NO_COUNT_S:
-            return None
+            return cls._monitor_late(take)
         return NO_COUNT if take.route.mode == "direct" else NO_COUNT_ROOM
 
     @staticmethod

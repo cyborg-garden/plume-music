@@ -36,16 +36,30 @@ The tests:
   bars and eight seconds, while the take is not ending.  That is only said, never
   acted on: a dead input and a long rest look the same to the band, and the band
   already has its own idea of what a rest means.
-* clip -- her input itself is clipping: the interface's gain is set so hot that her
-  notes hit full scale and flatten there.  That is distortion in the recording and,
-  with Hear me on, in the speakers, and only the knob on the interface can take it
-  out.  A hop clips when at least CLIP_SAMPLES of its samples sit at CLIP_LEVEL or
-  over (one peak just touching full scale is not a flat top).  Time is cut into
-  CLIP_SLOT_S slots, and she is told once CLIP_SAY slots within CLIP_WINDOW_S held a
-  clipping hop: one hot strum fills one or two, a hot gain fills them all, whether
-  she strums apart or never stops.  It clears after CLIP_CLEAR_S with none.  Only
-  said, never acted on: ducking her because she plays hard would be worse.  A hum
-  that clips is a buzz, which is said instead.
+* clip and bump -- her input reaches full scale and flattens there, which is
+  distortion in the recording and, with Hear me on, in the speakers.  A hop is at
+  full scale when at least CLIP_SAMPLES of its samples sit at CLIP_LEVEL or over (one
+  peak just touching it is not a flat top).  Two different things do that, and they
+  need different words:
+
+  - clip: she is playing loud into a gain set too hot, so her notes hit the top.
+    Only the knob on the interface takes that out, and the line says so.
+  - bump: a burst hits the top while her playing sits far below it: a knock, a
+    thump, a crackling cable or socket.  Turning the gain down would only make her
+    quieter, so the line names the bumps and gives no such advice.
+
+  What tells them apart is how loud she is playing around it: the median level of
+  the sounding hops, full-scale ones left out, from AROUND_S before the slot to
+  AROUND_S after it.  So a slot is judged AROUND_S late, by what came after as well
+  as before: a first hot strum is clipping at once, with no history to wait for,
+  and a thump's own short tail does not make quiet playing loud.  At HOT_DB or over
+  it is clipping; under it, or with nothing else sounding, a bump.  Time is cut into
+  CLIP_SLOT_S
+  slots.  Clipping is said once CLIP_SAY slots within CLIP_WINDOW_S held it (one hot
+  strum fills one or two, a hot gain fills them all) and clears after CLIP_CLEAR_S
+  with none.  Bumps come seconds apart, so they are said once BUMP_SAY slots within
+  BUMP_WINDOW_S held one and clear after BUMP_CLEAR_S with none.  Both are only
+  said, never acted on.  A hum at full scale is a buzz, which is said instead.
 """
 from __future__ import annotations
 
@@ -106,22 +120,35 @@ PLAYED_S = 0.5
 SILENT_BARS = 4.0
 SILENT_MIN_S = 8.0
 
-#: Clipping: a sample this close to full scale is on the ceiling ...
+#: Full scale: a sample this close to it is on the ceiling ...
 CLIP_LEVEL = 0.98
 #: ... and a hop with this many of them is flattened, not one peak touching it.
 CLIP_SAMPLES = 3
-#: Clipping is counted by the slot: one strum's attack fills one or two.
+#: Full-scale hops are counted by the slot: one strum's attack fills one or two.
 CLIP_SLOT_S = 0.5
+#: How loud she is playing around a full-scale slot: the median of her sounding hops
+#: this long before and after it.  At HOT_DB or over, full scale is her own notes
+#: clipping; under it, something else hit the top.  A strummed guitar's peaks sit 12
+#: to 18 dB over its level, so notes that reach full scale put the level well over
+#: this, and bursts over quiet playing leave it well under.  A first guess, not tuned
+#: on a player.
+AROUND_S = 1.5
+HOT_DB = -20.0
 #: Slots that clipped within CLIP_WINDOW_S before she is told, and the clean time
 #: that ends it.
 CLIP_SAY = 3
 CLIP_WINDOW_S = 10.0
 CLIP_CLEAR_S = 10.0
+#: The same for bumps, which come seconds apart.
+BUMP_SAY = 3
+BUMP_WINDOW_S = 60.0
+BUMP_CLEAR_S = 30.0
 
 BUZZ_LINE = "Your input is buzzing. Check the cable."
 SILENT_LINE = "No sound from your input for a while."
 CLIP_LINE = "Your input is clipping. Turn the gain down on your interface."
-LINES = {"buzz": BUZZ_LINE, "silent": SILENT_LINE, "clip": CLIP_LINE}
+BUMP_LINE = "Loud bumps or crackle on your input. Check the cable and what it is plugged into."
+LINES = {"buzz": BUZZ_LINE, "silent": SILENT_LINE, "clip": CLIP_LINE, "bump": BUMP_LINE}
 
 
 def monitor_slot() -> np.ndarray:
@@ -210,10 +237,21 @@ class InputGuard:
         self.buzz = False
         self.silent = False
         self.clip = False
-        #: Hops that clipped, over the whole take: the planner logs each bar's share.
+        self.bump = False
+        #: Full-scale hops over the whole take, as her own clipping and as bumps: the
+        #: planner logs each bar's share.
         self.clip_hops = 0
+        self.bump_hops = 0
         self._clips: collections.deque = collections.deque()   # slots that clipped
+        self._bumps: collections.deque = collections.deque()   # slots with a bump
         self._last_clip_hop = -math.inf
+        self._last_bump_hop = -math.inf
+        #: Each hop's level over the last 2 * AROUND_S, NaN where nothing of hers
+        #: sounded or the hop was at full scale.
+        self._levels: collections.deque = collections.deque(
+            maxlen=int(round(2.0 * AROUND_S / HOP_S)))
+        #: Full-scale slots not yet judged: [slot, the hop to judge it at, its hops].
+        self._unjudged: collections.deque = collections.deque()
         self._hops = 0
         self._run = 0
         self._recent: collections.deque = collections.deque(maxlen=SAY_OF)
@@ -230,7 +268,7 @@ class InputGuard:
     def fault(self) -> str | None:
         if not self.notices:
             return None
-        return ("buzz" if self.buzz else "clip" if self.clip
+        return ("buzz" if self.buzz else "clip" if self.clip else "bump" if self.bump
                 else "silent" if self.silent else None)
 
     def feed(self, x) -> str | None:
@@ -285,26 +323,54 @@ class InputGuard:
         # Clipping or not, any non-hum sound over the line is her playing.
         if not hum and db > PLAYING_DB:
             self._played_s += HOP_S
-        self._clipping(h, hum)
+        self._full_scale(h, db, hum)
         self._silence(db)
 
-    def _clipping(self, h: np.ndarray, hum: bool) -> None:
+    def _full_scale(self, h: np.ndarray, db: float, hum: bool) -> None:
         self._hops += 1
         now = self._hops
-        if not hum and int(np.count_nonzero(np.abs(h) >= CLIP_LEVEL)) >= CLIP_SAMPLES:
-            self.clip_hops += 1
-            slot = int(now * HOP_S / CLIP_SLOT_S)
-            if not self._clips or self._clips[-1] != slot:
-                self._clips.append(slot)
-            self._last_clip_hop = now
-        while self._clips and (now * HOP_S / CLIP_SLOT_S - self._clips[0]
-                               > CLIP_WINDOW_S / CLIP_SLOT_S):
-            self._clips.popleft()
+        slot = int(now * HOP_S / CLIP_SLOT_S)
+        full = not hum and int(np.count_nonzero(np.abs(h) >= CLIP_LEVEL)) >= CLIP_SAMPLES
+        self._levels.append(db if not full and not hum and db > PLAYING_DB else math.nan)
+        if full:
+            if self._unjudged and self._unjudged[-1][0] == slot:
+                self._unjudged[-1][2] += 1
+            else:
+                self._unjudged.append([slot, now + int(round(AROUND_S / HOP_S)), 1])
+        while self._unjudged and now >= self._unjudged[0][1]:
+            self._judge(*self._unjudged.popleft())
+        for slots, window in ((self._clips, CLIP_WINDOW_S), (self._bumps, BUMP_WINDOW_S)):
+            while slots and slot - slots[0] > window / CLIP_SLOT_S:
+                slots.popleft()
         if len(self._clips) >= CLIP_SAY and self.notices:
             self.clip = True
-        elif self.clip and now - self._last_clip_hop >= CLIP_CLEAR_S / HOP_S:
+        if len(self._bumps) >= BUMP_SAY and self.notices:
+            self.bump = True
+        # Quiet for long enough ends it, and what it had counted: the next one starts
+        # from nothing.
+        if now - self._last_clip_hop >= CLIP_CLEAR_S / HOP_S and (self.clip or self._clips):
+            self._clips.clear()
             self.clip = False
             self._said.discard("clip")
+        if now - self._last_bump_hop >= BUMP_CLEAR_S / HOP_S and (self.bump or self._bumps):
+            self._bumps.clear()
+            self.bump = False
+            self._said.discard("bump")
+
+    def _judge(self, slot: int, at: int, hops: int) -> None:
+        """A full-scale slot, AROUND_S on: her own notes clipping, or a bump.  Once a
+        slot, not once a hop: a median of three seconds of hops is not hop work."""
+        at -= int(round(AROUND_S / HOP_S))          # when it happened, not when judged
+        around = np.fromiter(self._levels, dtype=np.float64, count=len(self._levels))
+        around = around[~np.isnan(around)]
+        if around.size and float(np.median(around)) >= HOT_DB:
+            self.clip_hops += hops
+            self._last_clip_hop = at
+            self._clips.append(slot)
+        else:
+            self.bump_hops += hops
+            self._last_bump_hop = at
+            self._bumps.append(slot)
 
     def _demodulate(self, x: np.ndarray) -> int:
         """Turn whole hops of input by every grid line and add them onto the running

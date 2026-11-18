@@ -2258,26 +2258,51 @@ def note_xruns(counts: list, status) -> None:
             counts[3] += 1
 
 
-class XrunTally:
-    """The callback's xrun counts and the input's clipping, per logged row.
+def note_callback(span: list, began: float, ended: float) -> None:
+    """Audio callback, last thing: how long this call took, and how long after the
+    one before it began.  ``span`` is [longest call, longest gap, last start]: three
+    floats in a list made before the stream opened."""
+    last = span[2]
+    span[2] = began
+    if last > 0.0 and began - last > span[1]:
+        span[1] = began - last
+    if ended - began > span[0]:
+        span[0] = ended - began
 
-    The callback only adds into ``counts`` (:func:`note_xruns`); the planner reads
-    what each row added since the one before, so one row is one bar's worth.
+
+class XrunTally:
+    """The stream's health per logged row: PortAudio's over/underruns, the callback's
+    longest call and longest gap against the buffer's own length, and her clipping.
+
+    The callback only adds into ``counts`` (:func:`note_xruns`) and raises ``span``
+    (:func:`note_callback`); the planner reads what each row added since the one
+    before, so one row is one bar's worth.  A call longer than the buffer, or a gap
+    well over it, is a glitch at the speakers that no recording of the band shows.
     """
 
-    def __init__(self, guard=None):
+    def __init__(self, guard=None, *, period_s: float = BLOCK / SR):
         self.counts = [0, 0, 0, 0]
+        self.span = [0.0, 0.0, 0.0]
+        self._period_ms = 1000.0 * float(period_s)
         self._guard = guard
         self._seen = [0, 0, 0, 0]
-        self._clips_seen = 0
+        self._clips_seen = [0, 0]
 
     def row(self) -> dict:
         now = list(self.counts)
         doc = {"xruns": {n: a - b for n, a, b in zip(XRUN_NAMES, now, self._seen)}}
         self._seen = now
+        # Read, then start the next row's from nothing.  A call that lands between the
+        # two lines is lost to the log; it cannot be made exact without a lock.
+        took, gap = self.span[0], self.span[1]
+        self.span[0] = self.span[1] = 0.0
+        doc["callback"] = {"worst_ms": round(1000.0 * took, 3),
+                           "worst_gap_ms": round(1000.0 * gap, 3),
+                           "period_ms": round(self._period_ms, 3)}
         if self._guard is not None:
-            clips = int(self._guard.clip_hops)
-            doc["input_clip_hops"] = clips - self._clips_seen
+            clips = [int(self._guard.clip_hops), int(self._guard.bump_hops)]
+            doc["input_clip_hops"] = clips[0] - self._clips_seen[0]
+            doc["input_bump_hops"] = clips[1] - self._clips_seen[1]
             self._clips_seen = clips
         return doc
 
@@ -2726,16 +2751,20 @@ def jam(*, style: str, seed: int, params, device: str | None = None,
 
     xrun_tally = XrunTally(guard)
     xruns = xrun_tally.counts
+    span = xrun_tally.span
+    perf_counter = time.perf_counter
 
     def callback(indata, outdata, frames, time_info, status):  # noqa: ARG001
         # Ring copies only: no locks, no waiting, nothing outside the rings.  The
         # slices and the sum below do allocate a little; it is bounded and small.
+        began = perf_counter()
         note_xruns(xruns, status)
         in_ring.write(indata[:, route.guitar])
         timeline.read_into(outdata)
         machine_ring.write(0.5 * (outdata[:, 0] + outdata[:, 1]))
         if monitor:
             mix_monitor(outdata, indata[:, route.guitar], guard_slot, input_fx)
+        note_callback(span, began, perf_counter())
 
     hop_rms = HopRms()
 
@@ -5116,8 +5145,11 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
 
     xrun_tally = XrunTally(guard)
     xruns = xrun_tally.counts
+    span = xrun_tally.span
+    perf_counter = time.perf_counter
 
     def callback(indata, outdata, frames, time_info, status_flags):  # noqa: ARG001
+        began = perf_counter()
         note_xruns(xruns, status_flags)
         in_ring.write(indata[:, route.guitar])
         # Before machine_ring: the analysis thread reads what both of those hold, so
@@ -5128,6 +5160,7 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
         machine_ring.write(0.5 * (outdata[:, 0] + outdata[:, 1]))
         if monitor:
             mix_monitor(outdata, indata[:, route.guitar], guard_slot, input_fx)
+        note_callback(span, began, perf_counter())
 
     hop_rms = HopRms()
 

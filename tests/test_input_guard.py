@@ -12,7 +12,7 @@ import numpy as np
 import pytest
 
 from plume import guitake, inputguard, realtime
-from plume.inputguard import BUZZ_LINE, CLIP_LINE, SILENT_LINE, InputGuard
+from plume.inputguard import BUMP_LINE, BUZZ_LINE, CLIP_LINE, SILENT_LINE, InputGuard
 
 SR = realtime.SR
 BLOCK = realtime.BLOCK
@@ -267,8 +267,8 @@ def test_loud_playing_never_ducks(kind, drive):
     x = np.clip(x * drive * 2.0, -1.0, 1.0)      # peaks at 0 dBFS and over
     _, gains, guard, lines = run(x)
     assert np.all(gains == 1.0)
-    assert [line for _, line in lines] in ([], [CLIP_LINE])
-    assert guard.fault in (None, "clip")
+    assert BUZZ_LINE not in [line for _, line in lines]
+    assert guard.fault in (None, "clip", "bump")
     if drive >= 2.5:
         assert guard.fault == "clip", "every note flattened on the ceiling is said"
     if drive == 1.0:
@@ -352,6 +352,7 @@ def test_an_input_that_keeps_clipping_is_said_once_and_never_ducked():
     assert [line for _, line in lines] == [CLIP_LINE]
     assert guard.fault == "clip"
     assert guard.clip_hops > 0
+    assert guard.bump_hops == 0, "her own notes, not bumps"
     assert np.all(gains == 1.0), "clipping is said, never acted on"
 
 
@@ -361,7 +362,7 @@ def test_one_hot_strum_is_not_clipping():
                         strums(5.0, peak_db=-12.0, every_s=1.0)])
     _, _, guard, lines = run(x)
     assert lines == [] and guard.fault is None
-    assert guard.clip_hops > 0, "the strum did clip; it just is not said"
+    assert guard.clip_hops + guard.bump_hops > 0, "the strum did clip; it just is not said"
 
 
 def test_clipping_clears_once_she_has_turned_it_down():
@@ -381,6 +382,69 @@ def test_a_midi_take_says_nothing_of_a_clipping_input():
     assert lines == [] and guard.fault is None
 
 
+# ------------------------------------------------------------------ bumps on a quiet input
+
+def _bumpy(seconds: float, every_s: float = 4.0, *, level_db: float = -28.0,
+           seed: int = 3) -> np.ndarray:
+    """Quiet single notes with a burst now and then that swings rail to rail, mostly
+    below 60 Hz: a knock or a crackling connection, not her playing."""
+    rng = np.random.default_rng(seed)
+    x = plucks(seconds, [196.0, 246.94, 293.66, 329.63], every_s=0.5).astype(np.float64)
+    x *= _db_to_lin(level_db) / np.sqrt(np.mean(x ** 2))
+    t = np.arange(int(0.06 * SR)) / SR
+    at = 1.3
+    while at + 0.1 < seconds:
+        thump = 4.0 * np.sin(2 * np.pi * rng.uniform(25.0, 55.0) * t + rng.uniform(0, 6.3))
+        thump = thump * np.exp(-t / 0.03) + 0.3 * rng.standard_normal(t.size) * np.exp(-t / 0.01)
+        i = int(at * SR)
+        x[i:i + t.size] += thump
+        at += every_s * rng.uniform(0.8, 1.2)
+    return np.clip(x, -1.0, 1.0).astype(np.float32)
+
+
+def test_bursts_over_quiet_playing_are_bumps_and_never_a_gain_to_turn_down():
+    _, gains, guard, lines = run(_bumpy(16.0))
+    assert [line for _, line in lines] == [BUMP_LINE]
+    assert "gain" not in BUMP_LINE.lower()
+    assert guard.fault == "bump"
+    assert guard.bump_hops > 0 and guard.clip_hops == 0
+    assert np.all(gains == 1.0), "only said: nothing is done to what she hears"
+
+
+def test_one_or_two_bumps_are_not_said():
+    x = np.concatenate([_bumpy(6.0, every_s=3.0), _bumpy(6.0, every_s=1000.0)[SR * 2:]])
+    _, _, guard, lines = run(x)
+    assert lines == [] and guard.fault is None
+    assert guard.bump_hops > 0 and guard.clip_hops == 0
+
+
+def test_bumps_clear_once_they_stop(monkeypatch):
+    monkeypatch.setattr(inputguard, "BUMP_CLEAR_S", 7.0)
+    guard = InputGuard(SR)
+    _, _, guard, _ = run(_bumpy(16.0), guard=guard)
+    assert guard.fault == "bump"
+    quiet_playing = _bumpy(10.0, every_s=1000.0)[SR * 2:]
+    _, _, guard, lines = run(quiet_playing[:SR], guard=guard)
+    assert guard.fault == "bump", "not cleared at once"
+    _, _, guard, lines = run(quiet_playing, guard=guard)
+    assert guard.fault is None and lines == []
+
+
+def test_a_hot_gain_is_never_called_bumps():
+    _, _, guard, lines = run(_hot(strums(8.0, peak_db=-3.0)))
+    assert [line for _, line in lines] == [CLIP_LINE]
+    assert guard.bump_hops == 0
+
+
+@pytest.mark.parametrize("kind", ["open-chords", "fast-open-chords", "bass-di", "drop-c-chugs"])
+def test_normal_loud_playing_is_neither_clipping_nor_bumps(kind):
+    x = PLAYING[kind]()
+    x = x / np.max(np.abs(x)) * _db_to_lin(-1.0)        # as loud as it goes, unclipped
+    _, _, guard, lines = run(np.concatenate([quiet(1.0), x]))
+    assert lines == [] and guard.fault is None
+    assert guard.clip_hops == guard.bump_hops == 0
+
+
 # ------------------------------------------------------------------ the page and the log
 
 def test_the_live_page_says_the_fault_while_the_band_plays():
@@ -389,6 +453,7 @@ def test_the_live_page_says_the_fault_while_the_band_plays():
     assert guitake.TakeRunner._hint(take("buzz"), 0.0) == BUZZ_LINE
     assert guitake.TakeRunner._hint(take("silent"), 0.0) == SILENT_LINE
     assert guitake.TakeRunner._hint(take("clip"), 0.0) == CLIP_LINE
+    assert guitake.TakeRunner._hint(take("bump"), 0.0) == BUMP_LINE
     assert CLIP_LINE == "Your input is clipping. Turn the gain down on your interface."
     assert guitake.TakeRunner._hint(take(None), 0.0) is None
     assert "input_fault" in guitake._ROW_FIELDS
@@ -443,7 +508,7 @@ def _humming_take():
 def test_a_buzzing_take_logs_input_fault(tmp_path, monkeypatch, plume_registry, run):
     rows = _live_rows(tmp_path, monkeypatch, run, _humming_take())
     assert rows
-    assert all(r.get("input_fault", "missing") in (None, "buzz", "silent", "clip")
+    assert all(r.get("input_fault", "missing") in (None, "buzz", "silent", "clip", "bump")
                for r in rows)
     assert any(r["input_fault"] == "buzz" for r in rows)
 
@@ -468,8 +533,14 @@ def test_a_clipping_take_logs_it_with_each_bars_xruns(tmp_path, monkeypatch, plu
                       status=status)
     assert rows
     assert any(r["input_fault"] == "clip" for r in rows)
-    assert all(isinstance(r.get("input_clip_hops"), int) for r in rows)
+    assert all(isinstance(r.get("input_clip_hops"), int)
+               and isinstance(r.get("input_bump_hops"), int) for r in rows)
     assert sum(r["input_clip_hops"] for r in rows) > 0
+    for r in rows:
+        timing = r["callback"]
+        assert timing["period_ms"] == pytest.approx(1000.0 * BLOCK / SR, abs=1e-3)
+        assert timing["worst_ms"] >= 0.0 and timing["worst_gap_ms"] >= 0.0
+    assert any(r["callback"]["worst_ms"] > 0.0 for r in rows)
     assert all(set(r["xruns"]) == set(realtime.XRUN_NAMES) for r in rows)
     under = sum(r["xruns"]["output_underflow"] for r in rows)
     over = sum(r["xruns"]["input_overflow"] for r in rows)
@@ -485,12 +556,23 @@ def test_xruns_are_counted_from_the_flags_and_split_by_row():
     realtime.note_xruns(tally.counts, None)
     realtime.note_xruns(tally.counts, FakeCallbackFlags(0))
     realtime.note_xruns(tally.counts, FakeCallbackFlags(0x10))      # priming: not a run
-    assert tally.row() == {"xruns": dict.fromkeys(realtime.XRUN_NAMES, 0)}
+    assert tally.row()["xruns"] == dict.fromkeys(realtime.XRUN_NAMES, 0)
     realtime.note_xruns(tally.counts, FakeCallbackFlags(1 | 8))
     realtime.note_xruns(tally.counts, FakeCallbackFlags(8))
-    assert tally.row() == {"xruns": {"input_underflow": 1, "input_overflow": 0,
-                                     "output_underflow": 0, "output_overflow": 2}}
+    assert tally.row()["xruns"] == {"input_underflow": 1, "input_overflow": 0,
+                                    "output_underflow": 0, "output_overflow": 2}
     assert tally.row()["xruns"]["output_overflow"] == 0, "each row only its own"
+
+
+def test_each_row_holds_its_own_longest_callback_and_gap():
+    tally = realtime.XrunTally(period_s=0.004)
+    assert tally.row()["callback"] == {"worst_ms": 0.0, "worst_gap_ms": 0.0, "period_ms": 4.0}
+    realtime.note_callback(tally.span, 10.000, 10.001)     # the first has no gap to measure
+    realtime.note_callback(tally.span, 10.004, 10.0065)
+    realtime.note_callback(tally.span, 10.013, 10.0135)    # late: 9 ms after the last began
+    assert tally.row()["callback"] == {"worst_ms": 2.5, "worst_gap_ms": 9.0, "period_ms": 4.0}
+    realtime.note_callback(tally.span, 10.017, 10.0175)
+    assert tally.row()["callback"] == {"worst_ms": 0.5, "worst_gap_ms": 4.0, "period_ms": 4.0}
 
 
 def test_sounddevices_own_flags_read_the_same():

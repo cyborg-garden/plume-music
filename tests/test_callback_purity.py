@@ -43,7 +43,7 @@ FORBIDDEN_NAME = re.compile(
 #: C functions that wait.
 FORBIDDEN_CALL = {"sleep", "acquire", "release", "wait", "join", "acquire_lock", "select"}
 #: The C functions a callback may call: its rings, and nothing else.
-ALLOWED_CALLS = {"asarray", "min", "setprofile"}
+ALLOWED_CALLS = {"asarray", "min", "setprofile", "perf_counter"}
 #: The plume files whose code may run in the callback: the transport, and the input sound
 #: plume.inputfx (the effect on the "Hear me" monitoring switch), held to the same rules.
 CALLBACK_FILES = {"realtime.py", "inputfx.py"}
@@ -176,7 +176,7 @@ def test_the_callback_only_copies_rings(env, run, extra, midi):
         run(env, short_socket_path("pure"), monitor=True, input_device="audio interface",
             input_channel=1, **extra, **kw)
     assert watcher.blocks > 50, "the callback barely ran, so this proves nothing"
-    assert {"callback", "write", "read_into", "note_xruns"} <= watcher.names_entered()
+    assert {"callback", "write", "read_into", "note_xruns", "note_callback"} <= watcher.names_entered()
     assert watcher.problems() == []
     if run is run_lead:
         return       # a tap-started take logs no bar before its count: see test_input_guard

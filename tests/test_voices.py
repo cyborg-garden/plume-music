@@ -117,3 +117,15 @@ def test_preset_info_is_jsonable_and_complete():
         assert set(entry["params"]) == set(PRESETS[name])
         for pname, meta in entry["params"].items():
             assert "default" in meta
+
+
+def test_the_crackle_stays_a_quiet_scratch_as_the_band_plays_it():
+    # Measured, not changed: at the role's gain its loudest tick sits near -23 dBFS and
+    # its bed near -54, some 18 dB and 48 dB under a full lofi band.  This holds it
+    # there: no louder, and not gone.
+    from plume.duet import _ROLE_GAIN_DB
+    gain = 10.0 ** (_ROLE_GAIN_DB["crackle"] / 20.0)
+    for seed in range(8):
+        y = _render("crackle", freq_hz=None, seed=seed, dur_s=3.2, velocity=0.7) * gain
+        assert 20.0 * np.log10(float(np.max(np.abs(y)))) <= -22.0
+        assert -58.0 <= 10.0 * np.log10(float(np.mean(y.astype(np.float64) ** 2))) <= -50.0

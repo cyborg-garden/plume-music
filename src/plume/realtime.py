@@ -389,7 +389,7 @@ def unclipped(events: list, clipped) -> list:
 
 
 def follow_heard(events: list, clipped, *, silence_rms_db: float, ref_db: float | None,
-                 beats_per_bar: int = 4) -> tuple[float | None, float | None]:
+                 beats_per_bar: int = 4, bar: int = 0) -> tuple[float | None, float | None]:
     """Her level (dB) and busyness (onsets per beat) over ``events`` as BandFollow reads
     them, from the frames the input did not clip in (see :func:`unclipped`): a knock is
     not a note either.  ``(None, None)`` when she sat out, by
@@ -398,7 +398,7 @@ def follow_heard(events: list, clipped, *, silence_rms_db: float, ref_db: float 
     kept = unclipped(events, clipped)
     if len(kept) < FOLLOW_CLIP_MIN_KEPT * len(events):
         return None, None
-    kw = bar_features_dict(0, kept, silence_rms_db=silence_rms_db, ref_db=ref_db,
+    kw = bar_features_dict(bar, kept, silence_rms_db=silence_rms_db, ref_db=ref_db,
                            beats_per_bar=beats_per_bar)
     return (None, None) if kw["silent"] else (kw["rms_db"], kw["onset_density"])
 
@@ -410,11 +410,14 @@ def follow_bar(human, events: list, clipped, *, silence_rms_db: float,
     them), and that stands unless the input clipped in the bar."""
     if human is None:
         return None, None
+    if isinstance(human, dict):
+        bar, db, busy = human["bar"], human["rms_db"], human["onset_density"]
+    else:
+        bar, db, busy = human.bar, human.rms_db, human.onset_density
     if len(unclipped(events, clipped)) == len(events):
-        if isinstance(human, dict):
-            return human["rms_db"], human["onset_density"]
-        return human.rms_db, human.onset_density
-    return follow_heard(events, clipped, silence_rms_db=silence_rms_db, ref_db=ref_db)
+        return db, busy
+    return follow_heard(events, clipped, silence_rms_db=silence_rms_db, ref_db=ref_db,
+                        bar=bar)
 
 
 def follow_parts(bar_events, later_events, w_start: float, w_end: float,

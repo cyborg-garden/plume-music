@@ -1120,18 +1120,21 @@ FOLLOW_SWING_RELEASE_BARS = 6.0
 #: normal: a bar the band is leaning on (a passage it is following, or a swing) never
 #: moves it, so a passage is followed for as long as it lasts and she comes back to the
 #: same normal.  Short enough to follow her normal as it drifts slowly over a take (a
-#: few dB over a few minutes).  The window starts with her first bars counted
-#: :data:`FOLLOW_NORMAL_SEED_BARS` times, so a few odd bars early on do not move it.
+#: few dB over a few minutes).  A median, so one odd bar among her first does not set it.
 FOLLOW_NORMAL_BARS = 32
-FOLLOW_NORMAL_SEED_BARS = 16
-#: Bars a lean has to hold, steady, before that level is her normal: louder (a soft
-#: intro, then her real level) after a section; softer after longer than any passage
-#: the band follows (a loud intro, or a very long soft stretch).
+#: Bars a lean has to hold, steady, before that level is her normal.  A lean she has
+#: held since the band came in, louder than her first bars, is an intro that was simply
+#: soft: a section.  Any other (a chorus, a soft passage, a loud intro) only after
+#: longer than any passage the band follows.
 FOLLOW_ABSORB_LOUDER_BARS = 16
 FOLLOW_ABSORB_SOFTER_BARS = 64
-#: After a lean becomes her normal, bars back at her old normal that put her normal back
-#: at once, so the band never reads her own level as louder or softer than normal; and
-#: bars for which the old normal is remembered.
+#: Bars at her own normal after which a lean is a passage, not her opening: longer
+#: than an intro, shorter than a verse.  A soft intro longer than this is a verse
+#: (her louder playing after it is a chorus, and only after a long while her normal).
+FOLLOW_SETTLED_BARS = 12
+#: After a passage becomes her normal, bars back at her old normal that put her normal
+#: back at once, so the band never reads her own level as louder or softer than normal;
+#: and bars for which the old normal is remembered.
 FOLLOW_RECENTRE_BARS = 2
 FOLLOW_RECENTRE_MEMORY_BARS = 64
 
@@ -1292,6 +1295,10 @@ class _Patience:
         value = 0.0 if abs(median) <= self._deadband else median
         if value == self.value:
             return 0
+        if value == 0.0 and side * self._recent[-1][0] > self._deadband:
+            # Back to normal, while her latest is already well past it the same way:
+            # she is going somewhere, not coming back.  The patience will say where.
+            return 0
         self.value = value
         self._reset()
         self._side = 0
@@ -1397,6 +1404,8 @@ class BandFollow:
         self._levels: list[float] = []
         self._busies: list[float] = []
         self._held = 0                # bars she has held the band's lean (see _absorb)
+        self._at_normal = 0           # bars in a row at her normal, once it is known
+        self._settled = False         # she has played FOLLOW_SETTLED_BARS at her normal
         self._prior: float | None = None   # her normal before a lean became it
         self._prior_age = 0
         self._prior_near = 0
@@ -1420,13 +1429,6 @@ class BandFollow:
         if busy is not None and (not known or self._busy.value == 0.0):
             self._busies.append(float(busy))
         self._learned += 1
-        if self._learned == FOLLOW_LEARN_BARS:
-            # As if she had played her opening level for a while.
-            first = float(np.mean(self._levels))
-            self._levels = [first] * FOLLOW_NORMAL_SEED_BARS + self._levels
-            if self._busies:
-                busy0 = float(np.mean(self._busies))
-                self._busies = [busy0] * FOLLOW_NORMAL_SEED_BARS + self._busies
         del self._levels[:-FOLLOW_NORMAL_BARS]
         del self._busies[:-FOLLOW_NORMAL_BARS]
         self._normal_db = float(np.median(self._levels))
@@ -1499,7 +1501,7 @@ class BandFollow:
         return self._state(tuple(moved))
 
     def _reseed(self, db: float) -> None:
-        self._levels = [float(db)] * FOLLOW_NORMAL_SEED_BARS
+        self._levels = [float(db)] * FOLLOW_LEARN_BARS
         self._normal_db = float(db)
         lvl = self._level
         lvl.value, lvl._averaged, lvl._recent, lvl._latest = 0.0, False, [], []
@@ -1522,14 +1524,23 @@ class BandFollow:
             if self._prior_age > FOLLOW_RECENTRE_MEMORY_BARS:
                 self._prior = None
         lean = self._level.value
+        if lean == 0.0 and not self._level._averaged:
+            self._at_normal += 1
+            self._settled = self._settled or self._at_normal >= FOLLOW_SETTLED_BARS
+        else:
+            self._at_normal = 0
         if lean == 0.0 or self._level._averaged or moved:
             self._held = 0
             return
         if abs(db - self._normal_db - lean) <= FOLLOW_LEVEL_DEADBAND_DB:
             self._held += 1
-        limit = FOLLOW_ABSORB_LOUDER_BARS if lean > 0 else FOLLOW_ABSORB_SOFTER_BARS
+        opening = lean > 0 and not self._settled
+        limit = FOLLOW_ABSORB_LOUDER_BARS if opening else FOLLOW_ABSORB_SOFTER_BARS
         if self._held >= limit:
-            self._prior, self._prior_age, self._prior_near = self._normal_db, 0, 0
+            # An opening that was off is forgotten; a passage's old normal is kept, to
+            # come back to.
+            self._prior = None if opening else self._normal_db
+            self._prior_age, self._prior_near = 0, 0
             self._reseed(self._normal_db + lean)
 
     @property

@@ -48,10 +48,11 @@ up and so does the band. Playing fewer notes at your usual level only thins the 
 patterns. One quiet bar, or one loud one, moves nothing. Answer yourself soft and loud a
 few bars at a time and the band settles rather than pumping, with the song's parts and
 lifts as written. A softer passage is followed for as long as it lasts, and when you come
-back to your normal the band comes back to its own level with you, not past it. If your
-first bars were softer than the level you then keep playing at, that becomes your normal
-within about 16 bars; if they were louder, or you stay softer for well over a minute or
-two, it takes about 64. The song's own shape is only a
+back to your normal the band comes back to its own level with you, not past it, and a
+louder chorus is lifted with you for as long as it lasts. If you open softly for a few bars
+and then play at your real level, that becomes your normal within about 16 bars; open
+softly for as long as a verse and what follows is a chorus. If you open loudly, or stay
+louder or softer for well over a minute or two, it becomes your normal after about 64 bars. The song's own shape is only a
 default: a lift you play softly under is played as a verse, and a verse you drive is played
 as a lift, always from a phrase line. The `yield` field in each decision row says when that
 happened. On a room mic the song keeps its own shape, since the mic hears the band too. Chords follow

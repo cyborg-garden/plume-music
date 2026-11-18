@@ -18,7 +18,7 @@ import pytest
 from conftest import needs_laptop_speed, playhead_rate  # noqa: E402
 
 from plume import herchords as hc
-from plume.bandentry import (FOLLOW_LEARN_BARS, FOLLOW_NORMAL_SEED_BARS, SONG_ARC,
+from plume.bandentry import (FOLLOW_LEARN_BARS, SONG_ARC,
                              BandFollow, PlanYield, song_section, yield_to)
 
 NORMAL_DB, NORMAL_BUSY = -27.0, 2.8
@@ -198,6 +198,29 @@ def test_a_swell_then_a_drop_is_answered_like_a_sudden_drop():
     assert swell[-1][1].lean == sudden[-1][1].lean
 
 
+def test_a_drop_straight_after_a_swell_read_by_the_half_bar():
+    """As the planner reads her, half a bar at a time, dB from her normal: settled, a
+    two-bar swell, then well under her normal, the halves across the drop mixed.  The
+    band must not settle back at her normal on the way down (its last four bars still
+    hold the swell) and start its wait over: it is under -2 dB within four bars of the
+    drop."""
+    settled = [(0.4, 0.0), (1.7, 0.2), (0.3, 1.4), (1.8, -0.3), (2.8, 0.7), (1.7, 1.5),
+               (-2.6, -0.0), (0.8, 2.1), (2.7, 3.9), (-2.0, 1.3), (-4.6, -0.4), (1.8, 3.4)]
+    swell = [(8.7, 11.0), (6.6, 5.3), (5.4, 2.4)]
+    drop = [(-4.3, -17.8), (-1.7, -8.9), (-12.0, -6.6), (-8.2, -6.2), (-9.6, -14.2)]
+    f = BandFollow(trusted=True)
+    for _ in range(FOLLOW_LEARN_BARS):
+        f.bar(NORMAL_DB, NORMAL_BUSY, playing=True)
+    gains = []
+    for a, b in settled + swell + drop:
+        whole = NORMAL_DB + 10 * np.log10((10 ** (a / 10) + 10 ** (b / 10)) / 2)
+        s = f.bar(whole, NORMAL_BUSY, playing=True, parts=[NORMAL_DB + a, NORMAL_DB + b],
+                  bar_s=2.6)
+        gains.append(s.gain_db)
+    at = len(settled) + len(swell)
+    assert min(gains[at:at + 4]) <= -2.0, gains[at - 3:]
+
+
 def test_a_noisy_drop_after_a_swell_is_not_held_at_the_average():
     """Real playing wanders: after a swell she drops 5-9 dB, with a bar now and then
     back near her normal.  The band must not lock onto the average of her loud bars
@@ -257,7 +280,7 @@ def _opening(offsets):
     return out
 
 
-@pytest.mark.parametrize("intro,depth", [(8, -6.0), (8, -10.0), (16, -6.0), (24, -6.0)])
+@pytest.mark.parametrize("intro,depth", [(8, -6.0), (8, -10.0), (12, -6.0)])
 def test_a_soft_intro_gives_way_to_her_real_level(intro, depth):
     """A soft intro, then her real level for the rest of the take.  The band reads her
     real level as louder for a while, then it is her normal: no lift for the rest of
@@ -269,6 +292,16 @@ def test_a_soft_intro_gives_way_to_her_real_level(intro, depth):
     assert all(s.gain_db == 0.0 for s, _, _ in run[-24:])
     assert all((got.section, got.resting, got.drums) == (arc[0], arc[2], 1.0)
                for _, got, arc in run[-24:])
+
+
+@pytest.mark.parametrize("intro", [16, 24])
+def test_a_soft_opening_as_long_as_a_verse_is_a_verse(intro):
+    """Soft for as long as a verse, then louder: that is a chorus, lifted with her,
+    and only after a long while (longer than any passage) her normal."""
+    run = _opening([-6.0] * intro + [0.0] * 100)
+    start = intro - FOLLOW_LEARN_BARS
+    assert all(s.gain_db >= 2.0 for s, _, _ in run[start + 3:start + 40])
+    assert all(s.gain_db == 0.0 and got.lean == "neutral" for s, got, _ in run[-24:])
 
 
 def test_a_loud_intro_gives_way_to_her_real_level_in_the_end():
@@ -314,6 +347,43 @@ def test_her_normal_follows_her_as_it_drifts_slowly(step):
     f = learned()
     states = wander(f, [step * i for i in range(80)] + [80 * step] * 20)
     assert all(s.gain_db == 0.0 for s in states), max((s.gain_db for s in states), key=abs)
+
+
+def test_a_long_loud_chorus_is_lifted_with_her_all_the_way():
+    """Verse and chorus: 16 bars at her normal, 24 a few dB over it, again.  Louder
+    than her normal after she has settled is a chorus, not a new normal: the band lifts
+    with her for every bar of both choruses, and comes back down for the verses."""
+    run = _opening([0.0] * 4 + ([0.0] * 16 + [5.0] * 24) * 2 + [0.0] * 16)
+    for start in (16, 56):
+        chorus = [s.gain_db for s, _, _ in run[start + 3:start + 24]]
+        assert all(g >= 2.0 for g in chorus), (start, chorus)
+        verse = [s.gain_db for s, _, _ in run[start + 24 + 4:start + 40]]
+        assert all(g == 0.0 for g in verse), (start, verse)
+
+
+def test_a_big_final_chorus_is_lifted_to_its_last_bar():
+    run = _opening([0.0] * 36 + [5.0] * 40)
+    final = [s.gain_db for s, _, _ in run[32 + 3:]]
+    assert all(g >= 2.0 for g in final), final
+
+
+def test_a_quiet_moment_after_a_soft_intro_does_not_undo_her_real_level():
+    """A soft intro that became her real level, then two bars as soft as the intro: a
+    quiet moment, not a return to her normal.  Her real level after it is still her
+    normal, never read as louder."""
+    run = _opening([-6.0] * 8 + [0.0] * 40 + [-6.0, -6.0] + [0.0] * 30)
+    after = run[4 + 40 + 2:]
+    louder = [i for i, (s, got, _) in enumerate(after) if s.gain_db > 0.5 or got.lean == "louder"]
+    assert len(louder) <= 2, [s.gain_db for s, _, _ in after]
+
+
+def test_a_noisy_opening_sets_her_normal_from_its_middle():
+    """One of her first bars barely sounds (a string muted, a fumble): her normal
+    is where most of them sat, and her steady playing after it does not lean."""
+    f = BandFollow(trusted=True)
+    states = [f.bar(NORMAL_DB + d, NORMAL_BUSY, playing=True)
+              for d in [0.0, -30.0, 0.0, 0.0] + [0.0] * 24]
+    assert all(s.gain_db == 0.0 for s in states), [s.gain_db for s in states]
 
 
 def test_mildest_depth_of_a_held_phrase_sets_the_parts():

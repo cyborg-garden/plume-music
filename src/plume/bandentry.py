@@ -1128,6 +1128,8 @@ FOLLOW_NORMAL_BARS = 32
 #: longer than any passage the band follows.
 FOLLOW_ABSORB_LOUDER_BARS = 16
 FOLLOW_ABSORB_SOFTER_BARS = 64
+#: Bars over which a lean becomes her normal, a step a bar: a phrase.
+FOLLOW_ABSORB_RAMP_BARS = 4
 #: Bars at her own normal after which a lean is a passage, not her opening: longer
 #: than an intro, shorter than a verse.  A soft intro longer than this is a verse
 #: (her louder playing after it is a chorus, and only after a long while her normal).
@@ -1295,10 +1297,6 @@ class _Patience:
         value = 0.0 if abs(median) <= self._deadband else median
         if value == self.value:
             return 0
-        if value == 0.0 and side * self._recent[-1][0] > self._deadband:
-            # Back to normal, while her latest is already well past it the same way:
-            # she is going somewhere, not coming back.  The patience will say where.
-            return 0
         self.value = value
         self._reset()
         self._side = 0
@@ -1404,6 +1402,7 @@ class BandFollow:
         self._levels: list[float] = []
         self._busies: list[float] = []
         self._held = 0                # bars she has held the band's lean (see _absorb)
+        self._ramp: tuple[int, float, float] | None = None   # steps left, step, target
         self._at_normal = 0           # bars in a row at her normal, once it is known
         self._settled = False         # she has played FOLLOW_SETTLED_BARS at her normal
         self._prior: float | None = None   # her normal before a lean became it
@@ -1512,7 +1511,18 @@ class BandFollow:
     def _absorb(self, db: float, moved: bool) -> None:
         """A lean held long enough becomes her normal (:data:`FOLLOW_ABSORB_LOUDER_BARS`,
         :data:`FOLLOW_ABSORB_SOFTER_BARS`); and back at the normal it replaced, that is
-        her normal again at once (:data:`FOLLOW_RECENTRE_BARS`)."""
+        her normal again at once (:data:`FOLLOW_RECENTRE_BARS`).  Becoming her normal
+        takes :data:`FOLLOW_ABSORB_RAMP_BARS`, a step a bar, so the band eases back to
+        its own level instead of jumping there."""
+        if self._ramp:
+            left, step, target = self._ramp
+            if left <= 1:
+                self._ramp = None
+                self._reseed(target)
+            else:
+                self._ramp = (left - 1, step, target)
+                self._shift(step)
+            return
         if self._prior is not None:
             self._prior_age += 1
             near = abs(db - self._prior) <= FOLLOW_LEVEL_DEADBAND_DB
@@ -1541,7 +1551,19 @@ class BandFollow:
             # come back to.
             self._prior = None if opening else self._normal_db
             self._prior_age, self._prior_near = 0, 0
-            self._reseed(self._normal_db + lean)
+            step = lean / FOLLOW_ABSORB_RAMP_BARS
+            self._ramp = (FOLLOW_ABSORB_RAMP_BARS - 1, step, self._normal_db + lean)
+            self._shift(step)
+
+    def _shift(self, step: float) -> None:
+        """Her normal ``step`` dB towards a lean, and the lean that much less."""
+        self._normal_db += step
+        self._levels = [self._normal_db] * FOLLOW_LEARN_BARS
+        lvl = self._level
+        lvl.value -= step
+        lvl._recent, lvl._latest = [], []
+        lvl._reset()
+        lvl._side = 0
 
     @property
     def yield_db(self) -> float:

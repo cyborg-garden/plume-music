@@ -386,6 +386,19 @@ def test_a_noisy_opening_sets_her_normal_from_its_middle():
     assert all(s.gain_db == 0.0 for s in states), [s.gain_db for s in states]
 
 
+@pytest.mark.parametrize("depth", [-9.0, 5.0])
+def test_a_lean_becoming_her_normal_eases_in_over_a_phrase(depth):
+    """When a lean she has held for very long becomes her normal, the band moves back to
+    its own level over a phrase, not in one bar."""
+    f = learned()
+    wander(f, [0.0] * 16)
+    states = wander(f, [depth] * 90)
+    gains = [s.gain_db for s in states]
+    assert gains[-1] == 0.0                                   # it did become her normal
+    steps = [abs(b - a) for a, b in zip(gains[8:], gains[9:])]
+    assert max(steps) <= 2.0, max(steps)            # it was 4 dB in one bar
+
+
 def test_mildest_depth_of_a_held_phrase_sets_the_parts():
     """A phrase that is softer, then much softer, thins the band to softer at its line:
     the depth it held all through, not the depth it reached."""

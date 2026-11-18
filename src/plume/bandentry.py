@@ -11,6 +11,7 @@ this adds is that bars she sat out are no evidence of a key.
 """
 from __future__ import annotations
 
+import copy
 import math
 from dataclasses import dataclass
 from types import SimpleNamespace
@@ -1625,7 +1626,9 @@ class FollowTwice:
 
     def __init__(self, *, trusted: bool, mode: str = FOLLOW):
         self.heard = BandFollow(trusted=trusted, mode=mode)
-        self.spared = BandFollow(trusted=trusted, mode=mode)
+        #: The second follower: the first's twin from the first bar anything is left
+        #: out of.  Until then the two have heard the same, and there is only one.
+        self.spared: BandFollow | None = None
         self.mode, self.trusted = self.heard.mode, self.heard.trusted
         self.gain_db, self.density = 0.0, 1.0
 
@@ -1645,15 +1648,18 @@ class FollowTwice:
 
     @property
     def yield_db(self) -> float:
-        return swell_bound(self.heard.yield_db, self.spared.yield_db, 0.0)
+        other = self.spared or self.heard
+        return swell_bound(self.heard.yield_db, other.yield_db, 0.0)
 
     def _settle(self) -> None:
-        self.gain_db = swell_bound(self.heard.gain_db, self.spared.gain_db, 0.0)
-        self.density = swell_bound(self.heard.density, self.spared.density, 1.0)
+        other = self.spared or self.heard
+        self.gain_db = swell_bound(self.heard.gain_db, other.gain_db, 0.0)
+        self.density = swell_bound(self.heard.density, other.density, 1.0)
 
     def cue(self, value: str) -> FollowState:
         state = self.heard.cue(value)
-        self.spared.cue(value)
+        if self.spared is not None:
+            self.spared.cue(value)
         self._settle()
         return self._state(state, state.moved)
 
@@ -1663,9 +1669,12 @@ class FollowTwice:
         ``(rms_db, onsets_per_beat, parts)`` with the clipped bars left out, or None
         when nothing was."""
         was = (self.gain_db, self.density, self.held_back)
+        whole = (rms_db, onsets_per_beat, parts)
+        db, busy, sparts = whole if spared is None else spared
+        if self.spared is None and (db, busy, sparts) != whole:
+            self.spared = copy.deepcopy(self.heard)
         state = self.heard.bar(rms_db, onsets_per_beat, parts=parts, **kw)
-        db, busy, sparts = (rms_db, onsets_per_beat, parts) if spared is None else spared
-        other = self.spared.bar(db, busy, parts=sparts, **kw)
+        other = state if self.spared is None else self.spared.bar(db, busy, parts=sparts, **kw)
         self._settle()
         if was[2] is None and self.held_back is None:
             return self._state(state, state.moved)

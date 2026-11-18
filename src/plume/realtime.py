@@ -5328,8 +5328,10 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
         note_callback(span, began, perf_counter())
 
     hop_rms = HopRms()
-    # Keys do not clip: what the audio input holds on a MIDI take is not her playing.
-    clip_watch = None if midi_port is not None else ClipWatch()
+    # Only on an input that hears only her.  Keys do not clip: what the audio input
+    # holds on a MIDI take is not her playing.  And a room mic's follower takes its own
+    # lean off what it hears, so nothing may be held back there (bandentry.FollowTwice).
+    clip_watch = ClipWatch() if hears_only_her and midi_port is None else None
 
     def analysis_loop():
         nonlocal harmony, tap_detector
@@ -5363,7 +5365,8 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
             if band_in_mic is not None:
                 band_in_mic.feed(x, m)
             looper.feed(x)
-            clipped_now = clip_watch.process(x) if clip_watch is not None else []
+            clipped_now = (clip_watch.process(x)
+                           if clip_watch is not None and hears_only_her else [])
             masked_frames, _flags, beat_state, harm_state = analysis_step(
                 extractor=extractor, hop_rms=hop_rms, masker=masker,
                 tracker=tracker, harmony=harmony,
@@ -5442,7 +5445,7 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
             masker.enable()
             if entry is not None:
                 chord_follow.band_in_mic = True
-                follow = FollowTwice(trusted=False, mode=FOLLOW)
+                follow.distrust()        # a room mic's follower, and nothing held
                 # Not a new ending: one already fading must go on fading, and finish.
                 silence_ending.long_wait()
                 if style_pick is not None:

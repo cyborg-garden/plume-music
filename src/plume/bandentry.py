@@ -1618,11 +1618,17 @@ class FollowTwice:
     has it over its resting level or density, it goes no further over than the second
     (:func:`swell_bound`).
 
-    So leaving a clip out can only take away a swell, or a filling out, that hearing
-    everything would have made.  It never has the band quieter or sparser than hearing
-    everything would, nor louder or busier, whatever was left out and whoever was
-    playing.  Nothing here is in the audio callback: it is the planner's, a bar at a
-    time."""
+    So on an input that hears only her, leaving a clip out can only take away a swell,
+    or a filling out, that hearing everything would have made: on every bar the band's
+    level lies between resting and what hearing everything gives, and so does its
+    density.  ``yield_db`` is bounded the same way, and is always 0 or ``gain_db``.
+
+    That is said for a direct input only.  A room mic's follower takes its own lean
+    back off what it hears, so a swell held back would be taken off bars the band never
+    played it in: on an untrusted input there is no second follower, nothing is held,
+    and this is :class:`BandFollow` and no more.  The same on a MIDI take, where no
+    clip is ever marked.  Nothing here is in the audio callback: it is the planner's, a
+    bar at a time."""
 
     def __init__(self, *, trusted: bool, mode: str = FOLLOW):
         self.heard = BandFollow(trusted=trusted, mode=mode)
@@ -1656,6 +1662,13 @@ class FollowTwice:
         self.gain_db = swell_bound(self.heard.gain_db, other.gain_db, 0.0)
         self.density = swell_bound(self.heard.density, other.density, 1.0)
 
+    def distrust(self) -> None:
+        """The input turns out to hold the band: from here a room mic's follower, new,
+        as the take would have made it, and no second one.  It never goes back."""
+        self.heard = BandFollow(trusted=False, mode=self.mode)
+        self.spared, self.trusted = None, False
+        self._settle()
+
     def cue(self, value: str) -> FollowState:
         state = self.heard.cue(value)
         if self.spared is not None:
@@ -1670,7 +1683,7 @@ class FollowTwice:
         when nothing was."""
         was = (self.gain_db, self.density, self.held_back)
         whole = (rms_db, onsets_per_beat, parts)
-        db, busy, sparts = whole if spared is None else spared
+        db, busy, sparts = whole if spared is None or not self.trusted else spared
         if self.spared is None and (db, busy, sparts) != whole:
             self.spared = copy.deepcopy(self.heard)
         state = self.heard.bar(rms_db, onsets_per_beat, parts=parts, **kw)

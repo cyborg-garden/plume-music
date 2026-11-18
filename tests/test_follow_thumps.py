@@ -113,6 +113,8 @@ def follow(x, bars=BARS):
         now = twice.bar(kw["rms_db"], kw["onset_density"], **same,
                         spared=(*realtime.follow_bar(kw, clipped, w0, w1), spared_parts))
         rows.append((now, plain.bar(kw["rms_db"], kw["onset_density"], **same)))
+        assert twice.yield_db in (0.0, twice.gain_db), n
+    follow.twice = twice
     return rows, clipped
 
 
@@ -146,7 +148,7 @@ def test_knocks_over_a_couple_of_bars_do_not_lift_or_fill_the_band(notes):
         x = thump(x, LEAN[0] * BAR_S + off)
     rows, clipped = follow(x)
     assert clipped and bounded(rows)
-    assert still(now for now, _ in rows)
+    assert still(now for now, _ in rows) and follow.twice.spared is not None
     assert max(ever.gain_db for _, ever in rows) >= 1.5, "the knocks alone lift nothing"
 
 
@@ -245,6 +247,7 @@ def test_a_player_whose_own_strikes_clip_is_followed_exactly_as_ever(sound, up_d
     rows, clipped = follow(x)
     assert not clipped and bounded(rows) == []
     assert all(now == ever for now, ever in rows)
+    assert follow.twice.spared is None, "with no clip marked there is one follower"
     assert any("louder" in now.moved for now, _ in rows) or sound.get("per_bar") == 1
 
 
@@ -309,6 +312,102 @@ def test_follow_twice_with_nothing_spared_is_band_follow():
     assert (twice.gain_db, twice.density, twice.yield_db, twice.hold_bars) == (
         plain.gain_db, plain.density, plain.yield_db, plain.hold_bars)
     assert isinstance(a, FollowState)
+
+
+NORMAL = (-27.0, 1.0)
+
+
+def _swelling(twice, *, bars=6, plain=None):
+    """``twice`` after her normal and then ``bars`` of knocks: hearing everything reads
+    them 12 dB up, and they are left out of the second reading.  ``plain`` hears
+    everything alongside."""
+    def bar(db, spared):
+        kw = dict(playing=True, parts=(db, db), bar_s=2.0)
+        if plain is not None:
+            plain.bar(db, NORMAL[1], **kw)
+        return twice.bar(db, NORMAL[1], spared=spared, **kw)
+    for _ in range(8):
+        bar(NORMAL[0], None)
+    for _ in range(bars):
+        state = bar(NORMAL[0] + 12.0, (None, None, (None, None)))
+    return state
+
+
+def test_a_swell_held_back_does_not_lift_the_songs_shape_either():
+    """The song's shape reads ``yield_db``: a verse must not become a lift for knocks."""
+    twice = FollowTwice(trusted=True)
+    _swelling(twice)
+    assert twice.heard.gain_db > 1.0 and twice.heard.yield_db == twice.heard.gain_db
+    assert (twice.gain_db, twice.yield_db) == (0.0, 0.0) and twice.held_back is not None
+
+
+def test_yield_is_the_bands_lean_or_nothing_whatever_is_left_out():
+    """As it is for one follower: the lean, or none while she swings soft and loud."""
+    rng = np.random.default_rng(11)
+    for take in range(20):
+        twice = FollowTwice(trusted=True)
+        for n in range(60):
+            db = NORMAL[0] + float(rng.choice([-9.0, -4.0, 0.0, 0.0, 5.0, 12.0])) + float(
+                rng.normal(0, 1.5))
+            kw = dict(playing=True, parts=(db, db), bar_s=2.0)
+            out = n > 8 and rng.random() < 0.4
+            twice.bar(db, NORMAL[1], spared=(None, None, (None, None)) if out else None, **kw)
+            assert twice.yield_db in (0.0, twice.gain_db), (take, n)
+            assert min(twice.heard.gain_db, 0.0) <= twice.gain_db <= max(twice.heard.gain_db, 0.0)
+
+
+def test_her_own_word_reaches_both_followers():
+    """A "sparser" cue beats following, and holds for some bars.  The second follower
+    is told too, or it would go on filling out and be no bound on the first when the
+    hold ends."""
+    twice, alone = FollowTwice(trusted=True), BandFollow(trusted=True)
+    _swelling(twice, bars=1)                       # a second follower now exists
+    for db, busy in [(NORMAL[0], 2.2)] * 8:        # and she plays busier, to both
+        kw = dict(playing=True, parts=(db, db), bar_s=2.0)
+        twice.bar(db, busy, spared=(db, busy, kw["parts"]), **kw)
+    assert twice.spared.density > 1.0 and twice.density > 1.0
+    twice.cue("sparser")
+    assert twice.heard.density == twice.spared.density == twice.density == 1.0
+    kw = dict(playing=True, parts=(NORMAL[0],) * 2, bar_s=2.0)
+    twice.bar(NORMAL[0], 2.2, spared=(NORMAL[0], 2.2, kw["parts"]), **kw)
+    assert twice.spared.density == 1.0, "the cue holds in the second follower too"
+    assert alone.cue("sparser") is not None
+
+
+def test_on_a_room_mic_there_is_one_follower_and_nothing_is_ever_held():
+    """A room mic's follower takes its own lean back off what it hears.  A swell held
+    back would be taken off bars the band never played it in, so there it is main's
+    follower and no more, whatever is said to have clipped."""
+    twice, plain = FollowTwice(trusted=False), BandFollow(trusted=False)
+    rng = np.random.default_rng(4)
+    for n in range(80):
+        db, busy = NORMAL[0] + float(rng.normal(0, 6)), NORMAL[1]
+        kw = dict(playing=True, bar_s=2.0, band_in=n > 3)
+        out = (None, None, None) if n % 3 == 0 else None
+        assert twice.bar(db, busy, spared=out, **kw) == plain.bar(db, busy, **kw), n
+        assert twice.spared is None and twice.held_back is None
+        assert (twice.gain_db, twice.density, twice.yield_db) == (
+            plain.gain_db, plain.density, plain.yield_db)
+    assert any(s != 0.0 for s in (plain.gain_db, plain.density - 1.0)) or plain._learned
+
+
+def test_a_take_that_stops_believing_the_input_is_a_room_mics_from_that_bar_on():
+    """Mid-swell, with one held back: the second follower goes, nothing is held, and
+    every bar from there is what a new room mic's follower says.  It never goes back."""
+    twice = FollowTwice(trusted=True)
+    _swelling(twice)
+    assert twice.spared is not None and twice.held_back is not None
+    twice.distrust()
+    room = BandFollow(trusted=False)
+    assert (twice.trusted, twice.spared, twice.held_back) == (False, None, None)
+    assert (twice.gain_db, twice.density, twice.yield_db) == (0.0, 1.0, 0.0)
+    rng = np.random.default_rng(6)
+    for n in range(40):
+        db = NORMAL[0] + float(rng.normal(0, 6))
+        kw = dict(playing=True, bar_s=2.0)
+        assert twice.bar(db, NORMAL[1], spared=(None, None, None), **kw) == room.bar(
+            db, NORMAL[1], **kw), n
+        assert twice.spared is None and twice.held_back is None
 
 
 # ------------------------------------------------------------ whose clip it is
@@ -423,6 +522,35 @@ def consent(tmp_path, monkeypatch, plume_registry):
     monkeypatch.setenv(realtime.AUDIO_CONSENT_ENV, "1")   # the FAKE device only
 
 
+def _stop_once_planned(sock, decisions, until_s, *, wall_s=150.0):
+    """Stop the take once the planner has logged a bar past ``until_s`` of it, however
+    long that takes the machine: the take ends by where it is, not by the clock.  (The
+    fake device can run ahead of a planner on a busy machine, so it is the planner's
+    place that counts.)  Returns the thread and a list holding True once it got there."""
+    import json
+    import threading
+
+    from conftest import wait_until
+    got = []
+
+    def there():
+        try:
+            last = decisions.read_text().splitlines()[-1]
+            return float(json.loads(last).get("t_s") or 0.0) >= until_s
+        except (OSError, IndexError, ValueError):
+            return False
+
+    def run():
+        got.append(wait_until(there, timeout=wall_s, poll=0.05))
+        try:
+            realtime.send_stop(socket_path=sock)
+        except realtime.RealtimeError:
+            pass
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    return thread, got
+
+
 def test_on_the_real_transport_thumps_and_crackle_do_not_lift_the_band(tmp_path, consent):
     """The planner's own path, on the fake device: a steady player whose input is
     knocked and crackles once the band is in.  The band never leans louder."""
@@ -434,21 +562,51 @@ def test_on_the_real_transport_thumps_and_crackle_do_not_lift_the_band(tmp_path,
     from plume import roles as roles_mod
 
     bpm, seconds = 115.0, 100.0
-    rate = playhead_rate(12.0)
+    bar_s = 240.0 / bpm
     human = _take(bpm=bpm, seconds=seconds)
     hits = (50.3, 52.9, 61.2, 70.4, 71.1)
     for at in hits:
         human = thump(human, at, seconds=0.25)
     human = crackle(human, 56.0, clicks=8, over_s=4.0)
-    with patched_module("sounddevice", fake_audio(human, devices=RIG, rate_x=rate)):
+    sock = short_socket_path("thump")
+    decisions = tmp_path / "rec" / "decisions.ndjson"
+    stopper, got = _stop_once_planned(sock, decisions, hits[-1] + 6 * bar_s)
+    with patched_module("sounddevice",
+                        fake_audio(human, devices=RIG, rate_x=playhead_rate(6.0))):
         realtime.lead(prompt="midwest emo in C major", seed=0, tap_start=True, direct=True,
                       role=roles_mod.RoleParams(role="lead"), record_dir=str(tmp_path / "rec"),
-                      status=False, socket_path=short_socket_path("thump"),
-                      max_minutes=(seconds / rate + 8.0) / 60.0,
+                      status=False, socket_path=sock, max_minutes=3.0,
                       input_device="audio interface", input_channel=1)
-    rows = [json.loads(x) for x in (tmp_path / "rec" / "decisions.ndjson").read_text().splitlines()]
+    stopper.join(timeout=5.0)
+    if got != [True]:
+        pytest.fail("timed out: the machine never played the take past its last knock")
+    rows = [json.loads(x) for x in decisions.read_text().splitlines()]
     rows = [r for r in rows if isinstance(r.get("bar"), int) and r.get("follow")]
-    heard = [r for r in rows if r["t_s"] > hits[-1] + 4 * 240.0 / bpm]
-    assert heard, "the take did not run past the last knock"
+    assert [r for r in rows if r["t_s"] > hits[-1] + 4 * bar_s], rows[-1]["t_s"]
     assert all("louder" not in (r["follow"].get("moved") or ()) for r in rows)
     assert max(r["follow"]["gain_db"] for r in rows) == 0.0
+    assert any("held_back" in r["follow"] for r in rows), "nothing was ever held back"
+
+
+def test_only_an_input_that_hears_only_her_is_watched_for_clips(consent, monkeypatch):
+    """A room mic's take builds no ClipWatch, so its follower is the one it always was."""
+    from conftest import fake_audio, patched_module, short_socket_path
+
+    from plume import roles as roles_mod
+    made = []
+
+    class Spy(realtime.ClipWatch):
+        def __init__(self, *a, **kw):
+            made.append(self)
+            super().__init__(*a, **kw)
+    monkeypatch.setattr(realtime, "ClipWatch", Spy)
+    for direct, watched in ((True, True), (False, False)):
+        del made[:]
+        with patched_module("sounddevice", fake_audio(np.ones(SR, dtype=np.float32),
+                                                      devices=RIG)):
+            realtime.lead(prompt="lofi", seed=0, tap_start=True, direct=direct,
+                          role=roles_mod.RoleParams(role="lead"), status=False,
+                          socket_path=short_socket_path("w-spy"), max_minutes=0.01,
+                          **({"input_device": "audio interface", "input_channel": 1}
+                             if direct else {}))
+        assert bool(made) is watched, direct

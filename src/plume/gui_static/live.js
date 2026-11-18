@@ -107,8 +107,14 @@ export const PHONES_OUTPUT_LINE = 'Hear me stays off on an output you chose. A m
 /* The take's own decision, from its log: it heard the band in a mic she said the band could not reach. */
 export function bandInMic(row) { return !!row && !!row.band_in_mic; }
 export const BAND_IN_MIC_LINE = 'Plume hears the band in this mic, so it has stopped going by what the mic hears. Press Stop when you are done.';
+/* Past this she hears herself as an echo of her own playing. A guess. */
+export const SEND_LATE_MS = 30;
+export const SEND_WAYS_OUT = ' To hear yourself on time, send the sound out through the same device as your input, or turn off Hear me and use that device\'s own direct monitoring.';
 export function sendDelayLine(ms) {
-  return 'Your instrument reaches that output about ' + Math.round(ms) + ' ms late, by your device\'s own count, and it could be more.';
+  /* By the number she is shown: "about 30 ms" must not come with advice for more than 30. */
+  const shown = Math.round(ms);
+  const line = 'Your instrument reaches that output about ' + shown + ' ms late, by your device\'s own count, and it could be more.';
+  return shown > SEND_LATE_MS ? line + SEND_WAYS_OUT : line;
 }
 
 /* A clap can't reach a pickup, and only a room mic hears the room. */

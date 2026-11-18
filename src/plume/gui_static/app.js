@@ -1416,7 +1416,11 @@ function drawLive() {
   $('live-stop').disabled = stopping;
   $('live-stop').textContent = stopping ? 'Stopping' : 'Stop';
   const inInput = bandInInput(row);
-  const hint = S.liveLost ? 'Lost touch with plume gui. If it has closed, plume stop still ends the take.' : doc.message || doc.hint || (inInput ? BAND_IN_INPUT_LINE : bandInMic(row) ? BAND_IN_MIC_LINE : '');
+  const band = inInput ? BAND_IN_INPUT_LINE : bandInMic(row) ? BAND_IN_MIC_LINE : '';
+  /* An overload can stand for a whole take, and a howl through the band reads as one, so
+     the band in her input is said over it. A buzz or a dead input is still said first. */
+  const overloading = !!row && row.input_fault === 'overload';
+  const hint = S.liveLost ? 'Lost touch with plume gui. If it has closed, plume stop still ends the take.' : doc.message || (overloading && band ? band : doc.hint || band);
   $('live-hint').hidden = !hint;
   $('live-hint').textContent = hint;
   const hasLevel = you.level !== null, sign = signView(you, row, doc);

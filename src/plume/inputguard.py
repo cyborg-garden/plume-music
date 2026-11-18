@@ -36,6 +36,24 @@ The tests:
   bars and eight seconds, while the take is not ending.  That is only said, never
   acted on: a dead input and a long rest look the same to the band, and the band
   already has its own idea of what a rest means.
+* overload -- her input keeps reaching full scale and flattening there, which is
+  distortion in the recording and, with Hear me on, in the speakers.  A hop is at
+  full scale when at least FULL_SAMPLES of its samples sit at FULL_LEVEL or over (one
+  peak just touching it is not a flat top).  Time is cut into FULL_SLOT_S slots, and
+  she is told once OVERLOAD_SAY slots within OVERLOAD_WINDOW_S held such a hop: one
+  stray thump or hot strum fills one or two.  It stays said until OVERLOAD_CLEAR_S
+  have passed with none, so it cannot flap, and what it had counted goes with it.
+
+  Two different things do this (a gain set too hot for how she plays, and knocks or
+  a crackling connection over quiet playing), and from the signal alone they cannot
+  be told apart well enough to give the player one cause: heavy clipping leaves
+  little unclipped to measure, and notes far apart look like bursts.  So the one
+  line is true of both.  A guess at which it is goes to the log only
+  (``guess_clip_hops`` and ``guess_bump_hops``; see :meth:`InputGuard._guess`), for
+  whoever reads a take afterwards.  It is only said, never acted on.  A hum at full
+  scale is a buzz, which is said instead.  The knocks of a count-in are meant to
+  be loud, so nothing is counted while ``counting`` is set, or for COUNT_GRACE_S
+  after.
 """
 from __future__ import annotations
 
@@ -96,9 +114,32 @@ PLAYED_S = 0.5
 SILENT_BARS = 4.0
 SILENT_MIN_S = 8.0
 
+#: Full scale: a sample this close to it is on the ceiling ...
+FULL_LEVEL = 0.98
+#: ... and a hop with this many of them is flattened, not one peak touching it.
+FULL_SAMPLES = 3
+#: Full-scale hops are counted by the slot: one strum's attack fills one or two.
+FULL_SLOT_S = 0.5
+#: Slots at full scale within OVERLOAD_WINDOW_S before she is told (bumps can come
+#: ten seconds apart), and the time without one that ends it.
+OVERLOAD_SAY = 3
+OVERLOAD_WINDOW_S = 60.0
+OVERLOAD_CLEAR_S = 30.0
+#: After a count-in ends, its last knock may still be ringing.
+COUNT_GRACE_S = 0.5
+#: The log's guess at the cause looks this far either side of a full-scale slot.  It
+#: reads as clipping when at least GUESS_FULL_SHARE of those hops were at full scale
+#: (her notes keep hitting the top), or the rest of her playing sits at GUESS_HOT_DB
+#: or over; as a bump otherwise.  A guess: never shown, never acted on.
+GUESS_AROUND_S = 1.5
+GUESS_FULL_SHARE = 0.05
+GUESS_HOT_DB = -20.0
+
 BUZZ_LINE = "Your input is buzzing. Check the cable."
 SILENT_LINE = "No sound from your input for a while."
-LINES = {"buzz": BUZZ_LINE, "silent": SILENT_LINE}
+OVERLOAD_LINE = ("Your input is overloading. Turn its gain down a little. "
+                 "If it is only pops or bumps, check your cable.")
+LINES = {"buzz": BUZZ_LINE, "silent": SILENT_LINE, "overload": OVERLOAD_LINE}
 
 
 def monitor_slot() -> np.ndarray:
@@ -186,6 +227,24 @@ class InputGuard:
         self.winding = False          # set while the band fades out (lead)
         self.buzz = False
         self.silent = False
+        self.overload = False
+        self.counting = False         # set while a count-in is being waited for
+        #: Hops at full scale over the whole take, and the log's guess at how many
+        #: were her own notes clipping and how many were bumps (see _guess): the
+        #: planner logs each bar's share.
+        self.full_hops = 0
+        self.guess_clip_hops = 0
+        self.guess_bump_hops = 0
+        self._full_slots: collections.deque = collections.deque()
+        self._last_full_hop = -math.inf
+        self._count_ended_hop = -math.inf
+        #: Each hop over the last 2 * GUESS_AROUND_S: its level, NaN where nothing of
+        #: hers sounded, +inf where it was at full scale.
+        self._levels: collections.deque = collections.deque(
+            maxlen=int(round(2.0 * GUESS_AROUND_S / HOP_S)))
+        #: Full-scale slots not yet guessed at: [slot, the hop to guess at, its hops].
+        self._unguessed: collections.deque = collections.deque()
+        self._hops = 0
         self._run = 0
         self._recent: collections.deque = collections.deque(maxlen=SAY_OF)
         self._recent_n = 0            # how many of _recent were hum (and _long_n)
@@ -201,7 +260,8 @@ class InputGuard:
     def fault(self) -> str | None:
         if not self.notices:
             return None
-        return "buzz" if self.buzz else "silent" if self.silent else None
+        return ("buzz" if self.buzz else "overload" if self.overload
+                else "silent" if self.silent else None)
 
     def feed(self, x) -> str | None:
         """Look at more input.  Returns a line to say, the first time a fault is
@@ -255,7 +315,54 @@ class InputGuard:
         # Clipping or not, any non-hum sound over the line is her playing.
         if not hum and db > PLAYING_DB:
             self._played_s += HOP_S
+        self._full_scale(h, db, hum)
         self._silence(db)
+
+    def _full_scale(self, h: np.ndarray, db: float, hum: bool) -> None:
+        self._hops += 1
+        now = self._hops
+        if self.counting:
+            self._count_ended_hop = now
+        counted = now - self._count_ended_hop > COUNT_GRACE_S / HOP_S
+        slot = int(now * HOP_S / FULL_SLOT_S)
+        full = (counted and not hum
+                and int(np.count_nonzero(np.abs(h) >= FULL_LEVEL)) >= FULL_SAMPLES)
+        self._levels.append(math.inf if full else
+                            db if not hum and db > PLAYING_DB else math.nan)
+        if full:
+            self.full_hops += 1
+            self._last_full_hop = now
+            if not self._full_slots or self._full_slots[-1] != slot:
+                self._full_slots.append(slot)
+            if self._unguessed and self._unguessed[-1][0] == slot:
+                self._unguessed[-1][2] += 1
+            else:
+                self._unguessed.append([slot, now + int(round(GUESS_AROUND_S / HOP_S)), 1])
+        while self._unguessed and now >= self._unguessed[0][1]:
+            self._guess(self._unguessed.popleft()[2])
+        while self._full_slots and slot - self._full_slots[0] > OVERLOAD_WINDOW_S / FULL_SLOT_S:
+            self._full_slots.popleft()
+        if len(self._full_slots) >= OVERLOAD_SAY and self.notices:
+            self.overload = True
+        # Long enough without one ends it, and what it had counted: the next starts
+        # from nothing, so the line cannot flap at the edge of the count.
+        if (now - self._last_full_hop >= OVERLOAD_CLEAR_S / HOP_S
+                and (self.overload or self._full_slots)):
+            self._full_slots.clear()
+            self.overload = False
+            self._said.discard("overload")
+
+    def _guess(self, hops: int) -> None:
+        """For the log only: were a slot's full-scale hops her own notes clipping, or
+        bumps over quieter playing?  Read GUESS_AROUND_S on, from the hops either side."""
+        around = np.fromiter(self._levels, dtype=np.float64, count=len(self._levels))
+        full = np.isinf(around)
+        rest = around[~full & ~np.isnan(around)]
+        if (float(np.mean(full)) >= GUESS_FULL_SHARE
+                or (rest.size and float(np.median(rest)) >= GUESS_HOT_DB)):
+            self.guess_clip_hops += hops
+        else:
+            self.guess_bump_hops += hops
 
     def _demodulate(self, x: np.ndarray) -> int:
         """Turn whole hops of input by every grid line and add them onto the running

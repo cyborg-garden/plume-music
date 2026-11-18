@@ -5224,7 +5224,8 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
         # The window is read once, and what reaches it after is dropped, so wait for the
         # ear to have heard all of it.  An ear that falls behind (a busy machine, a
         # stalled thread) otherwise loses the end of each bar: her strokes go uncounted
-        # and a bar can read as silent.  Bounded, so a late ear never makes a late bar.
+        # and a bar can read as silent.  Bounded: the wait ends while the plan still has
+        # the shortest lead it takes by choice, however late the ear is.
         give_up = read_window_by_s(t_bar, bar_s=bar_len, need_s=state.get("need_s", 0.0))
 
         def heard_to() -> float:

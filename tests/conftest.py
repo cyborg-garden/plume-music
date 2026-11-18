@@ -79,39 +79,63 @@ SR = realtime.SR
 #: The longest ``hold`` can pause the fake device: a wedge must still fail the test.
 HOLD_MAX_S = 30.0
 #: On a shared runner the fake device waits while the ear is this far behind it: more
-#: than this much of the input not yet read by the analysis thread.
-EAR_BEHIND_S = 0.5
-#: ... unless nothing has read that ring for this long: its reader has finished (a
+#: than this much of the input not yet heard.  Heard means analysed and handed on, not
+#: only read off the ring: the planner reads a bar once the ear has heard to its end
+#: (realtime.wait_for_ear), and what the ear has read but is still working through is
+#: not there yet.  Counting only the unread part let a slow ear sit half a second
+#: behind a fast playhead, the planner waited that out, and the wait came off the
+#: bar's lead: a twelfth of a second of wall time at 12x, enough to land the costliest
+#: bar late.  Kept short, so the wait costs a fast playhead next to nothing.
+EAR_BEHIND_S = 0.1
+#: ... unless nothing has touched that ring for this long: its reader has finished (a
 #: take's tail plays on after the ear has stopped), and waiting would only stall.
 EAR_GONE_S = 1.0
+#: The thread that reads the rings, in both transports.
+EAR_THREAD = "plume-analysis"
 #: Every live ring the transports feed the ear through (in, machine, voice).
 _EAR_RINGS: "weakref.WeakSet" = weakref.WeakSet()
 
 
 def _watch_the_ear() -> None:
-    """Note each ring, and when its reader last read it."""
+    """Note each ring: when its reader last touched it, how much it has read, and how
+    much of that it has finished with."""
     ring = realtime.RingBuffer
     if getattr(ring, "_ear_watched", False):
         return
-    real_init, real_read = ring.__init__, ring.read
+    real_init, real_read, real_available = ring.__init__, ring.read, ring.available.fget
 
     def __init__(self, *a, **kw):
         real_init(self, *a, **kw)
         self._ear_read_at = time.perf_counter()
+        self._ear_read = self._ear_heard = 0
         _EAR_RINGS.add(self)
 
     def read(self, *a, **kw):
+        out = real_read(self, *a, **kw)
         self._ear_read_at = time.perf_counter()
-        return real_read(self, *a, **kw)
+        self._ear_read += len(out)
+        return out
 
-    ring.__init__, ring.read, ring._ear_watched = __init__, read, True
+    def available(self):
+        # The ear asks what is waiting at the top of each turn, after handing on all
+        # it read the turn before: so by now it has heard everything it has read.
+        # Every ring it reads, as it only asks about some of them.
+        if threading.current_thread().name == EAR_THREAD:
+            now = time.perf_counter()
+            for r in list(_EAR_RINGS):
+                r._ear_heard, r._ear_read_at = r._ear_read, now
+        return real_available(self)
+
+    ring.__init__, ring.read, ring.available = __init__, read, property(available)
+    ring._ear_watched = True
 
 
 def ear_behind() -> bool:
     """Whether the analysis thread has fallen behind a fake device's input."""
     now = time.perf_counter()
     for ring in list(_EAR_RINGS):
-        if (ring.available > EAR_BEHIND_S * SR
+        unheard = ring.available + ring._ear_read - ring._ear_heard
+        if (unheard > EAR_BEHIND_S * SR
                 and now - getattr(ring, "_ear_read_at", now) < EAR_GONE_S):
             return True
     return False

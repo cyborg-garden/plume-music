@@ -640,10 +640,7 @@ def test_the_old_engine_rings_out_under_the_new_one(tmp_path, consent, monkeypat
             return np.full((tail_n, 2), 0.25, dtype=np.float32)
 
     monkeypatch.setattr(duet_mod, "DuetEngine", Marked)
-    # Where the tail lands, not how fast the bar was planned: the bar the band comes in
-    # on costs the most to plan, and a starved runner at full speed lands it late.
-    rec = _detect_take(tmp_path, _strummed_take(85.0), max_minutes=0.5,
-                       rate_x=playhead_rate(12.0))
+    rec = _detect_take(tmp_path, _strummed_take(85.0), max_minutes=0.5)
     band = [r for r in _rows(rec) if r["entry"] != "drums"]
     assert band and band[0]["style"] == "midwest"
     machine, _ = sf.read(str(rec / "machine.wav"), dtype="float32")
@@ -802,6 +799,44 @@ def test_waiting_for_the_ear_is_not_counted_as_planning(tmp_path, consent, monke
     _detect_take(tmp_path, _folk_take(96.0), max_minutes=0.1)
     assert costs, "no bar was planned"
     assert max(costs) < long_wait_s
+
+
+def test_an_ear_that_stops_does_not_hold_the_band_up(tmp_path, consent, monkeypatch):
+    """The planner waits for the ear to finish a bar before reading it, but only so long.
+    With the ear stopped for more than two bars, every bar still sounds on time."""
+    import time
+
+    import soundfile as sf
+
+    rate = playhead_rate(12.0)
+    stops_at_s, stopped_for_s = 14.0, 7.0            # of the take: two and a half bars
+    # A real device plays on whatever the ear is doing, so this one must not wait for it.
+    monkeypatch.setattr(conftest, "ear_behind", lambda: False)
+    analyse = realtime.analysis_step
+    stopped = []
+
+    def ear(**kw):
+        out = analyse(**kw)
+        frames = out[0]
+        if not stopped and frames and frames[-1].t_s >= stops_at_s:
+            stopped.append(frames[-1].t_s)
+            time.sleep(stopped_for_s / rate)
+        return out
+
+    monkeypatch.setattr(realtime, "analysis_step", ear)
+    rec = _detect_take(tmp_path, _strummed_take(85.0), max_minutes=0.3, rate_x=rate)
+    assert stopped, "the ear never stopped"
+    rows = _rows(rec)
+    bar_s = 240.0 / rows[0]["bpm"]
+    machine, _ = sf.read(str(rec / "machine.wav"), dtype="float32")
+    through = [r for r in rows if stopped[0] <= r["t_s"] <= stopped[0] + stopped_for_s]
+    assert len(through) >= 2, "no bar was planned while the ear was stopped"
+    for r in through:
+        for beat in range(4):
+            at = int((r["t_s"] + beat * bar_s / 4) * SR)
+            seg = machine[at:at + int(bar_s / 4 * SR)]
+            assert seg.size and float(np.abs(seg).max()) > 1e-3, (
+                f"bar {r['bar']} beat {beat} is silent: it was planned too late")
 
 
 def test_four_downstrokes_a_bar_at_120_bring_in_the_folk_band(tmp_path, consent):

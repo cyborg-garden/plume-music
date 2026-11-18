@@ -64,7 +64,7 @@ from pathlib import Path
 from . import inputfx as _inputfx
 from . import oscompat
 from .compose import parse_prompt
-from .inputguard import BUZZ_LINE, SILENT_LINE
+from .inputguard import LINES as INPUT_FAULT_LINES
 from .realtime import (AUDIO_CONSENT_ENV, AUDIO_CONSENT_OFF, OPEN_TOGETHER_FAILED, REC_CUES,
                        REC_DECISIONS, REC_ENDING, REC_HUMAN, REC_MACHINE, REC_MANIFEST, REC_MIDI, REC_STREAM, REC_VOICE,
                        LiveSession, RealtimeError, list_sessions, send_cue, stop_session)
@@ -87,7 +87,6 @@ NO_COUNT = ("Still waiting for a count. A knock may not reach a pickup, "
 NO_COUNT_ROOM = "Still waiting for a count. Try knocking or clapping louder, closer to the mic."
 OPENING = "Still opening the device. This computer may be asking to use the microphone."
 STALLED = "The audio device stopped answering."
-INPUT_FAULT_LINES = {"buzz": BUZZ_LINE, "silent": SILENT_LINE}
 ENDED_EARLY = "The take ended early."
 NO_PAGE = "No page was open, so plume stopped this take."
 WEDGED = "Still stopping. Run plume stop in a terminal."

@@ -13,6 +13,7 @@ arithmetic, which is not a function call.  Only a real device has a deadline.
 from __future__ import annotations
 
 import dis
+import json
 import os
 import re
 import socket
@@ -22,7 +23,8 @@ import time
 
 import numpy as np
 import pytest
-from conftest import FakeMido, fake_audio, patched_module, short_socket_path
+from conftest import (FakeCallbackFlags, FakeMido, fake_audio, patched_module,
+                      short_socket_path)
 
 import plume
 from plume import mind as mind_mod
@@ -32,6 +34,10 @@ from plume import roles as roles_mod
 PLUME_DIR = os.path.dirname(plume.__file__)
 NUMPY_DIR = os.path.dirname(np.__file__)
 THIS_FILE = os.path.abspath(__file__)
+#: The status object PortAudio hands the callback is the device's, not plume's: reading
+#: its flags enters its code, here the fake's.
+STATUS_FILE = os.path.abspath(sys.modules[FakeCallbackFlags.__module__].__file__)
+STATUS_CODE = {"__bool__", "<lambda>"}
 RIG = [{"name": "Audio Interface 4x4", "max_input_channels": 4, "max_output_channels": 4}]
 
 #: A name in callback code that means waiting, or reaching outside the rings.
@@ -41,7 +47,7 @@ FORBIDDEN_NAME = re.compile(
 #: C functions that wait.
 FORBIDDEN_CALL = {"sleep", "acquire", "release", "wait", "join", "acquire_lock", "select"}
 #: The C functions a callback may call: its rings, and nothing else.
-ALLOWED_CALLS = {"asarray", "min", "setprofile"}
+ALLOWED_CALLS = {"asarray", "min", "setprofile", "perf_counter"}
 #: The plume files whose code may run in the callback: the transport, and the input sound
 #: plume.inputfx (the effect on the "Hear me" monitoring switch), held to the same rules.
 CALLBACK_FILES = {"realtime.py", "inputfx.py"}
@@ -109,6 +115,8 @@ class Watcher:
             where = os.path.abspath(code.co_filename)
             if where == THIS_FILE or where.startswith(NUMPY_DIR):
                 continue
+            if where == STATUS_FILE and code.co_name in STATUS_CODE:
+                continue
             if not where.startswith(PLUME_DIR):
                 out.append(f"entered {where}:{code.co_name}")
                 continue
@@ -159,14 +167,33 @@ def run_jam(tmp_path, sock, **kw):
     (run_jam, {}),
 ], ids=["lead", "jam"])
 def test_the_callback_only_copies_rings(env, run, extra, midi):
-    sd, watcher = watched_device()
+    # Every bit PortAudio can flag, on one block in seven: counting them is callback
+    # work too, and must stay as pure as the rest.
+    flagged = []
+
+    def status(i):
+        if i % 7:
+            return FakeCallbackFlags(0)
+        flagged.append(i)
+        return FakeCallbackFlags(0xF)
+    sd, watcher = watched_device(status=status)
     kw = {"midi": midi} if midi else {}
     with patched_module("sounddevice", sd), patched_module("mido", FakeMido()):
         run(env, short_socket_path("pure"), monitor=True, input_device="audio interface",
             input_channel=1, **extra, **kw)
     assert watcher.blocks > 50, "the callback barely ran, so this proves nothing"
-    assert {"callback", "write", "read_into"} <= watcher.names_entered()
+    assert {"callback", "write", "read_into", "note_xruns", "note_callback"} <= watcher.names_entered()
     assert watcher.problems() == []
+    if run is run_lead:
+        return       # a tap-started take logs no bar before its count: see test_input_guard
+    rows = [json.loads(line) for line in
+            (env / "rec" / realtime.REC_DECISIONS).read_text().splitlines() if line.strip()]
+    counted = [r["xruns"] for r in rows if "xruns" in r]
+    assert counted, "no row logs the over/underruns"
+    for name in realtime.XRUN_NAMES:
+        total = sum(c[name] for c in counted)
+        # Rows stop before the device does, so the log holds most of them, never more.
+        assert 0 < total <= len(flagged), name
 
 
 @pytest.mark.parametrize("sound", ["clean", "dreamy", "lofi", "crunch"])

@@ -505,24 +505,30 @@ def test_one_bright_note_held_is_not_a_chord(midi, harmonics, ring):
         assert d["source"] == "template", (heard, d)
 
 
-def test_a_chord_missing_its_third_names_no_chord():
-    """Root and fifth loud, the third a trace: a drone or a power chord, not a chord
-    whose quality was heard."""
-    c = pcs_chroma((9, 4, 0), weights=(1.0, 0.6, 0.1))
-    r = hc.read_bar(c, hc.candidates(KEY, STYLE))
-    assert r.sym is None and r.best == "Am7" and "barely sounds" in r.why
+def test_a_chord_missing_its_third_names_the_keys_chord_on_its_root():
+    """Root and fifth loud, the third a trace: a power chord.  The quality was not
+    heard, so it is the key's: A and E in C major are its Am7.  (This named no chord
+    before partial voicings counted; a guitar plays power chords more than anything.)
+    A root and fifth that no chord of the key has (B and F# in C major) still names
+    none."""
+    cands = hc.candidates(KEY, STYLE)
+    r = hc.read_bar(pcs_chroma((9, 4, 0), weights=(1.0, 0.6, 0.1)), cands)
+    assert r.sym == "Am7", r
+    r = hc.read_bar(pcs_chroma((11, 6), weights=(1.0, 0.6)), cands)
+    assert r.sym is None, r
 
 
-def test_a_quiet_minor_third_still_names_the_chord_and_a_major_one_does_not():
+def test_a_quiet_third_still_names_the_chord_minor_or_major():
     """Six strings double the root and fifth and leave one third, a fifth of the
     loudest.  No overtone of the other chord tones lands on a minor third, so that is
-    a real string; a major third at the same level could be the root's own fifth
-    harmonic, and stays unsure."""
+    a real string.  A major third at the same level could be the root's own fifth
+    harmonic, and used to leave the bar unsure; its root and fifth are a partial
+    voicing now, which names the key's chord on that root: here the same Cmaj7."""
     cands = hc.candidates(KEY, STYLE)
     minor = hc.read_bar(pcs_chroma((4, 11, 7), weights=(1.0, 0.55, 0.2)), cands)
     assert minor.sym == "Em7", minor
     major = hc.read_bar(pcs_chroma((0, 7, 4), weights=(1.0, 0.55, 0.2)), cands)
-    assert major.sym is None and major.best == "Cmaj7" and "barely sounds" in major.why
+    assert major.sym == "Cmaj7", major
 
 
 OPEN_STRINGS = (40, 45, 50, 55, 59, 64)
@@ -562,27 +568,42 @@ def test_a_full_minor_chord_with_one_third_among_six_strings_is_followed(
     assert all(d["chord"].startswith(sym) for d in got), got[0]
 
 
-@pytest.mark.parametrize("shape, key", [("022100", "E major"), ("320033", "G major")])
-def test_a_full_major_chord_with_one_quiet_third_keeps_the_template_and_says_why(
-        shape, key):
-    """A known limit, kept on the safe side: with one major third among six strings
-    (0.16-0.24 of the loudest on a plain tone) the bar looks like a bright single
-    note, whose fifth harmonic is that same third.  The band keeps the template
-    rather than claim a chord it can't tell from one note."""
+@pytest.mark.parametrize("shape, key, sym", [("022100", "E major", "E"),
+                                             ("320033", "G major", "G")])
+def test_a_full_major_chord_with_one_quiet_third_is_followed(shape, key, sym):
+    """Once a known limit: with one major third among six strings (0.16-0.24 of the
+    loudest on a plain tone) the bar looks like a bright single note, whose fifth
+    harmonic is that same third, and the band kept the template.  Its root and fifth
+    sound as strings of their own (a lone note's fifth is under a third of its root),
+    so it is a partial voicing, and names the key's own chord on that root."""
     got = _held(_frets(shape), key)
-    assert got and all(d["source"] == "template" for d in got), got[0]
-    assert all("barely sounds" in d["reason"] for d in got[1:]), got[1]
+    assert got and all(d["source"] == "her_hold" for d in got), got[0]
+    assert all(d["chord"].startswith(sym) and 4 in parse_chord(d["chord"]).intervals
+               for d in got), got[0]
 
 
 @pytest.mark.parametrize("root", [40, 45, 47, 52])
 @pytest.mark.parametrize("key", [KEY, "E minor", "A minor", "D major"])
-def test_a_bright_power_chord_is_not_a_minor_chord(root, key):
-    """Root, fifth and octave with no third: the minor chord on that root has no
-    third in it at all, however bright the tone."""
+def test_a_bright_power_chord_takes_the_keys_chord_on_its_root(root, key):
+    """Root, fifth and octave with no third, however bright the tone.  The band plays
+    a chord of the key on that root (E minor's Em, D major's A; a bright tone's own
+    fifth harmonic can still tip it to the major V the style borrows, as before), or
+    the template where the key has no chord with that root and fifth.  Never another
+    root.  (Before, most power chords named no chord at all.)"""
     got = _held((root, root + 7, root + 12), key, harmonics=20, rolloff=0.7)
     assert got
+    mine = {c.sym for c in hc.candidates(key, STYLE) if c.root == root % 12}
     for d in got:
-        assert d["source"] == "template" or "m" not in d["chord"][1:3], d
+        if d["source"] == "template":
+            continue
+        assert parse_chord(d["chord"]).root % 12 == root % 12, d
+        assert d["her_chord"] in mine, d
+    fits = [c for c in hc.candidates(key, STYLE)
+            if c.root == root % 12 and (root + 7) % 12 in c.triad]
+    if fits:                              # the key has a chord there: it is followed
+        assert all(d["source"] == "her_hold" for d in got), got
+    else:                                 # it has none (B and F# in C major)
+        assert all(d["source"] == "template" for d in got), got
 
 
 def test_a_minor_third_that_another_note_overtones_is_not_her_string():
@@ -598,9 +619,12 @@ def test_a_minor_third_that_another_note_overtones_is_not_her_string():
     assert got and all(d["source"] == "template" for d in got), got[-1]
 
 
-def test_a_drone_with_the_minor_third_on_one_beat_in_four_is_still_a_drone():
+def test_a_drone_with_the_minor_third_on_one_beat_in_four_is_its_root_chord():
     """Root and fifth ringing, a melody over them that touches the third once a bar:
-    the third is a trace (0.06-0.12 of the root), and the band keeps the template."""
+    the third is a trace (0.06-0.12 of the root).  The drone is a power chord on E,
+    so once held it is the key's own chord there, E minor's Em, and never another
+    chord, nor one with a quality the key does not give E.  (It kept the template
+    before partial voicings counted.)"""
     bar_s, n = 2.0, 8
     audio = np.zeros(int((n + 1) * bar_s * SR))
     for b in range(n):
@@ -613,10 +637,13 @@ def test_a_drone_with_the_minor_third_on_one_beat_in_four_is_still_a_drone():
             y = 0.05 * _pluck((note,), 0.5)
             audio[s:s + y.size] += y
     f = hc.ChordFollower()
+    held = []
     for heard, frames in enumerate(_bars_of(audio[:int(n * bar_s * SR)], bar_s)):
         f.hear(heard, hc.clean_bar(frames), playing=True)
         d = f.decide(heard + 2, "E minor", STYLE, "Am7")
-        assert d["source"] == "template", (heard, d)
+        assert d["source"] == "template" or d["chord"].startswith("Em"), (heard, d)
+        held.append(d["source"])
+    assert "her_hold" in held
 
 
 @pytest.mark.parametrize("shape, key, style, sym", [
@@ -717,6 +744,9 @@ def test_live_room_mic_she_holds_am_and_the_band_says_it_cannot_tell(tmp_path, c
     assert all(r["chords"]["source"] == "template" for r in band)
     assert all(r["chord"] == r["chords"]["template"] for r in band)
     assert all("room mic" in r["chords"]["reason"] for r in band)
+    # Nor does the song yield to what a room mic hears: fewer parts there would read
+    # as her playing softer, and take the band down further (bandentry.PlanYield).
+    assert all("yield" not in r for r in band)
 
 
 def test_live_room_mic_melody_over_bleed_keeps_the_template(tmp_path, consent):

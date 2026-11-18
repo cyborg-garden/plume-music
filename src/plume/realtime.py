@@ -4979,12 +4979,14 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
     named_key = None
     if tap_start:
         from .bandentry import (DETECT_KEY_FALLBACK_BARS, END_AFTER_S,  # noqa: PLC0415
-                                CLICK_ROLE, FOLLOW, PLAIN_INTRO_GAIN_DB, BandEntry,
-                                BandFollow, GuitarEar, PhraseHold, SilenceEnding,
-                                StylePick, EntryRamp, click_bridge_level,
+                                CLICK_ROLE, DRUM_ROLES, FOLLOW, PLAIN_INTRO_GAIN_DB,
+                                BandEntry, BandFollow, GuitarEar, PhraseHold, PlanYield,
+                                SilenceEnding, StylePick, EntryRamp, click_bridge_level,
                                 follow_band_settled, outro, plain_phrase_feel,
-                                song_section)
+                                song_section, yield_to)
         density_hold = PhraseHold(int(params.entry_boundary_bars))
+        # The song's shape gives way to her (bandentry.PlanYield).
+        plan_yield = PlanYield(int(params.entry_boundary_bars))
         entry_ramp = EntryRamp(under_db=params.enter_under_db, ramp_bars=params.ramp_bars)
         guitar_ear = GuitarEar()
         from .herchords import ChordFollower, clean_bar  # noqa: PLC0415
@@ -5524,10 +5526,19 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
                                           ramp_bars=params.ramp_bars),
                                       parts=parts,
                                       bar_s=bar_len)
+            yielded = None
             if entered.stage == "drums":
                 section, density, resting = "intro", TAP_START_MIN_DENSITY, ()
             else:
                 section, density, resting = song_section(entry.bars_in)
+                arc_section = section
+                # The arc is a default: while the band has come down to meet her, a
+                # lift is a verse and the lighter parts rest; up with her, a lift.
+                # Never on a room mic, where fewer parts would read as her softer.
+                yielded = yield_to(plan_yield, follow, section, density, resting,
+                                   bars_in=entry.bars_in)
+                section, density, resting = (yielded.section, yielded.density,
+                                             yielded.resting)
                 density = follow.shape(density) * follow.density
             crash = False
             if ending_now is not None:
@@ -5555,6 +5566,10 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
             levels = ({r: 1.0 for r in roles} if entered.stage == "drums"
                       else entry_ramp.levels(entry.bars_in, roles,
                                              intro=state.get("intro_roles", ())))
+            if yielded is not None and yielded.drums < 1.0 and ending_now is None:
+                # Lighter drums while the band has come down to meet her.
+                levels = {r: v * (yielded.drums if r in DRUM_ROLES else 1.0)
+                          for r, v in levels.items()}
             # Over that swell the click she has been playing to fades out, and the
             # drums keep their first phrase plain (bandentry.bridged_style).
             click_level, plain_feel, notes = 0.0, None, []
@@ -5581,7 +5596,9 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
                 gain_db=(plan.gain_db + TAP_START_GAIN_DB + follow.gain_db + fade_db
                          + (PLAIN_INTRO_GAIN_DB if plain_intro[0] else 0.0)),
                 reason=f"{entered.reason}{bridge_note}; {plan.reason}"
-                       + (f"; {followed.reason}" if followed is not None else ""))
+                       + (f"; {followed.reason}" if followed is not None else "")
+                       + (f"; {yielded.reason}" if yielded is not None and yielded.lean
+                          != "neutral" and ending_now is None else ""))
         audio = lead_tone.process(duet.render_bar(plan, mbeat, mh, entry_feel=entry_feel,
                                                   section=form.section_idx),
                                   tilt=lead_cues.tilt, wet=lead_cues.wet)
@@ -5670,6 +5687,10 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
             if state["tempo_from_loop"]:
                 doc["tempo_from"] = "loop"
             doc["section"] = section
+            if yielded is not None and ending_now is None and follow.trusted:
+                # The song's own section, and how far it gave way to her.
+                doc["yield"] = {"arc": arc_section, "lean": yielded.lean,
+                                "reason": yielded.reason}
             doc["playing"] = playing
             doc["playing_trusted"] = playing_trusted
             doc["fade_db"] = round(fade_db, 2)

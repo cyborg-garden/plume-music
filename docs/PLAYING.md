@@ -38,6 +38,30 @@ fade and the band comes straight back. On a direct input a rest under 6 seconds 
 band. A longer one can: from about 6 to 11 seconds depending on the tempo and where in the bar
 you stop, later at very slow tempos. It can take two or three bars to come back up.
 
+Once it is in, the band keeps listening for the whole take, measured against how you
+normally play rather than against any fixed level. Your normal is where you have been
+playing when you are not in a softer or louder passage, and it moves with you. Play softer for a couple of bars and it
+comes down to meet you: quieter, fewer notes, the drums played lighter, and once you have
+held it through a phrase the lighter parts sitting out, though the kick, snare and bass
+keep going. Come back
+up and so does the band. Playing fewer notes at your usual level only thins the band's own
+patterns. One quiet bar, or one loud one, moves nothing. Answer yourself soft and loud a
+few bars at a time and the band settles rather than pumping, with the song's parts and
+lifts as written. A softer passage is followed for as long as it lasts, and when you come
+back to your normal the band comes back to its own level with you, not past it, and a
+louder chorus is lifted with you for as long as it lasts. If you open softly for a few bars
+and then play at your real level, that becomes your normal within about 16 bars; open
+softly for as long as a verse and what follows is a chorus. If you open loudly, or stay
+louder or softer for well over a minute or two, it becomes your normal after about 64 bars. The song's own shape is only a
+default: a lift you play softly under is played as a verse, and a verse you drive is played
+as a lift, always from a phrase line. The `yield` field in each decision row says when that
+happened. On a room mic the song keeps its own shape, since the mic hears the band too. Chords follow
+what you play when the band can tell what it is: a triad, a power chord or a two-string
+shape is enough, with no seventh needed. A loop is followed once you have played it a few
+times, even when a bar of it doesn't read cleanly, and a new loop takes over once you have
+played it twice. When the band can't tell, it plays the song's own chords. A room mic can't
+tell your chords from the band's, so there it always plays the song's own.
+
 Add `--detect` and you need no prompt at all: `plume lead --tap-start --detect`. Plume works
 out whatever the prompt doesn't name as you play. It listens for the key, and after 16 bars
 with no settled key it takes its latest reading. If it has no reading at all, as with playing

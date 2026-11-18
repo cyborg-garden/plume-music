@@ -28,12 +28,21 @@ each chord pays two bars for that, once, as the band comes in.
 
 TRUTH.  A wrong chord is worse than the template, so this commits only when a bar
 fits one chord clearly: its triad holds at least :data:`FIT_MIN` of the bar's
-pitch energy and beats the next chord by :data:`MARGIN`.  The chords it can name
-are the key's seven diatonic ones, and beside them any chord the style borrows
+pitch energy and beats the next chord by :data:`MARGIN`.  A seventh is never needed,
+and nor is the whole triad: a power chord or a two-string shape (its root and one
+more tone, :data:`PARTIAL_MIN`) names the key's chord on that root.  The chords it can
+name are the key's seven diatonic ones, and beside them any chord the style borrows
 for a degree (the minor key's major V, jazz's iv7 and VI7): never the borrowed
 one in place of the key's own.  Anything else, single-note melody included, keeps
 the style's own progression.  Each bar's decision says which it was and why
 (``decide``'s ``reason``).
+
+LOOPS THAT DO NOT READ CLEAN.  A real strum lands between two chords now and then.
+Beside the strict loop (every place read alike its last two times), a loop is also
+followed by vote (:meth:`ChordFollower._vote`): each place takes the chord most of its
+last three times named.  That is the hysteresis: one odd bar neither starts the band
+on a chord nor moves it off one, and a new loop takes over once she has played it
+twice.  A place with no clear chord keeps the template.
 
 ROOM MIC.  A room mic hears the band too, and the band's own chord must not come
 back as hers.  Nothing live can say how much of a bar is the band: the self
@@ -60,8 +69,9 @@ from .theory import parse_chord, parse_key, roman_to_chord
 
 #: Share of a bar's pitch energy her chord's triad must hold.  Three notes of
 #: twelve hold 0.25 by chance, and a melody walking a seven-note scale gives every
-#: diatonic triad about 0.43.  Tuned on the synthetic fixtures and her takes.
-FIT_MIN = 0.6
+#: diatonic triad about 0.43.  Tuned on the synthetic fixtures and her takes.  It was
+#: 0.6, which a strummed chord with a passing note or two can fall just under.
+FIT_MIN = 0.55
 #: How far the best chord must beat the next one (score units: fit plus the
 #: root's weight).  Neighbouring diatonic triads share two notes, so a bar that
 #: sits between them is not a chord we can name.
@@ -97,11 +107,28 @@ BALANCE_MIN = 0.25
 #: below it, the fifth harmonic of the one a major third below), so this floor holds
 #: only while neither of those sounds half as loud as the third itself.
 MINOR_THIRD_MIN = 0.15
+#: A partial voicing: two of the chord's three tones, its root one of them, and the
+#: quieter at least this share of the louder.  A power chord (root and fifth) or a
+#: two-string shape, the commonest way a guitar plays a chord, names the key's chord
+#: on that root: the band supplies the quality the key gives it.  A lone note's own
+#: fifth (its third harmonic) measured 0.12-0.29 of its root's chroma on rendered
+#: plain tones, and 0.37 on a very bright one (twenty harmonics, slow rolloff).
+PARTIAL_MIN = 0.4
 #: Her loop lengths in bars, longest first: an established longer loop knows more
 #: than the hold inside it.  1 is the hold, which :meth:`ChordFollower._hold`
 #: reads; it stays here so a loop of equal bars is left to the hold.  A loop of
 #: any other length (five bars, say) keeps the template: a wrong guess is worse.
 LOOP_PERIODS = (16, 12, 8, 6, 4, 3, 2, 1)
+#: Loop lengths read by vote, longest first as for :data:`LOOP_PERIODS` (see
+#: :meth:`ChordFollower._vote`): a loop that does not read clean every time, followed
+#: where most of it agrees.  A short one can agree by chance when a few of her bars
+#: named nothing; a longer one has to agree over more of them.  Longer loops need
+#: more bars than are kept to be heard three times.
+VOTE_PERIODS = (8, 4, 3, 2)
+#: Times round the loop each place is voted over, and the share of the readings
+#: that must agree with the winners.  Two of three is the least a vote can be.
+VOTE_CYCLES = 3
+VOTE_AGREE = 0.75
 #: Bars of her playing kept: the longest loop, seen twice, with room for rests.
 MEMORY_BARS = 48
 #: The band's phrase, in bars: its progressions are four bars long, and she changes
@@ -264,7 +291,7 @@ def read_bar(chroma, cands, bass=None, notes=None) -> Reading | None:
     floor = MINOR_THIRD_MIN if own_string else BALANCE_MIN
     if notes is not None and notes < NOTES_MIN:
         why = f"single notes ({notes:.1f} at once)"
-    elif balance < floor:
+    elif balance < floor and not _partial(c, best):
         why = f"one note of {best.sym} barely sounds ({balance:.2f} of the loudest)"
     elif fit < FIT_MIN:
         why = f"fit {fit:.2f} under {FIT_MIN:.2f}"
@@ -274,6 +301,15 @@ def read_bar(chroma, cands, bass=None, notes=None) -> Reading | None:
         why = ""
     return Reading(None if why else best.sym, round(fit, 3), best.sym, round(margin, 3),
                    why)
+
+
+def _partial(c, cand: Candidate) -> bool:
+    """Two of ``cand``'s tones sound, its root and one more, near enough each other
+    (see :data:`PARTIAL_MIN`): a power chord or a two-note shape."""
+    root = float(c[cand.root])
+    other = max(float(c[p]) for p in cand.triad if p != cand.root)
+    hi, lo = max(root, other), min(root, other)
+    return hi > 0.0 and lo >= PARTIAL_MIN * hi
 
 
 def clean_bar(frames) -> HerBar:
@@ -401,11 +437,14 @@ class ChordFollower:
             return out(template, "template",
                        f"template: nothing of hers since bar {evidence[-1]}", last=last)
         recent = evidence[-2:]
+        unsure = None
         if len(recent) == 2 and all(reads[b].sym is None for b in recent):
             r = reads[recent[-1]]
-            return out(template, "template",
-                       f"template: bars {recent[0]} and {recent[1]} name no chord "
-                       f"({r.why}, best {r.best})", last=last)
+            unsure = (f"template: bars {recent[0]} and {recent[1]} name no chord "
+                      f"({r.why}, best {r.best})")
+            # Only a loop most of whose bars she is still naming outlasts that.
+            voted = self._voted(reads, heard_bar, bar, template, out, last, fresh=True)
+            return voted or out(template, "template", unsure, last=last)
         for period in LOOP_PERIODS:
             if period == 1:
                 continue                # the hold, below
@@ -422,6 +461,7 @@ class ChordFollower:
                        f"bar {src_bar}'s {sym}", period, last)
         held = self._hold(reads, heard_bar)
         lag = max(bar - heard_bar, 0)
+        wait = None
         if held is not None and len(held[1]) >= max(2, lag + 1):
             sym, run = held
             # How long she has been on this chord: since the last bar that read
@@ -440,10 +480,13 @@ class ChordFollower:
                 return out(colour(sym, bar, key), "her_hold",
                            f"following her {sym}: bars {run[0]} to {run[-1]} read {sym}",
                            1, last)
-            return out(template, "template",
-                       f"template: her {sym} since bar {run[0]} may end on the phrase "
-                       f"line at bar {line}, which the band has not heard past",
-                       last=last)
+            wait = (f"template: her {sym} since bar {run[0]} may end on the phrase "
+                    f"line at bar {line}, which the band has not heard past")
+        voted = self._voted(reads, heard_bar, bar, template, out, last)
+        if voted is not None:
+            return voted
+        if wait is not None:
+            return out(template, "template", wait, last=last)
         r = reads[evidence[-1]]
         why = (f"her bar {evidence[-1]} reads {r.sym}, no hold or loop yet" if r.sym
                else f"her bar {evidence[-1]} names no chord ({r.why}, best {r.best})")
@@ -472,6 +515,65 @@ class ChordFollower:
                 break
             bars.append(b)
         return None if sym is None else (sym, bars[::-1])
+
+    def _voted(self, reads, heard_bar: int, bar: int, template, out, last, *,
+               fresh: bool = False):
+        """The decision from her loop by vote, or None when there is none.
+
+        Not every bar of a loop reads clean: a strum lands between two chords, a
+        fill.  Each place in a loop she has played three times takes the chord most
+        of those times named, and the loop is hers when nearly every place has one
+        and the readings mostly agree with it.  A place with none keeps the template.
+        ``fresh``: her latest bars named nothing, so the loop counts only while at
+        least half of its last time round still named a chord."""
+        for period in VOTE_PERIODS:
+            pattern = self._vote(reads, heard_bar, period)
+            if pattern is None:
+                continue
+            if fresh:
+                named = sum(1 for b in range(heard_bar - period + 1, heard_bar + 1)
+                            if isinstance(reads.get(b), Reading) and reads[b].sym)
+                if 2 * named < period:
+                    continue
+            k = (bar - heard_bar + period - 1) // period
+            src_bar = bar - k * period
+            sym = pattern.get(src_bar % period)
+            seq = " ".join(pattern.get((heard_bar - period + 1 + i) % period, "?")
+                           for i in range(period))
+            if sym is None:
+                return out(template, "template",
+                           f"template: her {period}-bar loop {seq} has no clear chord "
+                           f"for bar {bar}", period, last)
+            return out(sym, "her_loop",
+                       f"following most of her {period}-bar loop {seq}: bar {bar} plays "
+                       f"bar {src_bar}'s {sym}", period, last)
+        return None
+
+    @staticmethod
+    def _vote(reads, heard_bar: int, period: int):
+        """Her loop of ``period`` bars by vote: ``{place: chord}`` for each place in
+        the loop where at least two of its last :data:`VOTE_CYCLES` readings named
+        the same chord, or None when too few places have one, the readings agree
+        with it less than :data:`VOTE_AGREE` of the time, or it is one chord (a
+        hold, not a loop)."""
+        lo = heard_bar - VOTE_CYCLES * period + 1
+        slots: dict[int, list[str]] = {}
+        for b in range(heard_bar, lo - 1, -1):          # newest first
+            r = reads.get(b)
+            if isinstance(r, Reading) and r.sym is not None:
+                slots.setdefault(b % period, []).append(r.sym)
+        pattern: dict[int, str] = {}
+        for res, syms in slots.items():
+            top = max(dict.fromkeys(syms), key=syms.count)    # ties: the newest
+            if syms.count(top) >= 2:
+                pattern[res] = top
+        if len(pattern) < period - (period // 4) or len(set(pattern.values())) < 2:
+            return None
+        total = sum(len(s) for s in slots.values())
+        agree = sum(s.count(pattern[r]) for r, s in slots.items() if r in pattern)
+        if agree < VOTE_AGREE * total:
+            return None
+        return pattern
 
     @staticmethod
     def _loop(reads, heard_bar: int, period: int):

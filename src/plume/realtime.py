@@ -333,10 +333,23 @@ def _band_in_mic_doc(bar, share) -> dict:
                       "hears is no longer believed to be only her"}
 
 
-#: A sample this close to full scale has clipped.  A knock on the instrument's body or
-#: a crackling cable does that for a moment, and averaged into the bar it reads as a
-#: bar many dB louder.
+#: A sample this close to full scale has clipped.
 FOLLOW_CLIP_LEVEL = 0.99
+#: Full scale is out of character for a player whose loudest moments sit under this
+#: peak, some 10 dB below it: a clip then is a knock on the instrument's body or a
+#: crackling cable, and averaged into the bar it reads as a bar many dB louder.  A
+#: player at or over it reaches full scale by leaning in, and her clips are her playing.
+FOLLOW_CLIP_QUIET_PEAK = 0.3
+#: Her loudest moments are the peaks of each stretch this long that she played in ...
+FOLLOW_CLIP_BLOCK_S = 2.0
+#: ... over this many of them, about half a minute, and it is their middle that is
+#: compared: bursts are few, so they do not move it, and a player who has clipped in
+#: most of them is one who plays that loud.
+FOLLOW_CLIP_BLOCKS = 15
+#: With fewer than this many heard, nobody knows how she plays, and nothing is left out.
+FOLLOW_CLIP_MIN_BLOCKS = 5
+#: A stretch whose peak is under this is not one she played in.
+FOLLOW_CLIP_SOUNDING_PEAK = 0.02
 #: A frame ending within this of a clipped hop is left out with it: a knock is still
 #: swinging up to full scale, and ringing down from it, a few hundredths either side.
 FOLLOW_CLIP_GUARD_S = 0.045
@@ -350,23 +363,53 @@ _CLIP_HELD_S = (WIN - HOP) / SR
 
 
 class ClipWatch:
-    """When the input clipped: the end time, in stream seconds, of each HOP holding a
-    sample at full scale (:data:`FOLLOW_CLIP_LEVEL`), on the clock
-    :class:`~plume.listen.features.FeatureExtractor` stamps its frames with.  Runs in
-    the analysis thread beside it, on the same blocks."""
+    """When the input clipped out of character for this player.
+
+    ``process`` returns the end time, in stream seconds, of each HOP holding a sample at
+    full scale (:data:`FOLLOW_CLIP_LEVEL`), on the clock
+    :class:`~plume.listen.features.FeatureExtractor` stamps its frames with, but only
+    while full scale is far above how she has been playing: the middle of her recent
+    loudest moments (:attr:`typical_peak`) is under :data:`FOLLOW_CLIP_QUIET_PEAK`.
+    For a player who plays near full scale, or one not yet heard for long enough to
+    say, it returns nothing, and every reading is the one it always was.  Runs in the
+    analysis thread beside the extractor, on the same blocks."""
 
     def __init__(self, sr: int = SR, hop: int = HOP):
         self._sr, self._hop = int(sr), int(hop)
         self._seen = 0                # samples so far
         self._last = -1               # the last hop named
+        self._block = max(1, int(round(FOLLOW_CLIP_BLOCK_S * self._sr)))
+        self._block_peak = 0.0        # of the stretch now being heard
+        self._peaks: collections.deque = collections.deque(maxlen=FOLLOW_CLIP_BLOCKS)
+
+    @property
+    def typical_peak(self) -> float | None:
+        """The middle of her recent loudest moments; None until enough are heard."""
+        if len(self._peaks) < FOLLOW_CLIP_MIN_BLOCKS:
+            return None
+        return float(np.median(self._peaks))
+
+    def _hear(self, x: np.ndarray) -> None:
+        while x.size:
+            room = self._block - self._seen % self._block
+            part, x = x[:room], x[room:]
+            self._block_peak = max(self._block_peak, float(part.max()))
+            self._seen += part.size
+            if self._seen % self._block == 0:
+                if self._block_peak >= FOLLOW_CLIP_SOUNDING_PEAK:
+                    self._peaks.append(min(self._block_peak, 1.0))
+                self._block_peak = 0.0
 
     def process(self, block: np.ndarray) -> list[float]:
-        x = np.asarray(block)
+        x = np.abs(np.asarray(block, dtype=np.float32))
         if x.ndim == 2:
-            x = np.abs(x).max(axis=1)
-        hops = np.unique((self._seen + np.flatnonzero(np.abs(x) >= FOLLOW_CLIP_LEVEL))
-                         // self._hop)
-        self._seen += x.shape[0]
+            x = x.max(axis=1)
+        # What she has played up to this block says whether a clip in it is hers.
+        typical = self.typical_peak
+        hops = np.unique((self._seen + np.flatnonzero(x >= FOLLOW_CLIP_LEVEL)) // self._hop)
+        self._hear(x)
+        if typical is None or typical >= FOLLOW_CLIP_QUIET_PEAK:
+            return []
         new = [int(h) for h in hops if h > self._last]
         if new:
             self._last = new[-1]
@@ -391,23 +434,34 @@ def unclipped(events: list, clipped) -> list:
 def follow_heard(events: list, clipped, *, silence_rms_db: float, ref_db: float | None,
                  beats_per_bar: int = 4, bar: int = 0) -> tuple[float | None, float | None]:
     """Her level (dB) and busyness (onsets per beat) over ``events`` as BandFollow reads
-    them, from the frames the input did not clip in (see :func:`unclipped`): a knock is
-    not a note either.  ``(None, None)`` when she sat out, by
-    :func:`bar_features_dict`'s own silence rule on those frames, or when too few are
-    left to speak for the stretch (:data:`FOLLOW_CLIP_MIN_KEPT`)."""
+    them, without the moments the input clipped out of character (see
+    :class:`ClipWatch` and :func:`unclipped`).
+
+    With nothing left out, both are :func:`bar_features_dict`'s own, and ``(None,
+    None)`` when she sat out by its silence rule.  With something left out, the level is
+    that of the frames left, and the busyness is None: a knock is not a note, and
+    whether a note of hers went with it is not known.  The level is None as well when
+    what is left cannot speak for the stretch: silent, under
+    :data:`FOLLOW_CLIP_MIN_KEPT` of its frames, or without one onset, since then
+    everything struck in the stretch was struck in the moments left out, and those may
+    have been her after all.  Saying nothing moves nothing."""
     kept = unclipped(events, clipped)
-    if len(kept) < FOLLOW_CLIP_MIN_KEPT * len(events):
+    whole = len(kept) == len(events)
+    if not whole and (len(kept) < FOLLOW_CLIP_MIN_KEPT * len(events)
+                      or not any(e[2] for e in kept)):
         return None, None
     kw = bar_features_dict(bar, kept, silence_rms_db=silence_rms_db, ref_db=ref_db,
                            beats_per_bar=beats_per_bar)
-    return (None, None) if kw["silent"] else (kw["rms_db"], kw["onset_density"])
+    if kw["silent"]:
+        return None, None
+    return kw["rms_db"], (kw["onset_density"] if whole else None)
 
 
 def follow_bar(human, events: list, clipped, *, silence_rms_db: float,
                ref_db: float | None) -> tuple[float | None, float | None]:
     """The whole bar's level and busyness for BandFollow.  ``human`` is the bar as
     :func:`bar_features_dict` summed it up (its kwargs or the BarFeatures made of
-    them), and that stands unless the input clipped in the bar."""
+    them), and that stands unless the input clipped out of character in the bar."""
     if human is None:
         return None, None
     if isinstance(human, dict):
@@ -5161,7 +5215,8 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
             mix_monitor(outdata, indata[:, route.guitar], guard_slot, input_fx)
 
     hop_rms = HopRms()
-    clip_watch = ClipWatch()
+    # Keys do not clip: what the audio input holds on a MIDI take is not her playing.
+    clip_watch = None if midi_port is not None else ClipWatch()
 
     def analysis_loop():
         nonlocal harmony, tap_detector
@@ -5188,7 +5243,7 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
             if band_in_mic is not None:
                 band_in_mic.feed(x, m)
             looper.feed(x)
-            clipped_now = clip_watch.process(x)
+            clipped_now = clip_watch.process(x) if clip_watch is not None else []
             masked_frames, _flags, beat_state, harm_state = analysis_step(
                 extractor=extractor, hop_rms=hop_rms, masker=masker,
                 tracker=tracker, harmony=harmony,
@@ -5233,7 +5288,7 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
                 shared["harmony"] = harm_state
                 if clipped_now:
                     # A knock or a crackle, which BandFollow must not take for her
-                    # playing louder (see follow_heard).
+                    # playing louder (see ClipWatch and follow_heard).
                     shared["clipped"].extend(clipped_now)
                     del shared["clipped"][:-FOLLOW_CLIP_KEPT]
                 for f in masked_frames:

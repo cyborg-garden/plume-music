@@ -2,12 +2,14 @@
 
 A knock on the instrument's body or a bad cable puts a short burst at full scale on the
 input.  Averaged into the bar it reads as a bar many dB louder, and the band would
-swell for no musical reason.  The frames a full-scale burst touches are left out of the
-level the band follows, and everything she plays, however low or loud, still counts.
+swell for no musical reason.  For a player whose own playing sits far below full scale,
+the frames such a burst touches are left out of the level and note count the band
+follows.  A player whose strikes reach full scale by leaning in is read exactly as she
+always was: her clips are her playing.
 
 Synthetic signals only, and the listening is the live path's own: FeatureExtractor
 frames, ``ClipWatch``, and the half-bar readings the planner feeds BandFollow.  The
-last test drives the real transport on a fake device.
+last tests drive the real transport on a fake device.
 """
 import numpy as np
 import pytest
@@ -70,14 +72,17 @@ def crackle(x, at_s, *, clicks=4, over_s=BAR_S):
     return y
 
 
-def follow(x, *, bars):
+def follow(x, *, bars, watch=True):
     """What the planner feeds BandFollow from ``x``, a bar at a time: the half-bar
-    readings, the bar's own level and the band's lean after it."""
+    readings, the bar's own level and note count, and the band's lean after it.
+    ``watch`` False: with no clip ever marked, which is every reading as it was before
+    clips were looked at."""
     extractor, clips = FeatureExtractor(sr=SR), realtime.ClipWatch()
     events, clipped = [], []
     for i in range(0, x.size, BLOCK):
         block = x[i:i + BLOCK]
-        clipped.extend(clips.process(block))
+        if watch:
+            clipped.extend(clips.process(block))
         events.extend((f.t_s, f.rms_db, f.onset) for f in extractor.process(block))
     band = BandFollow(trusted=True)
     ref_db, fed, out = None, None, []
@@ -95,7 +100,8 @@ def follow(x, *, bars):
                                            ref_db=ref_db)
         state = band.bar(bar_db, busy, playing=not kw["silent"],
                          parts=parts, bar_s=BAR_S)
-        out.append({"parts": parts, "bar_db": bar_db, "gain_db": state.gain_db,
+        out.append({"parts": parts, "bar_db": bar_db, "busy": busy,
+                    "gain_db": state.gain_db, "density": state.density,
                     "moved": state.moved})
     return out
 
@@ -182,16 +188,6 @@ def test_a_lean_in_is_followed_through_a_thump():
     assert rows[-1]["gain_db"] == pytest.approx(clean[-1]["gain_db"], abs=0.25)
 
 
-def test_playing_hard_enough_to_clip_now_and_then_is_still_her_playing_louder():
-    """Her loudest strikes touching full scale are still her: only the clipped moments
-    are left out, and what rings on is as loud as she played it."""
-    x = np.clip(louder(playing(BARS, level=0.12), AT_BAR, 10.0), -1.0, 1.0)
-    assert np.abs(x).max() >= 1.0
-    rows = follow(x, bars=BARS)
-    assert any("louder" in r["moved"] for r in rows[AT_BAR:AT_BAR + 4])
-    assert rows[-1]["gain_db"] >= 2.0
-
-
 def test_a_half_bar_that_is_mostly_clipped_says_nothing():
     """Nothing to go on is no evidence, not a quiet bar."""
     x = playing(BARS)
@@ -211,16 +207,190 @@ def test_a_thump_while_she_sits_out_is_not_her_playing():
     assert rows[AT_BAR]["bar_db"] is None
 
 
+def _heard(watch, peak, seconds=12.0):
+    """``watch`` after ``seconds`` of a player whose strikes peak at ``peak``."""
+    x = np.zeros(int(seconds * SR), dtype=np.float32)
+    x[::SR // 2] = peak
+    watch.process(x)
+    return watch
+
+
 def test_clip_watch_names_the_hops_at_full_scale_however_the_stream_is_cut():
     x = np.zeros(8 * realtime.HOP, dtype=np.float32)
     x[3 * realtime.HOP + 7] = -1.0
     x[5 * realtime.HOP - 1] = 0.995
     x[6 * realtime.HOP] = 0.9                      # loud, not clipped
-    want = [4 * realtime.HOP / SR, 5 * realtime.HOP / SR]
+    t0 = 12.0
+    want = [t0 + 4 * realtime.HOP / SR, t0 + 5 * realtime.HOP / SR]
     for block in (64, 256, 700, x.size):
-        watch = realtime.ClipWatch()
+        watch = _heard(realtime.ClipWatch(), 0.15)
         got = [t for i in range(0, x.size, block) for t in watch.process(x[i:i + block])]
         assert got == pytest.approx(want), block
+
+
+@pytest.mark.parametrize("peak, marked", [(0.1, True), (0.25, True), (0.35, False),
+                                          (0.6, False), (1.0, False)])
+def test_a_clip_is_marked_only_when_full_scale_is_out_of_character(peak, marked):
+    watch = _heard(realtime.ClipWatch(), peak)
+    assert watch.typical_peak == pytest.approx(min(peak, 1.0))
+    burst = np.ones(realtime.HOP, dtype=np.float32)
+    assert bool(watch.process(burst)) is marked
+
+
+def test_before_she_has_been_heard_for_long_nothing_is_marked():
+    watch = realtime.ClipWatch()
+    assert watch.typical_peak is None
+    x = np.zeros(4 * SR, dtype=np.float32)
+    x[::SR // 2] = 0.1
+    x[SR:SR + 4000] = 1.0
+    assert watch.process(x) == [] and watch.typical_peak is None
+
+
+def test_a_few_bursts_do_not_make_full_scale_her_own():
+    """Bursts in a third of the last half minute, and a clip is still not hers."""
+    watch = _heard(realtime.ClipWatch(), 0.15, seconds=30.0)
+    x = np.zeros(2 * SR, dtype=np.float32)
+    x[::SR // 2] = 0.15
+    loud = x.copy()
+    loud[SR:SR + 2000] = 1.0
+    for i in range(15):
+        watch.process(loud if i % 3 == 0 else x)
+    assert watch.typical_peak == pytest.approx(0.15)
+    assert watch.process(np.ones(realtime.HOP, dtype=np.float32))
+
+
+def test_a_player_who_clips_most_of_the_time_plays_that_loud():
+    watch = _heard(realtime.ClipWatch(), 0.15, seconds=30.0)
+    loud = np.zeros(2 * SR, dtype=np.float32)
+    loud[::SR // 2] = 1.0
+    for _ in range(8):
+        watch.process(loud)
+    assert watch.typical_peak == pytest.approx(1.0)
+    assert watch.process(np.ones(realtime.HOP, dtype=np.float32)) == []
+
+
+def _flat(t0, t1, db, onsets=()):
+    return [(t, db, any(abs(t - o) < 0.005 for o in onsets))
+            for t in np.arange(t0, t1, 0.01).round(4).tolist()]
+
+
+def _clipped(t0, t1):
+    return np.arange(t0, t1, realtime.HOP / SR).tolist()
+
+
+def test_a_stretch_more_than_half_left_out_says_nothing_though_she_is_playing():
+    """What is left is loud and has a note in it, so only the share left decides."""
+    evs = _flat(0.0, 1.0, -20.0, onsets=(0.1, 0.9))
+    kw = {"silence_rms_db": SILENCE_RMS_DB, "ref_db": -20.0}
+    some = realtime.follow_heard(evs, _clipped(0.3, 0.5), **kw)
+    most = realtime.follow_heard(evs, _clipped(0.2, 0.75), **kw)
+    assert some == (pytest.approx(-20.0), None) and most == (None, None)
+    left = len(realtime.unclipped(evs, _clipped(0.2, 0.75))) / len(evs)
+    assert 0.2 < left < realtime.FOLLOW_CLIP_MIN_KEPT
+
+
+def test_a_stretch_with_every_onset_left_out_says_nothing():
+    """All that was struck was struck in the moments left out: those may have been her."""
+    evs = _flat(0.0, 1.0, -20.0, onsets=(0.4,))
+    kw = {"silence_rms_db": SILENCE_RMS_DB, "ref_db": -20.0}
+    assert realtime.follow_heard(evs, _clipped(0.38, 0.42), **kw) == (None, None)
+    assert realtime.follow_heard(evs, _clipped(0.7, 0.74), **kw)[0] == pytest.approx(-20.0)
+
+
+# ------------------------------------------------------------ a player who plays hot
+
+def strikes(bars, *, peak, per_bar, decay, notes=CHORD, noise=False, accents=None):
+    """``bars`` of one sound struck ``per_bar`` times a bar, each strike peaking at
+    ``peak`` and dying away at ``decay`` per second.  ``noise``: a drum or a slap, not
+    a pitch.  ``accents``: (every how many strikes, how many dB up)."""
+    rng = np.random.default_rng(7)
+    t = np.arange(int(min(1.5, 8.0 / decay) * SR)) / SR
+    if noise:
+        one = rng.standard_normal(t.size)
+    else:
+        one = sum(np.sin(2 * np.pi * f * t) / (1 + 0.3 * j) for j, f in enumerate(notes))
+    one = one * np.exp(-t * decay) * np.minimum(1.0, t / 0.003)
+    one = (one / np.abs(one).max()).astype(np.float32)
+    x = rng.standard_normal(int(bars * BAR_S * SR)).astype(np.float32) * 1e-4
+    for k in range(int(bars * per_bar)):
+        i = int(k * BAR_S / per_bar * SR)
+        seg = one[: x.size - i]
+        up = accents[1] if accents and k % accents[0] == 0 else 0.0
+        x[i:i + seg.size] += peak * 10.0 ** (up / 20.0) * seg
+    return x
+
+
+HOT_BARS, LEAN, SOFT = 28, (10, 18), (20, 28)
+
+#: Sounds a player makes whose strikes reach full scale when she leans in, or always.
+HOT = {
+    "ringing chord": dict(peak=0.5, per_bar=4, decay=3.0),
+    "strum": dict(peak=0.6, per_bar=4, decay=8.0),
+    "staccato": dict(peak=0.6, per_bar=4, decay=20.0),
+    "percussion in eighths": dict(peak=0.6, per_bar=8, decay=30.0, noise=True),
+    "percussion in sixteenths": dict(peak=0.6, per_bar=16, decay=40.0, noise=True),
+    "accents ten dB up": dict(peak=0.35, per_bar=8, decay=30.0, noise=True,
+                              accents=(4, 10.0)),
+    "low register": dict(peak=0.55, per_bar=4, decay=5.0, notes=LOW),
+    "always clipping, ringing": dict(peak=1.4, per_bar=4, decay=3.0),
+    "always clipping, staccato": dict(peak=1.4, per_bar=4, decay=20.0),
+    "always clipping, percussion": dict(peak=1.4, per_bar=8, decay=30.0, noise=True),
+    "one strike a bar": dict(peak=0.6, per_bar=1, decay=3.0),
+}
+
+
+def hot_take(**sound):
+    """Her normal, six dB louder from bar 10 to 18, eight dB softer from bar 20, through
+    an input that clips at full scale."""
+    x = strikes(HOT_BARS, **sound)
+    x = louder(x, LEAN[0], 6.0, to_bar=LEAN[1])
+    x = louder(x, SOFT[0], -8.0, to_bar=SOFT[1])
+    return np.clip(x, -1.0, 1.0)
+
+
+@pytest.mark.parametrize("name", list(HOT))
+def test_a_player_whose_own_strikes_clip_is_read_as_she_always_was(name):
+    """Level, note count and every move of the band: the same as with no clip marked."""
+    x = hot_take(**HOT[name])
+    lean = x[int(LEAN[0] * BAR_S * SR):int(LEAN[1] * BAR_S * SR)]
+    assert np.abs(lean).max() >= 1.0, "the lean never reached full scale"
+    assert follow(x, bars=HOT_BARS) == follow(x, bars=HOT_BARS, watch=False)
+
+
+def test_a_hot_players_lean_in_lifts_the_band_and_her_soft_passage_brings_it_down():
+    rows = follow(hot_take(**HOT["staccato"]), bars=HOT_BARS)
+    moves = [m for r in rows for m in r["moved"]]
+    assert "louder" in [m for r in rows[LEAN[0]:LEAN[1]] for m in r["moved"]]
+    assert "softer" in [m for r in rows[SOFT[0]:] for m in r["moved"]]
+    assert moves.index("louder") < moves.index("softer")
+
+
+# ------------------------------------------------------------ in between
+
+@pytest.mark.parametrize("sound", ["ringing chord", "staccato", "percussion in eighths"])
+def test_a_quiet_player_leaping_to_full_scale_never_moves_the_band_the_wrong_way(sound):
+    """Nothing in how she had been playing says a clip is hers, so her clipped strikes
+    are left out; what is left then has nothing struck in it and says nothing.  The
+    band stays where it was instead of thinning out under her loudest playing."""
+    x = strikes(HOT_BARS, **{**HOT[sound], "peak": 0.12})
+    x = np.clip(louder(x, LEAN[0], 20.0, to_bar=LEAN[1]), -1.0, 1.0)
+    rows = follow(x, bars=HOT_BARS)
+    wrong = [(n, r["moved"]) for n, r in enumerate(rows[:LEAN[1]])
+             if set(r["moved"]) & {"softer", "sparser"}]
+    assert not wrong
+    assert min(r["gain_db"] for r in rows[:LEAN[1]]) >= 0.0
+    assert min(r["density"] for r in rows[:LEAN[1]]) >= 1.0
+
+
+def test_bursts_on_a_sparse_players_strikes_do_not_thin_the_band():
+    """Two strikes a bar, and a knock lands on five of them running: each takes her
+    strike with it."""
+    x = strikes(BARS, peak=0.15, per_bar=2, decay=3.0)
+    for k in range(5):
+        x = thump(x, (AT_BAR + k) * BAR_S - 0.02, seconds=0.2)
+    rows = follow(x, bars=BARS)
+    assert all(not r["moved"] and r["gain_db"] == 0.0 and r["density"] == 1.0
+               for r in rows)
 
 
 def test_with_nothing_clipped_the_readings_are_the_ones_they_always_were():

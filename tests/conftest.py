@@ -126,6 +126,16 @@ DUPLEX_DEVICES = [{"name": "Fake Duplex", "max_input_channels": 2,
                    "max_output_channels": 2}]
 
 
+class FakeCallbackFlags:
+    """sounddevice's CallbackFlags as the callback sees it: PortAudio's bits in its one
+    slot (input underflow 1, input overflow 2, output underflow 4, output overflow 8)."""
+
+    __slots__ = ("_flags",)
+
+    def __init__(self, flags: int = 0):
+        self._flags = int(flags)
+
+
 class FakeAudioStream:
     """A ``sounddevice.Stream`` stand-in: a numpy buffer in, captured out.
 
@@ -146,8 +156,11 @@ class FakeAudioStream:
                  loop_human: bool = True, human_channel: int = 0,
                  inputs: dict | None = None,
                  bleed_channels: tuple[int, ...] = (0,), hold=None,
-                 bleed_shape=None, bleed_from_s: float = 0.0):
+                 bleed_shape=None, bleed_from_s: float = 0.0, status=None):
         self._human_ch = int(human_channel)
+        #: block index -> what PortAudio's ``status`` says for it (FakeCallbackFlags),
+        #: or None, as a device with nothing to report passes.
+        self._status = status
         self._inputs = {int(k): np.asarray(v, dtype=np.float32)
                         for k, v in (inputs or {}).items()}
         self._bleed_channels = tuple(int(c) for c in bleed_channels)
@@ -258,7 +271,8 @@ class FakeAudioStream:
             pos += self._n
             outdata = np.zeros((self._n, self._out_ch), dtype=np.float32)
             if self._cb is not None:
-                self._cb(indata, outdata, self._n, None, None)
+                self._cb(indata, outdata, self._n, None,
+                         None if self._status is None else self._status(self.blocks))
             if self._bleed is not None:
                 played = outdata.mean(axis=1).astype(np.float32)
                 if self._bleed_shape is not None:

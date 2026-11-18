@@ -2232,6 +2232,56 @@ def _started_with(input_fx) -> str | None:
     return input_fx.asked
 
 
+#: PortAudio's callback status bits, in the order :class:`XrunTally` counts them.
+XRUN_NAMES = ("input_underflow", "input_overflow", "output_underflow", "output_overflow")
+
+
+def note_xruns(counts: list, status) -> None:
+    """Audio callback: count each over- or underrun PortAudio flags on this block.
+
+    ``status`` is sounddevice's CallbackFlags, or None from a device that has none.
+    Its bits are read straight off it (``_flags``, the one slot it has): its own
+    properties are Python calls on every block.  Plain int adds into a list made
+    before the stream opened, so no array is built here.
+    """
+    if status is None:
+        return
+    bits = status._flags  # noqa: SLF001 - the bits, not four property calls per block
+    if bits & 0xF:
+        if bits & 1:
+            counts[0] += 1
+        if bits & 2:
+            counts[1] += 1
+        if bits & 4:
+            counts[2] += 1
+        if bits & 8:
+            counts[3] += 1
+
+
+class XrunTally:
+    """The callback's xrun counts and the input's clipping, per logged row.
+
+    The callback only adds into ``counts`` (:func:`note_xruns`); the planner reads
+    what each row added since the one before, so one row is one bar's worth.
+    """
+
+    def __init__(self, guard=None):
+        self.counts = [0, 0, 0, 0]
+        self._guard = guard
+        self._seen = [0, 0, 0, 0]
+        self._clips_seen = 0
+
+    def row(self) -> dict:
+        now = list(self.counts)
+        doc = {"xruns": {n: a - b for n, a, b in zip(XRUN_NAMES, now, self._seen)}}
+        self._seen = now
+        if self._guard is not None:
+            clips = int(self._guard.clip_hops)
+            doc["input_clip_hops"] = clips - self._clips_seen
+            self._clips_seen = clips
+        return doc
+
+
 def heed_input(guard, x, ending: bool = False) -> None:
     """Analysis thread: look at her input, and say a fault once where a terminal sees it."""
     try:
@@ -2674,9 +2724,13 @@ def jam(*, style: str, seed: int, params, device: str | None = None,
     # `deadline` (the bar-revision cutoff) and the two must never be confused.
     stop_deadline = session_deadline(started_mono, max_minutes)
 
+    xrun_tally = XrunTally(guard)
+    xruns = xrun_tally.counts
+
     def callback(indata, outdata, frames, time_info, status):  # noqa: ARG001
         # Ring copies only: no locks, no waiting, nothing outside the rings.  The
         # slices and the sum below do allocate a little; it is bounded and small.
+        note_xruns(xruns, status)
         in_ring.write(indata[:, route.guitar])
         timeline.read_into(outdata)
         machine_ring.write(0.5 * (outdata[:, 0] + outdata[:, 1]))
@@ -2688,7 +2742,9 @@ def jam(*, style: str, seed: int, params, device: str | None = None,
     def _log(doc: dict) -> None:
         """One decision -> the live log, flushed (v1.3)."""
         n_decisions[0] += 1
-        doc.setdefault("input_fault", guard.fault)   # a buzzing or dead input
+        doc.setdefault("input_fault", guard.fault)   # a buzzing, clipping or dead input
+        for k, v in xrun_tally.row().items():        # over/underruns and clipping since
+            doc.setdefault(k, v)                     # the row before
         if band_in_mic is not None and band_in_mic.latched and band_in_mic_doc[0] is None:
             # The band is in the mic after all, so it is masked again, for the rest of
             # the take.  The same decision, logged the same way, as in lead.
@@ -5058,7 +5114,11 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
             held_cues = None
     stop_deadline = session_deadline(started_mono, max_minutes)
 
+    xrun_tally = XrunTally(guard)
+    xruns = xrun_tally.counts
+
     def callback(indata, outdata, frames, time_info, status_flags):  # noqa: ARG001
+        note_xruns(xruns, status_flags)
         in_ring.write(indata[:, route.guitar])
         # Before machine_ring: the analysis thread reads what both of those hold, so
         # this ring always has at least that much.
@@ -5504,6 +5564,8 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
                                 else round(offset_ms, 2)),
             "cue_effects": cue_notes or None,
             "input_fault": guard.fault,
+            # PortAudio's over/underruns in this bar, and her clipping hops.
+            **xrun_tally.row(),
         }
         if looper.active or loop_events:
             doc["loop"] = {**looper.status(), "events": loop_events,

@@ -12,7 +12,7 @@ import numpy as np
 import pytest
 
 from plume import guitake, inputguard, realtime
-from plume.inputguard import BUZZ_LINE, SILENT_LINE, InputGuard
+from plume.inputguard import BUZZ_LINE, CLIP_LINE, SILENT_LINE, InputGuard
 
 SR = realtime.SR
 BLOCK = realtime.BLOCK
@@ -262,13 +262,17 @@ def test_a_steady_note_near_mains_is_not_hum(hz, organ):
 @pytest.mark.parametrize("kind", list(PLAYING))
 def test_loud_playing_never_ducks(kind, drive):
     # Resting first: a hard note out of silence is the biggest jump she makes.  And a
-    # hot input gain clips on every note: that is hers, not a fault.
+    # hot input gain clips on every note: never a buzz, and never ducked, only said.
     x = np.concatenate([quiet(2.0), PLAYING[kind](), quiet(1.0)])
     x = np.clip(x * drive * 2.0, -1.0, 1.0)      # peaks at 0 dBFS and over
     _, gains, guard, lines = run(x)
     assert np.all(gains == 1.0)
-    assert lines == []
-    assert guard.fault is None
+    assert [line for _, line in lines] in ([], [CLIP_LINE])
+    assert guard.fault in (None, "clip")
+    if drive >= 2.5:
+        assert guard.fault == "clip", "every note flattened on the ceiling is said"
+    if drive == 1.0:
+        assert guard.fault is None, "peaks just touching full scale are not clipping"
 
 
 # ------------------------------------------------------------------ a dead input
@@ -336,6 +340,47 @@ def test_a_buzz_then_silence_says_both():
     assert guard.fault == "silent"
 
 
+# ------------------------------------------------------------------ a clipping input
+
+def _hot(x: np.ndarray, drive: float = 3.0) -> np.ndarray:
+    """The interface's gain set too hot: every note flattened on full scale."""
+    return np.clip(x * drive, -1.0, 1.0).astype(np.float32)
+
+
+def test_an_input_that_keeps_clipping_is_said_once_and_never_ducked():
+    _, gains, guard, lines = run(_hot(strums(6.0, peak_db=-3.0)))
+    assert [line for _, line in lines] == [CLIP_LINE]
+    assert guard.fault == "clip"
+    assert guard.clip_hops > 0
+    assert np.all(gains == 1.0), "clipping is said, never acted on"
+
+
+def test_one_hot_strum_is_not_clipping():
+    x = np.concatenate([strums(3.0, peak_db=-12.0, every_s=1.0),
+                        _hot(strums(0.5, peak_db=-3.0, every_s=1.0)),
+                        strums(5.0, peak_db=-12.0, every_s=1.0)])
+    _, _, guard, lines = run(x)
+    assert lines == [] and guard.fault is None
+    assert guard.clip_hops > 0, "the strum did clip; it just is not said"
+
+
+def test_clipping_clears_once_she_has_turned_it_down():
+    guard = InputGuard(SR)
+    _, _, guard, _ = run(_hot(strums(5.0, peak_db=-3.0)), guard=guard)
+    assert guard.fault == "clip"
+    _, _, guard, lines = run(strums(5.0, peak_db=-12.0), guard=guard)
+    assert guard.fault == "clip", "not cleared on the first clean bars"
+    _, _, guard, lines = run(strums(6.0, peak_db=-12.0), guard=guard)
+    assert guard.fault is None and lines == []
+    _, _, guard, lines = run(_hot(strums(5.0, peak_db=-3.0)), guard=guard)
+    assert [line for _, line in lines] == [CLIP_LINE], "said again if it comes back"
+
+
+def test_a_midi_take_says_nothing_of_a_clipping_input():
+    _, _, guard, lines = run(_hot(strums(6.0, peak_db=-3.0)), guard=InputGuard(SR, notices=False))
+    assert lines == [] and guard.fault is None
+
+
 # ------------------------------------------------------------------ the page and the log
 
 def test_the_live_page_says_the_fault_while_the_band_plays():
@@ -343,6 +388,8 @@ def test_the_live_page_says_the_fault_while_the_band_plays():
         return SimpleNamespace(phase="playing", row={"bar": 9, "input_fault": fault})
     assert guitake.TakeRunner._hint(take("buzz"), 0.0) == BUZZ_LINE
     assert guitake.TakeRunner._hint(take("silent"), 0.0) == SILENT_LINE
+    assert guitake.TakeRunner._hint(take("clip"), 0.0) == CLIP_LINE
+    assert CLIP_LINE == "Your input is clipping. Turn the gain down on your interface."
     assert guitake.TakeRunner._hint(take(None), 0.0) is None
     assert "input_fault" in guitake._ROW_FIELDS
 
@@ -362,12 +409,12 @@ def test_the_live_page_says_nothing_of_silence_while_the_take_stops_or_fades():
 RIG = [{"name": "Audio Interface 4x4", "max_input_channels": 4, "max_output_channels": 4}]
 
 
-def _live_rows(tmp_path, monkeypatch, run, human, **kw):
+def _live_rows(tmp_path, monkeypatch, run, human, status=None, **kw):
     from conftest import (FakeMido, fake_audio, patched_module, playhead_rate,
                           short_socket_path)
     monkeypatch.setenv("PLUME_CALIBRATION_FILE", str(tmp_path / "none.json"))
     monkeypatch.setenv(realtime.AUDIO_CONSENT_ENV, "1")   # the FAKE device only
-    sd = fake_audio(human, devices=RIG, rate_x=playhead_rate(6.0))
+    sd = fake_audio(human, devices=RIG, rate_x=playhead_rate(6.0), status=status)
     with patched_module("sounddevice", sd), patched_module("mido", FakeMido()):
         run(tmp_path, short_socket_path("guard"), **kw)
     return [json.loads(line) for line in
@@ -396,7 +443,8 @@ def _humming_take():
 def test_a_buzzing_take_logs_input_fault(tmp_path, monkeypatch, plume_registry, run):
     rows = _live_rows(tmp_path, monkeypatch, run, _humming_take())
     assert rows
-    assert all(r.get("input_fault", "missing") in (None, "buzz", "silent") for r in rows)
+    assert all(r.get("input_fault", "missing") in (None, "buzz", "silent", "clip")
+               for r in rows)
     assert any(r["input_fault"] == "buzz" for r in rows)
 
 
@@ -405,3 +453,51 @@ def test_a_midi_take_never_logs_input_fault(tmp_path, monkeypatch, plume_registr
     rows = _live_rows(tmp_path, monkeypatch, run, _humming_take(), midi="auto")
     assert rows
     assert all(r.get("input_fault", "missing") is None for r in rows)
+
+
+def test_a_clipping_take_logs_it_with_each_bars_xruns(tmp_path, monkeypatch, plume_registry):
+    from conftest import FakeCallbackFlags
+    flagged = []
+
+    def status(i):                  # an output underrun, then an input overflow, now and then
+        if i % 50 == 0:
+            flagged.append(i)
+            return FakeCallbackFlags(4 if i % 100 == 0 else 2)
+        return FakeCallbackFlags(0)
+    rows = _live_rows(tmp_path, monkeypatch, _lead, _hot(strums(9.0, peak_db=-3.0)),
+                      status=status)
+    assert rows
+    assert any(r["input_fault"] == "clip" for r in rows)
+    assert all(isinstance(r.get("input_clip_hops"), int) for r in rows)
+    assert sum(r["input_clip_hops"] for r in rows) > 0
+    assert all(set(r["xruns"]) == set(realtime.XRUN_NAMES) for r in rows)
+    under = sum(r["xruns"]["output_underflow"] for r in rows)
+    over = sum(r["xruns"]["input_overflow"] for r in rows)
+    assert 0 < under <= len([i for i in flagged if i % 100 == 0])
+    assert 0 < over <= len([i for i in flagged if i % 100])
+    assert sum(r["xruns"]["input_underflow"] + r["xruns"]["output_overflow"]
+               for r in rows) == 0
+
+
+def test_xruns_are_counted_from_the_flags_and_split_by_row():
+    from conftest import FakeCallbackFlags
+    tally = realtime.XrunTally()
+    realtime.note_xruns(tally.counts, None)
+    realtime.note_xruns(tally.counts, FakeCallbackFlags(0))
+    realtime.note_xruns(tally.counts, FakeCallbackFlags(0x10))      # priming: not a run
+    assert tally.row() == {"xruns": dict.fromkeys(realtime.XRUN_NAMES, 0)}
+    realtime.note_xruns(tally.counts, FakeCallbackFlags(1 | 8))
+    realtime.note_xruns(tally.counts, FakeCallbackFlags(8))
+    assert tally.row() == {"xruns": {"input_underflow": 1, "input_overflow": 0,
+                                     "output_underflow": 0, "output_overflow": 2}}
+    assert tally.row()["xruns"]["output_overflow"] == 0, "each row only its own"
+
+
+def test_sounddevices_own_flags_read_the_same():
+    sd = pytest.importorskip("sounddevice")
+    counts = [0, 0, 0, 0]
+    flags = sd.CallbackFlags()
+    flags.input_overflow = True
+    flags.output_underflow = True
+    realtime.note_xruns(counts, flags)
+    assert counts == [0, 1, 1, 0]

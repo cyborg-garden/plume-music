@@ -36,6 +36,16 @@ The tests:
   bars and eight seconds, while the take is not ending.  That is only said, never
   acted on: a dead input and a long rest look the same to the band, and the band
   already has its own idea of what a rest means.
+* clip -- her input itself is clipping: the interface's gain is set so hot that her
+  notes hit full scale and flatten there.  That is distortion in the recording and,
+  with Hear me on, in the speakers, and only the knob on the interface can take it
+  out.  A hop clips when at least CLIP_SAMPLES of its samples sit at CLIP_LEVEL or
+  over (one peak just touching full scale is not a flat top).  Time is cut into
+  CLIP_SLOT_S slots, and she is told once CLIP_SAY slots within CLIP_WINDOW_S held a
+  clipping hop: one hot strum fills one or two, a hot gain fills them all, whether
+  she strums apart or never stops.  It clears after CLIP_CLEAR_S with none.  Only
+  said, never acted on: ducking her because she plays hard would be worse.  A hum
+  that clips is a buzz, which is said instead.
 """
 from __future__ import annotations
 
@@ -96,9 +106,22 @@ PLAYED_S = 0.5
 SILENT_BARS = 4.0
 SILENT_MIN_S = 8.0
 
+#: Clipping: a sample this close to full scale is on the ceiling ...
+CLIP_LEVEL = 0.98
+#: ... and a hop with this many of them is flattened, not one peak touching it.
+CLIP_SAMPLES = 3
+#: Clipping is counted by the slot: one strum's attack fills one or two.
+CLIP_SLOT_S = 0.5
+#: Slots that clipped within CLIP_WINDOW_S before she is told, and the clean time
+#: that ends it.
+CLIP_SAY = 3
+CLIP_WINDOW_S = 10.0
+CLIP_CLEAR_S = 10.0
+
 BUZZ_LINE = "Your input is buzzing. Check the cable."
 SILENT_LINE = "No sound from your input for a while."
-LINES = {"buzz": BUZZ_LINE, "silent": SILENT_LINE}
+CLIP_LINE = "Your input is clipping. Turn the gain down on your interface."
+LINES = {"buzz": BUZZ_LINE, "silent": SILENT_LINE, "clip": CLIP_LINE}
 
 
 def monitor_slot() -> np.ndarray:
@@ -186,6 +209,12 @@ class InputGuard:
         self.winding = False          # set while the band fades out (lead)
         self.buzz = False
         self.silent = False
+        self.clip = False
+        #: Hops that clipped, over the whole take: the planner logs each bar's share.
+        self.clip_hops = 0
+        self._clips: collections.deque = collections.deque()   # slots that clipped
+        self._last_clip_hop = -math.inf
+        self._hops = 0
         self._run = 0
         self._recent: collections.deque = collections.deque(maxlen=SAY_OF)
         self._recent_n = 0            # how many of _recent were hum (and _long_n)
@@ -201,7 +230,8 @@ class InputGuard:
     def fault(self) -> str | None:
         if not self.notices:
             return None
-        return "buzz" if self.buzz else "silent" if self.silent else None
+        return ("buzz" if self.buzz else "clip" if self.clip
+                else "silent" if self.silent else None)
 
     def feed(self, x) -> str | None:
         """Look at more input.  Returns a line to say, the first time a fault is
@@ -255,7 +285,26 @@ class InputGuard:
         # Clipping or not, any non-hum sound over the line is her playing.
         if not hum and db > PLAYING_DB:
             self._played_s += HOP_S
+        self._clipping(h, hum)
         self._silence(db)
+
+    def _clipping(self, h: np.ndarray, hum: bool) -> None:
+        self._hops += 1
+        now = self._hops
+        if not hum and int(np.count_nonzero(np.abs(h) >= CLIP_LEVEL)) >= CLIP_SAMPLES:
+            self.clip_hops += 1
+            slot = int(now * HOP_S / CLIP_SLOT_S)
+            if not self._clips or self._clips[-1] != slot:
+                self._clips.append(slot)
+            self._last_clip_hop = now
+        while self._clips and (now * HOP_S / CLIP_SLOT_S - self._clips[0]
+                               > CLIP_WINDOW_S / CLIP_SLOT_S):
+            self._clips.popleft()
+        if len(self._clips) >= CLIP_SAY and self.notices:
+            self.clip = True
+        elif self.clip and now - self._last_clip_hop >= CLIP_CLEAR_S / HOP_S:
+            self.clip = False
+            self._said.discard("clip")
 
     def _demodulate(self, x: np.ndarray) -> int:
         """Turn whole hops of input by every grid line and add them onto the running

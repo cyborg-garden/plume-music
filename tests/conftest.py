@@ -121,12 +121,15 @@ def ear_behind() -> bool:
 if os.environ.get("PLUME_SKIP_MACHINE_SPEED") == "1":
     _watch_the_ear()
 
-#: The planner's waits for the ear now in progress: when each began (perf_counter).
+#: The planner's waits for the ear now in progress: when each began (perf_counter), the
+#: end of the bar it waits for, and how to ask where the playhead is.
 _PLANNER_WAITS: dict = {}
 #: The longest the fake device stands still for one of them.  An ear that is running
 #: catches up in milliseconds; one that has stopped must not stop the take with it, as
 #: the wait gives up by the playhead, which a held device does not move.
 PLANNER_WAIT_HOLD_S = 1.0
+#: The device has given the ear a bar's end once the playhead is this far past it.
+BAR_END_IS_IN_S = 2 * 256 / SR
 
 
 def _watch_the_planner_wait() -> None:
@@ -135,11 +138,11 @@ def _watch_the_planner_wait() -> None:
     if real is None or getattr(real, "_wait_watched", False):
         return
 
-    def wait_for_ear(*a, **kw):
+    def wait_for_ear(heard_to, w_end, playhead_s, *a, **kw):
         me = object()
-        _PLANNER_WAITS[me] = time.perf_counter()
+        _PLANNER_WAITS[me] = (time.perf_counter(), float(w_end), playhead_s)
         try:
-            return real(*a, **kw)
+            return real(heard_to, w_end, playhead_s, *a, **kw)
         finally:
             _PLANNER_WAITS.pop(me, None)
 
@@ -148,15 +151,20 @@ def _watch_the_planner_wait() -> None:
 
 
 def planner_waiting() -> bool:
-    """Whether the planner is waiting for the ear, and has not been for too long.
+    """Whether the planner is waiting for the ear to catch up with audio it already has.
 
     The fake device stands still while it is, at any speed and on any machine.  The
     wait spends the bar's lead, and a real device at real time loses milliseconds of
     seconds to it.  A fake one at 12x would lose twelve times the share: a twelfth of a
     second of wall time was enough to land the costliest bar late.  Holding the device
-    all the time to the same end instead made it crawl where timers are coarse."""
+    all the time to the same end instead made it crawl where timers are coarse.
+
+    Not while the bar's end has yet to be played (a bar planned early, as when the tempo
+    slows): the ear cannot hear what the device has not given it, and standing still
+    would only stop the take.  Nor for longer than PLANNER_WAIT_HOLD_S."""
     now = time.perf_counter()
-    return any(now - t0 < PLANNER_WAIT_HOLD_S for t0 in list(_PLANNER_WAITS.values()))
+    return any(now - t0 < PLANNER_WAIT_HOLD_S and playhead_s() >= w_end + BAR_END_IS_IN_S
+               for t0, w_end, playhead_s in list(_PLANNER_WAITS.values()))
 
 
 _watch_the_planner_wait()

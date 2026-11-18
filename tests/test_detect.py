@@ -606,18 +606,23 @@ def _detect_take(tmp_path, human, *, name="rec", prompt=None, rate_x=12.0,
 
 def test_the_fake_device_stands_still_while_the_planner_waits_for_the_ear():
     """conftest.planner_waiting: what makes the planner's wait cost a fast fake playhead
-    none of the bar's lead.  Not for ever: an ear that has stopped must not stop the take."""
-    stop, heard = threading.Event(), [0.0]
-    args = (lambda: heard[0], 5.0, lambda: 0.0, 9.0, stop)
+    none of the bar's lead.  Only once the bar's end has been played, or the ear could
+    never hear it, and not for ever: an ear that has stopped must not stop the take."""
+    stop, heard, playhead = threading.Event(), [0.0], [4.0]
+    args = (lambda: heard[0], 5.0, lambda: playhead[0], 9.0, stop)
     waiting = threading.Thread(target=lambda: realtime.wait_for_ear(*args), daemon=True)
     assert not conftest.planner_waiting()
     waiting.start()
-    assert conftest.wait_until(conftest.planner_waiting, timeout=5.0)
+    assert conftest.wait_until(lambda: len(conftest._PLANNER_WAITS) == 1, timeout=5.0)
+    assert not conftest.planner_waiting(), "the bar's end has not been played yet"
+    playhead[0] = 5.1
+    assert conftest.planner_waiting()
     heard[0] = 5.0                       # the ear has finished the bar
     waiting.join(timeout=5.0)
     assert not waiting.is_alive() and not conftest.planner_waiting()
     # One that goes on too long is no longer waited for.
-    conftest._PLANNER_WAITS["old"] = time.perf_counter() - 2 * conftest.PLANNER_WAIT_HOLD_S
+    long_ago = time.perf_counter() - 2 * conftest.PLANNER_WAIT_HOLD_S
+    conftest._PLANNER_WAITS["old"] = (long_ago, 5.0, lambda: 6.0)
     try:
         assert not conftest.planner_waiting()
     finally:

@@ -92,8 +92,8 @@ def replay(take):
         kw = {"playing": playing, "band_in": band_in}
         if halves:
             kw.update(parts=parts, bar_s=bar_s)
-        her_db, her_busy = realtime.follow_bar(human, evs, clipped,
-                                               silence_rms_db=SILENCE_RMS_DB, ref_db=ref_db)
+        her_db, her_busy = (realtime.follow_bar(human, clipped, starts[i - 2], starts[i - 1])
+                            if i >= 2 else (None, None))
         s = follow.bar(her_db, her_busy, **kw)
         out.append((n, r["t_s"], bar_db(x, sr, starts[i], starts[i + 1]),
                     r.get("follow", {}).get("gain_db"), s.gain_db, s.moved))

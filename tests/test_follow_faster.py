@@ -1,4 +1,4 @@
-"""The band finds her within a few seconds (Juniper, 2026-11-06).
+"""The band finds her within a few seconds (2026-11-06).
 
 "it did not get quieter when i was playing quieter tho."  On that take (60 bpm, a
 direct input) she went about 14 dB softer for four bars, and the band's first

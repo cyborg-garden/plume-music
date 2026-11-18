@@ -4,9 +4,9 @@ WHY THIS FILE EXISTS.  plume's live transports (``realtime.jam`` and
 ``realtime.lead``) are the only part of the system with no offline twin: `sim`
 and `simlead` prove the *music*, but the threads, the ring buffers, the
 schedule, the socket, the recorder and the ending all live in code that only
-runs when an audio device is open.  There is no audio device in CI, and there
-must never be one in a test — an agent left a live session playing in a
-human's room, and `tests/test_audio_consent.py` exists because of it.
+runs when an audio device is open.  There is no audio device in CI, and a test
+must never open a real audio device or play sound: `tests/test_audio_consent.py`
+holds that line.
 
 So every live-path test drives the real transport through
 :class:`FakeAudioStream`: a duplex stream stand-in pumped by an ordinary
@@ -23,19 +23,18 @@ The knobs that matter, and the failures they reproduce:
 - ``rate_x`` — pump faster than real time.  The planner paces itself against
   the playhead, so this shortens a test without changing a single decision.
 - ``block_on_stop`` — ``stop()`` blocks, the way ``Pa_StopStream`` is
-  documented to ("waits until all pending audio buffers have been played") and
-  the way it actually did on the machine where `plume stop` failed.  This is
-  the wedge, reproducible on a laptop with no audio hardware at all.
+  documented to ("waits until all pending audio buffers have been played").
+  This is the wedge behind a `plume stop` that does not stop, reproducible with
+  no audio hardware at all.
 - ``block_on_abort`` — even ``Pa_AbortStream`` does not come back.  The
   pathological case that no amount of politeness inside the process can fix,
   and the one the hard-exit watchdog exists for.
 - ``bleed_db`` / ``bleed_delay_s`` — **the laptop.**  What the machine plays
-  comes back into the microphone, quieter and later: speakers in the same room
-  as the mic, which is how Juniper actually played (an acoustic guitar into the
-  built-in mic while plume came out of the built-in speakers) and the condition
-  every self-masking defect lives in.  Without this the fake device is an
-  isolation booth and the beat tracker can never hear itself, so the bug that
-  cost a whole session is untestable by construction.
+  comes back into the microphone, quieter and later: the fake device models
+  speakers and microphone sharing a room (acoustic bleed), the condition every
+  self-masking defect lives in.  Without this the fake device is an isolation
+  booth and the beat tracker can never hear itself, so a self-masking defect is
+  untestable by construction.
 - ``latency`` — the stand-in reports a round trip the way ``sounddevice`` does,
   so ``realtime.stream_latency_hops`` aligns the mask to it.
 - ``bleed_from_s`` — **headphones coming out.**  The leak starts this far into the take.

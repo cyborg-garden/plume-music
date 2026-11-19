@@ -43,12 +43,14 @@ ENTRY_KEY_BARS = 2
 #: key, needs a large margin to replace it), so a belief formed in her first few
 #: seconds can outlive the evidence against it.  As the band comes in it is checked
 #: against what the evidence says now (HarmonyState.key_best): a key that has led
-#: every other by at least this much correlation for ENTRY_KEY_BARS of her bars is
-#: the one the band comes in on.  A lead of 0.03 to 0.06 measured best, and none
-#: at all let a tie decide.  The present best key names the belief's relative only
-#: on a clear edge (harmony._KEY_BEST_RELATIVE_LEAD): between those two the fit
-#: alone is not evidence.
-ENTRY_BEST_LEAD = 0.03
+#: the belief for ENTRY_KEY_BARS of her bars by at least this share of the margin
+#: the belief's own hysteresis would ask (HarmonyState.key_lead) is the one the band
+#: comes in on.  Nobody has heard the band's key yet, so it may move on less than a
+#: switch needs, but not on a lead the belief would shrug off.  Measured on generated
+#: takes: over the benchmark's 270 parts any share from 0.2 to 0.8 came in right on
+#: 145 to 148; on takes that opened two bars on the relative chord, 0.2 and 0.3 came
+#: in right on 10 of 12, 0.5 on 8 and 0.8 on 3.
+ENTRY_BEST_LEAD = 0.3
 
 DRUMS, BAND, FULL = "drums", "band", "full"
 
@@ -633,8 +635,9 @@ class BandEntry:
         ``phrase_bars``: the band comes in only on the top of one of her groups of this
         many bars, counted from the bar she last started playing in after a rest.  Chords
         that came in other than at the end of one of her groups of bars were heard
-        as coming in at the wrong place.  It used to come in on whatever bar the key settled, which was bar 8
-        of plume's count and bar 6 of hers.  1 enters as soon as it is ready.
+        as coming in at the wrong place.  It used to come in on whatever bar the key
+        settled, which was bar 8 of plume's count and bar 6 of hers.  1 enters as
+        soon as it is ready.
         """
         self._min_drum_bars = int(min_drum_bars)
         self._melody_delay = int(melody_delay_bars)
@@ -744,10 +747,12 @@ class BandEntry:
             self._latest_key = harmony.key
         if playing and harmony is not None:
             best = getattr(harmony, "key_best", None)
-            clear = (best is not None
-                     and float(getattr(harmony, "key_lead", 0.0)) >= ENTRY_BEST_LEAD)
-            self._best_key_bars = (self._best_key_bars + 1 if clear and best == self._best_key
-                                   else int(clear))
+            # The belief itself, once it is the best fit, leads by definition.
+            clear = best is not None and (
+                best == harmony.key
+                or float(getattr(harmony, "key_lead", 0.0)) >= ENTRY_BEST_LEAD)
+            self._best_key_bars = (self._best_key_bars + 1
+                                   if clear and best == self._best_key else int(clear))
             self._best_key = best if clear else None
         if (self._key_fallback_bars is not None and self._gov.committed_key is None
                 and self._heard >= self._key_fallback_bars
@@ -764,12 +769,13 @@ class BandEntry:
             # Until the band is in, a commitment is one nobody has heard, so it is
             # only a first guess.  The guess is the first run of bars that agreed,
             # and a player who opens on another chord than her home one (the ii,
-            # say, or the relative minor) makes that run the wrong key.  The tracker has heard every bar since, so the band comes in on
-            # its word, once that has held for ENTRY_KEY_BARS of her bars: one bar
-            # of it is a passing chord.  Its present best key when that has led
-            # clearly (ENTRY_BEST_LEAD), else its belief, whose own hysteresis keeps
-            # a passing phrase from moving it.  Its latest word, so a rest on the
-            # entry bar (likely, now the band waits for her phrase) still counts.
+            # say, or the relative minor) makes that run the wrong key.  The
+            # tracker has heard every bar since, so the band comes in on its word,
+            # once that has held for ENTRY_KEY_BARS of her bars: one bar of it is a
+            # passing chord.  Its present best key when that has led the belief
+            # clearly (ENTRY_BEST_LEAD), else its belief, whose own hysteresis
+            # keeps a passing phrase from moving it.  Its latest word, so a rest on
+            # the entry bar (likely, now the band waits for her phrase) still counts.
             # From here on only the release rule can change the key, and the live
             # loop hands this key back to the tracker (HarmonyTracker.adopt) so its
             # stale belief cannot release the band back to the old one.
@@ -1050,8 +1056,9 @@ FOLLOW = "follow"
 FOLLOW_MODES = (FOLLOW,)
 
 #: How long a new way of playing has to hold before the band answers.  At 60 bpm the
-#: band was heard not getting quieter when the player did.  Three whole bars, read two bars late and answered a decibel a bar, was
-#: sixteen seconds after she went soft: not following.
+#: band was heard not getting quieter when the player did.  Three whole bars, read two
+#: bars late and answered a decibel a bar, was sixteen seconds after she went soft:
+#: not following.
 #:
 #: Her level is read every half bar, and a clear change is answered sooner than a
 #: slight one.  A clear change, :data:`FOLLOW_CLEAR_DB` from what the band follows

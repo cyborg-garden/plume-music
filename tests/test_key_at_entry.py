@@ -10,7 +10,7 @@ from types import SimpleNamespace
 
 import numpy as np
 
-from plume.bandentry import BandEntry
+from plume.bandentry import ENTRY_BEST_LEAD, BandEntry
 from plume.listen.harmony import HarmonyTracker
 from plume.theory import parse_key
 
@@ -184,11 +184,20 @@ def _entry_key(best, lead):
 
 
 def test_the_band_enters_on_a_clearly_leading_present_key():
-    assert _entry_key("A minor", 0.2) == "A minor"
+    """``key_lead`` is counted in the margin the belief's hysteresis would ask."""
+    assert _entry_key("A minor", 1.0) == "A minor"
+    assert _entry_key("A minor", ENTRY_BEST_LEAD) == "A minor"
 
 
-def test_a_tie_in_the_present_evidence_leaves_the_band_on_the_belief():
+def test_a_lead_under_the_entry_share_leaves_the_band_on_the_belief():
     assert _entry_key("A minor", 0.0) == "C major"
+    assert _entry_key("A minor", 0.9 * ENTRY_BEST_LEAD) == "C major"
+
+
+def test_the_belief_reports_no_lead_over_itself():
+    state = play([(BAR_S, _triad(r, m), {r: 0.03})
+                  for r, m in ((C, False), (F, False), (G, False), (C, False))], 24.0)
+    assert state.key_best == state.key and state.key_lead == 0.0
 
 
 def test_adopt_sets_the_belief_and_keeps_its_hysteresis():
@@ -217,55 +226,75 @@ def test_a_minor_loop_on_its_relative_majors_chords_keeps_the_key_it_opened_in()
     assert keys and {parse_key(k) for k in keys} == {parse_key("A minor")}, sorted(set(keys))
 
 
-def test_the_present_best_key_names_the_relative_only_on_a_clear_edge():
-    from plume.listen import harmony
-    tr = HarmonyTracker()
-    t = 0.0
-    for root, minor in [(A, True)] * 2 + [(A, True), (F, False), (C, False), (G, False)] * 2:
-        state = tr.process(frames(t, BAR_S, _triad(root, minor), {root: 0.03}))
-        t += BAR_S
-    assert parse_key(state.key) == parse_key("A minor")
-    assert parse_key(state.key_best) == parse_key("A minor"), state.key_best
-    # The same evidence with no edge required: the relative is the best fit.
-    old = harmony._KEY_BEST_RELATIVE_LEAD
-    try:
-        harmony._KEY_BEST_RELATIVE_LEAD = 0.0
-        state = tr.process(frames(t, BAR_S, _triad(C), {C: 0.03}))
-    finally:
-        harmony._KEY_BEST_RELATIVE_LEAD = old
-    assert parse_key(state.key_best) == parse_key("C major"), state.key_best
+# ---- strummed loops that sit on I but hold another key's notes
+
+def _sounded(midi_notes, decay=0.4):
+    """The chroma of notes as a string sounds them: partials 1-8 at decay ** (n - 1)."""
+    c = {}
+    for m in midi_notes:
+        for n in range(1, 9):
+            pc = (m + int(round(12 * np.log2(n)))) % 12
+            c[pc] = c.get(pc, 0.0) + decay ** (n - 1)
+    return c
 
 
-# ---- MIDI: notes without partials
-
-def test_midi_notes_are_matched_without_partials():
-    """Chroma built from MIDI notes has no partials, and matched as if it had, a slow
-    I bVII IV I reads as the IV's key (F major for C): each bar of F is long enough
-    to carry the belief past the neighbour margin."""
-    loop = [(C, False), (A + 1, False), (F, False), (C, False)]
-    bar_s = 240.0 / 70.0
-
-    def heard(partials):
-        tr, t, state = HarmonyTracker(partials=partials), 0.0, None
-        for bar in range(16):
-            root, minor = loop[bar % 4]
-            state = tr.process(frames(t, bar_s, _triad(root, minor), {root: 0.03}))
-            t += bar_s
-        return parse_key(state.key)
-
-    assert heard(partials=False) == parse_key("C major")
-    assert heard(partials=True) == parse_key("F major")
+def _strum(root, minor=False):
+    """A strummed shape: the root on a low string (E2 to D#3), its octave, the triad
+    above.  ``low``: the bass band's share, larger for a lower root, as a pickup reads it."""
+    r = 40 + (root - 40) % 12
+    notes = [r, r + 12, r + 12 + (3 if minor else 4), r + 19, r + 24]
+    return _sounded(notes), {root: 0.005 + 0.01 * (52 - r) / 12}
 
 
-def test_the_live_take_builds_its_trackers_by_input():
-    """Every HarmonyTracker the live loop makes says whether its input is MIDI."""
-    import inspect
+def _strummed_take(chords, bars, bar_s=240.0 / 90.0):
+    tr, entry, keys = HarmonyTracker(), BandEntry("midwest", key_fallback_bars=16), []
+    for bar in range(bars):
+        pcs, low = _strum(*chords[bar % len(chords)])
+        h = tr.process(frames(bar * bar_s, bar_s, pcs, low))
+        e = entry.update(bar, h, True)
+        if entry.band_is_in and entry.bars_in == 0 and e.key != h.key:
+            tr.adopt(e.key)
+        keys.append(e.key)
+    return [k for k in keys if k is not None]
 
+
+def test_a_strummed_I_bVII_IV_I_comes_in_on_I_not_on_the_IV():
+    """D C G D holds exactly G major's notes, and the IV's root is the lowest string,
+    so every profile fits G major.  The chords sit on D."""
+    for tonic in (C, D, A):
+        loop = [(tonic, False), ((tonic + 10) % 12, False), ((tonic + 5) % 12, False),
+                (tonic, False)]
+        keys = _strummed_take(loop, 24)
+        want = parse_key(f"{('C', 'D', 'A')[(C, D, A).index(tonic)]} major")
+        assert keys and {parse_key(k) for k in keys} == {want}, (tonic, sorted(set(keys)))
+
+
+# ---- audio and MIDI
+
+def test_audio_chroma_is_matched_as_it_sounds():
+    """A maj7 home chord and its IV as strings sound them: the fifth partials of
+    C E G B and F A C E fill in E minor's triad, and matched against bare profiles
+    the loop reads as E minor."""
+    loop = [(BAR_S, _sounded([48 + i for i in MAJ7], 0.6), {C: 0.03}),
+            (BAR_S, _sounded([53 + i for i in MAJ7], 0.6), {F: 0.03})]
+    assert parse_key(play(loop, 32.0).key) == parse_key("C major")
+
+    tr, t = HarmonyTracker(partials=False), 0.0
+    for _ in range(8):
+        for dur, pcs, low in loop:
+            state = tr.process(frames(t, dur, pcs, low))
+            t += dur
+    assert parse_key(state.key) != parse_key("C major"), state.key
+
+
+def test_a_live_take_matches_keys_by_its_input():
+    """Chroma from sound carries partials, chroma built from MIDI notes has none."""
     from plume import realtime
-    src = inspect.getsource(realtime)
-    made = src.count("HarmonyTracker(")
-    assert made >= 4
-    assert src.count("HarmonyTracker(partials=midi_port is None)") == made
+    from plume.listen import harmony
+    assert realtime.live_harmony_tracker(None)._profiles is harmony._PROFILES
+    assert realtime.live_harmony_tracker("a port")._profiles is harmony._PROFILES_BARE
+    # sim and cli read rendered audio, so the default is the audio match.
+    assert HarmonyTracker()._profiles is harmony._PROFILES
 
 
 # ---- the live loop hands the band's key to the tracker

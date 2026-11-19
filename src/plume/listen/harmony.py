@@ -5,15 +5,18 @@ Key belief
     (half-life ``key_halflife_s``) is Pearson-correlated against all 24 key
     profiles (12 major + 12 minor; Krumhansl-Kessler with a share of corpus
     profiles, and for audio as each would sound with its partials: see
-    _KEY_CORPUS_SHARE).  The reported key is
+    _KEY_CORPUS_SHARE).  Each key's score is that correlation plus
+    ``_KEY_ROOT_WEIGHT`` times the share of the music's chords that sit on its
+    tonic (_KEY_ROOT_WEIGHT).  The reported key is
     an *incumbent* with switch hysteresis: a challenger key must beat the
-    incumbent's correlation by ``_KEY_SWITCH_MARGIN`` sustained for
+    incumbent's score by ``_KEY_SWITCH_MARGIN`` sustained for
     ``_KEY_SWITCH_SUSTAIN_S`` seconds before the belief flips.  ``key`` is
     ``None`` until enough voiced mass has accumulated and the best correlation
     clears ``_KEY_CONF_FLOOR``; ``key_conf`` is the incumbent's Krumhansl-Kessler
     correlation clipped to [0, 1] and discounted while evidence is thin.
-    ``key_best`` / ``key_lead`` report the best fit right now, before any
-    hysteresis, and how far it leads the runner-up.
+    ``key_best`` / ``key_lead`` report the best score right now, before any
+    hysteresis, and how far it leads the belief, in units of the margin the
+    belief's hysteresis would ask of it.
 
 Chord belief
     Per-frame cosine scores of the chroma against 24 binary maj/min triad
@@ -103,9 +106,38 @@ _CORPUS_MINOR = np.array(
 )
 _KEY_CORPUS_SHARE = 0.5
 _KEY_PARTIAL_DECAY = 0.4
+# _KEY_ROOT_WEIGHT — v1.6.  Which pitch class the chords sit on.  A pitch-class
+# histogram cannot tell a key from its neighbour when the music uses notes of
+# both: I bVII IV I in D (D C G D) holds exactly G major's notes, and so does a
+# I bVII vamp but for one, so both read as the IV's key however the profiles
+# are built.  What names D is that the chords sit on D.  So every voiced frame
+# is read as a triad (cosine against the 24 major and minor triads, root
+# counted _ROOT_TEMPLATE_WEIGHT times, on the same bass-weighted chroma the key
+# histogram takes, sharpened by _HMM_BETA as the chord reader is), the reading's
+# weight is added to its root, and that root histogram decays with the key's
+# half-life.  Its share on a key's tonic, times this weight, is added to the
+# key's correlation.  The root term counts a major and a minor triad on one root
+# alike: whether a frame's third is major or minor is the partials' and the
+# profiles' question (a low string's 5th partial is a major third under any
+# melody).  It moves nothing between keys on one tonic, and between a key and
+# its relative only as far as the music dwells on one of their tonics, which is
+# what a listener hears as home.  Measured on generated strummed I bVII IV I in
+# four voicings and 12 keys: the band came in on I in 48 of 48 takes at 0.3, and
+# in 31 of 48 with no root term (none of 12 for one voicing).  0.4 came in on
+# I no more often, and over 36 I bVII vamps moved the key after the band was in
+# 6 times against 4 at 0.3.
+_KEY_ROOT_WEIGHT = 0.3
+_ROOT_TEMPLATE_WEIGHT = 2.0
 
-_KEY_SWITCH_MARGIN = 0.05     # challenger must beat incumbent corr by this...
+_KEY_SWITCH_MARGIN = 0.10     # challenger must beat incumbent score by this...
 _KEY_SWITCH_SUSTAIN_S = 3.0   # ...sustained this long, to flip the belief
+# v1.6: the margin was 0.05 on correlation alone.  The root term swings with
+# the chord of the moment, most in a two-chord vamp (I bVII leans to bVII's key
+# for a bar, then back), and at 0.05 those swings walked beliefs off the key
+# after the band was in: over the 270 generated benchmark takes, key changes
+# after entry were 16 at 0.05 and 12 at 0.10.  Moves of two or more accidentals
+# leave a gap far above either (0.9-1.0 for I IV V I up a whole step), and were
+# followed equally fast at both.
 # _KEY_RELATIVE_STICKY — v1.2 AMENDMENT (SPEC-V1 section 3).  A key and its
 # RELATIVE (C minor / Eb major) contain exactly the same pitch collection, so
 # a pitch-class histogram cannot distinguish them in principle — only metric
@@ -122,15 +154,6 @@ _KEY_SWITCH_SUSTAIN_S = 3.0   # ...sustained this long, to flip the belief
 # that a same-collection reading cannot reach.  Non-relative modulations are
 # unaffected and still switch on the ordinary margin.
 _KEY_RELATIVE_STICKY = 0.60
-# _KEY_BEST_RELATIVE_LEAD — v1.6.  ``key_best`` (the best fit now, which the
-# band may come in on: bandentry ENTRY_BEST_LEAD) names the belief's relative
-# only when the relative fits better by at least this much.  For the reason
-# above, a smaller edge is the weighting of chords in a loop, not evidence:
-# i-bVI-bIII-bVII fits its relative major better, all through.  A larger edge
-# comes from notes outside the shared collection (a minor key's raised
-# seventh) or from the loop sitting on the other tonic, as when a player opens
-# on the relative chord and then plays in the key.
-_KEY_BEST_RELATIVE_LEAD = 0.12
 # _KEY_NEIGHBOR_STICKY — v1.4 AMENDMENT (SPEC-V1 section 3).  The relative
 # stickiness above is the extreme case of a general fact: two keys whose
 # diatonic collections differ by ONE accidental share 6 of 7 pitch classes, so
@@ -152,11 +175,20 @@ _KEY_BEST_RELATIVE_LEAD = 0.12
 # just under the ceiling: strongly sticky, still passable by a real key
 # change.  At 0.15 the A-minor fixtures stopped drifting to F major and
 # flagship stopped visiting Bb major, while a full modulation still landed.
-# The v1.6 profiles separate neighbouring keys further, so the same stickiness
-# needs a larger margin: at 0.22 the subdominant passage in test_harmony holds
-# as long as it did at 0.15 before, and a move to the dominant on input with
-# partials is followed about as fast as before.
-_KEY_NEIGHBOR_STICKY = 0.22
+# The v1.6 score (profiles and root term) separates neighbouring keys further,
+# so the same stickiness needs a larger margin: below 0.26 the subdominant
+# passage in test_harmony moves the key within its 35 s.  The ceiling, measured
+# on generated strummed takes as the new key's lead over the old once a move
+# has settled: up a fifth 0.40-0.55 (I IV V I), 0.30-0.42 (I V vi IV), 0.45-0.54
+# (i iv v i), followed in 14-36 s (one I V vi IV take of four went to the new
+# key's relative minor instead, as its vi chord dwelt).  That is slower than
+# with the probe-tone profiles at 0.15, which followed the same moves in 5-22 s.
+# Up a fourth the lead is smaller, -0.02 to 0.12 major and 0.12 to 0.31 minor
+# (every partial leans a note toward its dominant), so a move to the
+# subdominant is often not followed; it was not at 0.15 either.  An I IV vamp
+# moved up a fifth is the old key's V I and leads by -0.01 to 0.11: not
+# followed (at 0.15 it was, after 42-90 s).
+_KEY_NEIGHBOR_STICKY = 0.26
 _KEY_CONF_FLOOR = 0.3         # below this correlation, key reports None
 _KEY_MASS_FLOOR = 5.0         # min accumulated voiced chroma mass (guards std)
 # _KEY_MIN_EVIDENCE_S — v1.2 AMENDMENT (SPEC-V1 section 3).  The only gate on
@@ -280,6 +312,15 @@ def _as_heard(profile: np.ndarray) -> np.ndarray:
     return sum(weight[pc] * np.roll(partials, pc) for pc in range(12))
 
 
+def _root_triads() -> np.ndarray:
+    """(24, 12) L2-normalized triads with the root counted _ROOT_TEMPLATE_WEIGHT
+    times; row r<12 = major root r, else minor.  See _KEY_ROOT_WEIGHT."""
+    t = (_triad_templates() > 0).astype(np.float64)
+    for r in range(24):
+        t[r, r % 12] = _ROOT_TEMPLATE_WEIGHT
+    return t / np.linalg.norm(t, axis=1, keepdims=True)
+
+
 def _triad_templates() -> np.ndarray:
     """(24, 12) L2-normalized binary triads; row r<12 = major root r, else minor."""
     t = np.zeros((24, 12))
@@ -300,6 +341,7 @@ _PROFILES_BARE = _key_profiles(_key_template(_KK_MAJOR, _CORPUS_MAJOR),
 _PROFILES = _key_profiles(_as_heard(_key_template(_KK_MAJOR, _CORPUS_MAJOR)),
                           _as_heard(_key_template(_KK_MINOR, _CORPUS_MINOR)))
 _TEMPLATES = _triad_templates()
+_ROOT_TRIADS = _root_triads()
 _N_STATES = 25  # 24 triads + N
 _N_IDX = 24
 
@@ -395,6 +437,7 @@ class HarmonyTracker:
         self._chal_idx: int | None = None
         self._chal_time = 0.0
         self._key_conf = 0.0
+        self._roots = np.zeros(12)             # where the chords sit (see above)
         self._best_idx: int | None = None
         self._best_lead = 0.0
         # chord HMM
@@ -477,12 +520,19 @@ class HarmonyTracker:
         if dt > 0.0:
             decay = 0.5 ** (dt / self._key_hl)
             self._hist *= decay
+            self._roots *= decay
             self._evidence_s *= decay
             self._elapsed_s *= decay
         self._elapsed_s += dt          # voiced or not: the duty denominator
         if voiced:
-            self._hist += chroma + _KEY_BASS_WEIGHT * chroma_low
+            heard = chroma + _KEY_BASS_WEIGHT * chroma_low
+            self._hist += heard
             self._evidence_s += dt
+            # The triad this frame sounds like, credited to its root.
+            fit = _HMM_BETA * (_ROOT_TRIADS @ heard) / np.linalg.norm(heard)
+            p = np.exp(fit - fit.max())
+            p /= p.sum()
+            self._roots += p[:12] + p[12:]
 
         mass = self._hist.sum()
         std = self._hist.std()
@@ -494,6 +544,8 @@ class HarmonyTracker:
             return
         hz = (self._hist - self._hist.mean()) / std
         corr = self._profiles @ hz / 12.0     # Pearson r vs each of 24 keys
+        # Each key scored by its correlation and the share of chords on its tonic.
+        score = corr + _KEY_ROOT_WEIGHT * np.tile(self._roots / self._roots.sum(), 2)
         # How tonal: the probe-tone fit, the scale every floor here was set on.
         tonal = _TONAL_PROFILES @ hz / 12.0
 
@@ -505,13 +557,13 @@ class HarmonyTracker:
         def conf_of(idx: int) -> float:
             return float(np.clip(tonal[idx], 0.0, 1.0) * settled)
 
-        best = int(np.argmax(corr))
-        self._best_idx = best
-        self._best_lead = float(corr[best] - np.partition(corr, -2)[-2])
+        best = int(np.argmax(score))
         inc = self._key_idx
-        if (inc is not None and _COLL_DIST[inc, best] == 0 and best != inc
-                and corr[best] - corr[inc] < _KEY_BEST_RELATIVE_LEAD):
-            self._best_idx, self._best_lead = inc, 0.0   # the belief stands
+        # How far the best key now leads the belief, in units of the margin the
+        # belief's hysteresis would ask of it (bandentry ENTRY_BEST_LEAD).
+        self._best_idx = best
+        self._best_lead = (0.0 if inc is None or best == inc
+                           else float(score[best] - score[inc]) / _switch_margin(inc, best))
         if self._key_idx is None:
             # ACQUISITION.  Needs sustained tonal content, not merely enough
             # accumulated frames: see _KEY_DUTY_FLOOR.
@@ -528,9 +580,9 @@ class HarmonyTracker:
         inc = self._key_idx
         self._key_conf = conf_of(inc)
         others = np.delete(np.arange(24), inc)
-        cb = int(others[np.argmax(corr[others])])
+        cb = int(others[np.argmax(score[others])])
         margin = _switch_margin(inc, cb)
-        if corr[cb] > corr[inc] + margin:
+        if score[cb] > score[inc] + margin:
             if cb == self._chal_idx:
                 self._chal_time += dt
             else:

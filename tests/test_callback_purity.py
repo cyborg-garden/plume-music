@@ -161,7 +161,33 @@ def run_jam(tmp_path, sock, **kw):
                  socket_path=sock, record_dir=str(tmp_path / "rec"), **kw)
 
 
-@pytest.mark.parametrize("midi", [None, "auto"], ids=["mic", "midi"])
+class FakeMidoWithOut(FakeMido):
+    """``FakeMido`` with output ports too, for the band sent as MIDI: opens none."""
+
+    class Message:
+        def __init__(self, type, **kw):  # noqa: A002 - mido's own name
+            self.type, self.kw = type, kw
+
+    class Out:
+        def __init__(self):
+            self.sent = []
+
+        def send(self, msg):
+            self.sent.append(msg)
+
+        def close(self):
+            pass
+
+    def __init__(self):
+        super().__init__()
+        self.outs = []
+
+    def open_output(self, name, virtual=False):  # noqa: ARG002
+        self.outs.append(self.Out())
+        return self.outs[-1]
+
+
+@pytest.mark.parametrize("midi", [None, "auto", "out"], ids=["mic", "midi", "midi-out"])
 @pytest.mark.parametrize("run,extra", [
     (run_lead, {"voice_channel": 2}),
     (run_jam, {}),
@@ -177,8 +203,9 @@ def test_the_callback_only_copies_rings(env, run, extra, midi):
         flagged.append(i)
         return FakeCallbackFlags(0xF)
     sd, watcher = watched_device(status=status)
-    kw = {"midi": midi} if midi else {}
-    with patched_module("sounddevice", sd), patched_module("mido", FakeMido()):
+    kw = ({"midi_out": "virtual", "midi_only": True} if midi == "out"
+          else {"midi": midi} if midi else {})
+    with patched_module("sounddevice", sd), patched_module("mido", FakeMidoWithOut()):
         run(env, short_socket_path("pure"), monitor=True, input_device="audio interface",
             input_channel=1, **extra, **kw)
     assert watcher.blocks > 50, "the callback barely ran, so this proves nothing"

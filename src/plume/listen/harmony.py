@@ -110,7 +110,8 @@ _ENTRY_MINOR_OFFSET = 0.04
 # _ENTRY_HALFLIFE_S.  How long the entry reading remembers.  Long against the
 # time a band takes to come in (a minute holds every bar a slow player plays
 # before it does), so it reads her whole opening, where the belief's 15 s
-# half-life has mostly forgotten the start of it.
+# half-life has mostly forgotten the start of it.  At 15 s: 176 and 37; 30 s:
+# 182 and 37; 60 s: 184 and 36; never forgetting: 184 and 33.
 _ENTRY_HALFLIFE_S = 60.0
 # _ENTRY_ROOT_WEIGHT.  Which pitch class the chords sit on.  A pitch-class
 # histogram cannot tell a key from its neighbour when the music uses notes of

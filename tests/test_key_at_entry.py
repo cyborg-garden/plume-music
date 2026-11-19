@@ -147,6 +147,15 @@ def test_a_maj7_vamp_on_the_home_chord_and_its_IV_comes_in_on_the_home_chord():
         assert came_in_on(loop, bars=24) == want, tonic
 
 
+def test_a_I_IV_vamp_with_the_IV_lowest_comes_in_on_the_I():
+    """C F C F with F the stronger bass note holds F major's V I as well: corpus
+    profiles weigh a major key's tonic and fifth nearly alike."""
+    for tonic, name in ((C, "C"), (E, "E"), (A - 1, "Ab")):
+        loop = [(BAR_S, _triad(tonic), {tonic: 0.03}),
+                (BAR_S, _triad((tonic + 5) % 12), {(tonic + 5) % 12: 0.15})]
+        assert came_in_on(loop, bars=24) == parse_key(f"{name} major"), name
+
+
 # ---- relative keys: the band comes in on everything she has played
 
 A_MINOR_LOOP = [(A, True), (D, True), (A, True), (E, False)]

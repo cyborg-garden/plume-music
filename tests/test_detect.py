@@ -548,6 +548,91 @@ def test_hiss_between_notes_on_a_quiet_input_is_not_strokes():
     assert ear.strokes / 28.0 == pytest.approx(0.5, abs=0.15), ear.strokes
 
 
+def _legato(*, bpm, attack_ms, gain_db=-6.0, bars=9, seed=2):
+    """A legato lead, bowed, blown or a soft synth: eighth notes of A minor, each swelling
+    in over ``attack_ms`` as the last one fades over the same time, with a little vibrato,
+    over the runner's hiss.  Its level hardly moves from note to note; its pitch does."""
+    from plume.theory import midi_to_hz
+    rng = np.random.default_rng(seed)
+    scale = (57, 59, 60, 62, 64, 65, 67, 69, 72)
+    step = 60.0 / bpm / 2.0
+    ramp = attack_ms / 1000.0
+    buf = np.zeros(int(round((bars * 8 * step + 2.0) * SR)))
+    m = 4
+    for i in range(bars * 8):
+        m = int(np.clip(m + rng.choice((-2, -1, 1, 2)), 0, len(scale) - 1))
+        t = np.arange(int((step + ramp) * SR)) / SR
+        phase = 2 * np.pi * midi_to_hz(scale[m]) * (t + 0.004 * np.sin(2 * np.pi * 5.5 * t)
+                                                     / (2 * np.pi * 5.5))
+        y = sum(np.sin(h * phase) / h ** 1.3 for h in range(1, 9))
+        env = np.minimum(1.0, np.minimum(t / ramp, (t[-1] - t) / ramp))
+        s0 = int(round(i * step * SR))
+        buf[s0:s0 + y.size] += y * env * rng.uniform(0.8, 1.0)
+    buf *= 10.0 ** (gain_db / 20.0) / float(np.max(np.abs(buf)))
+    return (buf + rng.standard_normal(buf.size) * _HISS).astype(np.float32)
+
+
+@pytest.mark.parametrize("attack_ms", [20.0, 60.0])
+def test_a_legato_lead_is_as_busy_as_its_notes(attack_ms):
+    """Two notes a beat with no gap and no lift in level between them: each new pitch is a
+    stroke, and the vibrato on a held one is not."""
+    pick, got = _picked(_legato(bpm=86.0, attack_ms=attack_ms), bpm=86.0, key="A minor")
+    assert 1.55 <= pick.busy <= 3.0, pick.why
+    assert got == "midwest", pick.why
+
+
+def test_a_legato_lead_s_pick_does_not_turn_with_the_gain_knob():
+    seen = {g: _picked(_legato(bpm=86.0, attack_ms=40.0, gain_db=g), bpm=86.0,
+                       key="A minor") for g in (-6.0, -26.0, -46.0)}
+    assert len({got for _, got in seen.values()}) == 1, {g: p.why for g, (p, _) in seen.items()}
+
+
+def test_a_held_chord_is_not_busy():
+    """Four notes held a bar each: the partials beat against each other and the level
+    wobbles, but nothing new is played until the next bar."""
+    from test_acoustic import _add, _string
+    rng = np.random.default_rng(6)
+    beat = 60.0 / 85.0
+    buf = np.zeros(int(round((9 * 4 * beat + 2.0) * SR)))
+    for b in range(9):
+        for m in (50, 57, 62, 65):
+            _add(buf, _string(m + (b % 2) * 2, dur_s=4 * beat + 0.3, velocity=0.6, rng=rng,
+                              attack_ms=150.0, tau_s=8.0), b * 4 * beat)
+    buf = buf * 10.0 ** (-6.0 / 20.0) / float(np.max(np.abs(buf)))
+    audio = (buf + rng.standard_normal(buf.size) * _HISS).astype(np.float32)
+    pick, _ = _picked(audio, bpm=85.0, key="D minor")
+    assert pick.busy < 0.8, pick.why
+
+
+def test_a_ringing_tail_on_a_loud_input_is_not_strokes():
+    """Two notes a bar, every other bar, near the top of the gain knob: between them the
+    strings ring down to the hiss 60 dB under her, and the attack there, a log ratio,
+    flickers like a note's.  Only what reaches near her own level is a stroke."""
+    from test_acoustic import _add, _string
+
+    from plume.bandentry import StrokeEar
+    from plume.listen.features import HOP, FeatureExtractor
+    rng = np.random.default_rng(1)
+    beat = 60.0 / 85.0
+    buf = np.zeros(int(round((8 * 4 * beat + 2.0) * SR)))
+    for b in range(0, 8, 2):
+        for at in (0.0, 1.5):
+            _add(buf, _string(57 + 3 * (b % 4), dur_s=1.0, velocity=0.8, rng=rng,
+                              attack_ms=5.0, tau_s=0.3), (b * 4 + at) * beat)
+    buf = buf * 10.0 ** (-6.0 / 20.0) / float(np.max(np.abs(buf)))
+    audio = (buf + np.random.default_rng(2).standard_normal(buf.size) * _HISS).astype(np.float32)
+    frames = FeatureExtractor(sr=SR).process(audio)
+    per = 4 * 60.0 / 85.0 * SR / HOP
+    ear = StrokeEar()
+    counts = []
+    for b in range(8):
+        before = ear.strokes
+        ear.bar(frames[int(round(b * per)):int(round((b + 1) * per))])
+        counts.append(ear.strokes - before)
+    # the first note has nothing heard before it to rise from
+    assert counts == [1, 0, 2, 0, 2, 0, 2, 0], counts
+
+
 def test_the_stroke_ear_keeps_a_bounded_memory():
     from types import SimpleNamespace
 

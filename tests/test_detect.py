@@ -117,35 +117,35 @@ def test_the_transport_refuses_too_before_touching_a_device(kw, monkeypatch):
     (79.9, "minor", None, "rnb"),
     (79.9, "minor", 3.0, "lofi"),
     (80.0, None, None, "lofi"),
-    (85.0, "major", 0.99, "lofi"),
-    (85.0, "major", 1.0, "midwest"),
+    (85.0, "major", 1.54, "lofi"),
+    (85.0, "major", 1.55, "midwest"),
     (85.0, "minor", 0.2, "hiphop"),
     (89.9, "minor", 2.0, "midwest"),
     (90.0, None, None, "midwest"),
     (95.0, "major", 0.2, "midwest"),
     (95.0, "minor", 0.2, "hiphop"),
-    (95.0, "minor", 1.0, "midwest"),
+    (95.0, "minor", 1.55, "midwest"),
     (100.0, "major", 0.2, "midwest"),
     (100.0, "minor", 0.2, "synthwave"),
     (100.0, "minor", None, "synthwave"),
-    (100.0, "minor", 1.0, "midwest"),
+    (100.0, "minor", 1.55, "midwest"),
     (117.9, "minor", 0.0, "synthwave"),
     (118.0, "minor", 0.0, "house"),
     (124.0, None, None, "midwest"),
-    (124.0, "minor", 1.0, "midwest"),
+    (124.0, "minor", 1.55, "midwest"),
     (129.9, "minor", None, "house"),
     (129.9, "major", 0.0, "midwest"),
     (130.0, None, None, "trap"),
-    (140.0, "minor", 0.49, "trap"),
-    (140.0, "minor", 0.5, "midwest"),
+    (140.0, "minor", 0.79, "trap"),
+    (140.0, "minor", 0.8, "midwest"),
     (150.0, "major", 0.1, "trap"),
     (150.1, "major", 0.1, "jazz"),
-    (170.0, "minor", 0.49, "jazz"),
+    (170.0, "minor", 0.79, "jazz"),
     (220.0, "major", 0.2, "jazz"),
     # Fast and not known to be sparse is the older answer: nothing there says jazz.
     (170.0, None, None, "midwest"),
     (170.0, "major", None, "midwest"),
-    (170.0, "minor", 0.5, "midwest"),
+    (170.0, "minor", 0.8, "midwest"),
     (170.0, "major", 2.0, "midwest"),
     (170.0, "minor", 3.0, "midwest"),
     (220.1, "major", 0.2, "midwest"),
@@ -166,9 +166,9 @@ def test_a_room_mic_never_says_how_busy_anyone_is():
 def test_a_direct_input_does():
     pick = StylePick(trust_busy=True)
     assert pick.busy is None          # no bars heard: not the same as not busy
-    pick.heard_bar(8)
+    pick.heard_bar(14)
     pick.heard_bar(0)
-    assert pick.busy == pytest.approx(1.0)
+    assert pick.busy == pytest.approx(1.75)
     assert pick.at_entry(85.0, "C major") == "midwest"
     assert pick.at_entry(140.0, "C major") == "midwest"
 
@@ -421,6 +421,145 @@ def test_folk_s_range_is_the_style_s_own():
     from plume.bandentry import FOLK_BPM
     from plume.styles_lib import load_style
     assert list(FOLK_BPM) == load_style("folk")["bpm_range"]
+
+
+# --------------------------------------------------------------------- busy
+#
+# How busy she is splits the tempo bands, so it must be how much she plays and not how
+# far the gain knob is turned.  The flux onsets it used to count were picked against a
+# fixed threshold: the same parts read a median 1.75, 1.39 and 1.00 onsets a beat at 0,
+# -20 and -40 dB, and over 1.0 almost always, so "busy" fired for nearly everyone.
+
+#: The runner's noise floor (tests/conftest's takes and the benchmark's): what is left
+#: between her notes on a quiet input.
+_HISS = 3e-4
+
+
+def _line(*, bpm, key, beats, gain_db=-6.0, bars=9, seed=4):
+    """A picked single-note line: a chord tone of i-VI-VII-i (or I-IV-V-I) on each of
+    ``beats`` (positions in the bar), over the runner's hiss, peaking at ``gain_db``."""
+    from test_acoustic import _add, _string
+
+    from plume.theory import parse_key, roman_to_chord
+    rng = np.random.default_rng(seed)
+    k = parse_key(key)
+    numerals = ("i", "VI", "VII", "i") if k.mode == "minor" else ("I", "IV", "V", "I")
+    beat = 60.0 / bpm
+    buf = np.zeros(int(round((bars * 4 * beat + 2.0) * SR)))
+    for b in range(bars):
+        ch = roman_to_chord(numerals[b % 4], k)
+        tones = [52 + (ch.root - 52) % 12 + iv for iv in ch.intervals] + [64 + (ch.root - 52) % 12]
+        for i, at in enumerate(beats):
+            t = (b * 4 + at) * beat + float(rng.normal(0.0, 0.006))
+            _add(buf, _string(tones[(b + i) % len(tones)], dur_s=1.2,
+                              velocity=float(rng.uniform(0.7, 0.9)), rng=rng,
+                              attack_ms=float(rng.uniform(3.0, 7.0)), tau_s=1.0), t)
+    buf *= 10.0 ** (gain_db / 20.0) / float(np.max(np.abs(buf)))
+    return (buf + rng.standard_normal(buf.size) * _HISS).astype(np.float32)
+
+
+def _picked(audio, *, bpm, key, bars=7, **kw):
+    """The first ``bars`` bars of ``audio`` into a direct input's StylePick, the onsets
+    counted as the take counts them, and its pick as the band comes in."""
+    from plume.listen.features import HOP, FeatureExtractor
+    fe = FeatureExtractor(sr=SR)
+    frames = []
+    for i in range(0, len(audio), 4800):
+        frames.extend(fe.process(audio[i:i + 4800]))
+    per = 4 * 60.0 / bpm * SR / HOP
+    pick = StylePick(trust_busy=True, **kw)
+    for b in range(bars):
+        bar = frames[int(round(b * per)):int(round((b + 1) * per))]
+        pick.heard_bar(sum(bool(f.onset) for f in bar), frames=bar)
+    return pick, pick.at_entry(bpm, key)
+
+
+#: Sparse: a note on one and on the "and" of two.  Dense: every eighth.
+_SPARSE = (0.0, 1.5)
+_EIGHTHS = tuple(i / 2.0 for i in range(8))
+
+
+@pytest.mark.parametrize("player", ["sparse", "eighths"])
+def test_how_busy_she_is_does_not_turn_with_the_gain_knob(player):
+    beats = {"sparse": _SPARSE, "eighths": _EIGHTHS}[player]
+    seen = {}
+    for gain_db in (-6.0, -26.0, -46.0):
+        pick, style = _picked(_line(bpm=85.0, key="A minor", beats=beats, gain_db=gain_db),
+                              bpm=85.0, key="A minor")
+        seen[gain_db] = (style, round(pick.busy, 2))
+    assert len({s for s, _ in seen.values()}) == 1, seen
+    busies = [b for _, b in seen.values()]
+    assert max(busies) - min(busies) <= 0.25 * max(busies), seen
+
+
+@pytest.mark.parametrize("bpm,style", [(85.0, "hiphop"), (70.0, "rnb")])
+def test_a_sparse_minor_player_reaches_the_styles_that_need_room(bpm, style):
+    pick, got = _picked(_line(bpm=bpm, key="D minor", beats=_SPARSE), bpm=bpm, key="D minor")
+    assert got == style, pick.why
+
+
+@pytest.mark.parametrize("bpm", [85.0, 95.0])
+def test_a_dense_picked_player_still_gets_midwest(bpm):
+    import folk_fixtures as ff
+    audio = ff.make_take("pick", key="E minor", bpm=bpm, gain_db=-6.0,
+                         numerals=("i", "VI", "III", "VII"))
+    audio = audio + np.random.default_rng(1).standard_normal(audio.size).astype(np.float32) * _HISS
+    pick, got = _picked(audio, bpm=bpm, key="E minor")
+    assert got == "midwest", pick.why
+
+
+def test_the_log_says_what_the_pick_was_made_from():
+    pick, got = _picked(_line(bpm=85.0, key="A minor", beats=_SPARSE), bpm=85.0,
+                        key="A minor", hear_technique=True)
+    why = pick.why
+    assert got in why and "bpm 85.0" in why and "minor" in why, why
+    assert f"busy {pick.busy:.2f} strokes a beat" in why, why
+    assert "folk" in why, why
+
+
+def test_a_room_mic_s_pick_says_it_could_not_hear_how_busy():
+    pick = StylePick(trust_busy=False)
+    pick.heard_bar(16)
+    pick.at_entry(85.0, "A minor")
+    assert "busy: not hers alone" in pick.why and "bpm 85.0" in pick.why
+
+
+def test_notes_without_frames_are_counted_as_they_come():
+    """A MIDI input has no frames to read: each note is a stroke."""
+    pick = StylePick(trust_busy=True)
+    pick.heard_bar(8)
+    pick.heard_bar(0)
+    assert pick.busy == pytest.approx(1.0)
+    assert "onsets a beat" in (pick.at_entry(85.0, "A minor"), pick.why)[1]
+
+
+def test_hiss_between_notes_on_a_quiet_input_is_not_strokes():
+    """At the bottom of the gain knob the hiss between two notes a bar is a large share of
+    what is heard, and its attack, a log ratio, rises and falls like a note's."""
+    from plume.bandentry import StrokeEar
+    from plume.listen.features import HOP, FeatureExtractor
+    audio = _line(bpm=85.0, key="A minor", beats=_SPARSE, gain_db=-46.0)
+    fe = FeatureExtractor(sr=SR)
+    frames = fe.process(audio)
+    per = int(round(4 * 60.0 / 85.0 * SR / HOP))
+    ear = StrokeEar()
+    for b in range(7):
+        ear.bar(frames[b * per:(b + 1) * per])
+    assert ear.strokes / 28.0 == pytest.approx(0.5, abs=0.15), ear.strokes
+
+
+def test_the_stroke_ear_keeps_a_bounded_memory():
+    from types import SimpleNamespace
+
+    from plume.bandentry import StrokeEar
+    ear = StrokeEar()
+    frames = [SimpleNamespace(rms_db=-20.0 - (i % 40), attack=0.2 * (i % 40 == 0))
+              for i in range(400)]
+    for _ in range(50):
+        ear.bar(frames)
+    assert ear.memory_items() < 200
+    # every one counted once, but the very first, with nothing heard before it to rise from
+    assert ear.strokes == 50 * 10 - 1
 
 
 # ---------------------------------------------------- a key that never settles

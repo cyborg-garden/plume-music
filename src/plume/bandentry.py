@@ -45,10 +45,19 @@ DRUMS, BAND, FULL = "drums", "band", "full"
 #: Detect mode: after this many heard bars with no four running on one key, take the
 #: tracker's latest word for it rather than leave the player on drums for the whole take.
 DETECT_KEY_FALLBACK_BARS = 16
-#: Onsets per beat that make a player busy, and that make one sparse enough for trap.
-#: Like every number in detect_style, a first guess nobody has calibrated.
-_BUSY_ONSETS_PER_BEAT = 1.0
-_SPARSE_ONSETS_PER_BEAT = 0.5
+
+#: Strokes per beat at or over which a player is busy, and under which one is sparse
+#: (StrokeEar).  Calibrated (2026-11-20) on a set of 270 generated solo parts,
+#: nine styles by five parts by three tempi by two modes, with the tempo and mode plume
+#: heard: with these the rule names the part's own style for 96 of the 262 the band came
+#: in on, with strokes at the old marks of 1.0 and 0.5 for 66, and with the flux onsets
+#: it used to read for 44.  A busy mark anywhere from 1.5 to 2.5 scores 91 or more, under
+#: 1.5 no more than 88; a sparse mark from 0.8 to 1.0 scores the same.  Per style, median
+#: strokes a beat over the first seven bars: trap 0.54, lofi 0.64, hiphop 0.82, rnb 0.93,
+#: folk and jazz 0.96, house 1.50, midwest 1.84, synthwave 1.96, and 40 recorded
+#: acoustic guitar excerpts 1.2 to 1.6.
+_BUSY_STROKES_PER_BEAT = 1.55
+_SPARSE_STROKES_PER_BEAT = 0.8
 
 #: Folk is a claim about how the guitar is played, never about the tempo alone, so it
 #: needs evidence the rest of the rule has no use for (FolkEar).  It answers only at or
@@ -62,9 +71,10 @@ def detect_style(bpm: float, mode: str | None = None, busy: float | None = None,
     """A style for a player who did not name one: a guess, and the page says so.
 
     The tempo does most of the work, and each style's own range sets the bands.  The
-    mode and how busy the playing is (onsets per beat) only split a band.  None means
-    not known yet, or on a room mic not knowable, and counts as neither minor nor busy.
-    The thresholds are uncalibrated: they have never met a real player.
+    mode and how busy the playing is (strokes per beat, StrokeEar) only split a band.
+    None means not known yet, or on a room mic not knowable, and counts as neither minor
+    nor busy.  The busy and sparse marks are calibrated on generated parts, never on a
+    real player (_BUSY_STROKES_PER_BEAT); the tempo bands are not calibrated at all.
 
     A minor key with room in it is the only sign this rule has of r&b, hip hop or house,
     so those three are claims about tempo and mode and nothing more.  It hears nothing
@@ -80,7 +90,7 @@ def detect_style(bpm: float, mode: str | None = None, busy: float | None = None,
     """
     if folk is not None and folk >= FOLK_CONFIDENCE and FOLK_BPM[0] <= bpm <= FOLK_BPM[1]:
         return "folk"
-    busy_now = busy is not None and busy >= _BUSY_ONSETS_PER_BEAT
+    busy_now = busy is not None and busy >= _BUSY_STROKES_PER_BEAT
     minor_with_room = mode == "minor" and not busy_now
     if bpm < 80.0:
         return "rnb" if minor_with_room and bpm >= 60.0 else "lofi"
@@ -95,8 +105,8 @@ def detect_style(bpm: float, mode: str | None = None, busy: float | None = None,
     if bpm < 130.0:
         return "house" if minor_with_room else "midwest"
     if bpm <= 150.0:
-        return "midwest" if busy is not None and busy >= _SPARSE_ONSETS_PER_BEAT else "trap"
-    known_sparse = busy is not None and busy < _SPARSE_ONSETS_PER_BEAT
+        return "midwest" if busy is not None and busy >= _SPARSE_STROKES_PER_BEAT else "trap"
+    known_sparse = busy is not None and busy < _SPARSE_STROKES_PER_BEAT
     return "jazz" if known_sparse and bpm <= 220.0 else "midwest"
 
 
@@ -233,6 +243,33 @@ _W_STRUM, _W_ACOUSTIC, _W_MAJOR = 0.55, 0.25, 0.2
 _BREADTH_BINS = 25
 
 
+def _strokes(att, ok, stroke_at: float, last: int, start: int = 3) -> tuple[list[int], int]:
+    """The strokes in ``att`` (a bar's attack with the last bar's tail in front): each
+    one's width in hops, and where the last one is.
+
+    A stroke is a peak of the attack at ``stroke_at`` or over, on a frame ``ok`` allows,
+    and at least _STROKE_SEP hops after the one before (``last``).  It is read with 3
+    frames before it and 6 after, so the last 6 wait for the next bar, and the tail
+    carried in front holds them and ``start`` frames before them.  Its width is the
+    unbroken run of hops around the peak at half of it or more."""
+    widths = []
+    for k in range(min(start, len(att)), len(att) - 6):
+        if not ok[k] or att[k] < stroke_at or k - last < _STROKE_SEP:
+            continue
+        w = att[k - 3:k + 6]
+        if att[k] < float(w[:7].max()):
+            continue                 # not the peak: a hop either side is higher
+        last = k
+        above = w >= 0.5 * float(att[k])
+        lo = hi = 3
+        while lo > 0 and above[lo - 1]:
+            lo -= 1
+        while hi < len(w) - 1 and above[hi + 1]:
+            hi += 1
+        widths.append(int(hi - lo + 1))
+    return widths, last
+
+
 class FolkEar:
     """Is she strumming an acoustic guitar?  The evidence for a folk guess.
 
@@ -281,23 +318,9 @@ class FolkEar:
         np.add.at(self._strong_hist, idx, 1)
         stroke_at = max(strong_at, _STROKE_SHARE
                         * float(np.percentile(att[audible], _STROKE_PCT)))
-        # A stroke is read with 3 frames before it and 6 after; the last 6 wait a bar.
-        last = self._last_stroke
-        for k in range(min(3, len(seen)), len(seen) - 6):
-            if not audible[k] or att[k] < stroke_at or k - last < _STROKE_SEP:
-                continue
-            w = att[k - 3:k + 6]
-            if att[k] < float(w[:7].max()):
-                continue                 # not the peak: a hop either side is higher
-            last = k
-            above = w >= 0.5 * float(att[k])
-            lo = hi = 3
-            while lo > 0 and above[lo - 1]:
-                lo -= 1
-            while hi < len(w) - 1 and above[hi + 1]:
-                hi += 1
-            self._onsets += 1
-            self._raked += int(hi - lo + 1 >= _RAKE_HOPS)
+        widths, last = _strokes(att, audible, stroke_at, self._last_stroke)
+        self._onsets += len(widths)
+        self._raked += sum(int(w >= _RAKE_HOPS) for w in widths)
         self._keep_tail(seen, last)
 
     def _keep_tail(self, seen: list, last: int) -> None:
@@ -344,6 +367,103 @@ class FolkEar:
         return len(self._tail) + int(self._strong_hist.size)
 
 
+#: Her own level is the 95th percentile of the frames heard from her, and a stroke counts
+#: only where she sounds within _SOUNDING_DB of it, however quiet the input: the fixed
+#: -60 dBFS that marks a silent frame elsewhere cut most of every part at -40 dB, and
+#: their counts fell by half.  The attack is a log ratio in every band, so a band holding
+#: nothing but the input's hiss rises and falls as much as one a note lands in, and the
+#: quieter the input, the more bands hold only hiss; the rise below is what keeps that out.
+_SOUNDING_DB = 30.0
+_LEVEL_PCT = 95.0
+#: Quieter than this is digital silence, not a level.  The level histogram has 1 dB bins
+#: from here to 0 dBFS.
+_FLOOR_DB = -100.0
+_LEVEL_BINS = 101
+#: A stroke must also lift her level, by this much from the lowest of the _RISE_BEFORE
+#: hops before the peak to the highest of the three from it.
+_RISE_DB = 0.5
+_RISE_BEFORE = 6
+#: And its attack must reach this share of the bar's strongest (FolkEar's is 0.5): a
+#: picked line's softer notes over strings still ringing reach a third of the loud ones'
+#: or less, and at 0.5 eighth notes picked thumb and finger read 1.2 to 1.5 a beat.
+#: Measured over the first seven bars of those 270 parts and of 40 recorded guitar
+#: excerpts: the count at -20 dB within a quarter of the one at 0 dB for 97% of inputs
+#: (88% with FolkEar's rule as it is), at -40 dB for 89% (34%); a lead, bass or picked
+#: line's count is over its written notes by more than 3% one time in ten (54% with
+#: FolkEar's rule) and under them by more than 19% one time in ten (24%).
+_BUSY_STROKE_SHARE = 0.25
+
+
+class StrokeEar:
+    """How much she plays: strokes per beat, whatever the input gain.
+
+    Fed one bar of her frames at a time (anything with ``rms_db`` and ``attack``).  A
+    stroke is FolkEar's (``_strokes``): a peak of the attack, which is a log ratio, over
+    a share of the bar's own strongest attacks, so the count barely moves with the
+    gain, where ``Frame.onset``, picked against a fixed flux threshold, does: the same
+    inputs read a median 1.75, 1.39 and 1.00 onsets a beat at 0, -20 and -40 dB.  Here a
+    stroke must also sound and rise (_SOUNDING_DB, _RISE_DB).  Memory stays bounded: a
+    tail of frames and a histogram.
+    """
+
+    def __init__(self):
+        from .listen.beat import BEAT_ATTACK_FLOOR, BEAT_ATTACK_MULT  # noqa: PLC0415
+        self._mult, self._floor = BEAT_ATTACK_MULT, BEAT_ATTACK_FLOOR
+        self._tail: list = []
+        self._last_stroke = -_STROKE_SEP
+        self._levels = np.zeros(_LEVEL_BINS, dtype=np.int64)
+        self.strokes = 0
+
+    def own_level_db(self) -> float | None:
+        """Her level so far (dBFS), None before anything audible."""
+        n = int(self._levels.sum())
+        if not n:
+            return None
+        k = int(np.searchsorted(np.cumsum(self._levels), _LEVEL_PCT / 100.0 * n))
+        return _FLOOR_DB + k + 1.0
+
+    def bar(self, frames) -> None:
+        frames = [f for f in frames if f is not None]
+        if not frames:
+            return
+        seen = self._tail + frames
+        rms = np.array([float(f.rms_db) for f in seen])
+        att = np.array([float(getattr(f, "attack", 0.0)) for f in seen])
+        new = rms[len(self._tail):]
+        new = new[new > _FLOOR_DB]
+        if new.size:
+            idx = np.clip((new - _FLOOR_DB).astype(int), 0, _LEVEL_BINS - 1)
+            np.add.at(self._levels, idx, 1)
+        own = self.own_level_db()
+        sounding = ((rms > _FLOOR_DB) & (rms > own - _SOUNDING_DB)
+                    if own is not None else np.zeros(len(rms), dtype=bool))
+        if not sounding.any():
+            self._keep_tail(seen, self._last_stroke)
+            return
+        n = len(rms)
+        rise = np.full(n, -np.inf)
+        if n >= _RISE_BEFORE + 3:
+            # for each k from _RISE_BEFORE to n - 3: max(rms[k:k+3]) - min(rms[k-6:k])
+            win = np.lib.stride_tricks.sliding_window_view
+            rise[_RISE_BEFORE:n - 2] = (win(rms[_RISE_BEFORE:], 3).max(axis=1)
+                                        - win(rms[:n - 3], _RISE_BEFORE).min(axis=1))
+        ok = sounding & (rise >= _RISE_DB)
+        stroke_at = max(self._mult * float(np.median(att[sounding])), self._floor,
+                        _BUSY_STROKE_SHARE * float(np.percentile(att[sounding], _STROKE_PCT)))
+        widths, last = _strokes(att, ok, stroke_at, self._last_stroke, start=_RISE_BEFORE)
+        self.strokes += len(widths)
+        self._keep_tail(seen, last)
+
+    def _keep_tail(self, seen: list, last: int) -> None:
+        # The six that wait for this bar's strokes to be read, and the hops before them
+        # that a rise is measured from.
+        self._tail = seen[-(6 + _RISE_BEFORE):]
+        self._last_stroke = max(last - (len(seen) - len(self._tail)), -_STROKE_SEP)
+
+    def memory_items(self) -> int:
+        return len(self._tail) + int(self._levels.size)
+
+
 class StylePick:
     """Where a detected style comes from over a take.
 
@@ -353,6 +473,10 @@ class StylePick:
     After that it never moves.  A room mic hears the drums as onsets too, so its
     ``trust_busy`` is off, and so is ``hear_technique``: whether she strums is only
     hers to hear on an input that carries nothing else.
+
+    How busy she is comes from her frames when there are any (StrokeEar), so it does not
+    move with her input gain, and from the onsets counted for her otherwise: notes on a
+    MIDI input, where every one is a stroke.  ``why`` gives every input of the pick.
     """
 
     def __init__(self, *, key: str | None = None, trust_busy: bool = False,
@@ -361,26 +485,42 @@ class StylePick:
         self._trust_busy = bool(trust_busy)
         self._onsets = 0
         self._beats = 0
+        self._stroke_beats = 0
         self.settled = False
         #: How she plays, which only an input hearing her alone can tell (FolkEar).
         self.folk_ear = FolkEar() if hear_technique else None
+        self.stroke_ear = StrokeEar() if trust_busy else None
         self.why = ""
+
+    @property
+    def wants_frames(self) -> bool:
+        """Whether her frames are worth handing over: something here reads them."""
+        return self.folk_ear is not None or self.stroke_ear is not None
 
     def distrust(self) -> None:
         """The input turned out to hold the band: how busy it sounds is no longer hers."""
         self._trust_busy = False
 
     def heard_bar(self, onsets: int, frames=None) -> None:
+        """One bar she played: the onsets counted in it, and her frames, None if they
+        were not kept."""
         self._onsets += int(onsets)
         self._beats += 4
-        if self.folk_ear is not None and frames is not None:
-            self.folk_ear.bar(frames)
+        if frames is not None:
+            if self.stroke_ear is not None:
+                self.stroke_ear.bar(frames)
+                self._stroke_beats += 4
+            if self.folk_ear is not None:
+                self.folk_ear.bar(frames)
 
     @property
     def busy(self) -> float | None:
-        """Onsets per beat over the bars heard, if this input can say."""
+        """Strokes (or, with no frames, onsets) per beat over the bars heard, if this
+        input can say."""
         if not self._trust_busy or not self._beats:
             return None
+        if self._stroke_beats:
+            return self.stroke_ear.strokes / self._stroke_beats
         return self._onsets / self._beats
 
     def at_count(self, bpm: float) -> str:
@@ -390,9 +530,23 @@ class StylePick:
         self.settled = True
         mode = _mode_of(key) or self._mode
         folk = None if self.folk_ear is None else self.folk_ear.confidence(mode)
-        if self.folk_ear is not None:
-            self.why = self.folk_ear.why(mode)
-        return detect_style(bpm, mode, self.busy, folk=folk)
+        busy = self.busy
+        style = detect_style(bpm, mode, busy, folk=folk)
+        self.why = "; ".join([f"{style} from: bpm {bpm:.1f}", f"mode {mode or 'unknown'}",
+                              self._busy_why(busy),
+                              self.folk_ear.why(mode) if self.folk_ear is not None
+                              else "folk: not heard on this input"])
+        return style
+
+    def _busy_why(self, busy: float | None) -> str:
+        if busy is None:
+            return ("busy: unknown, nothing heard yet" if self._trust_busy
+                    else "busy: not hers alone to hear on this input")
+        what = "strokes" if self._stroke_beats else "onsets"
+        word = ("busy" if busy >= _BUSY_STROKES_PER_BEAT else
+                "sparse" if busy < _SPARSE_STROKES_PER_BEAT else "neither busy nor sparse")
+        return (f"busy {busy:.2f} {what} a beat ({word}: busy from "
+                f"{_BUSY_STROKES_PER_BEAT:g}, sparse under {_SPARSE_STROKES_PER_BEAT:g})")
 
 
 @dataclass(frozen=True)

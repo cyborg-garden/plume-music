@@ -1299,6 +1299,59 @@ def _midi_listening(port: str, timeline: "TimelineBuffer",
     return source, frames, MidiMasker()
 
 
+#: The furthest ``--midi-out-offset`` may move the band's MIDI, s.  Bars are queued
+#: about a bar ahead, and a DAW's output latency is tens of ms.
+MIDI_OUT_MAX_OFFSET_S = 0.5
+
+
+def _warn_midi_loop(midi_port: str | None, band_midi) -> None:
+    """The band sent to the port plume listens to would come straight back as her."""
+    if midi_port is not None and band_midi is not None and midi_port == band_midi.port:
+        print(f"midi: --midi and --midi-out are both {midi_port}, so the band comes back "
+              "in as your playing; use two ports", file=sys.stderr, flush=True)
+
+
+def _open_band_midi(midi_out: str | None, midi_only: bool = False,
+                    offset_s: float = 0.0):
+    """The port the band is sent out of (see :mod:`plume.midiout`), opened, or None.
+    Refused before anything sounds, like ``--midi``."""
+    if midi_out is None:
+        if midi_only:
+            raise RealtimeError("--midi-only needs --midi-out: the band has to go somewhere")
+        return None
+    if not (math.isfinite(offset_s) and abs(offset_s) <= MIDI_OUT_MAX_OFFSET_S):
+        raise RealtimeError(f"--midi-out-offset must be within "
+                            f"+-{MIDI_OUT_MAX_OFFSET_S * 1000:g} ms")
+    from .midi import MidiError  # noqa: PLC0415 - optional, like sd
+    from .midiout import BandMidi, resolve_output  # noqa: PLC0415
+    try:
+        name, virtual = resolve_output(midi_out)
+        return BandMidi(name, virtual=virtual, only=midi_only, offset_s=offset_s,
+                        sr=SR, block=BLOCK).open()
+    except MidiError as e:
+        raise RealtimeError(str(e)) from None
+
+
+def _stream_output_latency_s(stream) -> float:
+    """What the stream reports for its output side: when a sample handed to the
+    device reaches the speaker."""
+    try:
+        s = float(stream.latency[1])
+    except (AttributeError, IndexError, KeyError, TypeError, ValueError):
+        return 0.0
+    return s if math.isfinite(s) and 0.0 <= s <= SELF_MASK_MAX_LATENCY_S else 0.0
+
+
+def _close_band_midi(band_midi, timeout: float = 1.0) -> None:
+    """Every sounding note ended and the port closed, whatever ended the take.
+    Bounded (see ``BandMidi.close``): a stuck driver cannot hold the ending."""
+    if band_midi is not None:
+        try:
+            band_midi.close(timeout=timeout)
+        except Exception:                          # noqa: BLE001 - the take is over
+            pass
+
+
 def _stream_input_latency_s(stream) -> float:
     """What the stream reports for its input side, for :attr:`MidiInput.offset_s`."""
     try:
@@ -2673,8 +2726,12 @@ class HardExit:
             pass
 
 
+#: How long a hard exit waits on each step of letting go of the band's MIDI notes.
+HARD_EXIT_MIDI_S = 0.3
+
+
 def _hard_exit_cleanup(recorder: "SessionRecorder | None", cues: "CueServer | None",
-                       ending_doc):
+                       ending_doc, band_midi=None):
     """What a hard exit does on its way out: close the take, unregister.
 
     Deliberately small and deliberately non-blocking.  Everything expensive
@@ -2697,6 +2754,8 @@ def _hard_exit_cleanup(recorder: "SessionRecorder | None", cues: "CueServer | No
             except OSError:
                 pass
         unregister_session()
+        # Last, and briefly: the take is safe on disk first, whatever the driver does.
+        _close_band_midi(band_midi, timeout=HARD_EXIT_MIDI_S)
 
     return _cleanup
 
@@ -2764,7 +2823,8 @@ def jam(*, style: str, seed: int, params, device: str | None = None,
         input_device: str | None = None, input_channel: int | None = None,
         direct: bool = False, midi: str | None = None,
         midi_clock: bool = False, sound: str | None = None,
-        band_in_headphones: bool = False) -> None:
+        band_in_headphones: bool = False, midi_out: str | None = None,
+        midi_only: bool = False, midi_out_offset_s: float = 0.0) -> None:
     """Run the live sideman until it is ended (SPEC-V1 section 7).
 
     ``params`` is a ``plume.mind.MindParams``.  ``tightness`` overrides the
@@ -2799,7 +2859,15 @@ def jam(*, style: str, seed: int, params, device: str | None = None,
     :mod:`plume.midi`), by name or ``auto``.  The mic is still recorded to
     ``human.wav``.  ``None`` never touches the MIDI library.  ``midi_clock``: let
     that port's MIDI clock set the tempo and the bar line; otherwise it is ignored.
+
+    ``midi_out`` (additive): a port to send the band to as MIDI, or ``virtual``
+    (see :mod:`plume.midiout`); ``midi_only`` silences plume's own band so that
+    port's instruments are the band; ``midi_out_offset_s`` moves the MIDI later
+    (negative: earlier).  ``None`` never touches the MIDI library.
     """
+    out_kw = ({} if midi_out is None and not midi_only else
+              {"midi_out": midi_out, "midi_only": midi_only,
+               "midi_out_offset_s": midi_out_offset_s})
     if _wants_lead(role, lead_in, session):
         return lead(style=style, seed=seed, params=params, role=role,
                     prompt=lead_in, session=session, device=device,
@@ -2813,7 +2881,8 @@ def jam(*, style: str, seed: int, params, device: str | None = None,
                     **({"band_in_headphones": True} if band_in_headphones else {}),
                     **({} if sound is None else {"sound": sound}),
                     **({} if midi is None else {"midi": midi,
-                                                "midi_clock": midi_clock}))
+                                                "midi_clock": midi_clock}),
+                    **out_kw)
     sd = _import_sounddevice()
     route = resolve_input(sd, device, input_device=input_device,
                           input_channel=input_channel, direct=direct,
@@ -2821,6 +2890,8 @@ def jam(*, style: str, seed: int, params, device: str | None = None,
     check_audio_consent(device)
     dev = route.device
     midi_port = _resolve_midi_port(midi)
+    band_midi = _open_band_midi(midi_out, midi_only, midi_out_offset_s)
+    _warn_midi_loop(midi_port, band_midi)
     max_minutes = resolve_max_minutes(max_minutes)
 
     # Siblings are imported lazily so this module always imports headless.
@@ -3059,6 +3130,9 @@ def jam(*, style: str, seed: int, params, device: str | None = None,
         # v2.5: early by the acoustic round trip, so the bar sounds in the
         # ROOM on the human's downbeat, not a round trip after it.
         at = int(round(beat_state.next_downbeat_t_s * SR)) - comp["samples"]
+        if band_midi is not None:
+            band_midi.bar(at, duet.last_events)
+            audio = band_midi.heard(audio)
         timeline.write_at(at, audio)
         if sounding_bar:
             with state_lock:
@@ -3087,6 +3161,8 @@ def jam(*, style: str, seed: int, params, device: str | None = None,
         at_old, n, audio = placed
         timeline.clear_region(at_old, n)
         timeline.write_at(at, audio)
+        if band_midi is not None:
+            band_midi.move(at_old, at)
         return (at, n, audio)
 
     def planner_loop():
@@ -3151,6 +3227,9 @@ def jam(*, style: str, seed: int, params, device: str | None = None,
                                                   cal["lin"])
                         if audio.shape[0]:
                             at = max(timeline.playhead, timeline.end)
+                            if band_midi is not None:
+                                band_midi.bar(at, duet.last_events)
+                                audio = band_midi.heard(audio)
                             sounded = timeline.write_at(at, audio)
                             if sounded:
                                 with state_lock:
@@ -3246,6 +3325,8 @@ def jam(*, style: str, seed: int, params, device: str | None = None,
         # The tail rings out at the gain the last bar ended at (parity with
         # sim, which scales its tail by cal_lin).
         tail = duet.flush_tail()
+        if band_midi is not None:
+            tail = band_midi.heard(tail)
         if tail.shape[0]:
             timeline.write_at(timeline.end,
                               apply_calibration(tail, cal["lin"], cal["lin"]))
@@ -3260,6 +3341,9 @@ def jam(*, style: str, seed: int, params, device: str | None = None,
     if midi_in is not None:
         midi_in.offset_s = _stream_input_latency_s(stream)
         midi_in.start()
+    if band_midi is not None:
+        band_midi.start(lambda: timeline.playhead,
+                        latency_s=_stream_output_latency_s(stream))
     # v2.5: resolve the placement compensation now that the stream can report
     # its latency (the planner has not started; it sees only the final value).
     from .calibrate import (  # noqa: PLC0415 — lazy, like the other siblings
@@ -3296,7 +3380,8 @@ def jam(*, style: str, seed: int, params, device: str | None = None,
                                             started_mono=started_mono,
                                             max_minutes=max_minutes,
                                             bars=n_decisions[0],
-                                            stream=xrun_tally.totals())))
+                                            stream=xrun_tally.totals()),
+        band_midi=band_midi))
     try:
         with GracefulSignals(on_repeat=lambda _s: hard.arm(
                 END_INTERRUPT, seconds=HARD_EXIT_GRACE_S)) as signals, stream:
@@ -3357,6 +3442,7 @@ def jam(*, style: str, seed: int, params, device: str | None = None,
             analysis.join(timeout=ANALYSIS_JOIN_S)
         if midi_in is not None:
             midi_in.close()
+        _close_band_midi(band_midi)
         if cues is not None:
             cues.close()
         status_line.close()
@@ -5028,8 +5114,13 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
          voice_channel: int | None = None, direct: bool = False,
          midi: str | None = None, midi_clock: bool = False,
          detect: bool = False, output_device: str | None = None,
-         sound: str | None = None, band_in_headphones: bool = False) -> None:
+         sound: str | None = None, band_in_headphones: bool = False,
+         midi_out: str | None = None, midi_only: bool = False,
+         midi_out_offset_s: float = 0.0) -> None:
     """The machine starts; you join (SPEC-V2 section 5).
+
+    ``midi_out``, ``midi_only``, ``midi_out_offset_s``: the band sent as MIDI too,
+    or instead, as in :func:`jam`.
 
     ``tap_start``: nothing plays until four knocks set the tempo, the drums then
     hold it, and the band joins once your key has settled (:mod:`plume.bandentry`).
@@ -5076,6 +5167,8 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
     check_audio_consent(device)
     dev = route.device
     midi_port = _resolve_midi_port(midi)
+    band_midi = _open_band_midi(midi_out, midi_only, midi_out_offset_s)
+    _warn_midi_loop(midi_port, band_midi)
     # With --midi the band listens to the notes, whatever --direct says about the
     # audio input, so a level from that input decides nothing here.
     is_direct = route.source == "direct" and midi_port is None
@@ -5669,8 +5762,10 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
                     if picked != style or plain_intro[0]:
                         # Before anything of this bar is rendered, and it rings out
                         # under the new engine's first bar, so there is no gap.
-                        timeline.write_at(int(round(t_bar * SR)) - comp_samples[0],
-                                          change_style(picked, bridge=plain_intro[0]))
+                        rung = change_style(picked, bridge=plain_intro[0])
+                        if band_midi is not None:
+                            rung = band_midi.heard(rung)
+                        timeline.write_at(int(round(t_bar * SR)) - comp_samples[0], rung)
                         entered = dataclasses.replace(
                             entered, chord=entry.chord_at(bar, harm_state))
             # Her chords (herchords): what she played in the window bar, then the
@@ -5819,7 +5914,10 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
                                   tilt=lead_cues.tilt, wet=lead_cues.wet)
         if entry is not None:
             audio = _fx.limiter(audio, TAP_START_CEILING_DB)
-        timeline.write_at(int(round(t_bar * SR)) - comp_samples[0], audio)
+        at = int(round(t_bar * SR)) - comp_samples[0]
+        if band_midi is not None:
+            band_midi.bar(at, duet.last_events)
+        timeline.write_at(at, audio if band_midi is None else band_midi.heard(audio))
         loop_events = looper.pop_events()
         if looper.active:
             timeline.write_at(
@@ -6025,6 +6123,8 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
             both[:tail.shape[0]] += tail
             both[tail.shape[0]:] += ring
             tail = both
+        if band_midi is not None:
+            tail = band_midi.heard(tail)
         if tail.shape[0]:
             timeline.write_at(timeline.end, tail)
         if looper.active:
@@ -6034,6 +6134,7 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
     def release_before_sound():
         if midi_in is not None:
             midi_in.close()
+        _close_band_midi(band_midi)
         cues.close()
         if recorder is not None:
             recorder.close()
@@ -6061,6 +6162,9 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
     if midi_in is not None:
         midi_in.offset_s = _stream_input_latency_s(stream)
         midi_in.start()
+    if band_midi is not None:
+        band_midi.start(lambda: timeline.playhead,
+                        latency_s=_stream_output_latency_s(stream))
     calibrated_ms = None
     if tap_start:
         # She plays to what she hears from her own tap, so bars must sound on
@@ -6108,7 +6212,8 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
                                             started_mono=started_mono,
                                             max_minutes=max_minutes,
                                             bars=n_decisions[0],
-                                            stream=xrun_tally.totals())))
+                                            stream=xrun_tally.totals()),
+        band_midi=band_midi))
     try:
         with GracefulSignals(on_repeat=lambda _s: hard.arm(
                 END_INTERRUPT, seconds=HARD_EXIT_GRACE_S)) as signals, stream:
@@ -6163,6 +6268,7 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
             analysis.join(timeout=ANALYSIS_JOIN_S)
         if midi_in is not None:
             midi_in.close()
+        _close_band_midi(band_midi)
         cues.close()
         status_line.close()
         if recorder is not None:

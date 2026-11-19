@@ -475,6 +475,83 @@ Things to watch for:
 - A port is matched by its exact name when reconnecting. A system that renames a port
   when it returns won't reconnect, so restart the take.
 
+### Sending the band to Ableton
+
+Plume can send its band out as MIDI, so the instruments in Ableton Live, or any other
+DAW or synth, play it. Plume still picks the tempo, key, style and every note; the other
+program only makes the sound, and can record it. It needs the same `midi` extra. So far
+this has only run against a simulated port, never a real copy of Ableton.
+
+```bash
+plume lead --tap-start "lofi at 90 bpm" --midi-out virtual               # plume's band and MIDI
+plume lead --tap-start "lofi at 90 bpm" --midi-out virtual --midi-only   # Ableton is the band
+```
+
+`--midi-out` takes part of a port's name, or `virtual` to make a new port called `plume`
+while the take runs. It works with `jam` and `lead`. Each part has its own channel:
+
+| Channel | Part |
+| --- | --- |
+| 1 | bass |
+| 2 | pad and keys |
+| 3 | lead |
+| 4 | arp |
+| 5 | shimmer |
+| 6 | sub (a tuned 808) |
+| 7 | any other part with notes |
+| 10 | drums, on General MIDI notes: kick 36, rim 37, snare 38, clap 39, closed hat 42, pedal hat 44, open hat 46, crash 49 |
+
+`--midi-only` keeps plume's own band silent, so you hear only Ableton's. Your own sound
+on Hear me, and loops, still come from plume, and a loop still makes room for the band
+as if plume were playing it. With `--record`, `machine.wav` then holds no band: record
+it in Ableton. Use `--midi-only` with `--midi`, a direct input or headphones: on a room
+mic plume can't take Ableton's band out of what it hears, so it would hear the band as
+you.
+
+`--midi-out-offset` goes from -500 to 500 ms. Notes whose sound plume had to drop,
+because their bar came too late, aren't sent either.
+
+When a take ends, however it ends, plume lets go of every held note and sends All Notes
+Off on each channel it used. A take also starts by sending All Notes Off on all of its
+channels, so if plume was ever killed outright and left a note hanging, the next take
+clears it.
+
+Don't send the band to the port plume listens to with `--midi`: it would come straight
+back in as your playing. Plume warns when both name the same port. The same loop happens
+if Ableton sends its MIDI out to the IAC port plume listens on, so keep Ableton's MIDI
+outputs off that port.
+
+**macOS.** Either use `--midi-out virtual`, or turn on the IAC Driver once: open Audio
+MIDI Setup, choose Window > Show MIDI Studio, open IAC Driver and tick "Device is
+online". Then use `--midi-out IAC`. The IAC port is there even when plume isn't running,
+so Ableton keeps its settings between takes; a virtual port only exists during a take.
+
+**Windows.** Windows can't make a port by itself. Install loopMIDI, add a port called
+`plume`, and use `--midi-out plume`.
+
+**Linux.** `--midi-out virtual` works with ALSA, for synths that run there.
+
+**In Ableton Live 12** (start the take first if you use `--midi-out virtual`, so the
+port exists):
+
+1. Live > Settings (Options > Settings on Windows) > Link, Tempo & MIDI: on the input
+   port (`plume`, or IAC Driver), turn Track on. Leave Sync and Remote off.
+2. Make one MIDI track per part. Set MIDI From to the port and the part's channel, for
+   example Ch. 1 for bass and Ch. 10 for drums. Set Monitor to In.
+3. Put an instrument on each track. A Drum Rack on channel 10 already has kick on C1
+   (36), snare on D1 (38) and hats on F#1 (42).
+4. Arm the tracks to record what plume plays into clips or the arrangement.
+
+**Timing.** Plume sends each note when its own sound of that note would reach your
+speakers. Ableton then adds its own output latency, so with `--midi-only` the band can
+sound a little late. Ableton shows that delay as Overall Latency in Settings > Audio.
+Send the notes that much earlier with a negative offset, for example
+`--midi-out-offset -12` for 12 ms. Ableton's tempo doesn't follow plume yet, so turn
+off anything in Ableton that syncs to its own tempo, or set its tempo to plume's.
+
+What isn't sent yet: fades and the bus volume (only how hard each note is played), tone
+cues such as darker or wetter, the vinyl crackle, and a tempo clock.
+
 ### Filming
 
 Point a phone at yourself and start recording before you count. With speakers, the phone

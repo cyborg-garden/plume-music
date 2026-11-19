@@ -9,8 +9,9 @@ checked instead of believed.  Run with::
 
 It needs ``human.wav`` and ``decisions.ndjson`` (for the bar grid, when the band came
 in, and the gain the take actually logged).  The listening is the live path's own:
-FeatureExtractor frames, ``bar_features_dict`` per bar, and, where this code has
-them, the half-bar readings the planner feeds BandFollow (``follow_parts``).  Each bar
+FeatureExtractor frames, ``bar_features_dict`` per bar, the moments the input clipped
+(``ClipWatch``), and, where this code has them, the half-bar readings the planner feeds
+BandFollow (``follow_parts``).  Each bar
 N is planned from bar N-2, and from the first half of bar N-1 when the planner runs
 half a bar ahead, exactly as live.
 
@@ -31,7 +32,7 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(REPO, "src"))
 
 from plume import realtime                                       # noqa: E402
-from plume.bandentry import BandFollow                           # noqa: E402
+from plume.bandentry import BandFollow, FollowTwice              # noqa: E402
 from plume.listen.features import FeatureExtractor               # noqa: E402
 
 BLOCK = 4096
@@ -42,12 +43,13 @@ def frames_of(path):
     x, sr = sf.read(path, dtype="float32")
     if x.ndim > 1:
         x = x.mean(axis=1)
-    fe = FeatureExtractor(sr=sr)
-    events = []
+    fe, clips = FeatureExtractor(sr=sr), realtime.ClipWatch(sr=sr)
+    events, clipped = [], []
     for i in range(0, len(x), BLOCK):
+        clipped.extend(clips.process(x[i:i + BLOCK]))
         for f in fe.process(x[i:i + BLOCK]):
             events.append((f.t_s, f.rms_db, f.onset))
-    return events, x, sr
+    return events, clipped, x, sr
 
 
 def bar_db(x, sr, t0, t1):
@@ -58,18 +60,18 @@ def bar_db(x, sr, t0, t1):
 def replay(take):
     rows = [json.loads(line) for line in open(os.path.join(take, "decisions.ndjson"))]
     rows = [r for r in rows if isinstance(r.get("bar"), int)]
-    events, x, sr = frames_of(os.path.join(take, "human.wav"))
+    events, clipped, x, sr = frames_of(os.path.join(take, "human.wav"))
     starts = [r["t_s"] for r in rows]
     bar_s = starts[1] - starts[0]
     starts.append(starts[-1] + bar_s)
     halves = "parts" in inspect.signature(BandFollow.bar).parameters
-    follow = BandFollow(trusted=bool(rows[0].get("follow", {}).get("trusted", True)))
+    follow = FollowTwice(trusted=bool(rows[0].get("follow", {}).get("trusted", True)))
     ref_db, fed = None, None
     out = []
     for i, r in enumerate(rows):
         n = r["bar"]
         band_in = r.get("entry") not in (None, "drums")
-        human, parts = None, None
+        human, parts, spared = None, None, None
         if i >= 2:
             w0, w1 = starts[i - 2], starts[i - 1]
             evs = [e for e in events if w0 <= e[0] < w1]
@@ -82,16 +84,20 @@ def replay(take):
                               else 0.5 * kw["rms_db"] + 0.5 * ref_db)
             if halves:
                 later = [e for e in events if w1 <= e[0] < starts[i]]
-                parts, fed = realtime.follow_parts(
-                    evs, later, w0, w1, starts[i], fed_until=fed,
-                    heard_until=starts[i - 1] + 0.5 * bar_s + 0.1,
-                    silence_rms_db=SILENCE_RMS_DB, ref_db=ref_db)
+                same = dict(fed_until=fed, heard_until=starts[i - 1] + 0.5 * bar_s + 0.1,
+                            silence_rms_db=SILENCE_RMS_DB, ref_db=ref_db)
+                parts, fed = realtime.follow_parts(evs, later, w0, w1, starts[i], **same)
+                spared = realtime.follow_parts(evs, later, w0, w1, starts[i],
+                                               clipped=clipped, **same)[0]
+            # the same bar with clipped bars left out: FollowTwice's second reading
+            spared = (*realtime.follow_bar(human, clipped, w0, w1), spared)
         playing = human is not None and not human["silent"]
         kw = {"playing": playing, "band_in": band_in}
         if halves:
             kw.update(parts=parts, bar_s=bar_s)
         s = follow.bar(None if human is None else human["rms_db"],
-                       None if human is None else human["onset_density"], **kw)
+                       None if human is None else human["onset_density"],
+                       spared=spared, **kw)
         out.append((n, r["t_s"], bar_db(x, sr, starts[i], starts[i + 1]),
                     r.get("follow", {}).get("gain_db"), s.gain_db, s.moved))
     return out, bar_s

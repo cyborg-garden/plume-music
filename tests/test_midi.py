@@ -836,6 +836,28 @@ class TestTransports:
         assert rows[-1]["key"] == "C major"
         assert all(p.closed for p in mido.ports)
 
+    def test_a_midi_take_never_reads_the_audio_input_for_clips(self, tmp_path, plume_registry,
+                                                               monkeypatch):
+        """Keys do not clip.  Whatever the audio input holds on a MIDI take, a hum or a
+        bang, is not her playing and must not hold back what her keys said.  (That a
+        direct input IS watched, so this spy can see one, is in test_follow_thumps.)"""
+        made = []
+
+        class Spy(realtime.ClipWatch):
+            def __init__(self, *a, **kw):
+                made.append(self)
+                super().__init__(*a, **kw)
+
+        monkeypatch.setattr(realtime, "ClipWatch", Spy)
+        sock = short_socket_path("midi-clip")
+        sd, mido = fake_audio(np.ones(SR, dtype=np.float32), rate_x=12.0), FakeMido()
+        stopper = stop_at(sock, lambda: (sd.stream.blocks * 256 / SR) if sd.stream else 0.0, 3.0)
+        with patched_module("sounddevice", sd), patched_module("mido", mido):
+            realtime.lead(prompt="lofi at 90 bpm", seed=0, socket_path=sock, status=False,
+                          tap_start=True, midi="auto", direct=True)
+        stopper.join(timeout=5.0)
+        assert sd.stream is not None and not made
+
     def test_a_bad_port_is_refused_before_a_stream_opens(self, tmp_path, plume_registry):
         sd, mido = fake_audio(None), FakeMido(["Keys"])
         with patched_module("sounddevice", sd), patched_module("mido", mido):

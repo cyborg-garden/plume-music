@@ -11,6 +11,7 @@ this adds is that bars she sat out are no evidence of a key.
 """
 from __future__ import annotations
 
+import copy
 import math
 from dataclasses import dataclass
 from types import SimpleNamespace
@@ -1598,6 +1599,115 @@ class BandFollow:
     def _state(self, moved: tuple[str, ...]) -> FollowState:
         why = (f"follow: level {self.gain_db:+.1f}dB density x{self.density:.2f}"
                + (f", {' and '.join(moved)} for {self.hold_bars:g} bars" if moved else ""))
+        return FollowState(round(self.gain_db, 3), round(self.density, 4), moved, why)
+
+
+def swell_bound(heard: float, spared: float, rest: float) -> float:
+    """``heard`` unless it is over ``rest``, and then no further over than ``spared``:
+    never under ``rest``, never over ``heard``."""
+    return heard if heard <= rest else min(heard, max(spared, rest))
+
+
+class FollowTwice:
+    """The band's level and density, following her twice over.
+
+    One :class:`BandFollow` hears everything, as the band always has.  A second hears
+    the same with ``spared`` in place of each bar's readings: the bars in which the
+    input clipped out of character for her (a knock on the instrument, a crackling
+    cable) left out.  The band does what the first says, except that where the first
+    has it over its resting level or density, it goes no further over than the second
+    (:func:`swell_bound`).
+
+    So on an input that hears only her, leaving a clip out can only take away a swell,
+    or a filling out, that hearing everything would have made: on every bar the band's
+    level lies between resting and what hearing everything gives, and so does its
+    density.  ``yield_db`` is bounded the same way, and is always 0 or ``gain_db``.
+
+    That is said for a direct input only.  A room mic's follower takes its own lean
+    back off what it hears, so a swell held back would be taken off bars the band never
+    played it in: on an untrusted input there is no second follower, nothing is held,
+    and this is :class:`BandFollow` and no more.  The same on a MIDI take, where no
+    clip is ever marked.  Nothing here is in the audio callback: it is the planner's, a
+    bar at a time."""
+
+    def __init__(self, *, trusted: bool, mode: str = FOLLOW):
+        self.heard = BandFollow(trusted=trusted, mode=mode)
+        #: The second follower: the first's twin from the first bar anything is left
+        #: out of.  Until then the two have heard the same, and there is only one.
+        self.spared: BandFollow | None = None
+        self.mode, self.trusted = self.heard.mode, self.heard.trusted
+        self.gain_db, self.density = 0.0, 1.0
+
+    hold_bars = property(lambda self: self.heard.hold_bars)
+
+    def shape(self, arc_density: float) -> float:
+        return self.heard.shape(arc_density)
+
+    @property
+    def held_back(self) -> tuple[float, float] | None:
+        """(dB, density) of a swell hearing everything would have made and the band
+        is not making; None when the band is doing just what hearing everything says."""
+        if self.gain_db == self.heard.gain_db and self.density == self.heard.density:
+            return None
+        return (round(self.heard.gain_db - self.gain_db, 3),
+                round(self.heard.density - self.density, 4))
+
+    @property
+    def yield_db(self) -> float:
+        other = self.spared or self.heard
+        return swell_bound(self.heard.yield_db, other.yield_db, 0.0)
+
+    def _settle(self) -> None:
+        other = self.spared or self.heard
+        self.gain_db = swell_bound(self.heard.gain_db, other.gain_db, 0.0)
+        self.density = swell_bound(self.heard.density, other.density, 1.0)
+
+    def distrust(self) -> None:
+        """The input turns out to hold the band: from here a room mic's follower, new,
+        as the take would have made it, and no second one.  It never goes back."""
+        self.heard = BandFollow(trusted=False, mode=self.mode)
+        self.spared, self.trusted = None, False
+        self._settle()
+
+    def cue(self, value: str) -> FollowState:
+        state = self.heard.cue(value)
+        if self.spared is not None:
+            self.spared.cue(value)
+        self._settle()
+        return self._state(state, state.moved)
+
+    def bar(self, rms_db: float | None, onsets_per_beat: float | None, *,
+            parts=None, spared=None, **kw) -> FollowState:
+        """This bar's lean.  As :meth:`BandFollow.bar`, with ``spared``: the same
+        ``(rms_db, onsets_per_beat, parts)`` with the clipped bars left out, or None
+        when nothing was."""
+        was = (self.gain_db, self.density, self.held_back)
+        whole = (rms_db, onsets_per_beat, parts)
+        db, busy, sparts = whole if spared is None or not self.trusted else spared
+        if self.spared is None and (db, busy, sparts) != whole:
+            self.spared = copy.deepcopy(self.heard)
+        state = self.heard.bar(rms_db, onsets_per_beat, parts=parts, **kw)
+        other = state if self.spared is None else self.spared.bar(db, busy, parts=sparts, **kw)
+        self._settle()
+        if was[2] is None and self.held_back is None:
+            return self._state(state, state.moved)
+        # While a swell is held back, a move is one the band made: either reading
+        # called it, and the level or the density went that way.
+        up = {"louder": self.gain_db > was[0] or self.density > was[1],
+              "softer": self.gain_db < was[0] or self.density < was[1],
+              "busier": self.density > was[1], "sparser": self.density < was[1]}
+        called = state.moved + tuple(m for m in other.moved if m not in state.moved)
+        return self._state(state, tuple(m for m in called if up[m]))
+
+    def _state(self, state: FollowState, moved: tuple[str, ...]) -> FollowState:
+        held = self.held_back
+        if held is None and moved == state.moved:
+            return state
+        why = (f"follow: level {self.gain_db:+.1f}dB density x{self.density:.2f}"
+               + (f", {' and '.join(moved)} for {self.hold_bars:g} bars" if moved else ""))
+        if held is not None:
+            why += (f"; a swell of {held[0]:+.1f}dB x{self.heard.density:.2f} held back:"
+                    f" the input clipped as she had not been playing")
         return FollowState(round(self.gain_db, 3), round(self.density, 4), moved, why)
 
 

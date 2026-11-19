@@ -1454,6 +1454,42 @@ def _midi_args(args) -> dict:
     return out
 
 
+def _add_midi_out_flags(p) -> None:
+    p.add_argument("--midi-out", dest="midi_out", default=None, metavar="PORT",
+                   help="also send the band as MIDI, one channel per part, to this "
+                        "output port (part of its name), or 'virtual' for a new port "
+                        "called plume (needs the midi extra)")
+    p.add_argument("--midi-only", dest="midi_only", action="store_true", default=False,
+                   help="with --midi-out: plume's own band stays silent, so the "
+                        "instruments on that port are the band")
+    p.add_argument("--midi-out-offset", dest="midi_out_offset", type=float, default=None,
+                   metavar="MS",
+                   help="with --midi-out: send the MIDI this many ms later than plume "
+                        "would sound it; negative is earlier, to cancel the other "
+                        "program's own output latency (default: 0)")
+
+
+def _midi_out_args(args) -> dict:
+    """What --midi-out, --midi-only and --midi-out-offset ask of a live verb, only if
+    they were given."""
+    port = getattr(args, "midi_out", None)
+    only = bool(getattr(args, "midi_only", False))
+    offset = getattr(args, "midi_out_offset", None)
+    if not port and (only or offset is not None):
+        raise CliError("--midi-only and --midi-out-offset need --midi-out: "
+                       "the band has to be sent somewhere")
+    if offset is not None and not math.isfinite(offset):
+        raise CliError(f"--midi-out-offset must be a number of ms, got {offset}")
+    out = {}
+    if port:
+        out["midi_out"] = port
+    if only:
+        out["midi_only"] = True
+    if offset is not None:
+        out["midi_out_offset_s"] = offset / 1000.0
+    return out
+
+
 def _add_input_mode_flag(p) -> None:
     """Attach --input to a verb's parser.  dest is input_mode (sim/listen
     already use the positional name 'input' for the WAV); default None means
@@ -1697,6 +1733,7 @@ def cmd_jam(args):
     # machine, so it is reported before anything probes the hardware.
     max_minutes = _parse_max_minutes(getattr(args, "max_minutes", None))
     midi_extra = _midi_args(args)
+    midi_extra.update(_midi_out_args(args))
     try:
         # Fail fast (and clean) on the no-device path before building the mind.
         realtime.check_device(args.device)
@@ -2384,6 +2421,7 @@ def cmd_lead(args):
                            "name the style in the prompt, or leave it out and plume will guess")
     max_minutes = _parse_max_minutes(getattr(args, "max_minutes", None))
     midi_extra = _midi_args(args)
+    midi_extra.update(_midi_out_args(args))
     try:
         # Fail fast (and clean) on the no-device path, before composing.
         realtime.check_device(args.device)
@@ -3352,6 +3390,7 @@ def _build_parser() -> argparse.ArgumentParser:
                         "else the stream's reported latency). Follow mode "
                         "only.")
     _add_midi_flag(p)
+    _add_midi_out_flags(p)
     p.set_defaults(func=cmd_jam)
 
     p = sub.add_parser(
@@ -3499,6 +3538,7 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="with --tap-start: no session, and PROMPT is optional. What "
                         "it does not name, plume guesses from your playing")
     _add_midi_flag(p)
+    _add_midi_out_flags(p)
     p.set_defaults(func=cmd_lead)
 
     p = sub.add_parser(

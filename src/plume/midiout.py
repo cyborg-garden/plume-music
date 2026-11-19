@@ -1,0 +1,426 @@
+"""Live MIDI output: the band as notes, for another instrument to play.
+
+Plume decides what the band plays a bar at a time and renders it with its own
+synths.  Each bar's notes are already known before the audio is made
+(``DuetEngine.last_events``), so this module sends those notes out of a MIDI port
+as well: one channel per band part, so a DAW such as Ableton Live can put its own
+instrument on each part.  See docs/PLAYING.md, "Sending the band to Ableton".
+
+Three parts:
+
+- :func:`bar_notes` turns one bar's events into notes: channel, pitch, velocity,
+  and the stream samples they start and stop on.  Pure.
+- :class:`Schedule` holds notes waiting to be sent and hands out the messages
+  that are due, keeping every note-on paired with exactly one note-off.  Pure.
+- :class:`BandMidi` owns the port and a sender thread.  The planner hands it a
+  bar about a bar ahead; the sender sends each message when plume's own sound of
+  that note would reach the speaker, plus an offset the player sets.
+
+Nothing here runs in the audio callback.  The sender reads the playhead the
+callback advances, which is a plain integer, and works out the wall-clock time of
+any stream sample from when it saw the playhead move (:class:`StreamClock`).
+
+``mido`` with ``python-rtmidi`` is the optional ``midi`` extra, imported only when a
+port is asked for.
+"""
+from __future__ import annotations
+
+import collections
+import heapq
+import itertools
+import threading
+import time
+
+from .midi import MidiError, _import_mido
+
+#: What ``--midi-out`` takes to make a new port of plume's own instead of naming one.
+VIRTUAL = "virtual"
+#: The name of that port, as other programs list it.
+VIRTUAL_NAME = "plume"
+
+#: Channel per band part, counted from 0 (a DAW shows these one higher).
+ROLE_CHANNELS = {"bass": 0, "pad": 1, "keys": 1, "lead": 2, "arp": 3, "shimmer": 4,
+                 "sub": 5}
+#: Any other part with pitches.
+OTHER_CHANNEL = 6
+#: General MIDI keeps channel 10 for drums.
+DRUM_CHANNEL = 9
+#: Drum parts and their General MIDI notes.  A part not here is not sent.
+DRUM_NOTES = {"kick": 36, "tick": 37, "click": 37, "snare": 38, "clap": 39, "hat": 42,
+              "foot": 44, "openhat": 46, "crash": 49}
+#: Parts with no notes to send: a noise bed is a sound, not a part to play.
+SKIP_ROLES = frozenset({"crackle"})
+#: How long a drum hit is held.  A hit has no length, but plenty of samplers want
+#: a note-off, and a stuck one would hold a choke group.
+DRUM_LEN_S = 0.05
+#: The shortest note sent, so an off can never land before its on.
+MIN_LEN_S = 0.005
+
+#: How often the sender looks at the playhead and the queue, in seconds.
+POLL_S = 0.001
+#: How long the sender's reading of the stream clock remembers a sighting.  Long
+#: enough to catch the earliest callback, short enough to follow clock drift.
+CLOCK_WINDOW_S = 2.0
+#: How long to wait on a port opening, listing or closing, like plume.midi.
+PORT_TIMEOUT_S = 2.0
+
+#: Message order at the same sample: a note-off goes before a note-on, so a note
+#: struck again on the beat it ends is a new note, not a cut-off one.
+_OFF, _ON = 0, 1
+_CC_SUSTAIN = 64
+_CC_ALL_NOTES_OFF = 123
+
+
+def channel_for(role: str) -> int | None:
+    """The channel a band part is sent on, or None if it is not sent."""
+    if role in SKIP_ROLES:
+        return None
+    if role in DRUM_NOTES:
+        return DRUM_CHANNEL
+    return ROLE_CHANNELS.get(role, OTHER_CHANNEL)
+
+
+def velocity_of(event: dict) -> int:
+    """A MIDI velocity from an event's velocity and its part's level, both 0..1."""
+    v = float(event.get("velocity", 0.8)) * float(event.get("level", 1.0))
+    return max(1, min(127, int(round(127.0 * v))))
+
+
+def bar_notes(events, at: int, sr: int) -> list[tuple[int, int, int, int, int]]:
+    """One bar's events as ``(on_sample, off_sample, channel, note, velocity)``.
+
+    ``at`` is the stream sample the bar starts on: where its audio is written.  An
+    event's ``onset_s`` counts from there, as it does in the render.
+    """
+    out = []
+    for ev in events:
+        role = str(ev.get("role", ""))
+        if role == "announce":                    # the cue gesture plays as its part
+            role = str(ev.get("voice_role", ""))
+        ch = channel_for(role)
+        if ch is None:
+            continue
+        if ch == DRUM_CHANNEL:
+            note, dur = DRUM_NOTES[role], DRUM_LEN_S
+        else:
+            if ev.get("midi") is None:
+                continue
+            note, dur = int(ev["midi"]), max(MIN_LEN_S, float(ev.get("dur_s", 0.0)))
+        if not 0 <= note <= 127:
+            continue
+        on = int(at) + int(round(float(ev.get("onset_s", 0.0)) * sr))
+        off = max(on + 1, on + int(round(dur * sr)))
+        out.append((on, off, ch, note, velocity_of(ev)))
+    return out
+
+
+class Schedule:
+    """Notes waiting to be sent, and the notes sounding now.
+
+    Every note-on is paired with exactly one note-off: a note struck while the
+    same note on the same channel still sounds is ended first, and the earlier
+    note's own off is then dropped.  :meth:`release` ends whatever sounds.
+    """
+
+    def __init__(self):
+        #: [sample, order, seq, kind, channel, note, velocity, note id, bar key]
+        self._pending: list = []
+        self._seq = itertools.count()
+        self._ids = itertools.count()
+        #: (channel, note) -> the id of the note sounding there
+        self._sounding: dict[tuple[int, int], int] = {}
+        self.channels: set[int] = set()
+
+    def __len__(self) -> int:
+        return len(self._pending)
+
+    @property
+    def sounding(self) -> int:
+        return len(self._sounding)
+
+    def add(self, notes, key=None) -> None:
+        for on, off, ch, note, vel in notes:
+            nid = next(self._ids)
+            heapq.heappush(self._pending, (on, _ON, next(self._seq), "on", ch, note, vel,
+                                           nid, key))
+            heapq.heappush(self._pending, (off, _OFF, next(self._seq), "off", ch, note, 0,
+                                           nid, key))
+
+    def move(self, key, delta: int, new_key=None) -> None:
+        """Move the unsent messages of the bar ``key`` by ``delta`` samples, and
+        call that bar ``new_key`` from now on if one is given."""
+        new_key = key if new_key is None else new_key
+        if not delta and new_key == key:
+            return
+        self._pending = [((e[0] + delta,) + e[1:8] + (new_key,)) if e[8] == key else e
+                         for e in self._pending]
+        heapq.heapify(self._pending)
+
+    def next_sample(self) -> int | None:
+        return self._pending[0][0] if self._pending else None
+
+    def due(self, upto: float) -> list[tuple]:
+        """The messages at or before stream sample ``upto``, as ``(kind, ch, a, b)``."""
+        out = []
+        while self._pending and self._pending[0][0] <= upto:
+            _s, _o, _q, kind, ch, note, vel, nid, _k = heapq.heappop(self._pending)
+            where = (ch, note)
+            if kind == "on":
+                if where in self._sounding:
+                    out.append(("off", ch, note, 0))
+                self._sounding[where] = nid
+                self.channels.add(ch)
+                out.append(("on", ch, note, vel))
+            elif self._sounding.get(where) == nid:
+                del self._sounding[where]
+                out.append(("off", ch, note, 0))
+        return out
+
+    def release(self) -> list[tuple]:
+        """Forget what is waiting; end what sounds, then all notes off and the
+        sustain pedal up on every channel this ever played on."""
+        self._pending = []
+        out = [("off", ch, note, 0) for ch, note in sorted(self._sounding)]
+        self._sounding.clear()
+        for ch in sorted(self.channels):
+            out.append(("cc", ch, _CC_SUSTAIN, 0))
+            out.append(("cc", ch, _CC_ALL_NOTES_OFF, 0))
+        return out
+
+
+class StreamClock:
+    """Which wall-clock time a stream sample is handed to the device.
+
+    The playhead moves one block per callback.  A sighting of it moving, at time
+    ``now``, says the callback that moved it ran at or before ``now``; the earliest
+    such reading over :data:`CLOCK_WINDOW_S` is the best guess, and the window lets
+    a slow drift between the audio clock and the system clock through.
+    """
+
+    def __init__(self, sr: int, block: int, *, window_s: float = CLOCK_WINDOW_S):
+        self._sr = float(sr)
+        self._block = int(block)
+        self._window = float(window_s)
+        self._last: int | None = None
+        #: (seen at, offset) with offsets rising: the front is the window's least
+        self._low: collections.deque = collections.deque()
+
+    @property
+    def ready(self) -> bool:
+        return bool(self._low)
+
+    def observe(self, playhead: int, now: float) -> None:
+        if self._last is not None and playhead != self._last:
+            c = now - (playhead - self._block) / self._sr
+            while self._low and self._low[-1][1] >= c:
+                self._low.pop()
+            self._low.append((now, c))
+        self._last = playhead
+        while len(self._low) > 1 and now - self._low[0][0] > self._window:
+            self._low.popleft()
+
+    def time_of(self, sample: float) -> float:
+        return self._low[0][1] + sample / self._sr
+
+    def sample_at(self, t: float) -> float:
+        return (t - self._low[0][1]) * self._sr
+
+
+def _message(mido, kind: str, ch: int, a: int, b: int):
+    if kind == "on":
+        return mido.Message("note_on", channel=ch, note=a, velocity=b)
+    if kind == "off":
+        return mido.Message("note_off", channel=ch, note=a, velocity=0)
+    return mido.Message("control_change", channel=ch, control=a, value=b)
+
+
+def _bounded(fn, timeout: float, what: str):
+    """``fn()`` on its own thread, waited on for ``timeout``: a driver for a gone
+    device may never return."""
+    answer: list = []
+
+    def run() -> None:
+        try:
+            answer.append((True, fn()))
+        except Exception as e:             # noqa: BLE001 - the backend's own type
+            answer.append((False, e))
+
+    t = threading.Thread(target=run, name="plume-midi-out-open", daemon=True)
+    t.start()
+    t.join(timeout)
+    if not answer:
+        raise MidiError(f"the MIDI driver did not {what} in {timeout:g} seconds")
+    ok, value = answer[0]
+    if not ok:
+        raise value
+    return value
+
+
+def resolve_output(want: str) -> tuple[str, bool]:
+    """``(port name, is virtual)`` for what ``--midi-out`` said: ``virtual``, an
+    exact port name, or part of one."""
+    if want == VIRTUAL:
+        return VIRTUAL_NAME, True
+    mido = _import_mido()
+    try:
+        names = list(_bounded(mido.get_output_names, PORT_TIMEOUT_S, "list its ports"))
+    except MidiError:
+        raise
+    except ImportError as e:
+        raise MidiError(f"live MIDI needs mido and python-rtmidi: "
+                        f"pip install -e '.[midi]' ({e})") from None
+    except Exception as e:                 # noqa: BLE001 - a backend's own error type
+        raise MidiError(f"could not list MIDI output ports: {e}") from None
+    if want in names:
+        return want, False
+    hits = [n for n in names if want.lower() in n.lower()]
+    if len(hits) == 1:
+        return hits[0], False
+    if hits:
+        raise MidiError(f"--midi-out {want} matches more than one port: {', '.join(hits)}")
+    known = ", ".join(names) or "none"
+    raise MidiError(f"no MIDI output port matching {want} (there is: {known}); "
+                    f"--midi-out {VIRTUAL} makes one called {VIRTUAL_NAME!r} where "
+                    "the system allows it")
+
+
+class BandMidi:
+    """The band, sent out of one MIDI port while a take plays.
+
+    ``only``: plume's own band is silent (:meth:`heard`), so the port's instruments
+    are the band.  ``offset_s`` moves every message later (or earlier, negative)
+    than the moment plume's own sound of it would reach the speaker: a DAW adds
+    its own output latency to a note it is sent live.
+
+    The planner calls :meth:`bar` and :meth:`move`; the sender thread does the
+    rest.  :meth:`close` ends every sounding note whatever happened before it.
+    """
+
+    def __init__(self, port: str, *, virtual: bool = False, only: bool = False,
+                 offset_s: float = 0.0, sr: int = 48000, block: int = 256,
+                 clock=time.perf_counter, poll_s: float = POLL_S):
+        self.port = port
+        self.virtual = bool(virtual)
+        self.only = bool(only)
+        self.offset_s = float(offset_s)
+        self.latency_s = 0.0
+        self.sent = 0
+        self.errors: list[str] = []
+        self._sr = int(sr)
+        self._clock = clock
+        self._poll_s = float(poll_s)
+        self._schedule = Schedule()
+        self._stream = StreamClock(sr, block)
+        self._lock = threading.Lock()
+        self._closing = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._playhead = None
+        self._handle = None
+        self._mido = None
+
+    # ------------------------------------------------------------ the port
+
+    def open(self) -> "BandMidi":
+        mido = _import_mido()
+        self._mido = mido
+        try:
+            if self.virtual:
+                self._handle = _bounded(
+                    lambda: mido.open_output(self.port, virtual=True),
+                    PORT_TIMEOUT_S, "open a port")
+            else:
+                self._handle = _bounded(lambda: mido.open_output(self.port),
+                                        PORT_TIMEOUT_S, "open a port")
+        except MidiError:
+            raise
+        except (NotImplementedError, AttributeError, TypeError) as e:
+            raise MidiError(f"this system cannot make a virtual MIDI port ({e}); make "
+                            "a loopback port (loopMIDI on Windows) and name it with "
+                            "--midi-out") from None
+        except Exception as e:             # noqa: BLE001 - a backend's own error type
+            raise MidiError(f"could not open MIDI output {self.port}: {e}") from None
+        return self
+
+    def start(self, playhead, *, latency_s: float = 0.0, thread: bool = True) -> "BandMidi":
+        """Start sending.  ``playhead`` gives the stream sample the device has been
+        handed up to; ``latency_s`` is the stream's output latency."""
+        self._playhead = playhead
+        self.latency_s = max(0.0, float(latency_s))
+        if thread:
+            self._thread = threading.Thread(target=self._run, name="plume-midi-out",
+                                            daemon=True)
+            self._thread.start()
+        return self
+
+    def close(self, *, timeout: float = 1.0) -> None:
+        """Stop sending, end every sounding note, close the port.  Safe twice."""
+        self._closing.set()
+        if self._thread is not None and self._thread is not threading.current_thread():
+            self._thread.join(timeout)
+        with self._lock:
+            msgs = self._schedule.release()
+        self._send(msgs)
+        handle, self._handle = self._handle, None
+        if handle is not None:
+            try:
+                _bounded(handle.close, timeout, "close the port")
+            except Exception:              # noqa: BLE001 - it is going anyway
+                pass
+
+    # ------------------------------------------------------------ the planner
+
+    def bar(self, at: int, events, *, key=None) -> None:
+        """Queue one bar's events, its audio starting at stream sample ``at``.
+        ``key`` names the bar for :meth:`move`; by default its sample."""
+        notes = bar_notes(events, at, self._sr)
+        with self._lock:
+            self._schedule.add(notes, key=at if key is None else key)
+
+    def move(self, old_at: int, new_at: int) -> None:
+        """A bar queued at ``old_at`` now starts at ``new_at``."""
+        with self._lock:
+            self._schedule.move(old_at, int(new_at) - int(old_at), new_key=int(new_at))
+
+    def heard(self, audio):
+        """What plume itself plays of a bar of band audio: none of it when the
+        port's instruments are the band."""
+        return audio * 0.0 if self.only else audio
+
+    # ------------------------------------------------------------ the sender
+
+    def pump(self, now: float | None = None) -> int:
+        """One look: read the playhead, send what is due.  Returns how many sent."""
+        now = self._clock() if now is None else now
+        if self._playhead is None:
+            return 0
+        self._stream.observe(int(self._playhead()), now)
+        if not self._stream.ready:
+            return 0
+        upto = self._stream.sample_at(now - self.latency_s - self.offset_s)
+        with self._lock:
+            msgs = self._schedule.due(upto)
+        self._send(msgs)
+        return len(msgs)
+
+    def _run(self) -> None:
+        while not self._closing.is_set():
+            try:
+                self.pump()
+            except Exception as e:         # noqa: BLE001 - never take the take down
+                self._note(f"midi out: {e}")
+            self._closing.wait(self._poll_s)
+
+    def _send(self, msgs) -> None:
+        handle, mido = self._handle, self._mido
+        if handle is None or mido is None:
+            return
+        for kind, ch, a, b in msgs:
+            try:
+                handle.send(_message(mido, kind, ch, a, b))
+                self.sent += 1
+            except Exception as e:         # noqa: BLE001 - a port gone mid-take
+                self._note(f"midi out: {e}")
+
+    def _note(self, text: str) -> None:
+        if len(self.errors) < 20:
+            self.errors.append(text)

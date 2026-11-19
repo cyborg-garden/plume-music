@@ -1,4 +1,4 @@
-"""The band finds her within a few seconds (Juniper, 2026-11-06).
+"""The band finds her within a few seconds (2026-11-06).
 
 "it did not get quieter when i was playing quieter tho."  On that take (60 bpm, a
 direct input) she went about 14 dB softer for four bars, and the band's first
@@ -7,13 +7,15 @@ move was heard sixteen seconds later, after she had come back up.  The patience 
 direction", but it is counted in half bars and seconds, the planner reads her half a
 bar sooner, and the answer is bigger and quicker.  Pure, so no device.
 """
+import threading
+
 import pytest
 from conftest import needs_laptop_speed  # noqa: E402
 
 from plume.bandentry import (FOLLOW_GAIN_MIN_DB, FOLLOW_GAIN_RETURN_STEP_DB,
                              FOLLOW_GAIN_STEP_DB, FOLLOW_HOLD_MIN_S, FOLLOW_LEARN_BARS,
                              BandFollow, follow_hold_bars)
-from plume.realtime import follow_parts, plan_lead_s
+from plume.realtime import follow_parts, plan_lead_s, read_window_by_s, wait_for_ear
 
 NORMAL_DB = -21.0
 
@@ -168,6 +170,63 @@ def test_the_planner_keeps_a_whole_bar_when_planning_is_slow_for_the_pace():
 
 def test_the_lead_is_never_more_than_a_bar():
     assert plan_lead_s(1.5, plan_cost_s=5.0, pace=1.0, comp_s=0.1) == 1.5
+
+
+def test_a_wait_for_the_ear_leaves_the_plan_its_shortest_lead():
+    # A whole bar ahead, the bar read ends where the playhead is: about half a bar to wait.
+    assert read_window_by_s(10.0, bar_s=2.0, need_s=0.1) == pytest.approx(9.1)
+    # Already at the shortest lead, there is nothing to wait with.
+    lead = plan_lead_s(2.0, plan_cost_s=0.01, pace=1.0, comp_s=0.0)
+    assert read_window_by_s(10.0, bar_s=2.0, need_s=0.04) == pytest.approx(10.0 - lead)
+    # Never into the time planning needs.
+    assert read_window_by_s(10.0, bar_s=2.0, need_s=1.6) == pytest.approx(8.4)
+
+
+def _wait_or_fail(heard_to, w_end, playhead_s, give_up_s, *, within_s: float = 2.0,
+                  **kw) -> float:
+    """``wait_for_ear`` on its own thread: a wait that never ends fails the test in
+    ``within_s`` instead of hanging the run, and is stopped after."""
+    stop = kw.pop("stop", None) or threading.Event()
+    out: list = []
+    t = threading.Thread(target=lambda: out.append(
+        wait_for_ear(heard_to, w_end, playhead_s, give_up_s, stop, **kw)), daemon=True)
+    t.start()
+    try:
+        t.join(timeout=within_s)
+        assert out, f"the wait for the ear did not end within {within_s} s"
+        return out[0]
+    finally:
+        stop.set()
+
+
+def test_the_bar_is_read_as_soon_as_the_ear_has_heard_it():
+    assert _wait_or_fail(lambda: 5.0, 5.0, lambda: 0.0, 9.0) < 0.5
+
+
+def test_a_dead_ear_holds_the_bar_only_until_the_playhead_says_so():
+    """An analysis thread that never reads again: the bar is planned from what came."""
+    reads = []
+
+    def at():
+        reads.append(1)
+        return 0.5 * (len(reads) - 1)    # the playhead moves on, 0.0, 0.5, 1.0, ...
+
+    _wait_or_fail(lambda: 0.0, 5.0, at, 3.0, poll_s=0.0)
+    assert len(reads) == 7              # 0.0 .. 3.0, and not a read past it
+
+
+def test_a_stop_ends_the_wait_at_once():
+    """Stopped while the ear is dead and the playhead still: the wait ends on its next look."""
+    stop = threading.Event()
+    looks = []
+
+    def at():
+        looks.append(1)
+        stop.set()                       # the take ends while it waits
+        return 0.0
+
+    _wait_or_fail(lambda: 0.0, 5.0, at, 9.0, stop=stop)
+    assert len(looks) == 1
 
 
 # ------------------------------------------------------------ her take, in numbers

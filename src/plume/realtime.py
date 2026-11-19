@@ -500,6 +500,33 @@ def plan_lead_s(bar_s: float, *, plan_cost_s: float | None, pace: float | None,
     return min(bar_s, max(0.5 * bar_s - FOLLOW_READ_MARGIN_S, need))
 
 
+def read_window_by_s(t_bar: float, *, bar_s: float, need_s: float) -> float:
+    """The playhead time, in stream seconds, after which a bar's plan stops waiting for
+    the ear to finish the window it reads, and plans from what has arrived.
+
+    It leaves the plan the shortest lead it ever takes by choice (:func:`plan_lead_s`:
+    half a bar, less :data:`FOLLOW_READ_MARGIN_S`), and never less than planning needs
+    (``need_s``).  So a plan a whole bar ahead waits up to half a bar, and one already
+    half a bar ahead, whose bar ended half a bar ago, does not wait: a wait there took
+    the time the bar the band comes in on needs, and it landed late.  On a real device
+    the ear is only an analysis hop behind, so the wait is that hop at most.
+    """
+    return float(t_bar) - max(0.5 * float(bar_s) - FOLLOW_READ_MARGIN_S, float(need_s))
+
+
+def wait_for_ear(heard_to, w_end: float, playhead_s, give_up_s: float, stop, *,
+                 poll_s: float = 0.002) -> float:
+    """Wait until the ear has heard up to ``w_end`` (``heard_to()``, stream seconds), the
+    playhead reaches ``give_up_s`` (``playhead_s()``), or ``stop`` is set.  Returns the
+    wall seconds spent, which are waiting and not planning."""
+    t0 = time.perf_counter()
+    while not stop.is_set():
+        if heard_to() >= w_end or playhead_s() >= give_up_s:
+            break
+        stop.wait(poll_s)
+    return time.perf_counter() - t0
+
+
 def _median_s(costs_us) -> float | None:
     """Median of the last planning costs, in seconds; None before there are any."""
     recent = sorted(costs_us[-32:])
@@ -783,11 +810,11 @@ class SelfMasker:
     never chases the machine's own output.  The human level estimate is an EMA
     over unmasked frames only.
 
-    **v1.6 — the three reasons this was inoperative in the room.**  Juniper
-    played an open-tuned acoustic into the laptop mic while plume came out of
-    the laptop speakers, and the tempo estimate walked 167.9 / 163.0 / 169.2 /
-    165.4 / 80.6 / 80.3 / 121.0 bpm.  That is the exact condition this class
-    exists for, and all three of its moving parts were wrong:
+    **v1.6 — the three reasons this was inoperative with acoustic bleed.**  With
+    an acoustic guitar into a built-in microphone and the band out of built-in
+    speakers, the tempo estimate walked 167.9 / 163.0 / 169.2 / 165.4 / 80.6 /
+    80.3 / 121.0 bpm.  That is the exact condition this class exists for, and
+    all three of its moving parts were wrong:
 
     1. **The flag never reached the tracker.**  ``mask()`` cleared
        ``Frame.onset`` and returned ``flags``, and both call sites threw the
@@ -3147,12 +3174,11 @@ def jam(*, style: str, seed: int, params, device: str | None = None,
                                    else round(cal["db"], 2)),
                     })
                 planned_bar, placed = None, None
-                # v1.7 — bounded while UNLOCKED, which is the case that
-                # actually happened.  ``shared["events"]`` is trimmed on a bar
-                # boundary, and a session that never locks has no bar
-                # boundaries: Juniper's six-minute take never locked once, so
-                # the list grew for the whole session (~34k tuples then, ~225k
-                # for a forty-minute one) — the same accumulate-forever shape
+                # v1.7 — bounded while UNLOCKED.  ``shared["events"]`` is
+                # trimmed on a bar boundary, and a session that never locks has
+                # no bar boundaries: over a six-minute take that never locks the
+                # list grows for the whole session (~34k tuples, ~225k for a
+                # forty-minute one) — the same accumulate-forever shape
                 # SessionRecorder was written to remove, left behind in the
                 # planner.  Nothing older than EVENT_KEEP_S can ever be asked
                 # for: the furthest back a bar summary reaches is two bars,
@@ -5232,7 +5258,9 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
     ending = threading.Event()
     state_lock = threading.Lock()
     shared = {"beat": None, "harmony": None, "events": [], "onsets": [],
-              "taps": None, "chroma": [], "technique": [], "clipped": []}
+              "taps": None, "chroma": [], "technique": [], "clipped": [],
+              # How far into the input the ear has read, s: every frame before it is in.
+              "heard_to": 0.0}
     # Her own frames, for the folk guess, while it is still listening.
     want_technique = style_pick is not None and style_pick.folk_ear is not None
     masker = SelfMasker(enabled=not route.isolated, learn_while_off=route.band_in_headphones)
@@ -5339,6 +5367,7 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
         soft_knocks: list[float] = []
         heard_samples = 0                   # of her input, so far: the stream's clock
         drain_until = None                  # v1.3: bounded on both paths
+        read_samples = 0
         while True:
             if stop.is_set() and drain_until is None:
                 drain_until = time.monotonic() + ANALYSIS_DRAIN_S
@@ -5352,6 +5381,7 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
                 continue
             x = in_ring.read(n)
             m = machine_ring.read(n)
+            read_samples += n
             # A count is knocked loud on purpose, and four clear knocks land it while
             # she is still knocking the rest: until the first bar it is all the count.
             heed_input(guard, x, ending.is_set() or stop.is_set(),
@@ -5423,6 +5453,8 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
                     shared["events"].append((f.t_s, f.rms_db, f.onset))
                     if f.onset:
                         shared["onsets"].append(f.t_s)
+                # After the frames: a bar that sees this sees everything before it.
+                shared["heard_to"] = read_samples / SR
 
     def plan_one_bar(clock, state, bpm):
         """Plan, render and place exactly one machine bar.  Returns the next
@@ -5464,6 +5496,20 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
         state["bar_starts"] = [*starts[-1:], t_bar]
         # tap-start: not the knocks
         first_heard_bar = int(from_bar) + (2 if tap_start else 1)
+        # The window is read once, and what reaches it after is dropped, so wait for the
+        # ear to have heard all of it.  An ear that falls behind (a busy machine, a
+        # stalled thread) otherwise loses the end of each bar: her strokes go uncounted
+        # and a bar can read as silent.  Bounded: the wait ends while the plan still has
+        # the shortest lead it takes by choice, however late the ear is.
+        give_up = read_window_by_s(t_bar, bar_s=bar_len, need_s=state.get("need_s", 0.0))
+
+        def heard_to() -> float:
+            with state_lock:
+                return shared["heard_to"]
+
+        # Not planning: the planning cost that sets the lead must not count it.
+        state["ear_wait_s"] = wait_for_ear(heard_to, w_end, lambda: timeline.playhead / SR,
+                                           give_up, stop)
         with state_lock:
             beat_state = shared["beat"]
             harm_state = shared["harmony"]
@@ -5480,7 +5526,9 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
                           if w_start <= t < w_end]
             bar_chroma = [e[0] for e in bar_frames]
             shared["chroma"] = [e for e in shared["chroma"] if e[0] >= w_end]
-            technique_frames = [f for f in shared["technique"] if w_start <= f.t_s < w_end]
+            # Everything before the bar line, a frame that missed its own bar included:
+            # the folk guess counts her strokes over the whole take, not bar by bar.
+            technique_frames = [f for f in shared["technique"] if f.t_s < w_end]
             shared["technique"] = [f for f in shared["technique"] if f.t_s >= w_end]
         human = None
         if bar >= first_heard_bar and evs:
@@ -5932,17 +5980,21 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
             # take whose band follows her plans later, half a bar ahead when planning
             # is quick enough, so it has heard half of N-1 (see plan_lead_s).
             ahead = clock.bar_len_s(bpm)
+            cost, rate = _median_s(plan_us), pace.rate()
             if entry is not None:
-                ahead = plan_lead_s(ahead, plan_cost_s=_median_s(plan_us),
-                                    pace=pace.rate(), comp_s=comp_samples[0] / SR)
+                ahead = plan_lead_s(ahead, plan_cost_s=cost, pace=rate,
+                                    comp_s=comp_samples[0] / SR)
             state["ahead_s"] = ahead
+            state["need_s"] = (comp_samples[0] / SR if cost is None or rate is None
+                               else PLAN_BUDGET_X * cost * rate + comp_samples[0] / SR)
             if clock.t_s - timeline.playhead / SR > ahead:
                 pace.note(timeline.playhead / SR)
                 stop.wait(0.01)
                 continue
             t0_wall = time.perf_counter()
+            state["ear_wait_s"] = 0.0
             bpm = plan_one_bar(clock, state, bpm)
-            plan_us.append((time.perf_counter() - t0_wall) * 1e6)
+            plan_us.append((time.perf_counter() - t0_wall - state["ear_wait_s"]) * 1e6)
             if state["ended"]:
                 ending.set()
         tail = duet.flush_tail()

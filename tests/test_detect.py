@@ -5,7 +5,10 @@ Nothing here has heard a real guitar.  Everything live runs on the fake device.
 """
 import argparse
 import json
+import threading
+import time
 
+import conftest
 import numpy as np
 import pytest
 from conftest import needs_laptop_speed  # noqa: E402
@@ -529,14 +532,156 @@ def _rows(rec):
     return [r for r in rows if isinstance(r.get("bar"), int)]
 
 
-def _detect_take(tmp_path, human, *, name="rec", prompt=None, rate_x=12.0, **kw):
+#: How long a take that ends by what it heard may run before it is called starved, min.
+#: Far from how long one takes (seconds): reaching it is a runner out of time, and it
+#: is reported as that, never as the band having played the wrong thing.
+STARVED_AFTER_MIN = 5.0
+#: A take that ends by what it heard plays this many bars with the band in, then stops.
+BARS_WITH_THE_BAND = 3
+
+
+def _detect_take(tmp_path, human, *, name="rec", prompt=None, rate_x=12.0,
+                 until_band=False, ends_itself=False, **kw):
+    """A take that ends by what was heard, not by the clock, for a test of what the band
+    made of her playing rather than of keeping up with a fast playhead.
+
+    ``until_band``: it stops once the band has been in for BARS_WITH_THE_BAND bars.
+    ``ends_itself``: the test stops it (:func:`_ear_that_stops`).  Either way it may take
+    as long as the runner needs, and the fake device pauses while the ear is behind it
+    (as it always does on a shared runner, conftest): a real device leaves the ear time
+    to spare."""
     route = {"direct": True, "input_device": "audio interface", "input_channel": 1}
     route.update(kw.pop("route", {}))
-    with patched_module("sounddevice", fake_audio(human, devices=RIG, rate_x=rate_x)):
-        realtime.lead(prompt=prompt, seed=0, tap_start=True, detect=True,
-                      role=roles_mod.RoleParams(role="lead"), record_dir=str(tmp_path / name),
-                      status=False, socket_path=short_socket_path(name), **route, **kw)
+    sock = short_socket_path(name)
+    hold, over = None, threading.Event()
+    real_entry = StylePick.at_entry
+    if until_band or ends_itself:
+        conftest._watch_the_ear()
+        hold = lambda: conftest.ear_behind()     # noqa: E731 - looked up when asked
+        kw["max_minutes"] = STARVED_AFTER_MIN
+    if until_band:
+        entered = threading.Event()
+
+        def at_entry(self, bpm, key):
+            entered.set()
+            return real_entry(self, bpm, key)
+
+        def stop_with_the_band_in():
+            came_in_at = None
+            while not over.wait(0.05):
+                if not entered.is_set():
+                    continue
+                try:
+                    bar = realtime.send_status(socket_path=sock).get("bar")
+                    if came_in_at is None:
+                        came_in_at = bar
+                    if bar - came_in_at >= BARS_WITH_THE_BAND:
+                        realtime.send_stop(socket_path=sock)
+                        return
+                except (OSError, TypeError, realtime.RealtimeError):
+                    pass                 # between bars, or already ending
+
+        StylePick.at_entry = at_entry
+        threading.Thread(target=stop_with_the_band_in, daemon=True).start()
+    try:
+        with patched_module("sounddevice", fake_audio(human, devices=RIG, rate_x=rate_x,
+                                                      hold=hold)):
+            realtime.lead(prompt=prompt, seed=0, tap_start=True, detect=True,
+                          role=roles_mod.RoleParams(role="lead"),
+                          record_dir=str(tmp_path / name), status=False, socket_path=sock,
+                          **route, **kw)
+    finally:
+        over.set()
+        StylePick.at_entry = real_entry
+    if until_band or ends_itself:
+        ending = json.loads((tmp_path / name / "ending.json").read_text())
+        if ending["capped"]:
+            what = (f"the band being in for {BARS_WITH_THE_BAND}" if until_band
+                    else "reaching where the test ends it")
+            pytest.fail(f"timed out: the take ran {ending['elapsed_s']:.0f} s of wall time "
+                        f"and {ending['bars']} bars without {what}: the runner starved "
+                        "it, or it never gets there at all", pytrace=False)
     return tmp_path / name
+
+
+def test_the_fake_device_stands_still_while_the_planner_waits_for_the_ear():
+    """conftest.planner_waiting: what makes the planner's wait cost a fast fake playhead
+    none of the bar's lead.  Only once the bar's end has been played, or the ear could
+    never hear it, and not for ever: an ear that has stopped must not stop the take."""
+    stop, heard, playhead = threading.Event(), [0.0], [4.0]
+    args = (lambda: heard[0], 5.0, lambda: playhead[0], 9.0, stop)
+    waiting = threading.Thread(target=lambda: realtime.wait_for_ear(*args), daemon=True)
+    assert not conftest.planner_waiting()
+    waiting.start()
+    assert conftest.wait_until(lambda: len(conftest._PLANNER_WAITS) == 1, timeout=5.0)
+    assert not conftest.planner_waiting(), "the bar's end has not been played yet"
+    playhead[0] = 5.1
+    assert conftest.planner_waiting()
+    heard[0] = 5.0                       # the ear has finished the bar
+    waiting.join(timeout=5.0)
+    assert not waiting.is_alive() and not conftest.planner_waiting()
+    # One that goes on too long is no longer waited for.
+    long_ago = time.perf_counter() - 2 * conftest.PLANNER_WAIT_HOLD_S
+    conftest._PLANNER_WAITS["old"] = (long_ago, 5.0, lambda: 6.0)
+    try:
+        assert not conftest.planner_waiting()
+    finally:
+        del conftest._PLANNER_WAITS["old"]
+
+
+def test_the_fake_device_never_stands_still_for_the_planner_at_real_time(monkeypatch):
+    """At 1x the fake device is the real one's stand-in for what a late ear costs her, and
+    a real device plays on.  Faster than that, the wait would cost it more than its share."""
+    monkeypatch.delenv("PLUME_SKIP_MACHINE_SPEED", raising=False)
+    monkeypatch.setattr(conftest, "planner_waiting", lambda: True)
+    assert not conftest.FakeAudioStream(rate_x=1.0)._hold()
+    assert conftest.FakeAudioStream(rate_x=12.0)._hold()
+
+
+def test_a_dead_ear_holds_the_fake_device_about_a_second_and_no_more(tmp_path, consent,
+                                                                     monkeypatch):
+    """The fake device stands still for the planner's wait only so long
+    (conftest.PLANNER_WAIT_HOLD_S).  The wait gives up by the playhead, which a held
+    device does not move: with no limit, an ear that died would end the take with it."""
+    dead, waits = threading.Event(), []
+    analyse, wait = realtime.analysis_step, realtime.wait_for_ear
+    sock = short_socket_path("rec")
+
+    def ear(**kw):
+        out = analyse(**kw)
+        if out[0] and out[0][-1].t_s >= 14.0:
+            dead.wait(60.0 * STARVED_AFTER_MIN)      # it never hands on another frame
+        return out
+
+    def timed_wait(*a, **kw):
+        t0 = time.perf_counter()
+        try:
+            return wait(*a, **kw)
+        finally:
+            waits.append(time.perf_counter() - t0)
+            # One bar's wait on a dead ear is the proof; then let the take go.
+            if waits[-1] > 0.5 * conftest.PLANNER_WAIT_HOLD_S:
+                dead.set()
+                threading.Thread(target=_stop_quietly, args=(sock,), daemon=True).start()
+
+    monkeypatch.setattr(realtime, "analysis_step", ear)
+    monkeypatch.setattr(realtime, "wait_for_ear", timed_wait)
+    try:
+        _detect_take(tmp_path, _strummed_take(85.0), max_minutes=2.0)
+    finally:
+        dead.set()
+    held = [w for w in waits if w > 0.5 * conftest.PLANNER_WAIT_HOLD_S]
+    assert held, "the device never stood still for a dead ear"
+    # About a second of hold, then half a bar at the device's own pace: seconds, with
+    # room for a slow runner, and nowhere near a hold with no limit.
+    assert max(waits) < 10.0
+
+
+def _stop_quietly(sock):
+    try:
+        realtime.send_stop(socket_path=sock)
+    except (OSError, realtime.RealtimeError):
+        pass                             # already ending on its own
 
 
 def test_a_busy_player_at_85_starts_lofi_and_the_band_arrives_as_midwest(tmp_path, consent):
@@ -704,8 +849,9 @@ def _folk_take(bpm, *, bars=28, kind="strum", gain_db=-18.0, strums=None):
     return x
 
 
+@pytest.mark.ends_by_what_was_heard
 def test_a_strummed_folk_tune_on_a_direct_input_brings_in_the_folk_band(tmp_path, consent):
-    rec = _detect_take(tmp_path, _folk_take(96.0), max_minutes=0.6)
+    rec = _detect_take(tmp_path, _folk_take(96.0), until_band=True)
     rows = _rows(rec)
     band = [r for r in rows if r["entry"] != "drums"]
     assert band, "the band never came in"
@@ -716,25 +862,208 @@ def test_a_strummed_folk_tune_on_a_direct_input_brings_in_the_folk_band(tmp_path
     assert doc["style"] == "detect" and doc["style_chosen"] is False
 
 
-@pytest.mark.parametrize("gain_db", [-6.0, -30.0])
-def test_the_folk_band_comes_in_whatever_the_input_level(tmp_path, consent, gain_db):
-    """The interface's gain turned up or down: the same strumming, the same band."""
-    rec = _detect_take(tmp_path, _folk_take(96.0, gain_db=gain_db), max_minutes=0.6)
+def _ear_late_on_every_read(monkeypatch) -> list:
+    """Slow the analysis on every read, as a starved machine does, and return the times of
+    the frames that reach the folk guess, as they arrive.  Each read costs a sixth of the
+    time it holds, so the ear is always behind a 12x playhead by what it is working on
+    and never slower than half of it: a fixed cost a read made the take crawl."""
+    analyse = realtime.analysis_step
+
+    def slow_ear(**kw):
+        time.sleep(len(kw["human_block"]) / SR / 6.0)
+        return analyse(**kw)
+
+    monkeypatch.setattr(realtime, "analysis_step", slow_ear)
+    heard: list = []
+    real = StylePick.heard_bar
+
+    def heard_bar(self, onsets, frames=None):
+        heard.extend(f.t_s for f in frames or [])
+        return real(self, onsets, frames)
+
+    monkeypatch.setattr(StylePick, "heard_bar", heard_bar)
+    return heard
+
+
+@pytest.mark.ends_by_what_was_heard
+@pytest.mark.parametrize("gain_db,late_ear", [(-6.0, False), (-30.0, True)])
+def test_the_folk_band_comes_in_whatever_the_input_level(tmp_path, consent, monkeypatch,
+                                                         gain_db, late_ear):
+    """The interface's gain turned up or down: the same strumming, the same band.
+
+    Turned down, the take clears the folk guess's minimum by about a stroke, so it is
+    also heard by an ear running late, as on a busy machine.  Each bar is read as it
+    ends, and frames that came after used to be dropped: strokes went uncounted and the
+    quiet take read as not enough heard.  None of her playing may be lost."""
+    heard = _ear_late_on_every_read(monkeypatch) if late_ear else None
+    rec = _detect_take(tmp_path, _folk_take(96.0, gain_db=gain_db), until_band=True)
     band = [r for r in _rows(rec) if r["entry"] != "drums"]
     assert band, "the band never came in"
     assert {r["style"] for r in band} == {"folk"}, band[0]["style_why"]
+    if heard is not None:
+        # One unbroken run of hops from her first heard frame to her last.
+        from plume.listen.features import HOP
+        hop = HOP / SR
+        assert len(heard) > 6 * (240.0 / 96.0) / hop, "fewer than six bars reached the guess"
+        assert float(np.max(np.diff(heard))) < 1.5 * hop, "frames of her playing were dropped"
+        assert np.all(np.diff(heard) > 0), "a frame was read twice, or out of order"
 
 
+@pytest.mark.ends_by_what_was_heard
+def test_waiting_for_the_ear_is_not_counted_as_planning(tmp_path, consent, monkeypatch):
+    """The lead a take plans by comes from what planning costs.  A wait for a late ear
+    counted as planning would push the lead to a whole bar, the band would follow her a
+    bar later, and the wait's own deadline would fall behind the playhead and end it."""
+    wait = realtime.wait_for_ear
+    long_wait_s = 0.3                    # longer than any bar's planning, by far
+
+    def slow_wait(*a, **kw):
+        time.sleep(long_wait_s)
+        return wait(*a, **kw) + long_wait_s
+
+    costs: list = []
+    lead = realtime.plan_lead_s
+
+    def plan_lead_s(bar_s, *, plan_cost_s, pace, comp_s):
+        if plan_cost_s is not None:
+            costs.append(plan_cost_s)
+        return lead(bar_s, plan_cost_s=plan_cost_s, pace=pace, comp_s=comp_s)
+
+    monkeypatch.setattr(realtime, "wait_for_ear", slow_wait)
+    monkeypatch.setattr(realtime, "plan_lead_s", plan_lead_s)
+    _ear_that_stops(monkeypatch, stop_for=lambda at: None, ends_at_s=22.0)
+    _detect_take(tmp_path, _strummed_take(85.0), ends_itself=True)
+    assert costs, "no bar was planned"
+    # The cost is a median of the bars so far: with the wait counted, never under it.
+    assert min(costs) < long_wait_s
+
+
+def _ear_that_stops(monkeypatch, *, stop_for, ends_at_s, name="rec"):
+    """The ear stops once: ``stop_for(at)`` says for how much of the take, given how far
+    it has heard, or None for not yet.  It stays stopped until the device has played that
+    much further on, and the take is stopped when the ear has heard to ``ends_at_s``.
+    All of it in the take's own time, so a slow runner changes nothing.
+
+    A real device plays on whatever the ear is doing, so the fake one does not wait for
+    the ear while it is stopped; before and after, it does (:func:`_detect_take`).
+    Returns ``[(the take time it stopped at, for how long)]``, once it has."""
+    conftest._watch_the_ear()
+    waits_for_ear, waits_for_planner = conftest.ear_behind, conftest.planner_waiting
+    analyse = realtime.analysis_step
+    sock = short_socket_path(name)
+    stopped, ended, stopping = [], [], []
+
+    def ear(**kw):
+        out = analyse(**kw)
+        at = out[0][-1].t_s if out[0] else 0.0
+        stopped_for_s = None if stopped else stop_for(at)
+        if stopped_for_s is not None:
+            stopped.append((at, stopped_for_s))
+            stopping.append(True)
+            rings = list(conftest._EAR_RINGS)
+            unread = [r.available for r in rings]
+            give_up = time.monotonic() + 60.0 * STARVED_AFTER_MIN
+            while (max(r.available - u for r, u in zip(rings, unread)) < stopped_for_s * SR
+                   and time.monotonic() < give_up):
+                time.sleep(0.002)
+            stopping.clear()
+        if not ended and at >= ends_at_s:
+            ended.append(at)
+
+            def stop():
+                try:
+                    realtime.send_stop(socket_path=sock)
+                except (OSError, realtime.RealtimeError):
+                    pass                 # already ending on its own
+
+            threading.Thread(target=stop, daemon=True).start()
+        return out
+
+    monkeypatch.setattr(realtime, "analysis_step", ear)
+    monkeypatch.setattr(conftest, "ear_behind", lambda: not stopping and waits_for_ear())
+    monkeypatch.setattr(conftest, "planner_waiting",
+                        lambda: not stopping and waits_for_planner())
+    return stopped
+
+
+def test_an_ear_that_stops_does_not_hold_the_band_up(tmp_path, consent, monkeypatch):
+    """The planner waits for the ear to finish a bar before reading it, but only so long.
+    With the ear stopped for more than two bars, every bar still sounds on time."""
+    import soundfile as sf
+
+    # For two and a half bars.
+    stopped = _ear_that_stops(monkeypatch, stop_for=lambda at: 7.0 if at >= 14.0 else None,
+                              ends_at_s=26.0)
+    rec = _detect_take(tmp_path, _strummed_take(85.0), ends_itself=True,
+                       rate_x=playhead_rate(12.0))
+    assert stopped, "the ear never stopped"
+    rows = _rows(rec)
+    bar_s = 240.0 / rows[0]["bpm"]
+    machine, _ = sf.read(str(rec / "machine.wav"), dtype="float32")
+    (stopped_at, stopped_for_s), = stopped
+    through = [r for r in rows if stopped_at <= r["t_s"] <= stopped_at + stopped_for_s]
+    assert len(through) >= 2, "no bar was planned while the ear was stopped"
+    for r in through:
+        for beat in range(4):
+            at = int((r["t_s"] + beat * bar_s / 4) * SR)
+            seg = machine[at:at + int(bar_s / 4 * SR)]
+            assert seg.size and float(np.abs(seg).max()) > 1e-3, (
+                f"bar {r['bar']} beat {beat} is silent: it was planned too late")
+
+
+@pytest.mark.ends_by_what_was_heard
+def test_strokes_the_ear_hands_on_after_the_bar_was_read_are_still_counted(
+        tmp_path, consent, monkeypatch):
+    """The ear stops just before a bar line and for longer than the planner waits, so
+    the bar is read without its last frames.  They come with the next bar: the folk guess
+    counts her strokes over the take, and dropping them lost strokes."""
+    from plume.listen.features import HOP
+
+    # This take's bar lines fall every 2.82 s from 10.45 s.  The ear stops within a
+    # second before one of them, until 1.8 s after it: longer than the planner waits
+    # (half a bar and a little), and back before the next line.
+    first_line_s, bar_s, late_by_s = 10.4533, 240.0 / 85.0, 1.8
+
+    def stop_for(at):
+        to_line = (first_line_s - at) % bar_s
+        return to_line + late_by_s if at >= 18.0 and 0.05 < to_line < 1.0 else None
+
+    stopped = _ear_that_stops(monkeypatch, stop_for=stop_for, ends_at_s=32.0)
+    heard: list = []
+    real = StylePick.heard_bar
+
+    def heard_bar(self, onsets, frames=None):
+        heard.extend(f.t_s for f in frames or [])
+        return real(self, onsets, frames)
+
+    monkeypatch.setattr(StylePick, "heard_bar", heard_bar)
+    rec = _detect_take(tmp_path, _strummed_take(85.0), ends_itself=True,
+                       rate_x=playhead_rate(12.0))
+    assert stopped, "the ear never stopped"
+    lines = [r["t_s"] for r in _rows(rec)]
+    (stopped_at, stopped_for_s), = stopped
+    missed = [t for t in lines if stopped_at < t < stopped_at + stopped_for_s]
+    assert len(missed) == 1, "the ear was to stop across one bar line"
+    assert stopped_at + stopped_for_s - missed[0] == pytest.approx(late_by_s, abs=0.05)
+    hop = HOP / SR
+    assert heard and heard[-1] > missed[0], "nothing was heard after the ear came back"
+    assert float(np.max(np.diff(heard))) < 1.5 * hop, "frames of her playing were dropped"
+    assert np.all(np.diff(heard) > 0), "a frame was read twice, or out of order"
+
+
+@pytest.mark.ends_by_what_was_heard
 def test_four_downstrokes_a_bar_at_120_bring_in_the_folk_band(tmp_path, consent):
     import folk_fixtures as ff
-    rec = _detect_take(tmp_path, _folk_take(120.0, strums=ff.QUARTER_STRUMS), max_minutes=0.6)
+    rec = _detect_take(tmp_path, _folk_take(120.0, strums=ff.QUARTER_STRUMS),
+                       until_band=True)
     band = [r for r in _rows(rec) if r["entry"] != "drums"]
     assert band, "the band never came in"
     assert {r["style"] for r in band} == {"folk"}, band[0]["style_why"]
 
 
+@pytest.mark.ends_by_what_was_heard
 def test_the_same_tune_fingerpicked_is_not_called_folk(tmp_path, consent):
-    rec = _detect_take(tmp_path, _folk_take(96.0, kind="pick"), max_minutes=0.6)
+    rec = _detect_take(tmp_path, _folk_take(96.0, kind="pick"), until_band=True)
     band = [r for r in _rows(rec) if r["entry"] != "drums"]
     assert band, "the band never came in"
     assert "folk" not in {r["style"] for r in band}

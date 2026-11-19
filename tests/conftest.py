@@ -4,9 +4,9 @@ WHY THIS FILE EXISTS.  plume's live transports (``realtime.jam`` and
 ``realtime.lead``) are the only part of the system with no offline twin: `sim`
 and `simlead` prove the *music*, but the threads, the ring buffers, the
 schedule, the socket, the recorder and the ending all live in code that only
-runs when an audio device is open.  There is no audio device in CI, and there
-must never be one in a test — an agent left a live session playing in a
-human's room, and `tests/test_audio_consent.py` exists because of it.
+runs when an audio device is open.  There is no audio device in CI, and a test
+must never open a real audio device or play sound: `tests/test_audio_consent.py`
+holds that line.
 
 So every live-path test drives the real transport through
 :class:`FakeAudioStream`: a duplex stream stand-in pumped by an ordinary
@@ -23,19 +23,18 @@ The knobs that matter, and the failures they reproduce:
 - ``rate_x`` — pump faster than real time.  The planner paces itself against
   the playhead, so this shortens a test without changing a single decision.
 - ``block_on_stop`` — ``stop()`` blocks, the way ``Pa_StopStream`` is
-  documented to ("waits until all pending audio buffers have been played") and
-  the way it actually did on the machine where `plume stop` failed.  This is
-  the wedge, reproducible on a laptop with no audio hardware at all.
+  documented to ("waits until all pending audio buffers have been played").
+  This is the wedge behind a `plume stop` that does not stop, reproducible with
+  no audio hardware at all.
 - ``block_on_abort`` — even ``Pa_AbortStream`` does not come back.  The
   pathological case that no amount of politeness inside the process can fix,
   and the one the hard-exit watchdog exists for.
 - ``bleed_db`` / ``bleed_delay_s`` — **the laptop.**  What the machine plays
-  comes back into the microphone, quieter and later: speakers in the same room
-  as the mic, which is how Juniper actually played (an acoustic guitar into the
-  built-in mic while plume came out of the built-in speakers) and the condition
-  every self-masking defect lives in.  Without this the fake device is an
-  isolation booth and the beat tracker can never hear itself, so the bug that
-  cost a whole session is untestable by construction.
+  comes back into the microphone, quieter and later: the fake device models
+  speakers and microphone sharing a room (acoustic bleed), the condition every
+  self-masking defect lives in.  Without this the fake device is an isolation
+  booth and the beat tracker can never hear itself, so a self-masking defect is
+  untestable by construction.
 - ``latency`` — the stand-in reports a round trip the way ``sounddevice`` does,
   so ``realtime.stream_latency_hops`` aligns the mask to it.
 - ``bleed_from_s`` — **headphones coming out.**  The leak starts this far into the take.
@@ -121,6 +120,54 @@ def ear_behind() -> bool:
 if os.environ.get("PLUME_SKIP_MACHINE_SPEED") == "1":
     _watch_the_ear()
 
+#: The planner's waits for the ear now in progress: when each began (perf_counter), the
+#: end of the bar it waits for, and how to ask where the playhead is.
+_PLANNER_WAITS: dict = {}
+#: The longest the fake device stands still for one of them.  An ear that is running
+#: catches up in milliseconds; one that has stopped must not stop the take with it, as
+#: the wait gives up by the playhead, which a held device does not move.
+PLANNER_WAIT_HOLD_S = 1.0
+#: The device has given the ear a bar's end once the playhead is this far past it.
+BAR_END_IS_IN_S = 2 * 256 / SR
+
+
+def _watch_the_planner_wait() -> None:
+    """Note when the planner is waiting for the ear to finish a bar (realtime.wait_for_ear)."""
+    real = getattr(realtime, "wait_for_ear", None)
+    if real is None or getattr(real, "_wait_watched", False):
+        return
+
+    def wait_for_ear(heard_to, w_end, playhead_s, *a, **kw):
+        me = object()
+        _PLANNER_WAITS[me] = (time.perf_counter(), float(w_end), playhead_s)
+        try:
+            return real(heard_to, w_end, playhead_s, *a, **kw)
+        finally:
+            _PLANNER_WAITS.pop(me, None)
+
+    wait_for_ear._wait_watched = True
+    realtime.wait_for_ear = wait_for_ear
+
+
+def planner_waiting() -> bool:
+    """Whether the planner is waiting for the ear to catch up with audio it already has.
+
+    The fake device stands still while it is, at any speed and on any machine.  The
+    wait spends the bar's lead, and a real device at real time loses milliseconds of
+    seconds to it.  A fake one at 12x would lose twelve times the share: a twelfth of a
+    second of wall time was enough to land the costliest bar late.  Holding the device
+    all the time to the same end instead made it crawl where timers are coarse.
+
+    Not while the bar's end has yet to be played (a bar planned early, as when the tempo
+    slows): the ear cannot hear what the device has not given it, and standing still
+    would only stop the take.  Nor for longer than PLANNER_WAIT_HOLD_S."""
+    now = time.perf_counter()
+    return any(now - t0 < PLANNER_WAIT_HOLD_S and playhead_s() >= w_end + BAR_END_IS_IN_S
+               for t0, w_end, playhead_s in list(_PLANNER_WAITS.values()))
+
+
+_watch_the_planner_wait()
+
 #: A device table that satisfies ``_resolve_device``: one duplex device.
 DUPLEX_DEVICES = [{"name": "Fake Duplex", "max_input_channels": 2,
                    "max_output_channels": 2}]
@@ -175,15 +222,20 @@ class FakeAudioStream:
                        else np.asarray(human, dtype=np.float32))
         self._loop_human = bool(loop_human)
         #: while this says so, the device waits, as if the test had paused time.
-        self._hold = hold
+        # Looked up when asked, so a test can stand in for either.  Not at real time:
+        # a real device does not stand still for the planner, and a take at 1x is how
+        # a test finds out what a late ear costs a player.
+        holds = [lambda: float(rate_x) > 1.0 and planner_waiting()]
+        if hold is not None:
+            holds.append(hold)
         if os.environ.get("PLUME_SKIP_MACHINE_SPEED") == "1":
             # A shared runner can starve the ear of CPU until it falls whole bars
             # behind a fast fake playhead: no key settles, the band never comes in,
             # and that reads as a broken band.  A real device at real time leaves
             # the ear seconds to spare, so here the device waits for it instead.
             # A fast machine never waits, so it still runs at full speed.
-            self._hold = (ear_behind if hold is None
-                          else (lambda: hold() or ear_behind()))
+            holds.append(lambda: ear_behind())
+        self._hold = lambda: any(h() for h in holds)
         #: speaker -> room -> mic path.  None = headphones (perfect isolation).
         self._bleed = (None if bleed_db is None
                        else float(10.0 ** (float(bleed_db) / 20.0)))
@@ -609,9 +661,23 @@ NEVER_RERUN_FILES = {"test_audio_consent.py", "test_cross_platform.py",
 NEVER_RERUN_WORDS = ("consent", "symlink", "secret", "token", "private", "refus")
 
 
+#: ... and nor does a take that ends by what was heard and not by the clock: a slow
+#: runner cannot make it fail, only make it slow, and one that reaches its wall-clock
+#: cap (minutes) is a starved runner that two more tries would starve again.
+ENDS_BY_WHAT_WAS_HEARD = "ends_by_what_was_heard"
+
+
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers", f"{ENDS_BY_WHAT_WAS_HEARD}: the take stops by what the ear heard, "
+        "so no slow runner fails it and it is never rerun")
+
+
 def _never_rerun(item) -> bool:
     name = os.path.basename(str(item.fspath))
-    return name in NEVER_RERUN_FILES or any(w in item.name.lower() for w in NEVER_RERUN_WORDS)
+    return (name in NEVER_RERUN_FILES
+            or any(w in item.name.lower() for w in NEVER_RERUN_WORDS)
+            or item.get_closest_marker(ENDS_BY_WHAT_WAS_HEARD) is not None)
 
 
 def pytest_collection_modifyitems(config, items):

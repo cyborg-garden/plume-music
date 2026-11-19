@@ -204,3 +204,124 @@ def test_adopt_sets_the_belief_and_keeps_its_hysteresis():
     state = tr.process(frames(t, 1.0, _triad(C), {C: 0.03}))
     # One more second of C is no reason to leave the relative the band is on.
     assert parse_key(state.key) == parse_key("A minor"), state.key
+
+
+# ---- a loop whose chords cannot tell the relative keys apart
+
+def test_a_minor_loop_on_its_relative_majors_chords_keeps_the_key_it_opened_in():
+    """i bVI bIII bVII (Am F C G) holds C major's chords more often than A minor's, so
+    the present fit leans to C major all through, by a small edge.  Nothing in the
+    notes says C major: the band stays on the key the tracker formed on the opening."""
+    loop = [(A, True), (F, False), (C, False), (G, False)]
+    keys = _take(lambda bar: loop[bar % 4], 20, adopt=True)
+    assert keys and {parse_key(k) for k in keys} == {parse_key("A minor")}, sorted(set(keys))
+
+
+def test_the_present_best_key_names_the_relative_only_on_a_clear_edge():
+    from plume.listen import harmony
+    tr = HarmonyTracker()
+    t = 0.0
+    for root, minor in [(A, True)] * 2 + [(A, True), (F, False), (C, False), (G, False)] * 2:
+        state = tr.process(frames(t, BAR_S, _triad(root, minor), {root: 0.03}))
+        t += BAR_S
+    assert parse_key(state.key) == parse_key("A minor")
+    assert parse_key(state.key_best) == parse_key("A minor"), state.key_best
+    # The same evidence with no edge required: the relative is the best fit.
+    old = harmony._KEY_BEST_RELATIVE_LEAD
+    try:
+        harmony._KEY_BEST_RELATIVE_LEAD = 0.0
+        state = tr.process(frames(t, BAR_S, _triad(C), {C: 0.03}))
+    finally:
+        harmony._KEY_BEST_RELATIVE_LEAD = old
+    assert parse_key(state.key_best) == parse_key("C major"), state.key_best
+
+
+# ---- MIDI: notes without partials
+
+def test_midi_notes_are_matched_without_partials():
+    """Chroma built from MIDI notes has no partials, and matched as if it had, a slow
+    I bVII IV I reads as the IV's key (F major for C): each bar of F is long enough
+    to carry the belief past the neighbour margin."""
+    loop = [(C, False), (A + 1, False), (F, False), (C, False)]
+    bar_s = 240.0 / 70.0
+
+    def heard(partials):
+        tr, t, state = HarmonyTracker(partials=partials), 0.0, None
+        for bar in range(16):
+            root, minor = loop[bar % 4]
+            state = tr.process(frames(t, bar_s, _triad(root, minor), {root: 0.03}))
+            t += bar_s
+        return parse_key(state.key)
+
+    assert heard(partials=False) == parse_key("C major")
+    assert heard(partials=True) == parse_key("F major")
+
+
+def test_the_live_take_builds_its_trackers_by_input():
+    """Every HarmonyTracker the live loop makes says whether its input is MIDI."""
+    import inspect
+
+    from plume import realtime
+    src = inspect.getsource(realtime)
+    made = src.count("HarmonyTracker(")
+    assert made >= 4
+    assert src.count("HarmonyTracker(partials=midi_port is None)") == made
+
+
+# ---- the live loop hands the band's key to the tracker
+
+def test_the_live_loop_hands_the_key_the_band_came_in_on_to_the_tracker(
+        tmp_path, monkeypatch, plume_registry):
+    """realtime.lead: the planner sets the key the band came in on, the analysis
+    thread hands it to its tracker (HarmonyTracker.adopt).  The entry here is made to
+    come in on a key the tracker never believed, so the hand-off must happen."""
+    import dataclasses
+    import threading
+
+    from conftest import fake_audio, patched_module, short_socket_path
+    from test_bandentry import _take as strummed_take
+
+    from plume import bandentry, realtime
+    from plume import roles as roles_mod
+
+    monkeypatch.setenv("PLUME_CALIBRATION_FILE", str(tmp_path / "none.json"))
+    monkeypatch.setenv(realtime.AUDIO_CONSENT_ENV, "1")
+    forced = "F# major"
+    real_update = bandentry.BandEntry.update
+
+    def update(self, bar, harmony, playing, **kw):
+        out = real_update(self, bar, harmony, playing, **kw)
+        if self.band_is_in and self.bars_in == 0:
+            self._gov.commit(forced, bar)
+            out = dataclasses.replace(out, key=forced)
+        return out
+
+    adopted, handed = [], threading.Event()
+    real_adopt = HarmonyTracker.adopt
+
+    def adopt(self, key):
+        adopted.append(key)
+        handed.set()
+        return real_adopt(self, key)
+
+    monkeypatch.setattr(bandentry.BandEntry, "update", update)
+    monkeypatch.setattr(HarmonyTracker, "adopt", adopt)
+    sock = short_socket_path("adopt")
+
+    def stop_once_handed():
+        if handed.wait(60.0):
+            for _ in range(40):
+                try:
+                    realtime.send_stop(socket_path=sock)
+                    return
+                except (OSError, realtime.RealtimeError):
+                    threading.Event().wait(0.05)
+
+    threading.Thread(target=stop_once_handed, daemon=True).start()
+    human = strummed_take(seconds=60.0, room_s=30.0)
+    with patched_module("sounddevice", fake_audio(human, rate_x=12.0)):
+        realtime.lead(prompt=None, detect=True, seed=0, tap_start=True,
+                      role=roles_mod.RoleParams(role="lead"),
+                      record_dir=str(tmp_path / "rec"), socket_path=sock,
+                      status=False, max_minutes=0.6)
+    assert adopted == [forced]

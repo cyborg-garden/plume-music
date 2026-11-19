@@ -3,8 +3,9 @@
 Key belief
     A 12-bin pitch-class histogram of incoming chroma with exponential decay
     (half-life ``key_halflife_s``) is Pearson-correlated against all 24 key
-    profiles (12 major + 12 minor; corpus profiles blended with the
-    Krumhansl-Kessler ones, see _KEY_MAJOR).  The reported key is
+    profiles (12 major + 12 minor; Krumhansl-Kessler with a share of corpus
+    profiles, and for audio as each would sound with its partials: see
+    _KEY_CORPUS_SHARE).  The reported key is
     an *incumbent* with switch hysteresis: a challenger key must beat the
     incumbent's correlation by ``_KEY_SWITCH_MARGIN`` sustained for
     ``_KEY_SWITCH_SUSTAIN_S`` seconds before the belief flips.  ``key`` is
@@ -69,40 +70,39 @@ _KK_MAJOR = np.array(
 _KK_MINOR = np.array(
     [6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17]
 )
-# _KEY_MAJOR / _KEY_MINOR / _KEY_TONAL_SHARE — v1.6 AMENDMENT.  Corpus
-# profiles (Albrecht and Shanahan, 2013: how long each pitch class sounds,
-# counted over pieces in known keys), tonic first.  The probe-tone profiles
-# come from listeners rating a tone after a cadence and give every chromatic
-# note nearly half a scale note's weight (2.2-2.9 against 3.5-4.4).  A solo
-# line or a strummed part is almost all scale notes, so that floor blurs
-# exactly what a solo key turns on: a maj7 home chord (C E G B) fits E minor
-# nearly as well as C major, and a key one accidental away nearly as well as
-# the right one.  The corpus profiles are near zero off the scale.
+# v1.6 AMENDMENT: what each key is matched against.  Two changes, each for a
+# kind of wrong key the probe-tone profiles alone gave at band entry.
 #
-# The key is chosen against a BLEND: each corpus profile plus _KEY_TONAL_SHARE
-# of the probe-tone one (both z-scored).  Measured on an offline benchmark (270
-# generated solo parts: bass, guitar, keys and mono lead, nine genres, both
-# modes; plus 40 recorded guitar excerpts), the tracker's key where the band
-# enters, with nothing else changed, went from 46% to 54% exactly right on the
-# generated parts and 35% to 38% on the recorded ones, and the iii-for-I
-# reading fell from 27 parts to 11.  Corpus profiles alone scored the same
-# overall but leaned to major: minor keyboard parts fell from 17 of 27 to 12.
-# The blend kept every instrument and mode at or near where it was.  It also
-# separates the modes when one pitch dominates (a ringing low tonic string
-# under a melody): with the probe-tone profiles alone the parallel major and
-# minor tied, and the string's own major-third overtone tipped it to major.
+# _CORPUS_MAJOR / _CORPUS_MINOR / _KEY_CORPUS_SHARE.  Corpus profiles
+# (Albrecht and Shanahan, 2013: how long each pitch class sounds in pieces of
+# known key), tonic first, added to the probe-tone ones at this share (both
+# z-scored).  The probe-tone minor profile weights its b6 nearly as high as
+# its fifth, so a maj7 home chord (C E G B) fits E minor about as well as C
+# major; the corpus profiles keep the b6 and the chromatic notes low.  Alone
+# they lean to major on minor material, so they are a share.
 #
-# Confidence (key_conf) and the floors that gate it keep the probe-tone fit
-# alone (_TONAL_PROFILES): they were set on that scale, and the blend's fits
-# run higher.  The margins below that compare two keys are on the blend's
-# scale.
-_KEY_MAJOR = np.array(
+# _KEY_PARTIAL_DECAY.  Audio chroma is the sound's, partials included: every
+# note also puts energy a twelfth above (its 3rd and 6th partials) and a major
+# third above (its 5th).  Against bare profiles that leans C major material
+# toward G major, and a ringing low string's 5th partial puts a major third
+# under a minor melody.  So for audio each profile is matched as the chroma its
+# scale would sound as: convolved with partials 1-8 at amplitude
+# _KEY_PARTIAL_DECAY ** (n - 1), as Gomez (2006) builds key templates for
+# audio.  Lower than Gomez's 0.6 because not every instrument is rich in
+# partials.  MIDI input has none, so a tracker made with ``partials=False``
+# matches the bare profiles (_PROFILES_BARE).
+#
+# Confidence (key_conf) and the floors that gate it keep the probe-tone
+# profiles alone (_TONAL_PROFILES): they were set on that scale.  The margins
+# below that compare two keys are on the scale of the matched profiles.
+_CORPUS_MAJOR = np.array(
     [0.238, 0.006, 0.111, 0.006, 0.137, 0.094, 0.016, 0.214, 0.009, 0.080, 0.008, 0.081]
 )
-_KEY_MINOR = np.array(
+_CORPUS_MINOR = np.array(
     [0.220, 0.006, 0.104, 0.123, 0.019, 0.103, 0.012, 0.214, 0.062, 0.022, 0.061, 0.052]
 )
-_KEY_TONAL_SHARE = 0.5
+_KEY_CORPUS_SHARE = 0.5
+_KEY_PARTIAL_DECAY = 0.4
 
 _KEY_SWITCH_MARGIN = 0.05     # challenger must beat incumbent corr by this...
 _KEY_SWITCH_SUSTAIN_S = 3.0   # ...sustained this long, to flip the belief
@@ -116,12 +116,21 @@ _KEY_SWITCH_SUSTAIN_S = 3.0   # ...sustained this long, to flip the belief
 # +0.38 correlation on all three minor-key renders — far above
 # _KEY_SWITCH_MARGIN, so the ordinary hysteresis never engaged.  (Measured:
 # swapping in Temperley Kostka-Payne or Albrecht-Shanahan profiles answers
-# Eb major too — it is not a profile-set bug.)  Since correlation cannot
-# decide, the belief established from earlier evidence is KEPT: a relative
-# challenger must clear a margin that a same-collection reading cannot reach.
-# Non-relative modulations are unaffected and still switch on the ordinary
-# margin.
+# Eb major too, and additionally breaks C-major lofi into F major — it is not
+# a profile-set bug.)  Since correlation cannot decide, the belief established
+# from earlier evidence is KEPT: a relative challenger must clear a margin
+# that a same-collection reading cannot reach.  Non-relative modulations are
+# unaffected and still switch on the ordinary margin.
 _KEY_RELATIVE_STICKY = 0.60
+# _KEY_BEST_RELATIVE_LEAD — v1.6.  ``key_best`` (the best fit now, which the
+# band may come in on: bandentry ENTRY_BEST_LEAD) names the belief's relative
+# only when the relative fits better by at least this much.  For the reason
+# above, a smaller edge is the weighting of chords in a loop, not evidence:
+# i-bVI-bIII-bVII fits its relative major better, all through.  A larger edge
+# comes from notes outside the shared collection (a minor key's raised
+# seventh) or from the loop sitting on the other tonic, as when a player opens
+# on the relative chord and then plays in the key.
+_KEY_BEST_RELATIVE_LEAD = 0.12
 # _KEY_NEIGHBOR_STICKY — v1.4 AMENDMENT (SPEC-V1 section 3).  The relative
 # stickiness above is the extreme case of a general fact: two keys whose
 # diatonic collections differ by ONE accidental share 6 of 7 pitch classes, so
@@ -141,11 +150,12 @@ _KEY_RELATIVE_STICKY = 0.60
 # margin at or above that would make the rule absolute — a genuine modulation
 # to a neighbouring key could never be followed at all — so the margin is set
 # just under the ceiling: strongly sticky, still passable by a real key
-# change.  It was 0.15; with the v1.6 blended profiles the same loop's gap is
-# 0.241 (to B major), so it is 0.22.  At 0.15 the A-minor fixtures stopped
-# drifting to F major and flagship stopped visiting Bb major, while a full
-# modulation still landed; at 0.22 on the blend a subdominant-heavy passage
-# still holds the key for 35 s and a full modulation still lands by 65 s.
+# change.  At 0.15 the A-minor fixtures stopped drifting to F major and
+# flagship stopped visiting Bb major, while a full modulation still landed.
+# The v1.6 profiles separate neighbouring keys further, so the same stickiness
+# needs a larger margin: at 0.22 the subdominant passage in test_harmony holds
+# as long as it did at 0.15 before, and a move to the dominant on input with
+# partials is followed about as fast as before.
 _KEY_NEIGHBOR_STICKY = 0.22
 _KEY_CONF_FLOOR = 0.3         # below this correlation, key reports None
 _KEY_MASS_FLOOR = 5.0         # min accumulated voiced chroma mass (guards std)
@@ -242,15 +252,32 @@ _VOICED_CHROMA_EPS = 1e-6
 _VOICED_RMS_DB = -80.0
 
 
-def _key_profiles(major: np.ndarray = _KEY_MAJOR,
-                  minor: np.ndarray = _KEY_MINOR) -> np.ndarray:
+def _key_profiles(major: np.ndarray, minor: np.ndarray) -> np.ndarray:
     """(24, 12) row-z-scored key profiles; row k<12 = major tonic k, else minor."""
     rows = [np.roll(major, t) for t in range(12)]
     rows += [np.roll(minor, t) for t in range(12)]
-    m = np.array(rows)
+    m = np.array(rows, dtype=np.float64)
     m -= m.mean(axis=1, keepdims=True)
     m /= m.std(axis=1, keepdims=True)
     return m
+
+
+def _z(p: np.ndarray) -> np.ndarray:
+    return (p - p.mean()) / p.std()
+
+
+def _key_template(probe: np.ndarray, corpus: np.ndarray) -> np.ndarray:
+    """One mode's template, tonic first: probe-tone plus a share of corpus."""
+    return _z(_z(probe) + _KEY_CORPUS_SHARE * _z(corpus))
+
+
+def _as_heard(profile: np.ndarray) -> np.ndarray:
+    """The chroma a scale weighted by ``profile`` sounds as, partials included."""
+    partials = np.zeros(12)
+    for n in range(1, 9):
+        partials[int(round(12 * np.log2(n))) % 12] += _KEY_PARTIAL_DECAY ** (n - 1)
+    weight = profile - profile.min()
+    return sum(weight[pc] * np.roll(partials, pc) for pc in range(12))
 
 
 def _triad_templates() -> np.ndarray:
@@ -266,10 +293,12 @@ def _triad_templates() -> np.ndarray:
 
 # How tonal the evidence is (key_conf): the probe-tone profiles alone.
 _TONAL_PROFILES = _key_profiles(_KK_MAJOR, _KK_MINOR)
-# Which key it is: the blend (see _KEY_TONAL_SHARE).
-_PROFILES = _key_profiles(
-    _key_profiles()[0] + _KEY_TONAL_SHARE * _TONAL_PROFILES[0],
-    _key_profiles()[12] + _KEY_TONAL_SHARE * _TONAL_PROFILES[12])
+# Which key it is (see _KEY_CORPUS_SHARE): for MIDI as written, for audio as
+# it sounds (_KEY_PARTIAL_DECAY).
+_PROFILES_BARE = _key_profiles(_key_template(_KK_MAJOR, _CORPUS_MAJOR),
+                               _key_template(_KK_MINOR, _CORPUS_MINOR))
+_PROFILES = _key_profiles(_as_heard(_key_template(_KK_MAJOR, _CORPUS_MAJOR)),
+                          _as_heard(_key_template(_KK_MINOR, _CORPUS_MINOR)))
 _TEMPLATES = _triad_templates()
 _N_STATES = 25  # 24 triads + N
 _N_IDX = 24
@@ -346,7 +375,12 @@ def _chord_name(idx: int, key: Key | None) -> str:
 
 
 class HarmonyTracker:
-    def __init__(self, *, key_halflife_s: float = 15.0, chord_selftrans: float = 0.9):
+    def __init__(self, *, key_halflife_s: float = 15.0, chord_selftrans: float = 0.9,
+                 partials: bool = True):
+        """``partials``: the chroma comes from sound, partials and all (audio);
+        False for chroma built from the notes alone (MIDI).  See
+        _KEY_PARTIAL_DECAY."""
+        self._profiles = _PROFILES if partials else _PROFILES_BARE
         self._key_hl = float(key_halflife_s)
         off = (1.0 - float(chord_selftrans)) / (_N_STATES - 1)
         self._trans = np.full((_N_STATES, _N_STATES), off)
@@ -456,9 +490,10 @@ class HarmonyTracker:
                 or mass < _KEY_MASS_FLOOR or std <= 0.0:
             if self._key_idx is not None:
                 self._key_conf = 0.0
+            self._best_idx, self._best_lead = None, 0.0
             return
         hz = (self._hist - self._hist.mean()) / std
-        corr = _PROFILES @ hz / 12.0          # Pearson r vs each of 24 keys
+        corr = self._profiles @ hz / 12.0     # Pearson r vs each of 24 keys
         # How tonal: the probe-tone fit, the scale every floor here was set on.
         tonal = _TONAL_PROFILES @ hz / 12.0
 
@@ -473,6 +508,10 @@ class HarmonyTracker:
         best = int(np.argmax(corr))
         self._best_idx = best
         self._best_lead = float(corr[best] - np.partition(corr, -2)[-2])
+        inc = self._key_idx
+        if (inc is not None and _COLL_DIST[inc, best] == 0 and best != inc
+                and corr[best] - corr[inc] < _KEY_BEST_RELATIVE_LEAD):
+            self._best_idx, self._best_lead = inc, 0.0   # the belief stands
         if self._key_idx is None:
             # ACQUISITION.  Needs sustained tonal content, not merely enough
             # accumulated frames: see _KEY_DUTY_FLOOR.

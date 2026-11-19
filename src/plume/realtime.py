@@ -2843,7 +2843,7 @@ def jam(*, style: str, seed: int, params, device: str | None = None,
     if count_in:
         tkw["count_in"] = True
     tracker = BeatTracker(**tkw)
-    harmony = HarmonyTracker()
+    harmony = HarmonyTracker(partials=midi_port is None)
     mind = Mind(params)
     from .governor import HarmonyGovernor  # noqa: PLC0415 — lazy, like siblings
     governor = HarmonyGovernor(style, params)
@@ -5125,7 +5125,7 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
     if count_in and not tap_start:
         tkw["count_in"] = True
     tracker = BeatTracker(**tkw)
-    harmony = HarmonyTracker()
+    harmony = HarmonyTracker(partials=midi_port is None)
     entry = None
     tap_detector = None
     style_pick = None
@@ -5406,7 +5406,7 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
                 # The loop set the tempo.  As after a count: never listen for one
                 # again, and the key starts from what comes next.
                 tap_detector = None
-                harmony = HarmonyTracker()
+                harmony = HarmonyTracker(partials=midi_port is None)
                 harm_state = None
                 with state_lock:
                     shared["events"].clear()
@@ -5427,7 +5427,7 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
                     taps = count_start(taps, soft_knocks)
                     tap_detector = None     # once: playing cannot re-set tempo
                     # Knocks are not harmony; her key starts from her first note.
-                    harmony = HarmonyTracker()
+                    harmony = HarmonyTracker(partials=midi_port is None)
                     harm_state = None
                     with state_lock:
                         shared["events"].clear()

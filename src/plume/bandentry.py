@@ -44,11 +44,10 @@ ENTRY_KEY_BARS = 2
 #: seconds can outlive the evidence against it.  As the band comes in it is checked
 #: against what the evidence says now (HarmonyState.key_best): a key that has led
 #: every other by at least this much correlation for ENTRY_KEY_BARS of her bars is
-#: the one the band comes in on.  Measured on an offline benchmark (generated solo
-#: parts and recorded guitar excerpts), the present best key at entry was right more
-#: often than the sticky belief on the recorded excerpts and as often on the
-#: generated parts; a lead of 0.03 to 0.06 measured best, and none at all let a tie
-#: decide.
+#: the one the band comes in on.  A lead of 0.03 to 0.06 measured best, and none
+#: at all let a tie decide.  The present best key names the belief's relative only
+#: on a clear edge (harmony._KEY_BEST_RELATIVE_LEAD): between those two the fit
+#: alone is not evidence.
 ENTRY_BEST_LEAD = 0.03
 
 DRUMS, BAND, FULL = "drums", "band", "full"
@@ -220,7 +219,7 @@ _RAKE_HOPS = 3
 #: counted are one unbroken run around the peak: tremolo picking puts the next pick
 #: inside the reading window, so its attack rises again after dipping, and counting from
 #: the first hop above half to the last called it a strum (0.88 to 0.96).  Measured that
-#: way (2026-11-10) over every seven bars of each take, at input levels up to 30 dB
+#: way over every seven bars of each take, at input levels up to 30 dB
 #: apart: slowly raked synthetic strums 0.22 to 0.57, nineteen in twenty over 0.29; a
 #: strum quicker than about 20 ms 0.09 to 0.20, which is not heard as one; fingerpicking
 #: 0.00 to 0.08; tremolo picking 0.00 to 0.03.  15 real direct-input takes, which were
@@ -1088,8 +1087,8 @@ _BUSY_FLOOR = 0.25
 #: The band moves half as far as she did: it answers rather than mirrors (the idea
 #: behind mind.py's delayed recovery), and comes down to find a soft player without
 #: vanishing under her.  Past :data:`FOLLOW_GAIN_BIG_DB` of drop it answers with
-#: :data:`FOLLOW_GAIN_PER_DB_BIG` of each further decibel: she went 14 dB down on
-#: the 2026-11-06 take, and half of that, capped at 6, was too small to hear as an
+#: :data:`FOLLOW_GAIN_PER_DB_BIG` of each further decibel: a player can go 14 dB
+#: down, and half of that, capped at 6, was too small to hear as an
 #: answer under her.
 FOLLOW_GAIN_PER_DB = 0.5
 FOLLOW_GAIN_BIG_DB = 6.0
@@ -1851,8 +1850,8 @@ def count_start(taps, soft_hits, *, tol_frac: float = 0.15,
     """The whole count, including knocks too quiet to have confirmed it.
 
     A count is confirmed by its four clearest knocks, which need not be its
-    first four: on 2026-11-02 the first three of a count were quiet, the band
-    counted from the fourth, and the drums came in three beats late.  So walk
+    first four: when the first three of a count are quiet, the band
+    counts from the fourth, and the drums come in three beats late.  So walk
     back along the confirmed spacing through quieter hits, until a beat is
     missing.  The first knock found is where she started counting.
     """

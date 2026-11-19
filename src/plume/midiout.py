@@ -176,6 +176,11 @@ class Schedule:
                 out.append(("off", ch, note, 0))
         return out
 
+    def unsent_off(self, ch: int, note: int) -> None:
+        """An off that did not reach the port: the note still counts as sounding, so
+        the next strike of it, or :meth:`release`, ends it."""
+        self._sounding.setdefault((ch, note), -1)
+
     def release(self) -> list[tuple]:
         """Forget what is waiting; end what sounds, then all notes off and the
         sustain pedal up on every channel this ever played on."""
@@ -191,10 +196,15 @@ class Schedule:
 class StreamClock:
     """Which wall-clock time a stream sample is handed to the device.
 
-    The playhead moves one block per callback.  A sighting of it moving, at time
-    ``now``, says the callback that moved it ran at or before ``now``; the earliest
-    such reading over :data:`CLOCK_WINDOW_S` is the best guess, and the window lets
-    a slow drift between the audio clock and the system clock through.
+    The playhead moves by whole blocks.  A device may run one callback per block,
+    or several back to back once per period of its own (and several at start-up,
+    to fill its buffer).  Either way, the samples handed over in one burst start
+    playing together, from the first one.  So a sighting of the playhead moving, at
+    time ``now``, dates the sample it moved FROM: that one went at or before
+    ``now``.  Moves seen less than half a block apart are one burst and only its
+    first sighting counts, so a burst seen in two halves cannot date its middle as
+    its start.  The earliest reading over :data:`CLOCK_WINDOW_S` is the best guess,
+    and the window lets a slow drift between the audio and system clocks through.
     """
 
     def __init__(self, sr: int, block: int, *, window_s: float = CLOCK_WINDOW_S):
@@ -202,6 +212,7 @@ class StreamClock:
         self._block = int(block)
         self._window = float(window_s)
         self._last: int | None = None
+        self._moved_at = -float("inf")
         #: (seen at, offset) with offsets rising: the front is the window's least
         self._low: collections.deque = collections.deque()
 
@@ -211,10 +222,12 @@ class StreamClock:
 
     def observe(self, playhead: int, now: float) -> None:
         if self._last is not None and playhead != self._last:
-            c = now - (playhead - self._block) / self._sr
-            while self._low and self._low[-1][1] >= c:
-                self._low.pop()
-            self._low.append((now, c))
+            if now - self._moved_at >= 0.5 * self._block / self._sr:
+                c = now - self._last / self._sr
+                while self._low and self._low[-1][1] >= c:
+                    self._low.pop()
+                self._low.append((now, c))
+            self._moved_at = now
         self._last = playhead
         while len(self._low) > 1 and now - self._low[0][0] > self._window:
             self._low.popleft()
@@ -245,7 +258,7 @@ def _bounded(fn, timeout: float, what: str):
         except Exception as e:             # noqa: BLE001 - the backend's own type
             answer.append((False, e))
 
-    t = threading.Thread(target=run, name="plume-midi-out-open", daemon=True)
+    t = threading.Thread(target=run, name="plume-midi-out-port", daemon=True)
     t.start()
     t.join(timeout)
     if not answer:
@@ -312,7 +325,11 @@ class BandMidi:
         self._schedule = Schedule()
         self._stream = StreamClock(sr, block)
         self._lock = threading.Lock()
+        #: Held for every batch sent, so the final release can never be overtaken
+        #: by a batch the sender had already begun.
+        self._send_lock = threading.Lock()
         self._closing = threading.Event()
+        self._released = False
         self._thread: threading.Thread | None = None
         self._playhead = None
         self._handle = None
@@ -346,6 +363,14 @@ class BandMidi:
         handed up to; ``latency_s`` is the stream's output latency."""
         self._playhead = playhead
         self.latency_s = max(0.0, float(latency_s))
+        # A note left hanging by a take that was killed outright ends here.
+        clear = [m for ch in (*sorted(set(ROLE_CHANNELS.values())), OTHER_CHANNEL,
+                              DRUM_CHANNEL)
+                 for m in (("cc", ch, _CC_SUSTAIN, 0), ("cc", ch, _CC_ALL_NOTES_OFF, 0))]
+        try:
+            _bounded(lambda: self._send(clear), PORT_TIMEOUT_S, "send")
+        except Exception as e:             # noqa: BLE001 - the take still plays
+            self._note(f"midi out: {e}")
         if thread:
             self._thread = threading.Thread(target=self._run, name="plume-midi-out",
                                             daemon=True)
@@ -353,13 +378,19 @@ class BandMidi:
         return self
 
     def close(self, *, timeout: float = 1.0) -> None:
-        """Stop sending, end every sounding note, close the port.  Safe twice."""
+        """Stop sending, end every sounding note, close the port.  Safe twice.
+
+        Bounded by about three times ``timeout`` whatever the driver does: a send
+        that never returns costs the release, never the caller.  Once closing, no
+        note-on goes out, so nothing can follow the final All Notes Off.
+        """
         self._closing.set()
         if self._thread is not None and self._thread is not threading.current_thread():
             self._thread.join(timeout)
-        with self._lock:
-            msgs = self._schedule.release()
-        self._send(msgs)
+        try:
+            _bounded(self._release, timeout, "take the notes off")
+        except Exception as e:             # noqa: BLE001 - it is going anyway
+            self._note(f"midi out: {e}")
         handle, self._handle = self._handle, None
         if handle is not None:
             try:
@@ -367,12 +398,26 @@ class BandMidi:
             except Exception:              # noqa: BLE001 - it is going anyway
                 pass
 
+    def _release(self) -> None:
+        with self._send_lock:
+            if self._released:
+                return
+            self._released = True
+            with self._lock:
+                msgs = self._schedule.release()
+            self._send(msgs)
+
     # ------------------------------------------------------------ the planner
 
     def bar(self, at: int, events, *, key=None) -> None:
         """Queue one bar's events, its audio starting at stream sample ``at``.
         ``key`` names the bar for :meth:`move`; by default its sample."""
         notes = bar_notes(events, at, self._sr)
+        if self._playhead is not None:
+            # The audio of a note that starts before the playhead is cut off, so
+            # its MIDI would only be a late burst.
+            now = int(self._playhead())
+            notes = [n for n in notes if n[0] >= now]
         with self._lock:
             self._schedule.add(notes, key=at if key is None else key)
 
@@ -397,10 +442,12 @@ class BandMidi:
         if not self._stream.ready:
             return 0
         upto = self._stream.sample_at(now - self.latency_s - self.offset_s)
-        with self._lock:
-            msgs = self._schedule.due(upto)
-        self._send(msgs)
-        return len(msgs)
+        with self._send_lock:
+            if self._released:
+                return 0
+            with self._lock:
+                msgs = self._schedule.due(upto)
+            return self._send(msgs)
 
     def _run(self) -> None:
         while not self._closing.is_set():
@@ -410,16 +457,26 @@ class BandMidi:
                 self._note(f"midi out: {e}")
             self._closing.wait(self._poll_s)
 
-    def _send(self, msgs) -> None:
+    def _send(self, msgs) -> int:
+        """Send in order; called holding the send lock.  Once closing, note-ons are
+        left out: release ends every note marked sounding, sent or not."""
         handle, mido = self._handle, self._mido
         if handle is None or mido is None:
-            return
+            return 0
+        n = 0
         for kind, ch, a, b in msgs:
+            if kind == "on" and self._closing.is_set():
+                continue
             try:
                 handle.send(_message(mido, kind, ch, a, b))
                 self.sent += 1
+                n += 1
             except Exception as e:         # noqa: BLE001 - a port gone mid-take
                 self._note(f"midi out: {e}")
+                if kind == "off" and not self._released:
+                    with self._lock:
+                        self._schedule.unsent_off(ch, a)
+        return n
 
     def _note(self, text: str) -> None:
         if len(self.errors) < 20:

@@ -502,13 +502,24 @@ while the take runs. It works with `jam` and `lead`. Each part has its own chann
 | 10 | drums, on General MIDI notes: kick 36, rim 37, snare 38, clap 39, closed hat 42, pedal hat 44, open hat 46, crash 49 |
 
 `--midi-only` keeps plume's own band silent, so you hear only Ableton's. Your own sound
-on Hear me, and loops, still come from plume. Use it with `--midi`, a direct input or
-headphones: on a room mic plume can't take Ableton's band out of what it hears, so it
-would hear the band as you.
+on Hear me, and loops, still come from plume, and a loop still makes room for the band
+as if plume were playing it. With `--record`, `machine.wav` then holds no band: record
+it in Ableton. Use `--midi-only` with `--midi`, a direct input or headphones: on a room
+mic plume can't take Ableton's band out of what it hears, so it would hear the band as
+you.
+
+`--midi-out-offset` goes from -500 to 500 ms. Notes whose sound plume had to drop,
+because their bar came too late, aren't sent either.
 
 When a take ends, however it ends, plume lets go of every held note and sends All Notes
-Off on each channel it used. If plume is killed outright, use Ableton's own stop, or
-untick and retick the track's monitor, to clear a stuck note.
+Off on each channel it used. A take also starts by sending All Notes Off on all of its
+channels, so if plume was ever killed outright and left a note hanging, the next take
+clears it.
+
+Don't send the band to the port plume listens to with `--midi`: it would come straight
+back in as your playing. Plume warns when both name the same port. The same loop happens
+if Ableton sends its MIDI out to the IAC port plume listens on, so keep Ableton's MIDI
+outputs off that port.
 
 **macOS.** Either use `--midi-out virtual`, or turn on the IAC Driver once: open Audio
 MIDI Setup, choose Window > Show MIDI Studio, open IAC Driver and tick "Device is

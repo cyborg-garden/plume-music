@@ -1466,7 +1466,7 @@ def _add_midi_out_flags(p) -> None:
                    metavar="MS",
                    help="with --midi-out: send the MIDI this many ms later than plume "
                         "would sound it; negative is earlier, to cancel the other "
-                        "program's own output latency (default: 0)")
+                        "program's own output latency; -500 to 500 (default: 0)")
 
 
 def _midi_out_args(args) -> dict:
@@ -1478,8 +1478,8 @@ def _midi_out_args(args) -> dict:
     if not port and (only or offset is not None):
         raise CliError("--midi-only and --midi-out-offset need --midi-out: "
                        "the band has to be sent somewhere")
-    if offset is not None and not math.isfinite(offset):
-        raise CliError(f"--midi-out-offset must be a number of ms, got {offset}")
+    if offset is not None and not (math.isfinite(offset) and abs(offset) <= 500.0):
+        raise CliError(f"--midi-out-offset must be between -500 and 500 ms, got {offset}")
     out = {}
     if port:
         out["midi_out"] = port

@@ -1299,6 +1299,18 @@ def _midi_listening(port: str, timeline: "TimelineBuffer",
     return source, frames, MidiMasker()
 
 
+#: The furthest ``--midi-out-offset`` may move the band's MIDI, s.  Bars are queued
+#: about a bar ahead, and a DAW's output latency is tens of ms.
+MIDI_OUT_MAX_OFFSET_S = 0.5
+
+
+def _warn_midi_loop(midi_port: str | None, band_midi) -> None:
+    """The band sent to the port plume listens to would come straight back as her."""
+    if midi_port is not None and band_midi is not None and midi_port == band_midi.port:
+        print(f"midi: --midi and --midi-out are both {midi_port}, so the band comes back "
+              "in as your playing; use two ports", file=sys.stderr, flush=True)
+
+
 def _open_band_midi(midi_out: str | None, midi_only: bool = False,
                     offset_s: float = 0.0):
     """The port the band is sent out of (see :mod:`plume.midiout`), opened, or None.
@@ -1307,6 +1319,9 @@ def _open_band_midi(midi_out: str | None, midi_only: bool = False,
         if midi_only:
             raise RealtimeError("--midi-only needs --midi-out: the band has to go somewhere")
         return None
+    if not (math.isfinite(offset_s) and abs(offset_s) <= MIDI_OUT_MAX_OFFSET_S):
+        raise RealtimeError(f"--midi-out-offset must be within "
+                            f"+-{MIDI_OUT_MAX_OFFSET_S * 1000:g} ms")
     from .midi import MidiError  # noqa: PLC0415 - optional, like sd
     from .midiout import BandMidi, resolve_output  # noqa: PLC0415
     try:
@@ -1327,11 +1342,12 @@ def _stream_output_latency_s(stream) -> float:
     return s if math.isfinite(s) and 0.0 <= s <= SELF_MASK_MAX_LATENCY_S else 0.0
 
 
-def _close_band_midi(band_midi) -> None:
-    """Every sounding note ended and the port closed, whatever ended the take."""
+def _close_band_midi(band_midi, timeout: float = 1.0) -> None:
+    """Every sounding note ended and the port closed, whatever ended the take.
+    Bounded (see ``BandMidi.close``): a stuck driver cannot hold the ending."""
     if band_midi is not None:
         try:
-            band_midi.close()
+            band_midi.close(timeout=timeout)
         except Exception:                          # noqa: BLE001 - the take is over
             pass
 
@@ -2710,6 +2726,10 @@ class HardExit:
             pass
 
 
+#: How long a hard exit waits on each step of letting go of the band's MIDI notes.
+HARD_EXIT_MIDI_S = 0.3
+
+
 def _hard_exit_cleanup(recorder: "SessionRecorder | None", cues: "CueServer | None",
                        ending_doc, band_midi=None):
     """What a hard exit does on its way out: close the take, unregister.
@@ -2721,7 +2741,6 @@ def _hard_exit_cleanup(recorder: "SessionRecorder | None", cues: "CueServer | No
     """
 
     def _cleanup(reason: str | None) -> None:
-        _close_band_midi(band_midi)            # no note left held in another program
         if recorder is not None:
             doc = None
             try:
@@ -2735,6 +2754,8 @@ def _hard_exit_cleanup(recorder: "SessionRecorder | None", cues: "CueServer | No
             except OSError:
                 pass
         unregister_session()
+        # Last, and briefly: the take is safe on disk first, whatever the driver does.
+        _close_band_midi(band_midi, timeout=HARD_EXIT_MIDI_S)
 
     return _cleanup
 
@@ -2870,6 +2891,7 @@ def jam(*, style: str, seed: int, params, device: str | None = None,
     dev = route.device
     midi_port = _resolve_midi_port(midi)
     band_midi = _open_band_midi(midi_out, midi_only, midi_out_offset_s)
+    _warn_midi_loop(midi_port, band_midi)
     max_minutes = resolve_max_minutes(max_minutes)
 
     # Siblings are imported lazily so this module always imports headless.
@@ -5139,6 +5161,7 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
     dev = route.device
     midi_port = _resolve_midi_port(midi)
     band_midi = _open_band_midi(midi_out, midi_only, midi_out_offset_s)
+    _warn_midi_loop(midi_port, band_midi)
     # With --midi the band listens to the notes, whatever --direct says about the
     # audio input, so a level from that input decides nothing here.
     is_direct = route.source == "direct" and midi_port is None

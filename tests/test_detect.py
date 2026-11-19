@@ -629,6 +629,61 @@ def test_the_fake_device_stands_still_while_the_planner_waits_for_the_ear():
         del conftest._PLANNER_WAITS["old"]
 
 
+def test_the_fake_device_never_stands_still_for_the_planner_at_real_time(monkeypatch):
+    """At 1x the fake device is the real one's stand-in for what a late ear costs her, and
+    a real device plays on.  Faster than that, the wait would cost it more than its share."""
+    monkeypatch.delenv("PLUME_SKIP_MACHINE_SPEED", raising=False)
+    monkeypatch.setattr(conftest, "planner_waiting", lambda: True)
+    assert not conftest.FakeAudioStream(rate_x=1.0)._hold()
+    assert conftest.FakeAudioStream(rate_x=12.0)._hold()
+
+
+def test_a_dead_ear_holds_the_fake_device_about_a_second_and_no_more(tmp_path, consent,
+                                                                     monkeypatch):
+    """The fake device stands still for the planner's wait only so long
+    (conftest.PLANNER_WAIT_HOLD_S).  The wait gives up by the playhead, which a held
+    device does not move: with no limit, an ear that died would end the take with it."""
+    dead, waits = threading.Event(), []
+    analyse, wait = realtime.analysis_step, realtime.wait_for_ear
+    sock = short_socket_path("rec")
+
+    def ear(**kw):
+        out = analyse(**kw)
+        if out[0] and out[0][-1].t_s >= 14.0:
+            dead.wait(60.0 * STARVED_AFTER_MIN)      # it never hands on another frame
+        return out
+
+    def timed_wait(*a, **kw):
+        t0 = time.perf_counter()
+        try:
+            return wait(*a, **kw)
+        finally:
+            waits.append(time.perf_counter() - t0)
+            # One bar's wait on a dead ear is the proof; then let the take go.
+            if waits[-1] > 0.5 * conftest.PLANNER_WAIT_HOLD_S:
+                dead.set()
+                threading.Thread(target=_stop_quietly, args=(sock,), daemon=True).start()
+
+    monkeypatch.setattr(realtime, "analysis_step", ear)
+    monkeypatch.setattr(realtime, "wait_for_ear", timed_wait)
+    try:
+        _detect_take(tmp_path, _strummed_take(85.0), max_minutes=2.0)
+    finally:
+        dead.set()
+    held = [w for w in waits if w > 0.5 * conftest.PLANNER_WAIT_HOLD_S]
+    assert held, "the device never stood still for a dead ear"
+    # About a second of hold, then half a bar at the device's own pace: seconds, with
+    # room for a slow runner, and nowhere near a hold with no limit.
+    assert max(waits) < 10.0
+
+
+def _stop_quietly(sock):
+    try:
+        realtime.send_stop(socket_path=sock)
+    except (OSError, realtime.RealtimeError):
+        pass                             # already ending on its own
+
+
 def test_a_busy_player_at_85_starts_lofi_and_the_band_arrives_as_midwest(tmp_path, consent):
     rec = _detect_take(tmp_path, _strummed_take(85.0), max_minutes=0.5)
     rows = _rows(rec)
@@ -931,7 +986,6 @@ def _ear_that_stops(monkeypatch, *, stop_for, ends_at_s, name="rec"):
     return stopped
 
 
-@pytest.mark.ends_by_what_was_heard
 def test_an_ear_that_stops_does_not_hold_the_band_up(tmp_path, consent, monkeypatch):
     """The planner waits for the ear to finish a bar before reading it, but only so long.
     With the ear stopped for more than two bars, every bar still sounds on time."""

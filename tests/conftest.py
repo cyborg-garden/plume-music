@@ -222,8 +222,10 @@ class FakeAudioStream:
                        else np.asarray(human, dtype=np.float32))
         self._loop_human = bool(loop_human)
         #: while this says so, the device waits, as if the test had paused time.
-        # Looked up when asked, so a test can stand in for either.
-        holds = [lambda: planner_waiting()]
+        # Looked up when asked, so a test can stand in for either.  Not at real time:
+        # a real device does not stand still for the planner, and a take at 1x is how
+        # a test finds out what a late ear costs a player.
+        holds = [lambda: float(rate_x) > 1.0 and planner_waiting()]
         if hold is not None:
             holds.append(hold)
         if os.environ.get("PLUME_SKIP_MACHINE_SPEED") == "1":

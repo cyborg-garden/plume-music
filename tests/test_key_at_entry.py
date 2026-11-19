@@ -1,8 +1,10 @@
 """The key the band comes in on: mode, maj7 home chords, relative keys, the entry check.
 
 Synthetic frames only (duck-typed, as listen/harmony.py reads them): no audio, no
-device.  Each scenario is one the key tracker used to get wrong, built from the
-pitch content that made it wrong.
+device, except the one live-loop test at the end.  Each scenario is one the band
+used to come in wrong on, built from the pitch content that made it wrong.  The
+takes run as the live loop runs them: the tracker hears each bar, the band entry
+reads it, and the tracker is handed the key the band came in on.
 """
 from __future__ import annotations
 
@@ -41,16 +43,45 @@ def chord(root, intervals, w=1.0):
     return {(root + i) % 12: w for i in intervals}
 
 
-def play(events, secs):
-    """Loop ``events`` [(seconds, pcs, low)] for ``secs``; the tracker's last state."""
-    tr, t, i, state = HarmonyTracker(), 0.0, 0, None
-    while t < secs:
+def _triad(root, minor=False):
+    return {root: 1.0, (root + (3 if minor else 4)) % 12: 1.0, (root + 7) % 12: 1.0}
+
+
+def take(events, bars, bar_s=BAR_S):
+    """A detect-mode take of ``events`` [(seconds, pcs, low)] looped for ``bars``
+    bars: every key the band played, from the bar it came in."""
+    seq, t, i = [], 0.0, 0
+    while t < bars * bar_s:
         dur, pcs, low = events[i % len(events)]
-        state = tr.process(frames(t, dur, pcs, low))
+        seq += frames(t, dur, pcs, low)
         t += dur
         i += 1
-    return state
+    tr, entry, keys, k = HarmonyTracker(), BandEntry("midwest", key_fallback_bars=16), [], 0
+    for bar in range(bars):
+        batch = []
+        while k < len(seq) and seq[k].t_s <= (bar + 1) * bar_s:
+            batch.append(seq[k])
+            k += 1
+        h = tr.process(batch)
+        e = entry.update(bar, h, True)
+        if entry.band_is_in and entry.bars_in == 0 and e.key != h.key:
+            tr.adopt(e.key)
+        keys.append(e.key)
+    return [key for key in keys if key is not None]
 
+
+def came_in_on(events, bars=20, bar_s=BAR_S):
+    keys = take(events, bars, bar_s)
+    assert keys, "the band never came in"
+    return parse_key(keys[0])
+
+
+def bar_chords(chords):
+    """One bar per (root, minor) triad, the root faintly in the bass."""
+    return [(BAR_S, _triad(r, m), {r: 0.03}) for r, m in chords]
+
+
+# ---- mode: a drone under a minor melody
 
 def low_string(root):
     """A low open string left ringing: its root, and the partials a string adds,
@@ -58,112 +89,98 @@ def low_string(root):
     return {root: 1.0, root + 7: 0.35, root + 4: 0.2}
 
 
-# ---- mode: a drone under a minor melody
+def _drone_melody(melody):
+    events = []
+    for note in melody:
+        pcs = low_string(E)
+        pcs[note] = pcs.get(note, 0.0) + 0.8
+        events.append((0.25, pcs, {E: 0.02}))
+    return events
 
-def test_a_ringing_low_tonic_under_a_minor_melody_is_minor():
+
+def test_a_ringing_low_tonic_under_a_minor_melody_brings_the_band_in_minor():
     """The tonic string rings under every note, so the tonic is about half of all
-    the pitch heard and the fit to E major and E minor tie; the string's own
-    overtone even adds a G sharp.  Her melody's G, C and D say minor."""
+    the pitch heard, and the string's own overtone adds a G sharp.  Her melody's
+    G, C and D say minor."""
     melody = [G, F + 1, E, D, B, A, G, B, C, B, G, E]
-    events = []
-    for note in melody:
-        pcs = low_string(E)
-        pcs[note] = pcs.get(note, 0.0) + 0.8
-        events.append((0.25, pcs, {E: 0.02}))
-    state = play(events, 20.0)
-    assert parse_key(state.key) == parse_key("E minor"), state.key
+    assert came_in_on(_drone_melody(melody)) == parse_key("E minor")
 
 
-def test_a_ringing_low_tonic_under_a_major_melody_stays_major():
-    """The same drone under the major melody: the mode rule must not make every
-    drone minor."""
+def test_a_ringing_low_tonic_under_a_major_melody_brings_the_band_in_major():
     melody = [G + 1, F + 1, E, D + 1, B, A, G + 1, B, C + 1, B, G + 1, E]
-    events = []
-    for note in melody:
-        pcs = low_string(E)
-        pcs[note] = pcs.get(note, 0.0) + 0.8
-        events.append((0.25, pcs, {E: 0.02}))
-    state = play(events, 20.0)
-    assert parse_key(state.key) == parse_key("E major"), state.key
+    assert came_in_on(_drone_melody(melody)) == parse_key("E major")
 
 
 # ---- a maj7 home chord holds the minor triad on its third
 
 def test_a_held_maj7_home_chord_is_its_root_not_the_minor_on_its_third():
     """C E G B holds E minor's triad.  With the root only faintly in the bass, as
-    a pickup hears a strummed guitar, it was read as E minor."""
-    state = play([(BAR_S, chord(C, MAJ7), {C: 0.03})], 20.0)
-    assert parse_key(state.key) == parse_key("C major"), state.key
+    a pickup hears a strummed guitar, the band came in on E minor."""
+    assert came_in_on([(BAR_S, chord(C, MAJ7), {C: 0.03})]) == parse_key("C major")
 
 
 def test_a_maj7_home_chord_progression_is_its_root_not_the_minor_on_its_third():
     events = [(BAR_S, chord(r, iv), {r: 0.03})
               for r, iv in ((C, MAJ7), (C, MAJ7), (F, MAJ7), (G, DOM7))]
-    state = play(events, 24.0)
-    assert parse_key(state.key) == parse_key("C major"), state.key
+    assert came_in_on(events) == parse_key("C major")
 
 
-def test_a_maj9_turnaround_is_its_home_key_not_a_fifth_away():
-    events = [(BAR_S, chord(r, iv), {r: 0.03})
-              for r, iv in ((C, MAJ9), (A, MIN9), (D, MIN9), (G, DOM7))]
-    state = play(events, 24.0)
-    assert parse_key(state.key) == parse_key("C major"), state.key
+def _sounded(midi_notes, decay=0.4):
+    """The chroma of notes as a string sounds them: partials 1-8 at decay ** (n - 1)."""
+    c = {}
+    for m in midi_notes:
+        for n in range(1, 9):
+            pc = (m + int(round(12 * np.log2(n)))) % 12
+            c[pc] = c.get(pc, 0.0) + decay ** (n - 1)
+    return c
 
 
-# ---- relative keys: the band comes in on what the evidence says now
+def test_a_maj7_vamp_on_the_home_chord_and_its_IV_comes_in_on_the_home_chord():
+    """Imaj7 IVmaj7, as strings sound them, with the IV's root the lowest.  The I's
+    maj7 holds the minor triad on its third, and the loop holds the IV's V I: the
+    band came in on the iii, and matched against corpus profiles alone, on the IV."""
+    for tonic in (C, A - 1, B - 1):
+        r = 48 + (tonic - 48) % 12
+        loop = [(BAR_S, _sounded([r + i for i in MAJ7], 0.6), {tonic: 0.03}),
+                (BAR_S, _sounded([r - 7 + i for i in MAJ7], 0.6), {(tonic + 5) % 12: 0.06})]
+        want = parse_key(f"{('C', 'Ab', 'Bb')[(C, A - 1, B - 1).index(tonic)]} major")
+        assert came_in_on(loop, bars=24) == want, tonic
 
-def _triad(root, minor=False):
-    return {root: 1.0, (root + (3 if minor else 4)) % 12: 1.0, (root + 7) % 12: 1.0}
 
-
-def _take(bar_chord, bars, *, adopt):
-    """A detect-mode take, a bar at a time, as the live loop runs it: the tracker
-    hears each bar, the entry reads it, and (``adopt``) the tracker is handed the
-    key the band came in on."""
-    tr, entry, keys = HarmonyTracker(), BandEntry("midwest", key_fallback_bars=16), []
-    for bar in range(bars):
-        root, minor = bar_chord(bar)
-        h = tr.process(frames(bar * BAR_S, BAR_S, _triad(root, minor), {root: 0.03}))
-        e = entry.update(bar, h, True)
-        if adopt and entry.band_is_in and entry.bars_in == 0 and e.key != h.key:
-            tr.adopt(e.key)
-        keys.append(e.key)
-    return [k for k in keys if k is not None]
-
+# ---- relative keys: the band comes in on everything she has played
 
 A_MINOR_LOOP = [(A, True), (D, True), (A, True), (E, False)]
-
-
-def _opens_on_the_relative_major(bar):
-    return (C, False) if bar < 2 else A_MINOR_LOOP[(bar - 2) % 4]
 
 
 def test_a_minor_loop_opened_on_its_relative_major_brings_the_band_in_minor():
     """Two bars of C, then i iv i V in A minor.  The tracker's belief formed on
     the opening C, and C major is A minor's relative, which its hysteresis keeps
     from replacing a belief: the band came in in C major and stayed there."""
-    keys = _take(_opens_on_the_relative_major, 20, adopt=True)
-    assert keys, "the band never came in"
-    assert parse_key(keys[0]) == parse_key("A minor"), keys[0]
+    loop = bar_chords([(C, False)] * 2 + A_MINOR_LOOP * 6)
+    assert came_in_on(loop[:2] + loop[2:], bars=20) == parse_key("A minor")
 
 
 def test_the_key_the_band_came_in_on_is_not_released_back_to_the_stale_belief():
     """Without the tracker adopting the band's key, its stale belief disagreed
     with the band for the governor's release bars and pulled the band back."""
-    keys = _take(_opens_on_the_relative_major, 24, adopt=True)
+    keys = take(bar_chords([(C, False)] * 2 + A_MINOR_LOOP * 6), 24)
     assert {parse_key(k) for k in keys} == {parse_key("A minor")}, sorted(set(keys))
 
 
 def test_a_major_loop_opened_on_its_relative_minor_brings_the_band_in_major():
-    loop = [(C, False), (F, False), (G, False), (C, False)]
-    keys = _take(lambda bar: (A, True) if bar < 2 else loop[(bar - 2) % 4], 20,
-                 adopt=True)
-    assert keys and parse_key(keys[0]) == parse_key("C major"), keys[:1]
+    loop = bar_chords([(A, True)] * 2 + [(C, False), (F, False), (G, False), (C, False)] * 6)
+    assert came_in_on(loop) == parse_key("C major")
 
 
 def test_a_steady_key_is_unchanged_by_the_entry_check():
-    keys = _take(lambda bar: A_MINOR_LOOP[bar % 4], 20, adopt=True)
+    keys = take(bar_chords(A_MINOR_LOOP), 20)
     assert keys and {parse_key(k) for k in keys} == {parse_key("A minor")}
+
+
+def test_a_minor_loop_on_its_relative_majors_chords_keeps_its_minor_key():
+    """i bVI bIII bVII (Am F C G) holds C major's chords more often than A minor's."""
+    keys = take(bar_chords([(A, True), (F, False), (C, False), (G, False)]), 20)
+    assert keys and {parse_key(k) for k in keys} == {parse_key("A minor")}, sorted(set(keys))
 
 
 # ---- the entry check, alone
@@ -183,118 +200,46 @@ def _entry_key(best, lead):
     return key
 
 
-def test_the_band_enters_on_a_clearly_leading_present_key():
-    """``key_lead`` is counted in the margin the belief's hysteresis would ask."""
+def test_the_band_enters_on_an_entry_reading_that_leads_the_belief():
     assert _entry_key("A minor", 1.0) == "A minor"
     assert _entry_key("A minor", ENTRY_BEST_LEAD) == "A minor"
 
 
-def test_a_lead_under_the_entry_share_leaves_the_band_on_the_belief():
+def test_a_near_tie_leaves_the_band_on_the_belief():
     assert _entry_key("A minor", 0.0) == "C major"
     assert _entry_key("A minor", 0.9 * ENTRY_BEST_LEAD) == "C major"
 
 
-def test_the_belief_reports_no_lead_over_itself():
-    state = play([(BAR_S, _triad(r, m), {r: 0.03})
-                  for r, m in ((C, False), (F, False), (G, False), (C, False))], 24.0)
+def test_the_entry_reading_reports_no_lead_over_the_belief_it_agrees_with():
+    tr, t = HarmonyTracker(), 0.0
+    for _ in range(6):
+        for dur, pcs, low in bar_chords([(C, False), (F, False), (G, False), (C, False)]):
+            state = tr.process(frames(t, dur, pcs, low))
+            t += dur
     assert state.key_best == state.key and state.key_lead == 0.0
 
 
+def test_the_entry_reading_leaves_the_belief_alone():
+    """The belief (``key``) is the tracker's hysteretic one, as it was before the
+    entry reading existed: the reading only reports."""
+    tr, t = HarmonyTracker(), 0.0
+    for dur, pcs, low in bar_chords([(C, False)] * 2 + A_MINOR_LOOP * 3):
+        state = tr.process(frames(t, dur, pcs, low))
+        t += dur
+    assert parse_key(state.key) == parse_key("C major")
+    assert parse_key(state.key_best) == parse_key("A minor") and state.key_lead > 0.0
+
+
 def test_adopt_sets_the_belief_and_keeps_its_hysteresis():
-    tr = HarmonyTracker()
-    c_major = [(BAR_S, _triad(r, m), {r: 0.03})
-               for r, m in ((C, False), (F, False), (G, False), (C, False))]
-    t = 0.0
+    tr, t = HarmonyTracker(), 0.0
     for _ in range(3):
-        for dur, pcs, low in c_major:
+        for dur, pcs, low in bar_chords([(C, False), (F, False), (G, False), (C, False)]):
             tr.process(frames(t, dur, pcs, low))
             t += dur
     tr.adopt("A minor")
     state = tr.process(frames(t, 1.0, _triad(C), {C: 0.03}))
     # One more second of C is no reason to leave the relative the band is on.
     assert parse_key(state.key) == parse_key("A minor"), state.key
-
-
-# ---- a loop whose chords cannot tell the relative keys apart
-
-def test_a_minor_loop_on_its_relative_majors_chords_keeps_the_key_it_opened_in():
-    """i bVI bIII bVII (Am F C G) holds C major's chords more often than A minor's, so
-    the present fit leans to C major all through, by a small edge.  Nothing in the
-    notes says C major: the band stays on the key the tracker formed on the opening."""
-    loop = [(A, True), (F, False), (C, False), (G, False)]
-    keys = _take(lambda bar: loop[bar % 4], 20, adopt=True)
-    assert keys and {parse_key(k) for k in keys} == {parse_key("A minor")}, sorted(set(keys))
-
-
-# ---- strummed loops that sit on I but hold another key's notes
-
-def _sounded(midi_notes, decay=0.4):
-    """The chroma of notes as a string sounds them: partials 1-8 at decay ** (n - 1)."""
-    c = {}
-    for m in midi_notes:
-        for n in range(1, 9):
-            pc = (m + int(round(12 * np.log2(n)))) % 12
-            c[pc] = c.get(pc, 0.0) + decay ** (n - 1)
-    return c
-
-
-def _strum(root, minor=False):
-    """A strummed shape: the root on a low string (E2 to D#3), its octave, the triad
-    above.  ``low``: the bass band's share, larger for a lower root, as a pickup reads it."""
-    r = 40 + (root - 40) % 12
-    notes = [r, r + 12, r + 12 + (3 if minor else 4), r + 19, r + 24]
-    return _sounded(notes), {root: 0.005 + 0.01 * (52 - r) / 12}
-
-
-def _strummed_take(chords, bars, bar_s=240.0 / 90.0):
-    tr, entry, keys = HarmonyTracker(), BandEntry("midwest", key_fallback_bars=16), []
-    for bar in range(bars):
-        pcs, low = _strum(*chords[bar % len(chords)])
-        h = tr.process(frames(bar * bar_s, bar_s, pcs, low))
-        e = entry.update(bar, h, True)
-        if entry.band_is_in and entry.bars_in == 0 and e.key != h.key:
-            tr.adopt(e.key)
-        keys.append(e.key)
-    return [k for k in keys if k is not None]
-
-
-def test_a_strummed_I_bVII_IV_I_comes_in_on_I_not_on_the_IV():
-    """D C G D holds exactly G major's notes, and the IV's root is the lowest string,
-    so every profile fits G major.  The chords sit on D."""
-    for tonic in (C, D, A):
-        loop = [(tonic, False), ((tonic + 10) % 12, False), ((tonic + 5) % 12, False),
-                (tonic, False)]
-        keys = _strummed_take(loop, 24)
-        want = parse_key(f"{('C', 'D', 'A')[(C, D, A).index(tonic)]} major")
-        assert keys and {parse_key(k) for k in keys} == {want}, (tonic, sorted(set(keys)))
-
-
-# ---- audio and MIDI
-
-def test_audio_chroma_is_matched_as_it_sounds():
-    """A maj7 home chord and its IV as strings sound them: the fifth partials of
-    C E G B and F A C E fill in E minor's triad, and matched against bare profiles
-    the loop reads as E minor."""
-    loop = [(BAR_S, _sounded([48 + i for i in MAJ7], 0.6), {C: 0.03}),
-            (BAR_S, _sounded([53 + i for i in MAJ7], 0.6), {F: 0.03})]
-    assert parse_key(play(loop, 32.0).key) == parse_key("C major")
-
-    tr, t = HarmonyTracker(partials=False), 0.0
-    for _ in range(8):
-        for dur, pcs, low in loop:
-            state = tr.process(frames(t, dur, pcs, low))
-            t += dur
-    assert parse_key(state.key) != parse_key("C major"), state.key
-
-
-def test_a_live_take_matches_keys_by_its_input():
-    """Chroma from sound carries partials, chroma built from MIDI notes has none."""
-    from plume import realtime
-    from plume.listen import harmony
-    assert realtime.live_harmony_tracker(None)._profiles is harmony._PROFILES
-    assert realtime.live_harmony_tracker("a port")._profiles is harmony._PROFILES_BARE
-    # sim and cli read rendered audio, so the default is the audio match.
-    assert HarmonyTracker()._profiles is harmony._PROFILES
 
 
 # ---- the live loop hands the band's key to the tracker

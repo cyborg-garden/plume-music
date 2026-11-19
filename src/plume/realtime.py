@@ -2898,6 +2898,7 @@ def jam(*, style: str, seed: int, params, device: str | None = None,
     from .duet import DuetEngine  # noqa: PLC0415
     from .listen.beat import BeatTracker  # noqa: PLC0415
     from .listen.features import FeatureExtractor  # noqa: PLC0415
+    from .listen.harmony import HarmonyTracker  # noqa: PLC0415
     from .mind import Mind  # noqa: PLC0415
 
     rec_path = None if record_dir is None else Path(record_dir)
@@ -2913,7 +2914,7 @@ def jam(*, style: str, seed: int, params, device: str | None = None,
     if count_in:
         tkw["count_in"] = True
     tracker = BeatTracker(**tkw)
-    harmony = live_harmony_tracker(midi_port)
+    harmony = HarmonyTracker()
     mind = Mind(params)
     from .governor import HarmonyGovernor  # noqa: PLC0415 — lazy, like siblings
     governor = HarmonyGovernor(style, params)
@@ -4945,14 +4946,6 @@ def window_lag_bars(t_bar: float, w_start: float, bar_len: float) -> int:
     return int(round((t_bar - w_start) / bar_len))
 
 
-def live_harmony_tracker(midi_port):
-    """The key and chord tracker for a live take's input.  Chroma heard from sound carries
-    each note's partials and chroma built from MIDI notes has none, so the tracker
-    matches keys as each would sound or as written (HarmonyTracker ``partials``)."""
-    from .listen.harmony import HarmonyTracker  # noqa: PLC0415 — lazy, like siblings
-    return HarmonyTracker(partials=midi_port is None)
-
-
 def machine_harmony_state(t_s: float, key: str | None, chord: str | None, *,
                           transpose: int = 0):
     """The harmony the MACHINE is playing this bar (its composed key/chord,
@@ -5190,6 +5183,7 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
     from .duet import DuetEngine  # noqa: PLC0415
     from .listen.beat import BeatTracker  # noqa: PLC0415
     from .listen.features import FeatureExtractor  # noqa: PLC0415
+    from .listen.harmony import HarmonyTracker  # noqa: PLC0415
     from .mind import (BarFeatures, Cue, Mind,  # noqa: PLC0415
                        MindParams, flatten_sections, parse_cue)
     from .roles import (RoleNegotiator, RoleParams,  # noqa: PLC0415
@@ -5224,7 +5218,7 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
     if count_in and not tap_start:
         tkw["count_in"] = True
     tracker = BeatTracker(**tkw)
-    harmony = live_harmony_tracker(midi_port)
+    harmony = HarmonyTracker()
     entry = None
     tap_detector = None
     style_pick = None
@@ -5505,7 +5499,7 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
                 # The loop set the tempo.  As after a count: never listen for one
                 # again, and the key starts from what comes next.
                 tap_detector = None
-                harmony = live_harmony_tracker(midi_port)
+                harmony = HarmonyTracker()
                 harm_state = None
                 with state_lock:
                     shared["events"].clear()
@@ -5526,7 +5520,7 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
                     taps = count_start(taps, soft_knocks)
                     tap_detector = None     # once: playing cannot re-set tempo
                     # Knocks are not harmony; her key starts from her first note.
-                    harmony = live_harmony_tracker(midi_port)
+                    harmony = HarmonyTracker()
                     harm_state = None
                     with state_lock:
                         shared["events"].clear()

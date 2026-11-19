@@ -40,17 +40,16 @@ PHRASE_REST_BARS = 2
 #: key it settled earlier.
 ENTRY_KEY_BARS = 2
 #: The tracker's belief is sticky by design (one accidental apart, or the relative
-#: key, needs a large margin to replace it), so a belief formed in her first few
-#: seconds can outlive the evidence against it.  As the band comes in it is checked
-#: against what the evidence says now (HarmonyState.key_best): a key that has led
-#: the belief for ENTRY_KEY_BARS of her bars by at least this share of the margin
-#: the belief's own hysteresis would ask (HarmonyState.key_lead) is the one the band
-#: comes in on.  Nobody has heard the band's key yet, so it may move on less than a
-#: switch needs, but not on a lead the belief would shrug off.  Measured on generated
-#: takes: over the benchmark's 270 parts any share from 0.2 to 0.8 came in right on
-#: 145 to 148; on takes that opened two bars on the relative chord, 0.2 and 0.3 came
-#: in right on 10 of 12, 0.5 on 8 and 0.8 on 3.
-ENTRY_BEST_LEAD = 0.3
+#: key, needs a large margin to replace it), so it mostly keeps the key it formed in
+#: her first few seconds.  Nobody has heard the band's key yet, so the band comes in
+#: on the tracker's entry reading (HarmonyState.key_best: the key that best fits
+#: everything she has played) once that has led the belief for ENTRY_KEY_BARS of her
+#: bars by at least this much of its score (HarmonyState.key_lead).  A smaller lead is
+#: a near tie, and the belief, which formed on her opening, keeps it.  Measured over
+#: 360 generated solo parts and 80 recorded guitar excerpts (see harmony's entry
+#: reading), takes whose band came in on the exact key: 178 and 37 at 0, 184 and 36
+#: at 0.05, 172 and 33 at 0.10; the belief alone, 159 and 26.
+ENTRY_BEST_LEAD = 0.05
 
 DRUMS, BAND, FULL = "drums", "band", "full"
 
@@ -772,8 +771,9 @@ class BandEntry:
             # say, or the relative minor) makes that run the wrong key.  The
             # tracker has heard every bar since, so the band comes in on its word,
             # once that has held for ENTRY_KEY_BARS of her bars: one bar of it is a
-            # passing chord.  Its present best key when that has led the belief
-            # clearly (ENTRY_BEST_LEAD), else its belief, whose own hysteresis
+            # passing chord.  Its entry reading (the key that best fits everything
+            # she has played) when that has led the belief by ENTRY_BEST_LEAD, else
+            # its belief, whose own hysteresis
             # keeps a passing phrase from moving it.  Its latest word, so a rest on
             # the entry bar (likely, now the band waits for her phrase) still counts.
             # From here on only the release rule can change the key, and the live

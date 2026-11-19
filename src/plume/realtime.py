@@ -4880,8 +4880,8 @@ def machine_harmony_state(t_s: float, key: str | None, chord: str | None, *,
 #: A tap-started take opens on a sparse composed section, but drums you are
 #: playing along to have to state the beat.
 TAP_START_MIN_DENSITY = 0.55
-#: Real knocks on a guitar body read 1.0-1.9 with the laptop across the room
-#: (2026-11-02, projector take), under the detector's default floor of 1.5.
+#: Real knocks on a guitar body read 1.0-1.9 with the microphone across the room,
+#: under the detector's default floor of 1.5.
 TAP_START_KNOCK_FLOOR = 1.0
 #: How strong a quieter knock has to be for an already-confirmed count to claim
 #: it as an earlier beat.  Her real first knocks read 0.6-1.0.
@@ -4890,8 +4890,8 @@ TAP_START_SOFT_FLOOR = 0.5
 TAP_START_SOFT_KEPT = 4096
 #: Lead mode renders hot (about -9 dBFS rms), and this take goes straight into
 #: headphones with an unamplified guitar to hear over them.  It was -10, and the
-#: owner heard the band as a little buried under her (2026-11-06): in a
-#: direct-input page take machine.wav sat about 12 dB (LUFS) under human.wav.
+#: band was heard as a little buried under the player: in a direct-input take
+#: machine.wav sat about 12 dB (LUFS) under human.wav.
 #: Up 2 dB; she stays on top.  At -8 the hottest style's densest bars peak near
 #: 0 dBFS, so the band is soft-limited at :data:`TAP_START_CEILING_DB`.
 TAP_START_GAIN_DB = -8.0
@@ -5439,6 +5439,7 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
             with state_lock:
                 shared["beat"] = beat_state
                 shared["harmony"] = harm_state
+                adopt_key = shared.pop("adopt_key", None)
                 if clipped_now:
                     # A knock or a crackle, which must not lift the band as her
                     # playing louder would (see ClipWatch and FollowTwice).
@@ -5455,6 +5456,10 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
                         shared["onsets"].append(f.t_s)
                 # After the frames: a bar that sees this sees everything before it.
                 shared["heard_to"] = read_samples / SR
+            if adopt_key is not None:
+                # The band came in on another key than this belief: hold the
+                # belief to the band's key (HarmonyTracker.adopt).
+                harmony.adopt(adopt_key)
 
     def plan_one_bar(clock, state, bpm):
         """Plan, render and place exactly one machine bar.  Returns the next
@@ -5640,6 +5645,14 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
             if playing and not is_direct and not entry.band_is_in:
                 heard_bar -= guitar_ear.began_bars_ago
             entered = entry.update(bar, harm_state, playing, heard_bar=heard_bar)
+            if (named_key is None and entry.band_is_in and entry.bars_in == 0
+                    and entered.key is not None
+                    and (harm_state is None or harm_state.key != entered.key)):
+                # The band comes in on the key the evidence favours now, which may
+                # not be the tracker's early belief: the analysis thread hands it
+                # to the tracker (HarmonyTracker.adopt).
+                with state_lock:
+                    shared["adopt_key"] = entered.key
             if style_pick is not None and not style_pick.settled:
                 if playing:
                     style_pick.heard_bar(len(onsets), frames=technique_frames)

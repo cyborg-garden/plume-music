@@ -1,6 +1,6 @@
 """When the band joins a tap-started take: drums first, then you, then them.
 
-The order is Juniper's (2026-11-02).  She taps four, the drums start and hold
+The order: she taps four, the drums start and hold
 that tempo, and she plays over them for a while.  Only once plume has heard her
 settle in one key do the bass and chords come in, in that key, with the melody
 a few bars after them.
@@ -39,6 +39,17 @@ PHRASE_REST_BARS = 2
 #: Bars on the tracker's key before the band will come in on it rather than on the
 #: key it settled earlier.
 ENTRY_KEY_BARS = 2
+#: The tracker's belief is sticky by design (one accidental apart, or the relative
+#: key, needs a large margin to replace it), so a belief formed in her first few
+#: seconds can outlive the evidence against it.  As the band comes in it is checked
+#: against what the evidence says now (HarmonyState.key_best): a key that has led
+#: every other by at least this much correlation for ENTRY_KEY_BARS of her bars is
+#: the one the band comes in on.  Measured on an offline benchmark (generated solo
+#: parts and recorded guitar excerpts), the present best key at entry was right more
+#: often than the sticky belief on the recorded excerpts and as often on the
+#: generated parts; a lead of 0.03 to 0.06 measured best, and none at all let a tie
+#: decide.
+ENTRY_BEST_LEAD = 0.03
 
 DRUMS, BAND, FULL = "drums", "band", "full"
 
@@ -109,9 +120,9 @@ def _mode_of(key: str | None) -> str | None:
         return None
 
 
-#: The beat a detected take plays until it knows her style and key.  Juniper,
-#: 2026-11-06: "the lofi intro drum beat felt weird and clunky ... it should give a
-#: simple beat until it both key and genre deduces".  The count's pick was a guess from
+#: The beat a detected take plays until it knows her style and key.  A styled intro
+#: beat was heard as weird and clunky: until both key and genre are known the beat
+#: should be a simple one.  The count's pick was a guess from
 #: the tempo alone, so its swing, its pushed and dragged hits and its 808 were a style
 #: she had not chosen yet.  A plain kick, snare and hat was still "too opinionated --
 #: it should almost just be like a metronome or a wood block".  So: one recorded
@@ -156,8 +167,8 @@ _CLICK_ROLE_DB = -6.0
 def bridged_style(name: str) -> dict:
     """``name``'s own style, with the plain beat's click kept as one more role.
 
-    Juniper, 2026-11-07: when the click stopped dead on the entry bar and the style's
-    drums came in under it, the beat "came in awkwardly".  So the click carries on
+    When the click stopped dead on the entry bar and the style's drums came in
+    under it, the beat came in awkwardly.  So the click carries on
     through the entry, at the level the plain beat had it, and fades out as the
     drums swell in (click_bridge_level).  The plain beat's bus was
     :data:`PLAIN_INTRO_GAIN_DB` under the band's, so the click's own gain takes that
@@ -411,7 +422,7 @@ _NOTHING_HEARD = HarmonyState(t_s=0.0, key=None, key_conf=0.0, chord=None,
 
 #: How much of a bar's pitch energy its three strongest notes must hold for the bar
 #: to count as someone playing.  Drums barely favour any note: bars measured with
-#: nobody playing (a real take, 2026-11-02) held 0.29-0.37, with guitar 0.46-0.76.
+#: nobody playing held 0.29-0.37, and bars of guitar 0.46-0.76.
 TONAL_TOP3 = 0.42
 
 
@@ -621,9 +632,9 @@ class BandEntry:
         commit to the tracker's latest key instead.  None waits for as long as it takes.
 
         ``phrase_bars``: the band comes in only on the top of one of her groups of this
-        many bars, counted from the bar she last started playing in after a rest.  Juniper,
-        2026-11-06: "the chords came in not at what felt like the end of a group of
-        measures".  It used to come in on whatever bar the key settled, which was bar 8
+        many bars, counted from the bar she last started playing in after a rest.  Chords
+        that came in other than at the end of one of her groups of bars were heard
+        as coming in at the wrong place.  It used to come in on whatever bar the key settled, which was bar 8
         of plume's count and bar 6 of hers.  1 enters as soon as it is ready.
         """
         self._min_drum_bars = int(min_drum_bars)
@@ -648,6 +659,8 @@ class BandEntry:
         self._rest_before_run = PHRASE_REST_BARS
         self._ready_since: int | None = None
         self._latest_key_bars = 0
+        self._best_key: str | None = None
+        self._best_key_bars = 0
         self.bars_in = 0
 
     @property
@@ -730,27 +743,38 @@ class BandEntry:
             self._latest_key_bars = (self._latest_key_bars + 1
                                      if harmony.key == self._latest_key else 1)
             self._latest_key = harmony.key
+        if playing and harmony is not None:
+            best = getattr(harmony, "key_best", None)
+            clear = (best is not None
+                     and float(getattr(harmony, "key_lead", 0.0)) >= ENTRY_BEST_LEAD)
+            self._best_key_bars = (self._best_key_bars + 1 if clear and best == self._best_key
+                                   else int(clear))
+            self._best_key = best if clear else None
         if (self._key_fallback_bars is not None and self._gov.committed_key is None
                 and self._heard >= self._key_fallback_bars
                 and self._latest_key is not None):
             self._gov.commit(self._latest_key, bar)
             governed = self._gov.govern(bar, harmony if harmony is not None else _NOTHING_HEARD,
                                         resting=True)
+        entry_key = (self._best_key if self._best_key_bars >= ENTRY_KEY_BARS
+                     else self._latest_key if self._latest_key_bars >= ENTRY_KEY_BARS
+                     else None)
         if (ready and self._band_bar is None and self._known_key is None
-                and self._latest_key is not None
-                and self._latest_key_bars >= ENTRY_KEY_BARS
-                and self._gov.committed_key not in (None, self._latest_key)):
+                and entry_key is not None
+                and self._gov.committed_key not in (None, entry_key)):
             # Until the band is in, a commitment is one nobody has heard, so it is
             # only a first guess.  The guess is the first run of bars that agreed,
-            # and a player who opens on another chord than her home one (a real
-            # take opened on the ii, G# minor, of F# major) makes that run the wrong
-            # key.  The tracker's present belief has heard every bar since, and its
-            # own hysteresis keeps a passing phrase from moving it, so the band comes
-            # in on that, once it has held for ENTRY_KEY_BARS of her bars: one bar of
-            # it is a passing chord.  Its latest word, so a rest on the entry bar
-            # (likely, now the band waits for her phrase) still counts.  From here on
-            # only the release rule can change the key.
-            self._gov.commit(self._latest_key, bar)
+            # and a player who opens on another chord than her home one (the ii,
+            # say, or the relative minor) makes that run the wrong key.  The tracker has heard every bar since, so the band comes in on
+            # its word, once that has held for ENTRY_KEY_BARS of her bars: one bar
+            # of it is a passing chord.  Its present best key when that has led
+            # clearly (ENTRY_BEST_LEAD), else its belief, whose own hysteresis keeps
+            # a passing phrase from moving it.  Its latest word, so a rest on the
+            # entry bar (likely, now the band waits for her phrase) still counts.
+            # From here on only the release rule can change the key, and the live
+            # loop hands this key back to the tracker (HarmonyTracker.adopt) so its
+            # stale belief cannot release the band back to the old one.
+            self._gov.commit(entry_key, bar)
             governed = self._gov.govern(
                 bar, harmony if harmony is not None else _NOTHING_HEARD, resting=True)
         key = self._gov.committed_key
@@ -1016,9 +1040,9 @@ def song_section(bars_in: int) -> tuple[str, float, tuple[str, ...]]:
 
 # ------------------------------------------------------------ following the player
 #
-# Juniper, 2026-11-06: "the band should follow the player but just with the confidence
-# waiting thing so that if i just make like a little mistake it doesnt assume thats the
-# whole direction we're going."  Before this the band's level never moved and its
+# The band should follow the player, but with the same wait for confidence the key
+# has, so that one small slip is not taken for the direction the music is going.
+# Before this the band's level never moved and its
 # density was the arc's, by bar count, whatever she played.
 
 #: The band follows.  "lead", where plume steers the song itself, is on the roadmap;
@@ -1026,9 +1050,8 @@ def song_section(bars_in: int) -> tuple[str, float, tuple[str, ...]]:
 FOLLOW = "follow"
 FOLLOW_MODES = (FOLLOW,)
 
-#: How long a new way of playing has to hold before the band answers.  Juniper,
-#: 2026-11-06, on a take at 60 bpm: "it did not get quieter when i was playing quieter
-#: tho."  Three whole bars, read two bars late and answered a decibel a bar, was
+#: How long a new way of playing has to hold before the band answers.  At 60 bpm the
+#: band was heard not getting quieter when the player did.  Three whole bars, read two bars late and answered a decibel a bar, was
 #: sixteen seconds after she went soft: not following.
 #:
 #: Her level is read every half bar, and a clear change is answered sooner than a
@@ -1754,7 +1777,7 @@ MIN_REST_S = 6.0
 
 
 class SilenceEnding:
-    """Nobody playing: wait, then fade out and end (Juniper, 2026-11-02).
+    """Nobody playing: wait, then fade out and end.
 
     Times are bar starts in stream seconds.  A bar of playing during the fade
     brings the band straight back, so a rest costs at most a short dip.  Bars are read

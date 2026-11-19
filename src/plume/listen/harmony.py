@@ -2,14 +2,17 @@
 
 Key belief
     A 12-bin pitch-class histogram of incoming chroma with exponential decay
-    (half-life ``key_halflife_s``) is Pearson-correlated against all 24
-    Krumhansl-Kessler key profiles (12 major + 12 minor).  The reported key is
+    (half-life ``key_halflife_s``) is Pearson-correlated against all 24 key
+    profiles (12 major + 12 minor; corpus profiles blended with the
+    Krumhansl-Kessler ones, see _KEY_MAJOR).  The reported key is
     an *incumbent* with switch hysteresis: a challenger key must beat the
     incumbent's correlation by ``_KEY_SWITCH_MARGIN`` sustained for
     ``_KEY_SWITCH_SUSTAIN_S`` seconds before the belief flips.  ``key`` is
     ``None`` until enough voiced mass has accumulated and the best correlation
-    clears ``_KEY_CONF_FLOOR``; ``key_conf`` is the incumbent's correlation
-    clipped to [0, 1].
+    clears ``_KEY_CONF_FLOOR``; ``key_conf`` is the incumbent's Krumhansl-Kessler
+    correlation clipped to [0, 1] and discounted while evidence is thin.
+    ``key_best`` / ``key_lead`` report the best fit right now, before any
+    hysteresis, and how far it leads the runner-up.
 
 Chord belief
     Per-frame cosine scores of the chroma against 24 binary maj/min triad
@@ -52,7 +55,7 @@ from typing import TYPE_CHECKING, Sequence
 
 import numpy as np
 
-from ..theory import Key, spell
+from ..theory import Key, parse_key, spell
 
 if TYPE_CHECKING:  # runtime-independent: frames are duck-typed
     from .features import Frame
@@ -66,6 +69,40 @@ _KK_MAJOR = np.array(
 _KK_MINOR = np.array(
     [6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17]
 )
+# _KEY_MAJOR / _KEY_MINOR / _KEY_TONAL_SHARE — v1.6 AMENDMENT.  Corpus
+# profiles (Albrecht and Shanahan, 2013: how long each pitch class sounds,
+# counted over pieces in known keys), tonic first.  The probe-tone profiles
+# come from listeners rating a tone after a cadence and give every chromatic
+# note nearly half a scale note's weight (2.2-2.9 against 3.5-4.4).  A solo
+# line or a strummed part is almost all scale notes, so that floor blurs
+# exactly what a solo key turns on: a maj7 home chord (C E G B) fits E minor
+# nearly as well as C major, and a key one accidental away nearly as well as
+# the right one.  The corpus profiles are near zero off the scale.
+#
+# The key is chosen against a BLEND: each corpus profile plus _KEY_TONAL_SHARE
+# of the probe-tone one (both z-scored).  Measured on an offline benchmark (270
+# generated solo parts: bass, guitar, keys and mono lead, nine genres, both
+# modes; plus 40 recorded guitar excerpts), the tracker's key where the band
+# enters, with nothing else changed, went from 46% to 54% exactly right on the
+# generated parts and 35% to 38% on the recorded ones, and the iii-for-I
+# reading fell from 27 parts to 11.  Corpus profiles alone scored the same
+# overall but leaned to major: minor keyboard parts fell from 17 of 27 to 12.
+# The blend kept every instrument and mode at or near where it was.  It also
+# separates the modes when one pitch dominates (a ringing low tonic string
+# under a melody): with the probe-tone profiles alone the parallel major and
+# minor tied, and the string's own major-third overtone tipped it to major.
+#
+# Confidence (key_conf) and the floors that gate it keep the probe-tone fit
+# alone (_TONAL_PROFILES): they were set on that scale, and the blend's fits
+# run higher.  The margins below that compare two keys are on the blend's
+# scale.
+_KEY_MAJOR = np.array(
+    [0.238, 0.006, 0.111, 0.006, 0.137, 0.094, 0.016, 0.214, 0.009, 0.080, 0.008, 0.081]
+)
+_KEY_MINOR = np.array(
+    [0.220, 0.006, 0.104, 0.123, 0.019, 0.103, 0.012, 0.214, 0.062, 0.022, 0.061, 0.052]
+)
+_KEY_TONAL_SHARE = 0.5
 
 _KEY_SWITCH_MARGIN = 0.05     # challenger must beat incumbent corr by this...
 _KEY_SWITCH_SUSTAIN_S = 3.0   # ...sustained this long, to flip the belief
@@ -79,11 +116,11 @@ _KEY_SWITCH_SUSTAIN_S = 3.0   # ...sustained this long, to flip the belief
 # +0.38 correlation on all three minor-key renders — far above
 # _KEY_SWITCH_MARGIN, so the ordinary hysteresis never engaged.  (Measured:
 # swapping in Temperley Kostka-Payne or Albrecht-Shanahan profiles answers
-# Eb major too, and additionally breaks C-major lofi into F major — it is not
-# a profile-set bug.)  Since correlation cannot decide, the belief established
-# from earlier evidence is KEPT: a relative challenger must clear a margin
-# that a same-collection reading cannot reach.  Non-relative modulations are
-# unaffected and still switch on the ordinary margin.
+# Eb major too — it is not a profile-set bug.)  Since correlation cannot
+# decide, the belief established from earlier evidence is KEPT: a relative
+# challenger must clear a margin that a same-collection reading cannot reach.
+# Non-relative modulations are unaffected and still switch on the ordinary
+# margin.
 _KEY_RELATIVE_STICKY = 0.60
 # _KEY_NEIGHBOR_STICKY — v1.4 AMENDMENT (SPEC-V1 section 3).  The relative
 # stickiness above is the extreme case of a general fact: two keys whose
@@ -99,14 +136,17 @@ _KEY_RELATIVE_STICKY = 0.60
 #
 # The value is bounded from above by a measurement, not chosen for taste: on
 # material that is unambiguously and entirely in one key, the correlation gap
-# to its one-accidental neighbour TOPS OUT around 0.19 (measured 0.187 for
-# E major over G# minor on a saturated E-A-B loop).  A margin at or above that
-# would make the rule absolute — a genuine modulation to a neighbouring key
-# could never be followed at all — so 0.15 is deliberately set just under the
-# ceiling: strongly sticky, still passable by a real key change.  Measured at
-# 0.15 the A-minor fixtures stop drifting to F major and flagship stops
-# visiting Bb major, while a full modulation still lands.
-_KEY_NEIGHBOR_STICKY = 0.15
+# to its one-accidental neighbour TOPS OUT at a ceiling (with the probe-tone
+# profiles 0.187, for E major over G# minor on a saturated E-A-B loop).  A
+# margin at or above that would make the rule absolute — a genuine modulation
+# to a neighbouring key could never be followed at all — so the margin is set
+# just under the ceiling: strongly sticky, still passable by a real key
+# change.  It was 0.15; with the v1.6 blended profiles the same loop's gap is
+# 0.241 (to B major), so it is 0.22.  At 0.15 the A-minor fixtures stopped
+# drifting to F major and flagship stopped visiting Bb major, while a full
+# modulation still landed; at 0.22 on the blend a subdominant-heavy passage
+# still holds the key for 35 s and a full modulation still lands by 65 s.
+_KEY_NEIGHBOR_STICKY = 0.22
 _KEY_CONF_FLOOR = 0.3         # below this correlation, key reports None
 _KEY_MASS_FLOOR = 5.0         # min accumulated voiced chroma mass (guards std)
 # _KEY_MIN_EVIDENCE_S — v1.2 AMENDMENT (SPEC-V1 section 3).  The only gate on
@@ -202,10 +242,11 @@ _VOICED_CHROMA_EPS = 1e-6
 _VOICED_RMS_DB = -80.0
 
 
-def _key_profiles() -> np.ndarray:
-    """(24, 12) row-z-scored KK profiles; row k<12 = major tonic k, else minor."""
-    rows = [np.roll(_KK_MAJOR, t) for t in range(12)]
-    rows += [np.roll(_KK_MINOR, t) for t in range(12)]
+def _key_profiles(major: np.ndarray = _KEY_MAJOR,
+                  minor: np.ndarray = _KEY_MINOR) -> np.ndarray:
+    """(24, 12) row-z-scored key profiles; row k<12 = major tonic k, else minor."""
+    rows = [np.roll(major, t) for t in range(12)]
+    rows += [np.roll(minor, t) for t in range(12)]
     m = np.array(rows)
     m -= m.mean(axis=1, keepdims=True)
     m /= m.std(axis=1, keepdims=True)
@@ -223,7 +264,12 @@ def _triad_templates() -> np.ndarray:
     return t / np.linalg.norm(t, axis=1, keepdims=True)
 
 
-_PROFILES = _key_profiles()
+# How tonal the evidence is (key_conf): the probe-tone profiles alone.
+_TONAL_PROFILES = _key_profiles(_KK_MAJOR, _KK_MINOR)
+# Which key it is: the blend (see _KEY_TONAL_SHARE).
+_PROFILES = _key_profiles(
+    _key_profiles()[0] + _KEY_TONAL_SHARE * _TONAL_PROFILES[0],
+    _key_profiles()[12] + _KEY_TONAL_SHARE * _TONAL_PROFILES[12])
 _TEMPLATES = _triad_templates()
 _N_STATES = 25  # 24 triads + N
 _N_IDX = 24
@@ -238,6 +284,11 @@ class HarmonyState:
     chord_conf: float
     register_low_midi: float | None
     register_high_midi: float | None
+    #: What the evidence says right now, before hysteresis: the best-fitting key
+    #: and how far its fit leads the runner-up's.  The belief above is ``key``;
+    #: these let a caller about to commit check that belief against the present.
+    key_best: str | None = None
+    key_lead: float = 0.0
 
 
 _MAJOR_SCALE = (0, 2, 4, 5, 7, 9, 11)
@@ -310,6 +361,8 @@ class HarmonyTracker:
         self._chal_idx: int | None = None
         self._chal_time = 0.0
         self._key_conf = 0.0
+        self._best_idx: int | None = None
+        self._best_lead = 0.0
         # chord HMM
         self._alpha = np.full(_N_STATES, 1.0 / _N_STATES)
         self._lik_buf: deque[np.ndarray] = deque(maxlen=_HMM_LAG + 1)
@@ -332,6 +385,21 @@ class HarmonyTracker:
         for f in frames:
             self._step(f)
         return self._state
+
+    def adopt(self, key: str) -> None:
+        """Take ``key`` as the belief from here on, as the band has committed to it.
+
+        The band may come in on the key the present evidence favours rather than
+        on this tracker's belief, which can still be holding an early reading
+        (see bandentry ENTRY_BEST_LEAD).  Left alone, that stale belief would
+        go on disagreeing with the band's key and, after the governor's release
+        bars, pull the band back to it.  Adopting the band's key leaves the
+        evidence untouched; only the incumbent changes, so it still has to
+        hold against challengers by the ordinary margins.
+        """
+        k = parse_key(key)
+        self._key_idx = k.tonic + (0 if k.mode == "major" else 12)
+        self._chal_idx, self._chal_time = None, 0.0
 
     # ------------------------------------------------------------- internals
 
@@ -364,6 +432,8 @@ class HarmonyTracker:
             chord_conf=self._chord_conf(),
             register_low_midi=reg_lo,
             register_high_midi=reg_hi,
+            key_best=None if self._best_idx is None else _key_name(self._best_idx),
+            key_lead=self._best_lead,
         )
 
     # ---- key
@@ -389,6 +459,8 @@ class HarmonyTracker:
             return
         hz = (self._hist - self._hist.mean()) / std
         corr = _PROFILES @ hz / 12.0          # Pearson r vs each of 24 keys
+        # How tonal: the probe-tone fit, the scale every floor here was set on.
+        tonal = _TONAL_PROFILES @ hz / 12.0
 
         # Confidence is the incumbent's correlation DISCOUNTED by how much
         # evidence stands behind it, so a fresh reading cannot announce itself
@@ -396,15 +468,17 @@ class HarmonyTracker:
         settled = min(1.0, self._evidence_s / _KEY_COMMIT_EVIDENCE_S)
 
         def conf_of(idx: int) -> float:
-            return float(np.clip(corr[idx], 0.0, 1.0) * settled)
+            return float(np.clip(tonal[idx], 0.0, 1.0) * settled)
 
         best = int(np.argmax(corr))
+        self._best_idx = best
+        self._best_lead = float(corr[best] - np.partition(corr, -2)[-2])
         if self._key_idx is None:
             # ACQUISITION.  Needs sustained tonal content, not merely enough
             # accumulated frames: see _KEY_DUTY_FLOOR.
             duty = (self._evidence_s / self._elapsed_s
                     if self._elapsed_s > 0.0 else 0.0)
-            if corr[best] >= _KEY_CONF_FLOOR and duty >= _KEY_DUTY_FLOOR:
+            if tonal[best] >= _KEY_CONF_FLOOR and duty >= _KEY_DUTY_FLOOR:
                 self._key_idx = best
                 self._chal_idx, self._chal_time = None, 0.0
                 self._key_conf = conf_of(best)

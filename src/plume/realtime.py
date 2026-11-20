@@ -5354,8 +5354,10 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
               "taps": None, "chroma": [], "technique": [], "clipped": [],
               # How far into the input the ear has read, s: every frame before it is in.
               "heard_to": 0.0}
-    # Her own frames, for the folk guess, while it is still listening.
-    want_technique = style_pick is not None and style_pick.folk_ear is not None
+    # Her own frames, for the folk guess and how busy she is, while it is still
+    # listening.  Only from audio that is hers: with --midi her notes are what count.
+    want_technique = (style_pick is not None and style_pick.wants_frames
+                      and midi_port is None)
     masker = SelfMasker(enabled=not route.isolated, learn_while_off=route.band_in_headphones)
     midi_in = None
     if midi_port is not None:
@@ -5735,7 +5737,8 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
             entered = entry.update(bar, harm_state, playing, heard_bar=heard_bar)
             if style_pick is not None and not style_pick.settled:
                 if playing:
-                    style_pick.heard_bar(len(onsets), frames=technique_frames)
+                    style_pick.heard_bar(len(onsets), frames=(technique_frames
+                                                             if want_technique else None))
                 if entry.band_is_in:
                     picked = style_pick.at_entry(bpm, entered.key)
                     # Style and key are both known now, so the plain beat gives way to

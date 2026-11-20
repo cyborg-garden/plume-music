@@ -40,6 +40,11 @@ keeps its own 60 minute cap and still answers ``plume stop``, closing the bridge
 the take it started, and a take that needs a person to end it stops itself when no page
 has asked after it for :data:`HEARTBEAT_S`.
 
+The band can also go out as MIDI, to a DAW, through a port plume makes of its own.  That
+is a saved choice like the style, one of three words, and the page never sends a port name:
+Start reads the word and turns it into flags itself.  Whether the midi extra is there is
+asked of the import system without importing it, so the bridge still loads no MIDI driver.
+
 Everything here has only run against fakes.  Raw errors and stderr stay in a 0600 log
 and are never sent to the page.
 """
@@ -47,6 +52,7 @@ from __future__ import annotations
 
 import dataclasses
 import hashlib
+import importlib.util
 import json
 import math
 import os
@@ -65,6 +71,7 @@ from . import inputfx as _inputfx
 from . import oscompat
 from .compose import parse_prompt
 from .inputguard import LINES as INPUT_FAULT_LINES
+from .midiout import VIRTUAL as MIDI_VIRTUAL
 from .realtime import (AUDIO_CONSENT_ENV, AUDIO_CONSENT_OFF, OPEN_TOGETHER_FAILED, REC_CUES,
                        REC_DECISIONS, REC_ENDING, REC_HUMAN, REC_MACHINE, REC_MANIFEST, REC_MIDI, REC_STREAM, REC_VOICE,
                        LiveSession, RealtimeError, list_sessions, send_cue, stop_session)
@@ -118,6 +125,9 @@ LATE_GUESS = ("Try wired headphones. This output looks wireless (a guess), "
               "and wireless ones can arrive late.")
 LATE_REPORTED = ("Try wired headphones. This output reports about {ms} ms, "
                  "and wireless ones can arrive late.")
+MIDI_PART_MISSING = "Playing through a DAW needs plume's MIDI part: pip install with the midi extra."
+MIDI_NO_PORT = "Plume cannot make its own MIDI port on this computer. Use a terminal instead."
+MIDI_FAILED = "Plume could not open its MIDI port. Try again, or turn off Play through a DAW in Settings."
 COUNT_LINE = "Knock or clap 8 even beats."
 COUNT_PICKUP = "A knock may not reach a pickup, so chuck muted strings."
 
@@ -209,6 +219,7 @@ _WIRELESS = re.compile(r"bluetooth|wireless|airpods|buds|hands-?free", re.IGNORE
 
 #: What the child said, mapped to the page's words.  First match wins.
 _FAILURES = (
+    (("virtual midi port", "could not open midi output", "live midi needs mido"), MIDI_FAILED),
     (("sounddevice is not available",), AUDIO_PART_MISSING),
     (("refusing to play live audio", "refusing to open a live input"), SOUND_OFF),
     (("another plume session",), TERMINAL_TAKE),
@@ -286,6 +297,22 @@ def default_lister() -> list[dict]:
     if not isinstance(devices, list):
         raise TakeError(NO_LISTING)
     return devices
+
+
+def default_midi_check() -> str | None:
+    """None when a take could make its own MIDI port here, else the page's words for why not.
+
+    Found, not imported: loading a MIDI driver is the take's business, not the bridge's.
+    """
+    try:
+        found = all(importlib.util.find_spec(name) is not None for name in ("mido", "rtmidi"))
+    except (ImportError, ValueError):
+        found = False
+    if not found:
+        return MIDI_PART_MISSING
+    if sys.platform == "win32":          # no virtual ports there (see plume.midiout)
+        return MIDI_NO_PORT
+    return None
 
 
 def default_meter(name: str, seconds: float, cancelled: threading.Event) -> dict | None:
@@ -564,6 +591,9 @@ _STEPS = {
 _TRY_OR_START = [{"answer": "again", "label": "Play again"}, {"answer": "start", "label": "Start anyway"}]
 #: With nothing to play into, neither of those means anything.
 _TRY_ONLY = [{"answer": "again", "label": "Try again"}]
+#: The band as MIDI: not at all, alongside plume's own band, or instead of it.
+MIDI_OFF, MIDI_OUT, MIDI_ONLY = "off", "out", "only"
+MIDI_CHOICES = (MIDI_OFF, MIDI_OUT, MIDI_ONLY)
 _DEVICE_KEY = re.compile(r"[0-9a-f]{16}|default")
 _OUTPUT_ID = re.compile(r"[0-9a-f]{16}")
 _ROOM_ANSWERS = ("headphones", "hears_self", "still", "hear_me", "late_said", "band", "band_channel", "band_output")
@@ -618,7 +648,7 @@ class SetupStore:
         self._doc: dict | None = None
 
     def _read(self) -> dict:
-        empty = {"last": None, "devices": {}, "style": None}
+        empty = {"last": None, "devices": {}, "style": None, "midi": MIDI_OFF}
         if self._path_of is None:
             return empty
         try:
@@ -642,8 +672,10 @@ class SetupStore:
                 if isinstance(k, str) and _DEVICE_KEY.fullmatch(k)}
         last = doc.get("last")
         style = doc.get("style")
+        midi = doc.get("midi")
         return {"last": last if last in kept else None, "devices": kept,
-                "style": style if isinstance(style, str) and style in list_styles() else None}
+                "style": style if isinstance(style, str) and style in list_styles() else None,
+                "midi": midi if isinstance(midi, str) and midi in MIDI_CHOICES else MIDI_OFF}
 
     def _loaded(self) -> dict:
         if self._doc is None:
@@ -702,10 +734,23 @@ class SetupStore:
                 doc["style"] = style
                 self._write()
 
-    def forget(self) -> None:
-        """Set up again is about her gear: the style she chose stays."""
+    def midi(self) -> str:
+        """Where the band goes as MIDI: one of :data:`MIDI_CHOICES`."""
         with self._lock:
-            self._doc = {"last": None, "devices": {}, "style": self._loaded()["style"]}
+            return self._loaded()["midi"]
+
+    def put_midi(self, midi: str) -> None:
+        with self._lock:
+            doc = self._loaded()
+            if doc["midi"] != midi:
+                doc["midi"] = midi
+                self._write()
+
+    def forget(self) -> None:
+        """Set up again is about her gear: the style she chose stays, and so does the DAW."""
+        with self._lock:
+            doc = self._loaded()
+            self._doc = {"last": None, "devices": {}, "style": doc["style"], "midi": doc["midi"]}
             self._write()
 
 
@@ -844,12 +889,15 @@ def _text_field(body: dict, name: str) -> str:
 
 
 def build_argv(route: Route, folder: Path, *, key: str | None, style: str | None,
-               seed: int, sound: str | None = None) -> list[str]:
+               seed: int, sound: str | None = None, midi: str = MIDI_OFF) -> list[str]:
     """Every value is one token, glued to its flag, so none can read as a flag of its own.
 
     No ``--max-minutes``: the take keeps the session cap.  After ``--`` a prompt is only
-    ever a prompt.
+    ever a prompt.  ``midi`` is one of :data:`MIDI_CHOICES`; the port is always plume's
+    own, never a name from anywhere else.
     """
+    if not isinstance(midi, str) or midi not in MIDI_CHOICES:
+        raise ValueError("midi must be one of " + ", ".join(MIDI_CHOICES))
     argv = [*PLUME_CHILD, "lead", "--tap-start", "--detect",
             f"--record={folder}/", f"--seed={int(seed)}"]
     if route.mode == "direct":
@@ -868,6 +916,10 @@ def build_argv(route: Route, folder: Path, *, key: str | None, style: str | None
         # Off is said outright: left out, the take would fall back to $PLUME_SOUND, and
         # she would hear a sound the page shows as Off.
         argv.append(f"--sound={sound or 'off'}")
+    if midi != MIDI_OFF:
+        argv.append(f"--midi-out={MIDI_VIRTUAL}")
+        if midi == MIDI_ONLY:
+            argv.append("--midi-only")
     words = [w for w in (style, f"in {key}" if key else None) if w]
     if words:
         argv += ["--", " ".join(words)]
@@ -1030,7 +1082,8 @@ class TakeRunner:
 
     def __init__(self, root, *, log_path, id_of, spawner=None, lister=None, sessions=None,
                  stopper=None, cue=None, listener=None, clock=time.monotonic, now=datetime.now,
-                 tick_s: float = 0.5, watch: bool = True, meter=None, setup_path=None):
+                 tick_s: float = 0.5, watch: bool = True, meter=None, setup_path=None,
+                 midi_check=None):
         self.root = Path(root)
         self._log_path = log_path
         self._id_of = id_of
@@ -1038,6 +1091,8 @@ class TakeRunner:
         self._list = default_lister if lister is None else lister
         self._meter = default_meter if meter is None else meter
         self._setup = SetupStore(setup_path)
+        #: None when a take can send the band out as MIDI, else the page's words for why not.
+        self._midi_check = default_midi_check if midi_check is None else midi_check
         self._listening: _Listening | None = None
         self._sessions = (lambda: list_sessions(prune=False)) if sessions is None else sessions
         self._stopper = stop_session if stopper is None else stopper
@@ -1095,6 +1150,8 @@ class TakeRunner:
             # The one she chose last, or None: plume guesses.
             "style": self._setup.style(),
             "sounds": [{"id": name, "label": label} for name, label in SOUND_CHOICES],
+            # The saved choice even while it cannot be had, so it comes back with the midi part.
+            "midi": {"choice": self._setup.midi(), "problem": self._midi_check()},
             "problem": problem,
             "setup": self._setup_doc(chosen, rows, mark, output),
         }
@@ -1460,6 +1517,19 @@ class TakeRunner:
         self._setup.put_style(style)
         return {"style": style}
 
+    def choose_midi(self, body: dict) -> dict:
+        """Remember where the band goes for the next Start: one of three words.  Nothing opens."""
+        if not isinstance(body, dict) or set(body) != {"midi"} or not isinstance(body["midi"], str) \
+                or body["midi"] not in MIDI_CHOICES:
+            raise Refused(400, "That is not something the MIDI choice understands.")
+        midi = body["midi"]
+        if midi != MIDI_OFF:
+            problem = self._midi_check()
+            if problem is not None:
+                raise Refused(409, problem)
+        self._setup.put_midi(midi)
+        return {"midi": midi}
+
     def reset_setup(self) -> dict:
         """Set up again.  The next press of Start begins from the first step."""
         self._release(self._call_off_listening())
@@ -1656,8 +1726,11 @@ class TakeRunner:
             folder = make_take_folder(self.root, self._now())
         except OSError:
             return self._failed(f"Could not make a folder in {pretty_path(self.root)}.")
+        # A saved choice that cannot be had right now is left out, not refused: the take
+        # still plays through plume, and the page already says why.
+        midi = self._setup.midi() if self._midi_check() is None else MIDI_OFF
         argv = build_argv(route, folder, key=key, style=style, seed=secrets.randbelow(100000),
-                          sound=sound)
+                          sound=sound, midi=midi)
         with self._lock:
             if self._cancelled:          # Stop was clicked while the devices were being listed
                 self._preparing = False

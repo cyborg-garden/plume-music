@@ -908,6 +908,7 @@ function drawSettings() {
   $('set-folder').textContent = doc.folder;
   drawOutput();
   drawHear();
+  drawMidi();
   drawSummary();
 }
 /* Whether she has said the band is only in her headphones, for the input and output chosen now. */
@@ -1019,7 +1020,42 @@ function drawSettingsNote() {
 }
 function drawSummary() {
   /* The style is not repeated here: its own control says it, just above. */
-  if (S.home) $('home-gear').textContent = routeLine(chosenDevice(), channelNow(), $('set-key').value.trim(), '', outputName(), bandInPhones());
+  if (!S.home) return;
+  const line = routeLine(chosenDevice(), channelNow(), $('set-key').value.trim(), '', outputName(), bandInPhones());
+  /* Said at home too, so a band muted for a DAW is never a surprise. */
+  $('home-gear').textContent = midiOn() ? line + ', band through a DAW' : line;
+}
+/* The band through a DAW, as MIDI. A saved choice of three words, kept by the bridge like the
+   style and never sent with Start, so nothing here can become a port name. Off unless she says. */
+const MIDI_LINE = 'Plume makes a MIDI port called plume. Choose it as a MIDI input in your DAW: each part of the band has its own channel.';
+function midiDoc() { return (S.home && S.home.midi) || { choice: 'off', problem: null }; }
+function midiOn() { const doc = midiDoc(); return !doc.problem && doc.choice !== 'off'; }
+function drawMidi() {
+  const doc = midiDoc(), on = midiOn();
+  $('midi-more').hidden = !S.home;
+  $('midi-row').hidden = !!doc.problem;
+  $('midi-out').checked = on;
+  $('midi-only-row').hidden = !on;
+  $('midi-only').checked = on && doc.choice === 'only';
+  $('midi-words').textContent = doc.problem || MIDI_LINE;
+}
+function midiChoice() { return !$('midi-out').checked ? 'off' : ($('midi-only').checked ? 'only' : 'out'); }
+async function sendMidi(choice) {
+  const boxes = [$('midi-out'), $('midi-only')], note = $('midi-note');
+  boxes.forEach(function (box) { box.disabled = true; });
+  note.hidden = true;
+  S.homeTurn += 1;
+  let answer = null;
+  try { answer = await send('midi', { midi: choice }); } catch (err) { /* said below */ }
+  boxes.forEach(function (box) { box.disabled = false; });
+  if (answer && answer.status === 401) { problem(answer); return; }
+  if (answer && answer.ok) { if (S.home) S.home.midi = { ...midiDoc(), choice: answer.doc.midi }; }
+  else {
+    note.hidden = false;
+    note.textContent = (answer && answer.doc && answer.doc.error) || 'That did not reach plume gui.';
+  }
+  drawMidi();
+  drawSummary();
 }
 /* The style beside Start: what she chose last, as the bridge remembers it, or Let plume guess. */
 function drawStyle() {
@@ -1640,6 +1676,8 @@ $('nav-takes').addEventListener('click', goShelf);
   $('cue-sparser').addEventListener('click', function () { sendCue('sparser'); });
   $('hear-me').addEventListener('change', function () { sendHear($('hear-me').checked); });
   $('send-me').addEventListener('change', function () { sendSend($('send-me').checked); });
+  $('midi-out').addEventListener('change', function () { sendMidi(midiChoice()); });
+  $('midi-only').addEventListener('change', function () { sendMidi(midiChoice()); });
   $('set-output').addEventListener('change', function () { S.settingsNote = ''; drawSettingsNote(); sendOutput($('set-output').value); });
   $('set-device').addEventListener('change', function () {
     S.form.device = $('set-device').value || null;

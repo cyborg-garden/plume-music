@@ -1329,3 +1329,180 @@ def test_the_style_route_has_the_same_checks(page):
     page.cookie = jar
     assert page.get("/api/style")[0].status == 404
     assert json.loads(page.get("/api/home")[1])["style"] is None
+
+
+# ------------------------------------------------------------- the band through a DAW
+#
+# Nothing here opens a MIDI port: the check for the midi extra is a fake, and argv is only
+# ever read by the real parser.
+
+def _midi_runner(rig, meter, setup_file, problem=None):
+    return rig.runner(meter=meter, setup_path=lambda: setup_file, midi_check=lambda: problem)
+
+
+def _route():
+    return guitake.Route("Audio Interface 4x4", "direct", 1, False)
+
+
+def test_build_argv_sends_no_midi_unless_asked(tmp_path):
+    argv = guitake.build_argv(_route(), tmp_path / "t", key=None, style=None, seed=1)
+    assert not [a for a in argv if a.startswith("--midi")]
+    args = _parsed(argv)
+    assert args.midi_out is None and args.midi_only is False
+
+
+@pytest.mark.parametrize("midi,flags,only", [
+    ("off", [], False),
+    ("out", ["--midi-out=virtual"], False),
+    ("only", ["--midi-out=virtual", "--midi-only"], True),
+])
+def test_build_argv_for_each_midi_choice(tmp_path, midi, flags, only):
+    argv = guitake.build_argv(_route(), tmp_path / "t", key="F major", style="folk", seed=1, midi=midi)
+    assert [a for a in argv if a.startswith("--midi")] == flags
+    # Before the prompt, so it can never be read as part of one.
+    assert argv[-2:] == ["--", "folk in F major"]
+    args = _parsed(argv)
+    assert args.midi_out == (None if midi == "off" else "virtual") and args.midi_only is only
+    assert args.prompt == "folk in F major"
+
+
+@pytest.mark.parametrize("midi", ["", "virtual", "--midi-out=x", "ONLY", None, True, 1])
+def test_build_argv_takes_only_a_known_midi_choice(tmp_path, midi):
+    with pytest.raises(ValueError):
+        guitake.build_argv(_route(), tmp_path / "t", key=None, style=None, seed=1, midi=midi)
+
+
+def test_the_midi_choice_starts_off(rig, meter, setup_file):
+    runner = _midi_runner(rig, meter, setup_file)
+    assert runner.home()["midi"] == {"choice": "off", "problem": None}
+    runner.start({})
+    assert not [a for a in rig.spawned[-1] if a.startswith("--midi")]
+
+
+@pytest.mark.parametrize("choice,flags", [("out", ["--midi-out=virtual"]),
+                                          ("only", ["--midi-out=virtual", "--midi-only"])])
+def test_a_midi_choice_is_remembered_and_used_by_start(rig, meter, setup_file, choice, flags):
+    runner = _midi_runner(rig, meter, setup_file)
+    assert runner.choose_midi({"midi": choice}) == {"midi": choice}
+    again = _midi_runner(rig, meter, setup_file)
+    assert again.home()["midi"] == {"choice": choice, "problem": None}
+    again.start({})
+    assert [a for a in rig.spawned[-1] if a.startswith("--midi")] == flags
+
+
+def test_turning_midi_off_is_remembered_too(rig, meter, setup_file):
+    runner = _midi_runner(rig, meter, setup_file)
+    runner.choose_midi({"midi": "only"})
+    assert runner.choose_midi({"midi": "off"}) == {"midi": "off"}
+    assert _midi_runner(rig, meter, setup_file).home()["midi"]["choice"] == "off"
+
+
+def test_set_up_again_keeps_the_midi_choice(rig, meter, setup_file):
+    runner = _midi_runner(rig, meter, setup_file)
+    runner.choose_midi({"midi": "out"})
+    runner.reset_setup()
+    assert runner.home()["midi"]["choice"] == "out"
+
+
+@pytest.mark.parametrize("body", [{}, {"midi": "virtual"}, {"midi": "--midi-out=x"}, {"midi": True},
+                                  {"midi": None}, {"midi": ["out"]}, {"midi": "out", "port": "x"},
+                                  {"style": "folk"}, {"midi": "o" * 500}])
+def test_a_midi_choice_must_be_one_of_three_words(rig, meter, setup_file, body):
+    runner = _midi_runner(rig, meter, setup_file)
+    with pytest.raises(guitake.Refused) as e:
+        runner.choose_midi(body)
+    assert e.value.status == 400
+    assert runner.home()["midi"]["choice"] == "off"
+
+
+def test_start_takes_no_midi_word_of_its_own(rig, meter, setup_file):
+    """The choice is saved, never sent with Start, so nothing at Start can become a flag."""
+    runner = _midi_runner(rig, meter, setup_file)
+    with pytest.raises(guitake.Refused):
+        runner.start({"midi": "out"})
+    assert rig.spawned == []
+
+
+@pytest.mark.parametrize("stored", ['"virtual"', '"--midi-only"', "true", '["out"]', "7"])
+def test_a_hand_edited_midi_choice_is_off(rig, meter, setup_file, stored):
+    setup_file.parent.mkdir(parents=True)
+    setup_file.write_text('{"version": 1, "last": null, "devices": {}, "style": null, "midi": %s}' % stored)
+    runner = _midi_runner(rig, meter, setup_file)
+    assert runner.home()["midi"]["choice"] == "off"
+    runner.start({})
+    assert not [a for a in rig.spawned[-1] if a.startswith("--midi")]
+
+
+def test_without_the_midi_part_the_choice_is_explained_and_refused(rig, meter, setup_file):
+    runner = _midi_runner(rig, meter, setup_file, guitake.MIDI_PART_MISSING)
+    assert runner.home()["midi"] == {"choice": "off", "problem": guitake.MIDI_PART_MISSING}
+    for choice in ("out", "only"):
+        with pytest.raises(guitake.Refused) as e:
+            runner.choose_midi({"midi": choice})
+        assert e.value.status == 409 and e.value.message == guitake.MIDI_PART_MISSING
+    assert runner.choose_midi({"midi": "off"}) == {"midi": "off"}
+
+
+def test_a_saved_choice_is_left_out_while_the_midi_part_is_missing(rig, meter, setup_file):
+    _midi_runner(rig, meter, setup_file).choose_midi({"midi": "only"})
+    runner = _midi_runner(rig, meter, setup_file, guitake.MIDI_PART_MISSING)
+    assert runner.home()["midi"] == {"choice": "only", "problem": guitake.MIDI_PART_MISSING}
+    runner.start({})
+    assert not [a for a in rig.spawned[-1] if a.startswith("--midi")]
+    # Back once it is installed, without asking again.
+    assert _midi_runner(rig, meter, setup_file).home()["midi"]["choice"] == "only"
+
+
+def test_the_midi_check_looks_for_both_libraries_without_importing_them(monkeypatch):
+    seen = []
+
+    def find(name, present):
+        seen.append(name)
+        return object() if name in present else None
+
+    monkeypatch.setattr(guitake.sys, "platform", "linux")
+    for present, want in (({"mido", "rtmidi"}, None), ({"mido"}, guitake.MIDI_PART_MISSING),
+                          ({"rtmidi"}, guitake.MIDI_PART_MISSING), (set(), guitake.MIDI_PART_MISSING)):
+        monkeypatch.setattr(guitake.importlib.util, "find_spec", lambda name, p=present: find(name, p))
+        assert guitake.default_midi_check() == want
+    assert set(seen) == {"mido", "rtmidi"}
+
+
+def test_the_midi_check_says_when_this_computer_cannot_make_a_port(monkeypatch):
+    monkeypatch.setattr(guitake.importlib.util, "find_spec", lambda name: object())
+    monkeypatch.setattr(guitake.sys, "platform", "win32")
+    assert guitake.default_midi_check() == guitake.MIDI_NO_PORT
+
+
+@pytest.mark.parametrize("line", [
+    "plume: error: this system cannot make a virtual MIDI port (no); make a loopback port",
+    "plume: error: could not open MIDI output plume: busy",
+    "plume: error: live MIDI needs mido and python-rtmidi: pip install -e '.[midi]' (x)",
+])
+def test_a_midi_port_that_would_not_open_gets_plain_words(tmp_path, line):
+    log = tmp_path / "take.log"
+    log.write_text(line + "\n")
+    assert guitake.classify_failure(log) == guitake.MIDI_FAILED
+    assert "MIDI" in guitake.MIDI_FAILED and "error" not in guitake.MIDI_FAILED.lower()
+
+
+def test_the_midi_choice_over_http(rig, meter, tmp_path, monkeypatch, plume_registry):
+    monkeypatch.setenv(gui.STATE_DIR_ENV, str(tmp_path / "state"))
+    srv = gui.GuiServer(roots=[rig.root], log=lambda line: None, spawner=rig.spawner, lister=rig.lister,
+                        sessions=rig.sessions, stopper=rig.stopper, cue=rig.cue, watch=False,
+                        meter=meter, midi_check=lambda: None).start()
+    try:
+        page = Client(srv).login()
+        assert json.loads(page.get("/api/home")[1])["midi"] == {"choice": "off", "problem": None}
+        resp, out = page.post("/api/midi", {"midi": "only"})
+        assert resp.status == 200 and json.loads(out) == {"midi": "only"}
+        resp, out = page.post("/api/midi", {"midi": "--midi-out=x"})
+        assert resp.status == 400 and "error" in json.loads(out)
+        assert json.loads(page.get("/api/home")[1])["midi"]["choice"] == "only"
+        assert page.post("/api/start", {})[0].status == 200
+        assert rig.spawned[-1][-2:] == ["--midi-out=virtual", "--midi-only"]
+        assert page.get("/api/midi")[0].status == 404
+        assert _ask(page, "POST", "/api/midi", Origin="http://evil.example") == 403
+        assert _ask(page, "POST", "/api/midi", **{"Content-Type": "text/plain"}) == 415
+    finally:
+        srv.close()

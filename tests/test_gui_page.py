@@ -3292,3 +3292,83 @@ def test_the_ways_out_go_by_the_number_she_is_shown(tmp_path, docs, ms, shown, a
     line = live_page(tmp_path, docs, sending, "return $('live-delay').textContent;")
     assert f"about {shown} ms late" in line
     assert ("same device" in line) is advice
+
+
+# ------------------------------------------------------------- the band through a DAW
+
+MIDI = """{ section: !$('midi-more').hidden, open: !!$('midi-more').open, row: !$('midi-row').hidden,
+  out: !!$('midi-out').checked, onlyRow: !$('midi-only-row').hidden, only: !!$('midi-only').checked,
+  words: $('midi-words').textContent, gear: $('home-gear').textContent }"""
+
+
+def _midi(docs, choice="off", problem=None):
+    docs["home"]["midi"] = {"choice": choice, "problem": problem}
+
+
+def test_the_daw_choice_is_tucked_away_in_settings_and_off():
+    html = (STATIC / "index.html").read_text()
+    first = html[html.index('<main id="home"'):html.index('<main id="settings"')]
+    assert "midi" not in first.lower() and "daw" not in first.lower()
+    settings = _settings_html()
+    # Inside a closed details: depth, not something to fill in.
+    folded = settings[settings.index('<details id="midi-more"'):]
+    folded = folded[:folded.index("</details>")]
+    assert 'id="midi-out"' in folded and 'id="midi-only"' in folded
+    assert "checked" not in folded and " open" not in folded
+
+
+def test_the_daw_choice_starts_off_and_start_says_nothing_about_it(tmp_path, docs):
+    _midi(docs)
+    out = run_page(tmp_path, docs, f"""
+        const seen = {MIDI};
+        $('start').click(); await page.settle();
+        return {{ ...seen, body: page.posts('start')[0], said: page.posts('midi') }};""")
+    assert out["section"] and not out["open"] and out["row"]
+    assert out["out"] is False and out["onlyRow"] is False and out["only"] is False
+    assert "MIDI port called plume" in out["words"]
+    assert out["body"] == {"style": ""} and out["said"] == []
+    assert "DAW" not in out["gear"]
+
+
+def test_ticking_the_daw_choice_saves_it_and_offers_muting(tmp_path, docs):
+    _midi(docs)
+    out = run_page(tmp_path, docs, f"""
+        $('midi-out').checked = true; $('midi-out').fire('change'); await page.settle();
+        const ticked = {MIDI};
+        $('midi-only').checked = true; $('midi-only').fire('change'); await page.settle();
+        const muted = {MIDI};
+        $('midi-out').checked = false; $('midi-out').fire('change'); await page.settle();
+        $('start').click(); await page.settle();
+        return {{ ticked, muted, off: {MIDI}, said: page.posts('midi'), body: page.posts('start')[0] }};""")
+    assert out["said"] == [{"midi": "out"}, {"midi": "only"}, {"midi": "off"}]
+    assert out["ticked"]["out"] and out["ticked"]["onlyRow"] and not out["ticked"]["only"]
+    assert "band through a DAW" in out["ticked"]["gear"]
+    assert out["muted"]["out"] and out["muted"]["only"]
+    assert not out["off"]["out"] and not out["off"]["onlyRow"] and "DAW" not in out["off"]["gear"]
+    assert out["body"] == {"style": ""}
+
+
+def test_a_saved_daw_choice_shows_ticked(tmp_path, docs):
+    _midi(docs, "only")
+    out = run_page(tmp_path, docs, f"return {MIDI};")
+    assert out["out"] and out["onlyRow"] and out["only"]
+    assert "band through a DAW" in out["gear"]
+
+
+def test_without_the_midi_part_the_choice_is_explained_not_offered(tmp_path, docs):
+    _midi(docs, "only", guitake.MIDI_PART_MISSING)
+    out = run_page(tmp_path, docs, f"return {MIDI};")
+    assert out["section"] and not out["row"] and not out["onlyRow"]
+    assert out["words"] == guitake.MIDI_PART_MISSING
+    assert "DAW" not in out["gear"]
+
+
+def test_a_refused_daw_choice_is_said_and_unticked(tmp_path, docs):
+    _midi(docs)
+    out = run_page(tmp_path, docs, f"""
+        page.replies.midi = [409, {{ error: {json.dumps(guitake.MIDI_NO_PORT)} }}];
+        $('midi-out').checked = true; $('midi-out').fire('change'); await page.settle();
+        return {{ ...{MIDI}, note: $('midi-note').textContent, shown: !$('midi-note').hidden,
+                  disabled: !!$('midi-out').disabled }};""")
+    assert out["out"] is False and out["onlyRow"] is False and out["disabled"] is False
+    assert out["note"] == guitake.MIDI_NO_PORT and out["shown"] is True

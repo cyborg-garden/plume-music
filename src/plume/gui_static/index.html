@@ -81,6 +81,13 @@
         <p id="send-words" class="note" hidden></p>
         <p id="room-output" class="note" hidden></p>
       </div>
+      <details id="midi-more" hidden>
+        <summary>Play through a DAW</summary>
+        <label id="midi-row"><input id="midi-out" type="checkbox"> Band plays through a DAW (MIDI)</label>
+        <label id="midi-only-row" hidden><input id="midi-only" type="checkbox"> Mute plume's own band</label>
+        <p id="midi-words" class="note"></p>
+        <p id="midi-note" class="note warn" role="status" hidden></p>
+      </details>
       <p id="again-row"><button id="set-again" class="textlink" type="button">Set up again</button> <span id="set-again-note" class="note" role="status"></span></p>
       <button id="settings-terminal" class="textlink" type="button">Play from a terminal or a coding agent</button>
       <button id="settings-done" class="textlink" type="button">Done</button>

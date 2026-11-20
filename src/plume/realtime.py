@@ -1258,22 +1258,27 @@ def analysis_step(*, extractor, hop_rms, masker, tracker, harmony,
     return masked_frames, flags, beat_state, harm_state
 
 
-#: Set to 0 to read the key from chroma even when the note model is installed.
+#: The note reading of the key (listen/notes.py), when its optional model is
+#: installed: unset, it runs on a thread of its own; 0 switches it off and the
+#: key is read from chroma alone; inline runs the model in the analysis thread,
+#: for a replay faster than real time, where a thread of its own would fall behind.
 NOTES_ENV = "PLUME_NOTES"
 
 
 def harmony_tracker(midi_port: str | None = None):
     """The key and chord tracker for a live take.
 
-    It reads the key from transcribed notes when the optional note model is installed
-    (``pip install plume-music[notes]``) and the input is audio, and from chroma
-    otherwise.  A MIDI take's frames are its notes already.
+    It reads the key from chroma and transcribed notes together when the optional
+    note model is installed (``pip install plume-music[notes]``) and the input is
+    audio, and from chroma alone otherwise.  A MIDI take's frames are its notes
+    already.
     """
     from .listen.harmony import HarmonyTracker  # noqa: PLC0415
     from .listen.notes import note_listener  # noqa: PLC0415
-    notes = (None if midi_port is not None or os.environ.get(NOTES_ENV, "") == "0"
-             else note_listener(SR))
-    return HarmonyTracker(notes=notes)
+    how = os.environ.get(NOTES_ENV, "")
+    notes = (None if midi_port is not None or how == "0"
+             else note_listener(SR, background=how != "inline"))
+    return HarmonyTracker() if notes is None else HarmonyTracker(notes=notes)
 
 
 # ------------------------------------------------------------------ device I/O

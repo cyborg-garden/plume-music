@@ -66,7 +66,8 @@ jobs:
           node-version: "22"
 
       # The notes extra (onnxruntime) so the note listener and its key reading are run
-      # on every OS; live-path tests keep the chroma reading (tests/conftest.py).
+      # on every OS; live-path tests keep the chroma reading (tests/conftest.py), but
+      # for one take in tests/test_key_notes.py.
       - name: Install
         run: |
           python -m pip install --upgrade pip

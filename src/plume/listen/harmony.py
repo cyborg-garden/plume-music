@@ -11,6 +11,10 @@ Key belief
     clears ``_KEY_CONF_FLOOR``; ``key_conf`` is the incumbent's correlation
     clipped to [0, 1].
 
+    With the optional note model (listen/notes.py) the correlation is the
+    average of that one and the same for a histogram of transcribed notes
+    against note-duration profiles: see "Key from chroma AND notes" below.
+
 Chord belief
     Per-frame cosine scores of the chroma against 24 binary maj/min triad
     templates plus an N (silence) state are turned into likelihoods
@@ -186,15 +190,39 @@ _KEY_DUTY_FLOOR = 0.5
 # times; what the ramp changes is how loudly an unsettled belief speaks.
 _KEY_COMMIT_EVIDENCE_S = 8.0
 
-# ---- Key from NOTES (optional: listen/notes.py) ---------------------------
+# ---- Key from chroma AND notes (optional: listen/notes.py) ----------------
 #
-# When the optional pitch model is installed the key is read from transcribed
-# notes instead of from chroma.  Chroma is the energy in each pitch class,
-# overtones included: a note's third harmonic lands on its fifth and its fifth
-# harmonic on its major third, so a chroma histogram leans every key toward its
-# dominant and its major-third colour, and one ringing low string spreads over
-# several pitch classes.  The model reports the notes themselves, one per piano
-# key, so what is counted is how long each note sounded.
+# When the optional pitch model is installed the key is read from two things at
+# once: the chroma histogram above, and a histogram of transcribed notes.  Each
+# is matched against its own key profiles and the two correlations are averaged
+# (_NOTE_SHARE) before the incumbent, margins and sustain above are applied,
+# unchanged.
+#
+# Why both.  Each reading alone is wrong in a way the other is not:
+#   - Chroma is the energy in each pitch class, overtones included.  A note's
+#     third harmonic lands on its fifth and its fifth harmonic on its major
+#     third, so chroma leans every key toward its dominant and its major-third
+#     colour (a maj7 home chord read as the minor chord on its third; a ringing
+#     low tonic tied major with minor), and one ringing low string spreads over
+#     several pitch classes.  The model reports the notes themselves, one per
+#     piano key, so what is counted there is how long each note sounded.
+#   - The note count has no overtones and no bass weighting, which are what
+#     tell chroma that a chord stands on its root.  A minor-seventh home chord
+#     holds exactly the notes of its relative major's sixth chord, and a line
+#     of roots outlines the wrong triad as easily as the right one.  Measured,
+#     the notes alone read many minor parts as the relative major, and minor
+#     bass lines worse than chroma does.
+# Measured offline (the benchmark's 270 generated parts replayed through this
+# tracker and the band's entry; 77 rendered trouble cases: hum, parts that open
+# away from home, bass lines, single lines, drones), exact key at the entry:
+# chroma alone 123 of 270, notes alone 152, the average 159; minor keys 64, 47
+# and 61 of 135; trouble cases right after 12 s, 62, 65 and 71 of 77.  On the
+# benchmark's 40 recorded guitar excerpts the three are level at the entry (14,
+# 16, 14) and the average is ahead by the end of the take (21, 23, 23).
+#
+# No weight is given to how a part opens: a term for the lowest note of the
+# opening scores well where every part starts on its home chord, and puts the
+# band in the key of the first chord where one does not.
 #
 # _NOTE_ON.  A model frame counts a note as sounding above this probability; its
 # weight is then that probability, so a held note counts for its length.
@@ -205,11 +233,33 @@ _KEY_COMMIT_EVIDENCE_S = 8.0
 # note per frame above 0.3, a fortieth above 0.5; a strummed chord gives three,
 # a quick single line most of one).  So the threshold sits at 0.5, and frames
 # count only while the summed note probability, smoothed over _NOTE_SOUND_S,
-# is at least half a note's worth.  The silence between a count and the first
-# note then adds nothing, and cannot pass for the opening.
+# is at least half a note's worth.
 _NOTE_ON = 0.5
 _NOTE_SOUNDING = 0.5
 _NOTE_SOUND_S = 0.1           # half-life of that smoothing, seconds
+#
+# LEVEL.  That gate removes scattered noise but not a steady tone: mains hum
+# under a silent input is one clean low note to the model, for as long as
+# nothing louder sounds (measured: 3 s of hum at -50 dBFS before the first
+# note, and the notes named the hum's key for the whole take).  What separates
+# it from playing is how loud it is beside the playing, which is not known
+# until the playing starts.  So the note histogram is kept per input level, in
+# _NOTE_LEVEL_STEP_DB bins, and read through a gate set from its own content:
+# the level of the loud playing is the highest bin with at least
+# _NOTE_LOUD_SHARE of the counted notes at or above it (a share, not a peak,
+# so one knock does not set it), notes within _NOTE_GATE_DB of that count in
+# full, and notes _NOTE_GATE_KNEE_DB further down or more count nothing.  Hum
+# heard before the first note stops counting as soon as playing 30 dB louder
+# has been heard, and counts as before if nothing louder ever comes.  The same
+# gate leaves out the last of a note's ring, which chroma still hears.
+# Measured, 20 and 30 dB score the same on the benchmark; at 30 a hum 30 dB
+# under quiet playing still counted in full.
+_NOTE_LEVEL_STEP_DB = 5.0
+_NOTE_LEVEL_LOW_DB = -90.0
+_NOTE_LEVEL_BINS = 19         # -90 dBFS up to full scale and above
+_NOTE_LOUD_SHARE = 0.1
+_NOTE_GATE_DB = 20.0
+_NOTE_GATE_KNEE_DB = 10.0
 # The profiles a histogram of note durations is matched against: Albrecht and
 # Shanahan's (2013) key profiles, which are themselves note-duration
 # distributions measured on scores.  The probe-tone profiles above are listener
@@ -219,32 +269,21 @@ _AS_MAJOR = np.array([0.238, 0.006, 0.111, 0.006, 0.137, 0.094,
                       0.016, 0.214, 0.009, 0.080, 0.008, 0.081])
 _AS_MINOR = np.array([0.220, 0.006, 0.104, 0.123, 0.019, 0.103,
                       0.012, 0.214, 0.062, 0.022, 0.061, 0.052])
-# _NOTE_MASS_FLOOR.  Decayed note-frames (probability-weighted) before the note
-# histogram may name a key: about a quarter second of one sounding note.
+# _NOTE_MASS_FLOOR.  Decayed note-frames (probability-weighted, inside the level
+# gate) before the note histogram has a say: about a quarter second of one
+# sounding note.
 _NOTE_MASS_FLOOR = 20.0
-#
-# The OPENING NOTE.  A loop through the same chords holds the same notes for the
-# same lengths whichever chord it calls home: Am F C G and C G Am F give one
-# histogram, and no profile can tell that minor key from its relative major.
-# What differs is the order, and a player most often starts at home.  So the
-# lowest sounding note of the first _OPEN_S seconds of notes (the first chord's
-# root, or a single line's first notes) adds _OPEN_WEIGHT to the correlation of
-# the major and the minor key on that note.  Within those seconds the earliest
-# count most, falling in a straight line to nothing at _OPEN_S, so that at a
-# quick tempo the second bar's root does not share the weight evenly with the
-# first; when more than one note was lowest the weight is shared by that count.
-# It says nothing about mode, only about the tonic.
-#
-# The lowest note of every later frame is NOT weighted as the chroma path
-# weights its bass band: with the opening note counted, an extra bass weight
-# measured slightly worse on entry key and on key at the end of a take.
-#
-# It fades with _OPEN_HALFLIFE_S, so that it helps most where it is needed, when
-# the band comes in a few bars after the first note, and so that a real change
-# of key later in a take can still be followed.
-_OPEN_S = 4.0
-_OPEN_WEIGHT = 0.3
-_OPEN_HALFLIFE_S = 60.0
+# _NOTE_SHARE.  The notes' share of the averaged correlation.  Even: measured
+# between 0.35 and 0.65, more weight on the notes gained major keys and lost
+# minor bass lines, less did the reverse, and the total moved little.
+_NOTE_SHARE = 0.5
+# While the notes have nothing to say (the model's frames arrive about a second
+# behind the chroma's, and some sounds it does not transcribe at all) the key
+# waits for them, rather than be named from chroma alone and then defended
+# against the notes by the hysteresis: measured, a first belief from chroma
+# alone costs a twentieth of the benchmark.  Once the chroma evidence is settled
+# (_KEY_COMMIT_EVIDENCE_S) and there are still no notes, chroma reads alone, so
+# a part the model cannot hear still gets its key.
 
 _HMM_LAG = 3                  # fixed-lag smoothing, frames
 _HMM_BETA = 8.0               # cosine-score -> likelihood sharpness
@@ -364,14 +403,14 @@ class HarmonyTracker:
                  notes=None):
         """``notes``: a :class:`~plume.listen.notes.NoteListener`, or None.  With one,
         :meth:`listen` feeds it the input audio and the key is read from the notes
-        it hears; without, from the chroma of the frames."""
+        it hears together with the chroma of the frames; without, from the chroma
+        alone."""
         self._key_hl = float(key_halflife_s)
         self._notes = notes
-        self._note_hist = np.zeros(12)
+        # decayed note-frames per input level bin and pitch class
+        self._note_hist = np.zeros((_NOTE_LEVEL_BINS, 12))
         self._note_t: float | None = None
         self._note_level = 0.0               # smoothed notes sounding per frame
-        self._open_hist = np.zeros(12)       # lowest notes of the opening
-        self._open_t: float | None = None    # when the first note sounded
         off = (1.0 - float(chord_selftrans)) / (_N_STATES - 1)
         self._trans = np.full((_N_STATES, _N_STATES), off)
         np.fill_diagonal(self._trans, float(chord_selftrans))
@@ -419,8 +458,9 @@ class HarmonyTracker:
             self.hear_notes(self._notes.process(block))
 
     def hear_notes(self, frames) -> None:
-        """Note frames ``(t_s, probs)``: 88 note probabilities from A0 up."""
-        for t, p in frames:
+        """Note frames ``(t_s, probs, level_db)``: 88 note probabilities from A0 up
+        and the input's level under the frame."""
+        for t, p, level_db in frames:
             t = float(t)
             dt = 0.0 if self._note_t is None else max(0.0, t - self._note_t)
             self._note_hist *= 0.5 ** (dt / self._key_hl)
@@ -432,13 +472,21 @@ class HarmonyTracker:
                                  * (1.0 - 0.5 ** (dt / _NOTE_SOUND_S)))
             if not on.any() or self._note_level < _NOTE_SOUNDING:
                 continue
-            self._note_hist += act @ _NOTE_PC_ONEHOT
-            if self._open_t is None:
-                self._open_t = t
-            age = (t - self._open_t) / _OPEN_S
-            if age < 1.0:
-                low = int(np.argmax(on))
-                self._open_hist[_NOTE_PC[low]] += p[low] * (1.0 - age)
+            b = int((float(level_db) - _NOTE_LEVEL_LOW_DB) // _NOTE_LEVEL_STEP_DB)
+            self._note_hist[min(max(b, 0), _NOTE_LEVEL_BINS - 1)] += act @ _NOTE_PC_ONEHOT
+
+    def _note_counts(self) -> np.ndarray:
+        """The note histogram by pitch class, through the level gate (_NOTE_GATE_DB)."""
+        mass = self._note_hist.sum(axis=1)
+        total = mass.sum()
+        if total <= 0.0:
+            return np.zeros(12)
+        at_or_above = np.cumsum(mass[::-1])[::-1]
+        loud = int(np.nonzero(at_or_above >= _NOTE_LOUD_SHARE * total)[0][-1])
+        under_db = (loud - np.arange(_NOTE_LEVEL_BINS)) * _NOTE_LEVEL_STEP_DB
+        gate = np.clip((_NOTE_GATE_DB + _NOTE_GATE_KNEE_DB - under_db) / _NOTE_GATE_KNEE_DB,
+                       0.0, 1.0)
+        return gate @ self._note_hist
 
     # ------------------------------------------------------------- internals
 
@@ -487,26 +535,25 @@ class HarmonyTracker:
             self._hist += chroma + _KEY_BASS_WEIGHT * chroma_low
             self._evidence_s += dt
 
-        if self._notes is not None:
-            # Read from notes (see _NOTE_ON); the chroma still says when there is
-            # enough sustained tonal sound to read at all.
-            hist, profiles = self._note_hist, _NOTE_KEY_PROFILES
-            enough = hist.sum() >= _NOTE_MASS_FLOOR
-        else:
-            hist, profiles = self._hist, _PROFILES
-            enough = hist.sum() >= _KEY_MASS_FLOOR
+        hist = self._hist
         std = hist.std()
-        if self._evidence_s < _KEY_MIN_EVIDENCE_S or not enough or std <= 0.0:
+        if (self._evidence_s < _KEY_MIN_EVIDENCE_S or hist.sum() < _KEY_MASS_FLOOR
+                or std <= 0.0):
             if self._key_idx is not None:
                 self._key_conf = 0.0
             return
         hz = (hist - hist.mean()) / std
-        corr = profiles @ hz / 12.0           # Pearson r vs each of 24 keys
-        if self._notes is not None and self._open_hist.sum() > 0.0:
-            # the opening note: see _OPEN_S
-            fade = 0.5 ** ((self._note_t - self._open_t) / _OPEN_HALFLIFE_S)
-            start = self._open_hist / self._open_hist.sum()
-            corr = corr + _OPEN_WEIGHT * fade * np.concatenate([start, start])
+        corr = _PROFILES @ hz / 12.0          # Pearson r vs each of 24 keys
+        if self._notes is not None:
+            # the same for the notes, and the two averaged: see _NOTE_SHARE
+            counts = self._note_counts()
+            nstd = counts.std()
+            if counts.sum() >= _NOTE_MASS_FLOOR and nstd > 0.0:
+                nz = (counts - counts.mean()) / nstd
+                corr = ((1.0 - _NOTE_SHARE) * corr
+                        + _NOTE_SHARE * (_NOTE_KEY_PROFILES @ nz / 12.0))
+            elif self._key_idx is None and self._evidence_s < _KEY_COMMIT_EVIDENCE_S:
+                return                        # no notes yet: wait (see _NOTE_SHARE)
 
         # Confidence is the incumbent's correlation DISCOUNTED by how much
         # evidence stands behind it, so a fresh reading cannot announce itself

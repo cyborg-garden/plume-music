@@ -28,7 +28,7 @@ voice = [
     "faster-whisper>=1.1; sys_platform != 'darwin' or platform_machine != 'arm64'",
 ]
 midi = ["mido", "python-rtmidi"]
-# Read the key from transcribed notes (listen/notes.py): a 230 kB pitch model run
+# Read the key from transcribed notes as well (listen/notes.py): a 230 kB pitch model run
 # with onnxruntime.  Without it the key is read from chroma.
 notes = ["onnxruntime>=1.17"]
 

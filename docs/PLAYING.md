@@ -417,6 +417,33 @@ the system reports.
 A mic close to the amp or the guitar, with the speakers further away, is the cheaper step
 in the same direction.
 
+### A second reading of the key
+
+Plume names your key from how much sound there is on each of the twelve notes. Overtones
+count there too, so a major key can come out as the key a fifth up, or as the minor key on
+its third. With the optional `notes` extra it also reads the notes themselves, with a
+small pitch model, and goes by both readings together.
+
+```bash
+.venv/bin/pip install -e '.[play,notes]'
+```
+
+Nothing else changes: the same commands, and no flag. It works on a mic and on a direct
+input. With `--midi` your keys are the notes already, and the model is not used.
+
+The model is 230 kB and comes with plume; what the extra installs is `onnxruntime`. It runs
+beside the take on a thread of its own, one two-second window each second, and takes 3 to
+8% of one processor core and about 70 MB of memory.
+
+`PLUME_NOTES=0` switches it off for a take, and the key comes from the first reading alone.
+`PLUME_NOTES=inline` is for replaying a recording faster than real time: it runs the model
+in step with the audio instead of beside it.
+
+So far this has only been measured on rendered parts and on a public set of guitar
+recordings, through a fake device. There it named more major keys correctly and about as
+many minor ones. A lone major-seventh chord held on its own can still come out as the minor
+key on its third.
+
 ### MIDI
 
 A keyboard or pad controller can tell plume exactly what you played, instead of plume

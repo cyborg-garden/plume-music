@@ -3,7 +3,8 @@
 Tempo says little about a style: seven of the nine bundled styles can be played at 85
 bpm.  What tells them apart is in the playing.  Five things are heard of it, every one
 counted from her strokes, when she strikes and how, and none from how loud she is, so
-no reading is lost or turned by the input gain:
+the input gain moves a reading only where it loses strokes: near the input's noise
+floor, where the quietest strokes no longer stand out of the hiss:
 
     strokes   strokes per beat (bandentry.StrokeEar)
     swing     where her off-beat eighths fall in the beat: 0.5 straight, 0.67 a triplet

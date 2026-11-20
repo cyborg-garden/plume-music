@@ -77,7 +77,8 @@ have played over the bars it heard. Your tempo says which styles it could be, ea
 own range, and five things heard on a direct input pick among them: whether your eighths
 swing, how many strokes you play to a beat, how many of them fall off the beat, how even the
 gaps between them are, and how many of them are strummed chords. All five come from when and
-how you strike, not from how loud you are, so the input gain does not change them. Each style
+how you strike, not from how loud you are, so the input gain barely moves them until your
+level nears the input's noise, where the quietest strokes go unheard. Each style
 has a band for the ones that tell it, a style loses for what falls outside its bands, and the
 best score wins (`plume/playstyle.py` has the bands). Swung eighths are `jazz`, and nothing is
 jazz without them. A busy even pulse is `synthwave`, busy and uneven is `midwest`, stabs off

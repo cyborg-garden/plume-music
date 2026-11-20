@@ -46,7 +46,8 @@ input how you play picks one: whether your eighth notes swing, how many strokes 
 a beat, whether they fall on the beat or between, how even they are, and whether you strum.
 Swung eighths lean to jazz, stabs between the beats to house, a busy even pulse to
 synthwave, busy uneven playing to midwest, and a few notes with space to trap, lofi, hip hop
-or r&b. How loud you play does not change the guess. A room mic hears plume's own drums too,
+or r&b. How loud you play hardly changes the guess, unless the input is turned so low that your
+quietest notes are lost in its hiss. A room mic hears plume's own drums too,
 so there the guess comes from your tempo and key alone.
 
 Plume guesses folk for plain playing on the beat, between 60 and 132 bpm, and a strum counts

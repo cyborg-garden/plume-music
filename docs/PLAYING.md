@@ -440,9 +440,9 @@ beside the take on a thread of its own, one two-second window each second, and t
 in step with the audio instead of beside it.
 
 So far this has only been measured on rendered parts and on a public set of guitar
-recordings, through a fake device. There it named more major keys correctly and about as
-many minor ones. A lone major-seventh chord held on its own can still come out as the minor
-key on its third.
+recordings, through a fake device. There it named clearly more major keys correctly and
+slightly fewer minor ones. A lone major-seventh chord held on its own can still come out as
+the minor key on its third.
 
 ### MIDI
 

@@ -498,6 +498,18 @@ def test_the_live_tracker_takes_notes_only_from_audio_and_can_be_switched(monkey
     assert made[-1] == (realtime.SR, {"background": False})
 
 
+def test_a_tracker_that_takes_no_arguments_still_stands_in_when_notes_are_off(monkeypatch):
+    # Tests and tools swap in a tracker class of their own, made with no arguments.
+    class Plain:
+        def __init__(self):
+            self.made = True
+
+    monkeypatch.setattr(H, "HarmonyTracker", Plain)
+    monkeypatch.setenv(realtime.NOTES_ENV, "0")
+    assert realtime.harmony_tracker().made
+    assert realtime.harmony_tracker("a midi port").made
+
+
 def test_the_analysis_step_hands_the_listener_the_unmasked_input():
     class Listener:
         def __init__(self):

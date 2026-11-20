@@ -574,34 +574,37 @@ class BandMidi:
         return self
 
     def close(self, *, timeout: float = 1.0, file_timeout: float = FILE_WRITE_S) -> None:
-        """Stop sending, write the take's file, end every sounding note, close the
+        """Stop sending, end every sounding note, write the take's file, close the
         port.  Safe twice.
 
         Bounded by about three times ``timeout`` plus ``file_timeout`` whatever the
         driver does: a send that never returns costs the release, never the caller.
         Once closing, no note-on goes out, so nothing can follow the final All Notes
-        Off.  The file is written before the port is let go of, and needs nothing
-        from it: in the file every note still sounding ends where the take did.
+        Off.  The notes are let go of first, so writing a long take's file never holds
+        a note on; the file needs nothing from the port: in it every note still
+        sounding ends where the take did.
         """
         self._closing.set()
         if self._thread is not None and self._thread is not threading.current_thread():
             self._thread.join(timeout)
         band_file, self.file = self.file, None
+        end_at = None
         if band_file is not None and self._playhead is not None:
             try:
                 end_at = int(self._playhead())
             except Exception:              # noqa: BLE001 - the last message's, then
                 end_at = None
+        try:
+            _bounded(self._release, timeout, "take the notes off")
+        except Exception as e:             # noqa: BLE001 - it is going anyway
+            self._note(f"midi out: {e}")
+        if band_file is not None and self._playhead is not None:
             try:
                 _bounded(lambda: band_file.write(end_at), file_timeout, "write band.mid")
             except Exception as e:         # noqa: BLE001 - the take is over
                 self._note(f"midi out: {e}")
             for e in band_file.errors:
                 self._note(f"midi out: {e}")
-        try:
-            _bounded(self._release, timeout, "take the notes off")
-        except Exception as e:             # noqa: BLE001 - it is going anyway
-            self._note(f"midi out: {e}")
         handle, self._handle = self._handle, None
         if handle is not None:
             try:

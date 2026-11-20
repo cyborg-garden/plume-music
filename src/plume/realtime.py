@@ -2097,6 +2097,7 @@ class SessionRecorder:
                 (self.dir / REC_MIDI).unlink(missing_ok=True)
             # Written at the end of a take that sends its band, so any here is the last's.
             (self.dir / REC_BAND).unlink(missing_ok=True)
+            (self.dir / f"{REC_BAND}.tmp").unlink(missing_ok=True)
             if not self._want_voice:
                 (self.dir / REC_VOICE).unlink(missing_ok=True)
             if manifest is not None:

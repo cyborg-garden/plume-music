@@ -777,6 +777,20 @@ def test_the_file_is_bounded_and_still_ends_every_note(tmp_path):
                                  for n in notes])
 
 
+def test_the_notes_are_let_go_of_before_the_file_is_written(tmp_path):
+    rig = Rig(file=BandFile(tmp_path / "band.mid", sr=SR))
+    rig.band.bar(0, BAR, bpm=120.0)
+    rig.run(0.6)
+    order = []
+    real_write = rig.band.file.write
+    rig.band.file.write = lambda *a, **k: (order.append(("write", len(rig.sent()))),
+                                           real_write(*a, **k))[1]
+    rig.band.close()
+    assert order and order[0][1] == len(rig.sent())  # every release message before it
+    assert rig.sent()[-1] == ("cc", 9, 123, 0)
+    assert (tmp_path / "band.mid").exists()
+
+
 def test_a_file_that_cannot_be_written_costs_the_file_not_the_take(tmp_path):
     (tmp_path / "taken").write_text("not a folder")
     f = BandFile(tmp_path / "taken" / "band.mid", sr=SR)
@@ -809,9 +823,25 @@ def test_a_hard_exit_keeps_the_file_past_a_stuck_driver(monkeypatch, tmp_path):
 
 def test_a_new_take_in_the_folder_drops_the_last_takes_band(tmp_path):
     (tmp_path / realtime.REC_BAND).write_bytes(b"MThd old")
+    (tmp_path / f"{realtime.REC_BAND}.tmp").write_bytes(b"MThd cut short")
     rec = realtime.SessionRecorder(tmp_path).open({})
     rec.close()
     assert not (tmp_path / realtime.REC_BAND).exists()
+    assert not (tmp_path / f"{realtime.REC_BAND}.tmp").exists()
+
+
+def test_a_note_sent_behind_an_earlier_one_still_makes_a_whole_file(tmp_path):
+    """A bar queued late under a negative offset can go out behind one already sent."""
+    f = BandFile(tmp_path / "band.mid", sr=SR)
+    f.add(SR, "on", 0, 40, 90)
+    f.add(2 * SR, "off", 0, 40, 0)
+    f.add(SR // 2, "on", 0, 43, 90)                  # sent after, for earlier
+    f.add(3 * SR, "off", 0, 43, 0)
+    assert f.write(), f.errors
+    _bpm, tracks = read_band(f.path)
+    times = [t for t, *_ in tracks["bass"]]
+    assert times == sorted(times) and len(times) == 4
+    assert paired([n[1:] for n in tracks["bass"]])
 
 
 class RealFileMido(FakeMidoOut):

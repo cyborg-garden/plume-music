@@ -3342,8 +3342,9 @@ def test_ticking_the_daw_choice_saves_it_and_offers_muting(tmp_path, docs):
         return {{ ticked, muted, off: {MIDI}, said: page.posts('midi'), body: page.posts('start')[0] }};""")
     assert out["said"] == [{"midi": "out"}, {"midi": "only"}, {"midi": "off"}]
     assert out["ticked"]["out"] and out["ticked"]["onlyRow"] and not out["ticked"]["only"]
-    assert "band through a DAW" in out["ticked"]["gear"]
+    assert out["ticked"]["gear"].endswith(", band through a DAW")
     assert out["muted"]["out"] and out["muted"]["only"]
+    assert out["muted"]["gear"].endswith(", band only through a DAW")
     assert not out["off"]["out"] and not out["off"]["onlyRow"] and "DAW" not in out["off"]["gear"]
     assert out["body"] == {"style": ""}
 
@@ -3352,7 +3353,7 @@ def test_a_saved_daw_choice_shows_ticked(tmp_path, docs):
     _midi(docs, "only")
     out = run_page(tmp_path, docs, f"return {MIDI};")
     assert out["out"] and out["onlyRow"] and out["only"]
-    assert "band through a DAW" in out["gear"]
+    assert out["gear"].endswith(", band only through a DAW")
 
 
 def test_without_the_midi_part_the_choice_is_explained_not_offered(tmp_path, docs):
@@ -3371,4 +3372,5 @@ def test_a_refused_daw_choice_is_said_and_unticked(tmp_path, docs):
         return {{ ...{MIDI}, note: $('midi-note').textContent, shown: !$('midi-note').hidden,
                   disabled: !!$('midi-out').disabled }};""")
     assert out["out"] is False and out["onlyRow"] is False and out["disabled"] is False
-    assert out["note"] == guitake.MIDI_NO_PORT and out["shown"] is True
+    # The boxes give way to the reason, said once, as if the page had known all along.
+    assert out["row"] is False and out["words"] == guitake.MIDI_NO_PORT and out["shown"] is False

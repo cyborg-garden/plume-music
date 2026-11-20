@@ -1023,7 +1023,8 @@ function drawSummary() {
   if (!S.home) return;
   const line = routeLine(chosenDevice(), channelNow(), $('set-key').value.trim(), '', outputName(), bandInPhones());
   /* Said at home too, so a band muted for a DAW is never a surprise. */
-  $('home-gear').textContent = midiOn() ? line + ', band through a DAW' : line;
+  const midi = !midiOn() ? '' : (midiDoc().choice === 'only' ? ', band only through a DAW' : ', band through a DAW');
+  $('home-gear').textContent = line + midi;
 }
 /* The band through a DAW, as MIDI. A saved choice of three words, kept by the bridge like the
    style and never sent with Start, so nothing here can become a port name. Off unless she says. */
@@ -1050,6 +1051,8 @@ async function sendMidi(choice) {
   boxes.forEach(function (box) { box.disabled = false; });
   if (answer && answer.status === 401) { problem(answer); return; }
   if (answer && answer.ok) { if (S.home) S.home.midi = { ...midiDoc(), choice: answer.doc.midi }; }
+  /* The bridge found it cannot be had here: say why in place of the boxes. */
+  else if (answer && answer.status === 409 && answer.doc && answer.doc.error && S.home) S.home.midi = { ...midiDoc(), problem: answer.doc.error };
   else {
     note.hidden = false;
     note.textContent = (answer && answer.doc && answer.doc.error) || 'That did not reach plume gui.';

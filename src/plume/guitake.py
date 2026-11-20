@@ -219,7 +219,8 @@ _WIRELESS = re.compile(r"bluetooth|wireless|airpods|buds|hands-?free", re.IGNORE
 
 #: What the child said, mapped to the page's words.  First match wins.
 _FAILURES = (
-    (("virtual midi port", "could not open midi output", "live midi needs mido"), MIDI_FAILED),
+    (("virtual midi port", "could not open midi output", "live midi needs mido", "the midi driver did not"),
+     MIDI_FAILED),
     (("sounddevice is not available",), AUDIO_PART_MISSING),
     (("refusing to play live audio", "refusing to open a live input"), SOUND_OFF),
     (("another plume session",), TERMINAL_TAKE),

@@ -1478,6 +1478,7 @@ def test_the_midi_check_says_when_this_computer_cannot_make_a_port(monkeypatch):
     "plume: error: this system cannot make a virtual MIDI port (no); make a loopback port",
     "plume: error: could not open MIDI output plume: busy",
     "plume: error: live MIDI needs mido and python-rtmidi: pip install -e '.[midi]' (x)",
+    "plume: error: the MIDI driver did not open a port in 2 seconds",
 ])
 def test_a_midi_port_that_would_not_open_gets_plain_words(tmp_path, line):
     log = tmp_path / "take.log"

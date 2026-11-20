@@ -665,21 +665,24 @@ def test_what_she_barely_touches_is_not_a_stroke_at_any_gain():
     assert all(b == pytest.approx(0.5, abs=0.1) for b in seen.values()), seen
 
 
+@pytest.mark.parametrize("lift", [False, True])
 @pytest.mark.parametrize("bar_hops", [33, 47, 64, 200])
-def test_every_legato_note_is_counted_once_wherever_the_bar_lines_fall(bar_hops):
-    """A new pitch every 20 hops, and 6 hops into each a dip and a lift in level with an
-    attack of its own: one note each, cut into bars of any length."""
+def test_every_legato_note_is_counted_once_wherever_the_bar_lines_fall(bar_hops, lift):
+    """A new pitch every 20 hops at a level that never moves or, with ``lift``, with a dip
+    and a lift in level 6 hops into each and an attack of its own: one note each, cut
+    into bars of any length."""
     from types import SimpleNamespace
 
     from plume.bandentry import StrokeEar
-    frames = [SimpleNamespace(rms_db=-23.0 if i % 20 in (3, 4, 5) else -20.0,
-                              attack=0.2 * (i % 20 in (0, 6)),
+    frames = [SimpleNamespace(rms_db=-23.0 if lift and i % 20 in (3, 4, 5) else -20.0,
+                              attack=0.2 * (i % 20 in ((0, 6) if lift else (0,))),
                               chroma=np.eye(12)[(i // 20) % 12]) for i in range(1600)]
     ear = StrokeEar()
     for i in range(0, len(frames), bar_hops):
         ear.bar(frames[i:i + bar_hops])
-    # one for each of the 80 notes: the first by its lift, the rest by their new pitch
-    assert ear.strokes == 80, ear.strokes
+    # 80 notes: the first is counted by its lift, and without one has nothing heard
+    # before it to differ from
+    assert ear.strokes == (80 if lift else 79), ear.strokes
 
 
 def test_the_stroke_ear_keeps_a_bounded_memory():

@@ -198,7 +198,18 @@ _KEY_COMMIT_EVIDENCE_S = 8.0
 #
 # _NOTE_ON.  A model frame counts a note as sounding above this probability; its
 # weight is then that probability, so a held note counts for its length.
-_NOTE_ON = 0.3
+#
+# _NOTE_SOUNDING.  The model scales each window to its own loudest part, so with
+# nothing but room noise in a window it still reports notes, at a probability
+# of 0.3 to 0.6 and scattered (measured on white noise: about a quarter of a
+# note per frame above 0.3, a fortieth above 0.5; a strummed chord gives three,
+# a quick single line most of one).  So the threshold sits at 0.5, and frames
+# count only while the summed note probability, smoothed over _NOTE_SOUND_S,
+# is at least half a note's worth.  The silence between a count and the first
+# note then adds nothing, and cannot pass for the opening.
+_NOTE_ON = 0.5
+_NOTE_SOUNDING = 0.5
+_NOTE_SOUND_S = 0.1           # half-life of that smoothing, seconds
 # The profiles a histogram of note durations is matched against: Albrecht and
 # Shanahan's (2013) key profiles, which are themselves note-duration
 # distributions measured on scores.  The probe-tone profiles above are listener
@@ -358,6 +369,7 @@ class HarmonyTracker:
         self._notes = notes
         self._note_hist = np.zeros(12)
         self._note_t: float | None = None
+        self._note_level = 0.0               # smoothed notes sounding per frame
         self._open_hist = np.zeros(12)       # lowest notes of the opening
         self._open_t: float | None = None    # when the first note sounded
         off = (1.0 - float(chord_selftrans)) / (_N_STATES - 1)
@@ -410,14 +422,17 @@ class HarmonyTracker:
         """Note frames ``(t_s, probs)``: 88 note probabilities from A0 up."""
         for t, p in frames:
             t = float(t)
-            if self._note_t is not None and t > self._note_t:
-                self._note_hist *= 0.5 ** ((t - self._note_t) / self._key_hl)
+            dt = 0.0 if self._note_t is None else max(0.0, t - self._note_t)
+            self._note_hist *= 0.5 ** (dt / self._key_hl)
             self._note_t = t
             p = np.asarray(p, dtype=np.float64)
             on = p > _NOTE_ON
-            if not on.any():
+            act = np.where(on, p, 0.0)
+            self._note_level += ((act.sum() - self._note_level)
+                                 * (1.0 - 0.5 ** (dt / _NOTE_SOUND_S)))
+            if not on.any() or self._note_level < _NOTE_SOUNDING:
                 continue
-            self._note_hist += np.where(on, p, 0.0) @ _NOTE_PC_ONEHOT
+            self._note_hist += act @ _NOTE_PC_ONEHOT
             if self._open_t is None:
                 self._open_t = t
             age = (t - self._open_t) / _OPEN_S

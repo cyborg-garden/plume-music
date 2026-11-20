@@ -119,6 +119,27 @@ def test_a_change_of_key_is_still_followed_after_the_opening():
 
 
 @needs_model
+def test_room_noise_before_the_first_note_is_not_the_opening():
+    # A fresh listener hears only faint noise between a count and the first note.  The
+    # model scales each window to its loudest part and reports scattered notes there;
+    # they must not count, least of all as where the part began.
+    rng = np.random.default_rng(3)
+    part = strums(["Am", "F", "C", "G"])
+    x = np.concatenate([np.zeros(3 * SR, np.float32), part])
+    x += (3e-4 * rng.standard_normal(len(x))).astype(np.float32)
+    fe = FeatureExtractor(sr=SR)
+    tr = HarmonyTracker(notes=N.NoteListener(SR))
+    for i in range(0, len(x), BLOCK):
+        blk = x[i:i + BLOCK]
+        tr.listen(blk)
+        h = tr.process(fe.process(blk))
+        if (i + BLOCK) / SR < 3.0:
+            assert tr._open_t is None and tr._note_hist.sum() < 1.0
+    assert tr._open_t is not None and tr._open_t >= 3.0
+    assert h.key == "A minor"
+
+
+@needs_model
 def test_the_listener_hears_each_frame_once_and_in_order():
     nl = N.NoteListener(SR)
     x = np.concatenate([tone(69, 3.0, decay=0.3), np.zeros(SR, np.float32)])

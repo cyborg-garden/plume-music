@@ -91,7 +91,7 @@ def test_the_click_is_heard_but_well_under_the_band(name):
 # ------------------------------------------------------------------ live, on the fake device
 
 def test_a_detected_take_starts_plain_and_the_style_comes_in_with_the_band(tmp_path, consent):  # noqa: F811
-    rec = _detect_take(tmp_path, _strummed_take(85.0), max_minutes=0.5)
+    rec = _detect_take(tmp_path, _strummed_take(85.0, uneven=True), max_minutes=0.5)
     rows = _rows(rec)
     drums = [r for r in rows if r["entry"] == "drums"]
     band = [r for r in rows if r["entry"] != "drums"]

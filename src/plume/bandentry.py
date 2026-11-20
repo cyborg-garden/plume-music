@@ -48,20 +48,19 @@ DRUMS, BAND, FULL = "drums", "band", "full"
 DETECT_KEY_FALLBACK_BARS = 16
 
 def detect_style(bpm: float, mode: str | None = None, busy: float | None = None, *,
-                 folk: float | None = None, playing: Playing | None = None) -> str:
+                 playing: Playing | None = None) -> str:
     """A style for a player who did not name one: a guess, and the page says so.
 
     The tempo names the candidates, each style's own range, and how she plays picks
     among them: every candidate is scored on what was heard of her playing, and the best
     one is the answer (:func:`plume.playstyle.score_styles`, where the rule is written
-    out).  ``playing`` is what was heard.  A caller that knows less gives ``busy``, her
-    strokes per beat, and ``folk``, the share of them that are strums, and those stand
-    for it.  With nothing heard, at the count or on a room mic, the answer is the
-    tempo's own default, turned by a minor key where one is known.
+    out).  ``playing`` is what was heard.  A caller that knows only how many strokes she
+    plays to a beat gives ``busy``, and that stands for it.  With nothing heard, at the
+    count or on a room mic, the answer is the tempo's own default, turned by a minor key
+    where one is known.
     """
-    if playing is None and (busy is not None or folk is not None):
-        playing = Playing(strokes=None if busy is None else float(busy),
-                          strum=None if folk is None else float(folk))
+    if playing is None and busy is not None:
+        playing = Playing(strokes=float(busy))
     return score_styles(bpm, mode, playing)[0].style
 
 
@@ -185,6 +184,13 @@ _RAKE_HOPS = 3
 #: the flux onsets, 27 of their 1129 windows, 26 of them in that one passage.  The style
 #: rule's bands for the strum are these two marks (plume.playstyle.PROFILES).
 _RAKE_NONE, _RAKE_FULL = 0.18, 0.40
+#: A strum is a chord.  One note that swells in, a soft synth, a bowed or blown line, a
+#: bass under a slow envelope, keeps its attack up as long as a strum does, and a line of
+#: them read 0.73 to 0.87 strummed.  So just after a strum's peak a second pitch class
+#: must sound at this share of the strongest one or more.  Generated strums read 0.42
+#: to 0.98 there, one in ten lower; one bright note with its own overtones 0.29 to 0.31,
+#: softer ones less.
+_STRUM_CHORD = 0.35
 #: Before this much is heard there is no strum evidence either way: four strokes a bar.
 #: The strummed takes had 29 to 52 strokes in seven bars.  One real take read 0.50 on 14.
 _FOLK_MIN_BARS, _FOLK_MIN_ONSETS = 6, 24
@@ -231,12 +237,14 @@ def _strokes(att, ok, stroke_at: float, last: int, start: int = 3, *, slow=None,
 
 
 class FolkEar:
-    """Is she strumming?  The share of her strokes that are strums, which the style rule
-    reads as folk's own sign.  The acoustic sound is measured too and only reported: a
-    guitar through a pickup never reads acoustic, so the rule does not ask for it.
+    """Is she strumming?  The share of her strokes that are strummed chords, which the
+    style rule counts against every style but folk.  The acoustic sound is measured too
+    and only reported: a guitar through a pickup never reads acoustic, so the rule does
+    not ask for it.
 
     Fed one bar of her frames at a time (``Frame`` or anything with ``rms_db``,
-    ``attack`` and ``attack_breadth``), only from an input that hears her alone.
+    ``attack`` and ``attack_breadth``, and ``chroma`` where there is one), only from an
+    input that hears her alone.
     Everything it measures comes from the attack, so how loud she arrives changes
     little.  Memory stays bounded however long the take: counts and a histogram.
     """
@@ -280,10 +288,22 @@ class FolkEar:
         np.add.at(self._strong_hist, idx, 1)
         stroke_at = max(strong_at, _STROKE_SHARE
                         * float(np.percentile(att[audible], _STROKE_PCT)))
-        widths, last = _strokes(att, audible, stroke_at, self._last_stroke)
+        found: list = []
+        widths, last = _strokes(att, audible, stroke_at, self._last_stroke, at=found)
         self._onsets += len(widths)
-        self._raked += sum(int(w >= _RAKE_HOPS) for w in widths)
+        self._raked += sum(int(w >= _RAKE_HOPS and self._chord(seen[k + _CHROMA_AHEAD]))
+                           for w, k in zip(widths, found))
         self._keep_tail(seen, last)
+
+    @staticmethod
+    def _chord(frame) -> bool:
+        """More than one note sounds in ``frame`` (_STRUM_CHORD).  True where it has no
+        chroma to say."""
+        chroma = getattr(frame, "chroma", None)
+        if chroma is None:
+            return True
+        c = np.sort(np.asarray(chroma, dtype=float))
+        return bool(c[-1] <= 0.0 or c[-2] >= _STRUM_CHORD * c[-1])
 
     def _keep_tail(self, seen: list, last: int) -> None:
         self._tail = seen[-9:]
@@ -354,12 +374,6 @@ _CHROMA_HOLD_DB = 6.0
 #: it moves with the gain knob as she does.
 _SOUNDING_DB = 20.0
 _LEVEL_PCT = 95.0
-#: No input's own floor is taken to be quieter than this (dBFS).  A rest is told from a
-#: note by the level falling _SOUNDING_DB under her own, and with her own level under
-#: -46 dBFS that mark is down where an input's hiss can be: every rest would read as
-#: sounding.  The share of time she sounds is then not known, where a wrong one would
-#: turn the style with the gain knob.
-_QUIET_FLOOR_DB = -66.0
 #: Quieter than this is digital silence, not a level.  The level histogram has 1 dB bins
 #: from here to 0 dBFS.
 _FLOOR_DB = -100.0
@@ -407,16 +421,6 @@ class StrokeEar:
         k = int(np.searchsorted(np.cumsum(self._levels), _LEVEL_PCT / 100.0 * n))
         return _FLOOR_DB + k + 1.0
 
-    def sounding_share(self) -> float | None:
-        """The share of the hops heard in which she sounds: within _SOUNDING_DB of her
-        own level, as a stroke must be.  None before anything audible, and on an input
-        so quiet that the mark would sit in its floor (_QUIET_FLOOR_DB)."""
-        own = self.own_level_db()
-        if own is None or own - _SOUNDING_DB < _QUIET_FLOOR_DB:
-            return None
-        k = int(np.clip(own - _SOUNDING_DB - _FLOOR_DB, 0, _LEVEL_BINS - 1))
-        return float(self._levels[k:].sum() / self._levels.sum())
-
     def bar(self, frames) -> None:
         self.last_at = ()
         frames = [f for f in frames if f is not None]
@@ -453,7 +457,12 @@ class StrokeEar:
         widths, last = _strokes(att, ok, stroke_at, self._last_stroke, start=_RISE_BEFORE,
                                 slow=~risen, last_slow=self._last_slow,
                                 slow_sep=_LEGATO_SEP, at=found)
-        times = [getattr(seen[k], "t_s", None) for k in found]
+        # When each was played.  A note damped just before the next one is struck leaves
+        # an edge of its own, new by its pitch alone, and the strike that follows inside
+        # _LEGATO_SEP is then not counted again: the one stroke is timed at the strongest
+        # attack of the hops read after it, the strike, not the edge before it.
+        when = [k if risen[k] else k + int(np.argmax(att[k:k + 7])) for k in found]
+        times = [getattr(seen[k], "t_s", None) for k in when]
         self.last_at = tuple(float(t) for t in times if t is not None)
         if widths:
             self._last_slow = not bool(risen[last])
@@ -564,7 +573,7 @@ class StylePick:
             return Playing(strokes=busy)
         return Playing(strokes=busy, swing=self.rhythm_ear.swing,
                        offbeat=self.rhythm_ear.offbeat,
-                       sounding=self.stroke_ear.sounding_share(),
+                       steady=self.rhythm_ear.steady,
                        strum=None if self.folk_ear is None else self.folk_ear.strum_share)
 
     def at_count(self, bpm: float) -> str:
@@ -591,8 +600,8 @@ class StylePick:
                    else f"swing {playing.swing:.2f}")
         if playing.offbeat is not None:
             out.append(f"off the beat {playing.offbeat:.0%}")
-        if playing.sounding is not None:
-            out.append(f"sounding {playing.sounding:.0%}")
+        out.append("steady: too few strokes" if playing.steady is None
+                   else f"steady {playing.steady:.0%}")
         out.append("strum: not heard on this input" if self.folk_ear is None
                    else self.folk_ear.why())
         return out

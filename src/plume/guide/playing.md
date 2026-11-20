@@ -43,16 +43,16 @@ and from 70 up it plays half-time with the snare on 3.
 
 A guessed style is only a guess. Your tempo says which styles it could be, and on a direct
 input how you play picks one: whether your eighth notes swing, how many strokes you play to
-a beat, whether they fall on the beat or between, whether you let notes ring or leave gaps,
-and whether you strum. Swung eighths lean to jazz, a light swing to lofi, hip hop or r&b,
-stabs between the beats to house, a few notes with space to trap or lofi, and busy playing
-that rings on to midwest or synthwave. A room mic hears plume's own drums too, so there the
-guess comes from your tempo and key alone.
+a beat, whether they fall on the beat or between, how even they are, and whether you strum.
+Swung eighths lean to jazz, stabs between the beats to house, a busy even pulse to
+synthwave, busy uneven playing to midwest, and a few notes with space to trap, lofi, hip hop
+or r&b. How loud you play does not change the guess. A room mic hears plume's own drums too,
+so there the guess comes from your tempo and key alone.
 
-Plume guesses folk when it hears you strumming steadily, on a direct input, between 60 and
-132 bpm. A strum drags the pick across the strings, and plume hears the attack last longer
-than a picked note's. Fingerpicking and very quick strums are not heard as folk. Name the
-style you want whenever the guess is wrong: a named style always wins.
+Plume guesses folk for plain playing on the beat, between 60 and 132 bpm, and a strum counts
+toward it. A strum drags the pick across the strings of a chord, and plume hears the attack
+last longer than a picked note's. Very quick strums are not heard as strums. Name the style
+you want whenever the guess is wrong: a named style always wins.
 
 ## Busier and sparser
 

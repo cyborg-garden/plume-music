@@ -6,7 +6,7 @@ synths.  Each bar's notes are already known before the audio is made
 as well: one channel per band part, so a DAW such as Ableton Live can put its own
 instrument on each part.  See docs/PLAYING.md, "Sending the band to Ableton".
 
-Three parts:
+Four parts:
 
 - :func:`bar_notes` turns one bar's events into notes: channel, pitch, velocity,
   and the stream samples they start and stop on.  Pure.
@@ -15,6 +15,8 @@ Three parts:
 - :class:`BandMidi` owns the port and a sender thread.  The planner hands it a
   bar about a bar ahead; the sender sends each message when plume's own sound of
   that note would reach the speaker, plus an offset the player sets.
+- :class:`BandFile` keeps what the port was sent, so a take with ``--record`` has
+  the band as a standard MIDI file, ``band.mid``, beside its audio.
 
 Nothing here runs in the audio callback.  The sender reads the playhead the
 callback advances, which is a plain integer, and works out the wall-clock time of
@@ -28,8 +30,12 @@ from __future__ import annotations
 import collections
 import heapq
 import itertools
+import math
+import os
+import struct
 import threading
 import time
+from pathlib import Path
 
 from .midi import MidiError, _import_mido
 
@@ -63,6 +69,20 @@ POLL_S = 0.001
 CLOCK_WINDOW_S = 2.0
 #: How long to wait on a port opening, listing or closing, like plume.midi.
 PORT_TIMEOUT_S = 2.0
+
+#: Ticks per quarter note in a take's ``band.mid``: under a millisecond at any tempo
+#: plume plays.
+TICKS_PER_BEAT = 960
+#: The file's tempo when no bar said one.
+DEFAULT_FILE_BPM = 120.0
+#: The most note messages a take's file keeps, each a few bytes until the file is
+#: written: about a hundred thousand notes, far more than an hour of the band sends.
+#: Past it new notes are left out and every note already in still ends.
+MAX_FILE_MESSAGES = 200_000
+#: The most bar tempos kept for the file's tempo: more bars than the longest take has.
+MAX_FILE_TEMPOS = 16_384
+#: How long a take's ending waits on its ``band.mid`` being written.
+FILE_WRITE_S = 15.0
 
 #: Message order at the same sample: a note-off goes before a note-on, so a note
 #: struck again on the beat it ends is a new note, not a cut-off one.
@@ -161,19 +181,24 @@ class Schedule:
 
     def due(self, upto: float) -> list[tuple]:
         """The messages at or before stream sample ``upto``, as ``(kind, ch, a, b)``."""
+        return [m for _s, m in self.due_timed(upto)]
+
+    def due_timed(self, upto: float) -> list[tuple]:
+        """:meth:`due`, each message with the stream sample it is for:
+        ``(sample, (kind, ch, a, b))``."""
         out = []
         while self._pending and self._pending[0][0] <= upto:
-            _s, _o, _q, kind, ch, note, vel, nid, _k = heapq.heappop(self._pending)
+            s, _o, _q, kind, ch, note, vel, nid, _k = heapq.heappop(self._pending)
             where = (ch, note)
             if kind == "on":
                 if where in self._sounding:
-                    out.append(("off", ch, note, 0))
+                    out.append((s, ("off", ch, note, 0)))
                 self._sounding[where] = nid
                 self.channels.add(ch)
-                out.append(("on", ch, note, vel))
+                out.append((s, ("on", ch, note, vel)))
             elif self._sounding.get(where) == nid:
                 del self._sounding[where]
-                out.append(("off", ch, note, 0))
+                out.append((s, ("off", ch, note, 0)))
         return out
 
     def unsent_off(self, ch: int, note: int) -> None:
@@ -237,6 +262,172 @@ class StreamClock:
 
     def sample_at(self, t: float) -> float:
         return (t - self._low[0][1]) * self._sr
+
+
+def _track_names() -> dict[int, str]:
+    """What each channel's track in ``band.mid`` is called: the parts sent on it."""
+    names: dict[int, list[str]] = {}
+    for role, ch in ROLE_CHANNELS.items():
+        names.setdefault(ch, []).append(role)
+    out = {ch: " and ".join(roles) for ch, roles in names.items()}
+    out[OTHER_CHANNEL] = "other"
+    out[DRUM_CHANNEL] = "drums"
+    return out
+
+
+#: One kept message: stream sample, on (1) or off (0), channel, note, velocity.
+_KEPT = struct.Struct("<qBBBB")
+
+
+class BandFile:
+    """What a take's port was sent, written as a standard MIDI file when it ends.
+
+    The sender hands over each note message with the stream sample it is for: where
+    plume's own sound of it starts, so sample 0 is the first sample of the take's
+    ``machine.wav`` and ``human.wav``, whatever the latency and offset did to when
+    the port got it.  Messages are kept packed, a few bytes each, up to
+    ``max_messages`` (with room always left to end every note), and the file is
+    written once, at the end: a MIDI file's tracks carry their lengths, so it cannot
+    grow as the take does.  It goes to a temporary name first, so an ending cut short
+    leaves no half file.
+
+    One track per channel, named for its parts, and one tempo: the median of the
+    tempos the bars were planned at.  Times are converted at that tempo from the
+    stream sample, so every note sits at the right time in a DAW even when the take's
+    tempo moved; only the bar lines are approximate then.
+
+    Only notes are kept.  The All Notes Off and sustain messages a take starts and
+    ends with are for a live port; in the file every note ends with its own off.
+    Never raises from :meth:`add`; :meth:`write` notes a failure in :attr:`errors`.
+    """
+
+    def __init__(self, path, *, sr: int = 48000, max_messages: int = MAX_FILE_MESSAGES):
+        self.path = Path(path)
+        self.sr = int(sr)
+        self.max_messages = int(max_messages)
+        self.dropped = 0
+        self.errors: list[str] = []
+        self._kept = bytearray()
+        self._n = 0
+        self._sounding: set[tuple[int, int]] = set()
+        self._tempos: list[float] = []
+        self._last = 0
+        self._done = False
+        self._lock = threading.Lock()
+
+    def __len__(self) -> int:
+        return self._n
+
+    def tempo(self, bpm) -> None:
+        """One bar's tempo, for the file's."""
+        try:
+            bpm = float(bpm)
+        except (TypeError, ValueError):
+            return
+        if math.isfinite(bpm) and 10.0 <= bpm <= 400.0:
+            with self._lock:
+                if len(self._tempos) < MAX_FILE_TEMPOS:
+                    self._tempos.append(bpm)
+
+    def add(self, sample, kind: str, ch: int, note: int, vel: int) -> None:
+        """One message as it went to the port.  Anything but a note is not kept, nor
+        an off for a note not sounding."""
+        if kind not in ("on", "off"):
+            return
+        where = (int(ch), int(note))
+        sample = max(0, int(sample))
+        with self._lock:
+            if self._done:
+                return
+            if kind == "on":
+                if where in self._sounding:          # the sender ends it first; still
+                    self._keep(sample, 0, *where, 0)
+                    self._sounding.discard(where)
+                # Room for this on, its off and the off of every note now sounding.
+                if self._n + len(self._sounding) + 2 > self.max_messages:
+                    self.dropped += 1
+                    return
+                self._sounding.add(where)
+                self._keep(sample, 1, *where, max(1, min(127, int(vel))))
+            elif where in self._sounding:
+                self._sounding.discard(where)
+                self._keep(sample, 0, *where, 0)
+
+    def end(self, sample=None) -> None:
+        """End every note still sounding, at ``sample`` or the last message's."""
+        with self._lock:
+            at = self._last if sample is None else max(self._last, int(sample))
+            for ch, note in sorted(self._sounding):
+                self._keep(at, 0, ch, note, 0)
+            self._sounding.clear()
+
+    def _keep(self, sample: int, on: int, ch: int, note: int, vel: int) -> None:
+        self._kept += _KEPT.pack(sample, on, ch, note, vel)
+        self._n += 1
+        self._last = max(self._last, sample)
+
+    def bpm(self) -> float:
+        with self._lock:
+            tempos = sorted(self._tempos)
+        return tempos[len(tempos) // 2] if tempos else DEFAULT_FILE_BPM
+
+    def write(self, end_at=None, *, mido=None) -> bool:
+        """End every note, write the file, and keep nothing more.  Once only."""
+        if self._done:
+            return False
+        self.end(end_at)
+        with self._lock:
+            self._done = True
+            kept, self._kept = self._kept, bytearray()
+        try:
+            if mido is None:
+                from .midi import _import_mido  # noqa: PLC0415
+                mido = _import_mido()
+            # Ticks from the tempo as the file stores it, whole microseconds a beat:
+            # from the exact one an hour would drift by milliseconds.
+            tempo_us = int(mido.bpm2tempo(self.bpm()))
+            per_tick = self.sr * tempo_us / (1e6 * TICKS_PER_BEAT)    # samples a tick
+            by_ch: dict[int, list[tuple[int, int, int, int, int]]] = {}
+            for i, (s, on, ch, note, vel) in enumerate(_KEPT.iter_unpack(kept)):
+                by_ch.setdefault(ch, []).append((s, i, on, note, vel))
+            del kept
+            f = mido.MidiFile(type=1, ticks_per_beat=TICKS_PER_BEAT)
+            head = mido.MidiTrack()
+            head.append(mido.MetaMessage("track_name", name="plume band", time=0))
+            head.append(mido.MetaMessage("set_tempo", tempo=tempo_us, time=0))
+            head.append(mido.MetaMessage("time_signature", numerator=4, denominator=4,
+                                         time=0))
+            head.append(mido.MetaMessage("end_of_track", time=0))
+            f.tracks.append(head)
+            names = _track_names()
+            for ch in sorted(by_ch):
+                track = mido.MidiTrack()
+                track.append(mido.MetaMessage("track_name", name=names.get(ch, "other"),
+                                              time=0))
+                prev = 0
+                # In the order they were sent, which pairs every on with its off.  A
+                # bar queued late under a negative offset can go out behind one sent
+                # before it; it is then put no earlier than that one.
+                for s, _i, on, note, vel in by_ch[ch]:
+                    tick = max(prev, int(round(s / per_tick)))
+                    track.append(mido.Message("note_on" if on else "note_off",
+                                              channel=ch, note=note, velocity=vel,
+                                              time=tick - prev))
+                    prev = tick
+                track.append(mido.MetaMessage("end_of_track", time=0))
+                f.tracks.append(track)
+            tmp = self.path.with_name(self.path.name + ".tmp")
+            try:
+                f.save(str(tmp))
+                os.replace(tmp, self.path)
+            finally:
+                if tmp.exists():
+                    tmp.unlink()
+        except Exception as e:             # noqa: BLE001 - never take the take down
+            if len(self.errors) < 20:
+                self.errors.append(f"band.mid: {e}")
+            return False
+        return True
 
 
 def _message(mido, kind: str, ch: int, a: int, b: int):
@@ -307,12 +498,17 @@ class BandMidi:
 
     The planner calls :meth:`bar` and :meth:`move`; the sender thread does the
     rest.  :meth:`close` ends every sounding note whatever happened before it.
+
+    ``file``: a :class:`BandFile` that keeps every note sent, written by :meth:`close`
+    when the take had started.
     """
 
     def __init__(self, port: str, *, virtual: bool = False, only: bool = False,
                  offset_s: float = 0.0, sr: int = 48000, block: int = 256,
-                 clock=time.perf_counter, poll_s: float = POLL_S):
+                 clock=time.perf_counter, poll_s: float = POLL_S,
+                 file: BandFile | None = None):
         self.port = port
+        self.file = file
         self.virtual = bool(virtual)
         self.only = bool(only)
         self.offset_s = float(offset_s)
@@ -377,16 +573,31 @@ class BandMidi:
             self._thread.start()
         return self
 
-    def close(self, *, timeout: float = 1.0) -> None:
-        """Stop sending, end every sounding note, close the port.  Safe twice.
+    def close(self, *, timeout: float = 1.0, file_timeout: float = FILE_WRITE_S) -> None:
+        """Stop sending, write the take's file, end every sounding note, close the
+        port.  Safe twice.
 
-        Bounded by about three times ``timeout`` whatever the driver does: a send
-        that never returns costs the release, never the caller.  Once closing, no
-        note-on goes out, so nothing can follow the final All Notes Off.
+        Bounded by about three times ``timeout`` plus ``file_timeout`` whatever the
+        driver does: a send that never returns costs the release, never the caller.
+        Once closing, no note-on goes out, so nothing can follow the final All Notes
+        Off.  The file is written before the port is let go of, and needs nothing
+        from it: in the file every note still sounding ends where the take did.
         """
         self._closing.set()
         if self._thread is not None and self._thread is not threading.current_thread():
             self._thread.join(timeout)
+        band_file, self.file = self.file, None
+        if band_file is not None and self._playhead is not None:
+            try:
+                end_at = int(self._playhead())
+            except Exception:              # noqa: BLE001 - the last message's, then
+                end_at = None
+            try:
+                _bounded(lambda: band_file.write(end_at), file_timeout, "write band.mid")
+            except Exception as e:         # noqa: BLE001 - the take is over
+                self._note(f"midi out: {e}")
+            for e in band_file.errors:
+                self._note(f"midi out: {e}")
         try:
             _bounded(self._release, timeout, "take the notes off")
         except Exception as e:             # noqa: BLE001 - it is going anyway
@@ -409,9 +620,13 @@ class BandMidi:
 
     # ------------------------------------------------------------ the planner
 
-    def bar(self, at: int, events, *, key=None) -> None:
+    def bar(self, at: int, events, *, key=None, bpm=None) -> None:
         """Queue one bar's events, its audio starting at stream sample ``at``.
-        ``key`` names the bar for :meth:`move`; by default its sample."""
+        ``key`` names the bar for :meth:`move`; by default its sample.  ``bpm`` is
+        the tempo it was planned at, for the take's file."""
+        band_file = self.file
+        if band_file is not None and bpm is not None:
+            band_file.tempo(bpm)
         notes = bar_notes(events, at, self._sr)
         if self._playhead is not None:
             # The audio of a note that starts before the playhead is cut off, so
@@ -446,8 +661,8 @@ class BandMidi:
             if self._released:
                 return 0
             with self._lock:
-                msgs = self._schedule.due(upto)
-            return self._send(msgs)
+                timed = self._schedule.due_timed(upto)
+            return self._send([m for _s, m in timed], [s for s, _m in timed])
 
     def _run(self) -> None:
         while not self._closing.is_set():
@@ -457,16 +672,21 @@ class BandMidi:
                 self._note(f"midi out: {e}")
             self._closing.wait(self._poll_s)
 
-    def _send(self, msgs) -> int:
+    def _send(self, msgs, samples=None) -> int:
         """Send in order; called holding the send lock.  Once closing, note-ons are
-        left out: release ends every note marked sounding, sent or not."""
+        left out: release ends every note marked sounding, sent or not.  With the
+        stream ``samples`` they are for, each message handed to the port is kept in
+        the take's file, whether or not the port took it: the file is the band."""
         handle, mido = self._handle, self._mido
         if handle is None or mido is None:
             return 0
+        band_file = self.file if samples is not None else None
         n = 0
-        for kind, ch, a, b in msgs:
+        for i, (kind, ch, a, b) in enumerate(msgs):
             if kind == "on" and self._closing.is_set():
                 continue
+            if band_file is not None:
+                band_file.add(samples[i], kind, ch, a, b)
             try:
                 handle.send(_message(mido, kind, ch, a, b))
                 self.sent += 1

@@ -13,7 +13,7 @@ from conftest import fake_audio, patched_module, short_socket_path
 
 from plume import cli, midiout, realtime
 from plume import mind as mind_mod
-from plume.midiout import (DRUM_CHANNEL, BandMidi, Schedule, StreamClock, bar_notes,
+from plume.midiout import (DRUM_CHANNEL, BandFile, BandMidi, Schedule, StreamClock, bar_notes,
                            resolve_output)
 
 SR = 48000
@@ -26,9 +26,14 @@ class Msg:
         self.__dict__.update(kw)
 
     def as_tuple(self):
-        if self.type == "control_change":
-            return ("cc", self.channel, self.control, self.value)
-        return (self.type[5:], self.channel, self.note, self.velocity)
+        return as_tuple(self)
+
+
+def as_tuple(msg):
+    """A message as ``(kind, channel, a, b)``: the fake's, or a real mido one."""
+    if msg.type == "control_change":
+        return ("cc", msg.channel, msg.control, msg.value)
+    return (msg.type[5:], msg.channel, msg.note, msg.velocity)
 
 
 class FakeOut:
@@ -40,7 +45,7 @@ class FakeOut:
 
     def send(self, msg):
         assert not self.closed
-        self.sent.append((self.now(), msg.as_tuple()))
+        self.sent.append((self.now(), as_tuple(msg)))
 
     def close(self):
         self.closed = True
@@ -183,12 +188,12 @@ def test_a_moved_bar_moves_again_by_its_new_place():
 class Rig:
     """A BandMidi on a fake port and a fake clock, with a playhead the test moves."""
 
-    def __init__(self, *, only=False, offset_s=0.0, latency_s=0.0):
+    def __init__(self, *, only=False, offset_s=0.0, latency_s=0.0, file=None):
         self.mido = FakeMidoOut()
         self.t = 0.0
         self.playhead = 0
         self.band = BandMidi("IAC Driver Bus 1", only=only, offset_s=offset_s, sr=SR,
-                             block=BLOCK, clock=lambda: self.t)
+                             block=BLOCK, clock=lambda: self.t, file=file)
         with patched_module("mido", self.mido):
             self.band.open()
         self.port = self.mido.ports[0]
@@ -604,14 +609,17 @@ class TestLive:
         assert not sd.streams
 
     @pytest.mark.parametrize("only", [False, True], ids=["both", "midi-only"])
-    def test_a_lead_take_sends_its_band_and_ends_every_note(self, only, plume_registry):
+    def test_a_lead_take_sends_its_band_and_ends_every_note(self, only, plume_registry,
+                                                           tmp_path):
         """The machine plays from its first bar, so notes go out with no input at all.
-        With --midi-only the device hears none of the band."""
-        sd, mido = fake_audio(None, rate_x=6.0), FakeMidoOut()
+        With --midi-only the device hears none of the band.  Either way the take's
+        folder keeps what was sent as band.mid."""
+        sd, mido = fake_audio(None, rate_x=6.0), RealFileMido()
+        rec = tmp_path / "take"
         with patched_module("sounddevice", sd), patched_module("mido", mido):
             realtime.lead(prompt="lofi at 120 bpm", seed=0, status=False, max_minutes=0.04,
                           socket_path=short_socket_path("mo-lead"), midi_out="iac",
-                          midi_only=only)
+                          midi_only=only, record_dir=str(rec))
         port = mido.ports[0]
         sent = [m for _t, m in port.sent]
         assert port.closed and port.name == "IAC Driver Bus 1"
@@ -620,6 +628,12 @@ class TestLive:
         assert paired([m for m in sent if m[0] != "cc"])
         assert ("cc", DRUM_CHANNEL, 123, 0) in sent
         assert sd.stream.sounded() is not only
+        bpm, tracks = read_band(rec / realtime.REC_BAND)
+        assert bpm == pytest.approx(120.0, abs=0.5)
+        assert sorted(n[1:] for notes in tracks.values() for n in notes
+                      if n[1] == "on") == sorted(m for m in sent if m[0] == "on")
+        for notes in tracks.values():
+            assert paired([n[1:] for n in notes]) and notes[-1][1] == "off"
 
     def test_jam_hands_the_port_to_lead(self, monkeypatch):
         seen = {}
@@ -658,3 +672,185 @@ class TestCli:
         monkeypatch.setattr(realtime, "jam", lambda **_k: None)
         assert cli.main(["jam", *flags]) != 0
         assert "--midi-out" in capsys.readouterr().err
+
+
+# ------------------------------------------------ band.mid: what was sent, kept
+
+def read_band(path):
+    """A written band.mid read back with mido: its tempo and, per track name, the notes
+    as ``(seconds, kind, channel, note, velocity)``."""
+    mido = pytest.importorskip("mido")
+    f = mido.MidiFile(str(path))
+    assert f.type == 1
+    tempos = [m.tempo for m in f.tracks[0] if m.type == "set_tempo"]
+    assert len(tempos) == 1
+    tracks = {}
+    for tr in f.tracks[1:]:
+        t, name, notes = 0, None, []
+        for m in tr:
+            t += m.time
+            if m.type == "track_name":
+                name = m.name
+            elif m.type in ("note_on", "note_off"):
+                kind = "on" if m.type == "note_on" and m.velocity else "off"
+                notes.append((mido.tick2second(t, f.ticks_per_beat, tempos[0]), kind,
+                              m.channel, m.note, m.velocity))
+        assert tr[-1].type == "end_of_track"
+        tracks[name] = notes
+    return mido.tempo2bpm(tempos[0]), tracks
+
+
+def test_a_take_keeps_what_it_sent_as_a_midi_file_at_the_audios_time(tmp_path):
+    path = tmp_path / "band.mid"
+    rig = Rig(latency_s=0.02, file=BandFile(path, sr=SR))
+    rig.band.bar(SR // 2, BAR, bpm=100.0)           # the bar's audio starts at 0.5 s
+    rig.band.bar(4 * SR, BAR, bpm=100.0)            # queued, never reached
+    rig.run(0.8)                                    # the pad still sounds at the end
+    rig.playhead = int(0.8 * SR)
+    rig.band.close()
+    bpm, tracks = read_band(path)
+    assert bpm == pytest.approx(100.0)
+    assert set(tracks) == {"bass", "pad and keys", "drums"}
+    sent = [m for m in rig.sent() if m[0] != "cc"]
+    kept = sorted((t, kind, ch, n, v) for notes in tracks.values()
+                  for t, kind, ch, n, v in notes)
+    # Every note the port was sent is in the file, and on the channel it was sent on.
+    assert sorted(m for m in sent if m[0] == "on") == sorted(
+        (k, ch, n, v) for _t, k, ch, n, v in kept if k == "on")
+    assert all(ch == {"bass": 0, "pad and keys": 1, "drums": DRUM_CHANNEL}[name]
+               for name, notes in tracks.items() for _t, _k, ch, _n, _v in notes)
+    tick = 60.0 / 100.0 / midiout.TICKS_PER_BEAT
+    at = {(k, ch, n): t for t, k, ch, n, _v in kept}
+    # At the time plume's own sound of each note starts, not when the port was sent it.
+    assert at[("on", 9, 36)] == pytest.approx(0.5, abs=tick)
+    assert at[("off", 9, 36)] == pytest.approx(0.55, abs=tick)
+    assert at[("on", 9, 42)] == pytest.approx(0.75, abs=tick)
+    assert at[("on", 1, 60)] == pytest.approx(0.5, abs=tick)
+    assert at[("off", 1, 60)] == pytest.approx(0.8, abs=tick)   # let go at the end
+    for notes in tracks.values():
+        assert paired([(k, ch, n, v) for _t, k, ch, n, v in notes])
+        assert notes[-1][1] == "off"
+    assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_the_files_tempo_is_the_takes_and_its_times_do_not_drift(tmp_path):
+    f = BandFile(tmp_path / "band.mid", sr=SR)
+    for bpm in (88.0, 90.0, 90.0, 91.0, 240.0):     # one wild bar does not move it
+        f.tempo(bpm)
+    f.tempo(float("nan"))
+    one_hour = 3600 * SR
+    f.add(one_hour, "on", 0, 40, 90)
+    f.add(one_hour + SR, "off", 0, 40, 0)
+    assert f.write()
+    bpm, tracks = read_band(f.path)
+    assert bpm == pytest.approx(90.0)
+    tick = 60.0 / 90.0 / midiout.TICKS_PER_BEAT
+    assert [round(t / tick) * tick for t, *_ in tracks["bass"]] == pytest.approx(
+        [3600.0, 3601.0], abs=tick)
+    g = BandFile(tmp_path / "none.mid", sr=SR)
+    g.add(0, "on", 9, 36, 100)
+    assert g.write()
+    assert read_band(g.path)[0] == pytest.approx(midiout.DEFAULT_FILE_BPM)
+
+
+def test_the_file_is_bounded_and_still_ends_every_note(tmp_path):
+    f = BandFile(tmp_path / "band.mid", sr=SR, max_messages=6)
+    for i in range(20):
+        f.add(i * 100, "on", 1, 60 + i % 3, 80)
+        f.add(i * 100 + 50, "off", 1, 60 + i % 3, 0)
+    f.add(5000, "on", 1, 72, 80)                     # past the cap: dropped
+    f.add(4000, "off", 0, 33, 0)                     # an off for no note: not kept
+    assert f.dropped == 18
+    f.add(5000, "cc", 1, 123, 0)                     # not a note: not kept
+    assert len(f) == 6
+    g = BandFile(tmp_path / "held.mid", sr=SR, max_messages=4)
+    g.add(0, "on", 0, 40, 90)
+    g.add(10, "on", 1, 60, 90)
+    g.add(20, "on", 2, 70, 90)                       # no room: the two held still end
+    g.end(SR)
+    assert len(g) == 4 and g.dropped == 1
+    assert g.write()
+    _bpm, tracks = read_band(g.path)
+    assert [n[1:] for notes in tracks.values() for n in notes] == [
+        ("on", 0, 40, 90), ("off", 0, 40, 0), ("on", 1, 60, 90), ("off", 1, 60, 0)]
+    assert f.write() and paired([n[1:] for notes in read_band(f.path)[1].values()
+                                 for n in notes])
+
+
+def test_the_notes_are_let_go_of_before_the_file_is_written(tmp_path):
+    rig = Rig(file=BandFile(tmp_path / "band.mid", sr=SR))
+    rig.band.bar(0, BAR, bpm=120.0)
+    rig.run(0.6)
+    order = []
+    real_write = rig.band.file.write
+    rig.band.file.write = lambda *a, **k: (order.append(("write", len(rig.sent()))),
+                                           real_write(*a, **k))[1]
+    rig.band.close()
+    assert order and order[0][1] == len(rig.sent())  # every release message before it
+    assert rig.sent()[-1] == ("cc", 9, 123, 0)
+    assert (tmp_path / "band.mid").exists()
+
+
+def test_a_file_that_cannot_be_written_costs_the_file_not_the_take(tmp_path):
+    (tmp_path / "taken").write_text("not a folder")
+    f = BandFile(tmp_path / "taken" / "band.mid", sr=SR)
+    f.add(0, "on", 0, 40, 90)
+    assert f.write() is False and f.errors
+    assert f.write() is False                        # once is all it tries
+
+
+def test_a_band_that_never_started_writes_no_file(tmp_path):
+    band = BandMidi("IAC Driver Bus 1", sr=SR, block=BLOCK,
+                    file=BandFile(tmp_path / "band.mid", sr=SR))
+    with patched_module("mido", FakeMidoOut()):
+        band.open()
+    band.close()
+    assert not (tmp_path / "band.mid").exists()
+
+
+def test_a_hard_exit_keeps_the_file_past_a_stuck_driver(monkeypatch, tmp_path):
+    monkeypatch.setattr(realtime, "unregister_session", lambda *_a: None)
+    band = wedged_band()
+    band.file = BandFile(tmp_path / "band.mid", sr=SR)
+    band._playhead = lambda: SR
+    band.file.add(0, "on", 9, 36, 114)               # sounding when the driver stuck
+    began = time.monotonic()
+    realtime._hard_exit_cleanup(None, None, dict, band_midi=band)("test")
+    assert time.monotonic() - began < 2.0
+    _bpm, tracks = read_band(tmp_path / "band.mid")
+    assert [n[1:] for n in tracks["drums"]] == [("on", 9, 36, 114), ("off", 9, 36, 0)]
+
+
+def test_a_new_take_in_the_folder_drops_the_last_takes_band(tmp_path):
+    (tmp_path / realtime.REC_BAND).write_bytes(b"MThd old")
+    (tmp_path / f"{realtime.REC_BAND}.tmp").write_bytes(b"MThd cut short")
+    rec = realtime.SessionRecorder(tmp_path).open({})
+    rec.close()
+    assert not (tmp_path / realtime.REC_BAND).exists()
+    assert not (tmp_path / f"{realtime.REC_BAND}.tmp").exists()
+
+
+def test_a_note_sent_behind_an_earlier_one_still_makes_a_whole_file(tmp_path):
+    """A bar queued late under a negative offset can go out behind one already sent."""
+    f = BandFile(tmp_path / "band.mid", sr=SR)
+    f.add(SR, "on", 0, 40, 90)
+    f.add(2 * SR, "off", 0, 40, 0)
+    f.add(SR // 2, "on", 0, 43, 90)                  # sent after, for earlier
+    f.add(3 * SR, "off", 0, 43, 0)
+    assert f.write(), f.errors
+    _bpm, tracks = read_band(f.path)
+    times = [t for t, *_ in tracks["bass"]]
+    assert times == sorted(times) and len(times) == 4
+    assert paired([n[1:] for n in tracks["bass"]])
+
+
+class RealFileMido(FakeMidoOut):
+    """The fake ports, with mido's own messages and file classes, so a take run inside
+    it can write its band.mid."""
+
+    def __init__(self):
+        super().__init__()
+        mido = pytest.importorskip("mido")
+        for name in ("Message", "MetaMessage", "MidiFile", "MidiTrack", "bpm2tempo"):
+            setattr(self, name, getattr(mido, name))
+

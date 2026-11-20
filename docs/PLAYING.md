@@ -72,17 +72,20 @@ Add `--detect` and you need no prompt at all: `plume lead --tap-start --detect`.
 out whatever the prompt doesn't name as you play. It listens for the key, and after 16 bars
 with no settled key it takes its latest reading. If it has no reading at all, as with playing
 that has no tonal centre, the band keeps waiting on drums until it gets one. It picks a
-style from your tempo when you count, then once more as the band comes in, using your key and
-how busy you are. On a room mic it can't tell your notes from the drums, so busyness doesn't
-count there. These are guesses, and so are the thresholds behind them. Tempo, key and
-busyness are all it has, so a guess of `rnb`, `hiphop` or `house` only means a minor key
-with room in it at those tempos. Nothing it hears can tell jazz, so it only guesses `jazz`
-above 150 bpm, where no other style reaches, and only for a player a direct input knows is
-leaving a lot of room. Anyone else that fast gets `midwest`. To play jazz at other tempos or on
-a room mic, name it. The one guess from how you play is `folk`: on a direct input, between 60
-and 132 bpm, it listens for strumming, an attack that lasts while the pick crosses the
-strings. An acoustic sound and a major key count for more. It only answers when it is
-confident, so fingerpicking, a very quick strum or a room mic stays with the tempo rule. So far this has only run on a simulated device, never with a real guitar.
+style from your tempo when you count, then once more as the band comes in, from how you
+have played over the bars it heard. Your tempo says which styles it could be, each style's
+own range, and five things heard on a direct input pick among them: whether your eighths
+swing, how many strokes you play to a beat, how many of them fall off the beat, how much of
+the time you sound, and how many of your strokes are strums. Each style has a band for
+each, a style loses for what falls outside its bands, and the best score wins
+(`plume/playstyle.py` has the bands). `jazz` is its swing and `folk` is its strum, an attack
+that lasts while the pick crosses the strings, so fingerpicking or a very quick strum is
+not heard as folk. Steady eighths that ring on fit `midwest` and `synthwave` alike, and a
+minor key from 100 to 118 bpm turns that tie to `synthwave`. On a room mic it can't tell
+your notes from the drums, so there the guess is from your tempo and key alone. These are
+guesses, and the bands were set on generated parts, not on real players: name the style
+you want when it is wrong. Each take's `decisions.ndjson` gives the best two styles with
+their scores and everything heard, in `style_why`. So far this has only run on a simulated device, never with a real guitar.
 
 To stop from another terminal, run `plume stop` (`plume play` and `plume calibrate` too), or `plume sessions` to see what is
 running. A take also stops by itself after 60 minutes; `--max-minutes N` changes that.

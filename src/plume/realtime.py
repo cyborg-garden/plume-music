@@ -1342,12 +1342,22 @@ def _stream_output_latency_s(stream) -> float:
     return s if math.isfinite(s) and 0.0 <= s <= SELF_MASK_MAX_LATENCY_S else 0.0
 
 
-def _close_band_midi(band_midi, timeout: float = 1.0) -> None:
-    """Every sounding note ended and the port closed, whatever ended the take.
-    Bounded (see ``BandMidi.close``): a stuck driver cannot hold the ending."""
+def _record_band_midi(band_midi, rec_path) -> None:
+    """A take that sends its band and records keeps the band as ``band.mid``."""
+    if band_midi is not None and rec_path is not None:
+        from .midiout import BandFile  # noqa: PLC0415 - imported with the port
+        band_midi.file = BandFile(Path(rec_path) / REC_BAND, sr=SR)
+
+
+def _close_band_midi(band_midi, timeout: float = 1.0,
+                     file_timeout: float | None = None) -> None:
+    """Every sounding note ended and the port closed, whatever ended the take, and
+    the take's ``band.mid`` written.  Bounded (see ``BandMidi.close``): a stuck
+    driver cannot hold the ending."""
     if band_midi is not None:
         try:
-            band_midi.close(timeout=timeout)
+            kw = {} if file_timeout is None else {"file_timeout": file_timeout}
+            band_midi.close(timeout=timeout, **kw)
         except Exception:                          # noqa: BLE001 - the take is over
             pass
 
@@ -1834,6 +1844,8 @@ REC_MACHINE = "machine.wav"
 REC_ENDING = "ending.json"
 REC_VOICE = "voice.wav"
 REC_MIDI = "midi.ndjson"
+#: The band as a standard MIDI file, when the take sent it out with ``--midi-out``.
+REC_BAND = "band.mid"
 #: What the device reported about latency, written once the stream is open.
 REC_STREAM = "stream.json"
 #: Keep's sidecar.  Plain JSON beside the take, so it outlives the page that wrote it.
@@ -2083,6 +2095,9 @@ class SessionRecorder:
             # handle here means this take's own file.  Without one the file is the last take's.
             if self._midi is None:
                 (self.dir / REC_MIDI).unlink(missing_ok=True)
+            # Written at the end of a take that sends its band, so any here is the last's.
+            (self.dir / REC_BAND).unlink(missing_ok=True)
+            (self.dir / f"{REC_BAND}.tmp").unlink(missing_ok=True)
             if not self._want_voice:
                 (self.dir / REC_VOICE).unlink(missing_ok=True)
             if manifest is not None:
@@ -2728,6 +2743,8 @@ class HardExit:
 
 #: How long a hard exit waits on each step of letting go of the band's MIDI notes.
 HARD_EXIT_MIDI_S = 0.3
+#: How long a hard exit waits on the take's ``band.mid`` being written.
+HARD_EXIT_BAND_FILE_S = 3.0
 
 
 def _hard_exit_cleanup(recorder: "SessionRecorder | None", cues: "CueServer | None",
@@ -2755,7 +2772,8 @@ def _hard_exit_cleanup(recorder: "SessionRecorder | None", cues: "CueServer | No
                 pass
         unregister_session()
         # Last, and briefly: the take is safe on disk first, whatever the driver does.
-        _close_band_midi(band_midi, timeout=HARD_EXIT_MIDI_S)
+        _close_band_midi(band_midi, timeout=HARD_EXIT_MIDI_S,
+                         file_timeout=HARD_EXIT_BAND_FILE_S)
 
     return _cleanup
 
@@ -2904,6 +2922,7 @@ def jam(*, style: str, seed: int, params, device: str | None = None,
     rec_path = None if record_dir is None else Path(record_dir)
     _refuse_a_kept_take(rec_path)
     recorder = None if rec_path is None else SessionRecorder(rec_path)
+    _record_band_midi(band_midi, rec_path)
 
     extractor = FeatureExtractor(sr=SR)
     tkw: dict = {}
@@ -3132,7 +3151,7 @@ def jam(*, style: str, seed: int, params, device: str | None = None,
         # ROOM on the human's downbeat, not a round trip after it.
         at = int(round(beat_state.next_downbeat_t_s * SR)) - comp["samples"]
         if band_midi is not None:
-            band_midi.bar(at, duet.last_events)
+            band_midi.bar(at, duet.last_events, bpm=beat_state.bpm)
             audio = band_midi.heard(audio)
         timeline.write_at(at, audio)
         if sounding_bar:
@@ -3229,7 +3248,8 @@ def jam(*, style: str, seed: int, params, device: str | None = None,
                         if audio.shape[0]:
                             at = max(timeline.playhead, timeline.end)
                             if band_midi is not None:
-                                band_midi.bar(at, duet.last_events)
+                                band_midi.bar(at, duet.last_events,
+                                              bpm=beat_state.bpm)
                                 audio = band_midi.heard(audio)
                             sounded = timeline.write_at(at, audio)
                             if sounded:
@@ -5208,6 +5228,7 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
     _refuse_a_kept_take(rec_path)
     recorder = (None if rec_path is None
                 else SessionRecorder(rec_path, voice=route.voice is not None))
+    _record_band_midi(band_midi, rec_path)
 
     extractor = FeatureExtractor(sr=SR)
     tkw: dict = {}
@@ -5901,7 +5922,7 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
             audio = _fx.limiter(audio, TAP_START_CEILING_DB)
         at = int(round(t_bar * SR)) - comp_samples[0]
         if band_midi is not None:
-            band_midi.bar(at, duet.last_events)
+            band_midi.bar(at, duet.last_events, bpm=mbeat.bpm)
         timeline.write_at(at, audio if band_midi is None else band_midi.heard(audio))
         loop_events = looper.pop_events()
         if looper.active:

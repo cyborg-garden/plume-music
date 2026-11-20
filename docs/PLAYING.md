@@ -530,8 +530,12 @@ while the take runs. It works with `jam` and `lead`. Each part has its own chann
 
 `--midi-only` keeps plume's own band silent, so you hear only Ableton's. Your own sound
 on Hear me, and loops, still come from plume, and a loop still makes room for the band
-as if plume were playing it. With `--record`, `machine.wav` then holds no band: record
-it in Ableton. Use `--midi-only` with `--midi`, a direct input or headphones: on a room
+as if plume were playing it. With `--record`, `machine.wav` then holds no band, but the
+take's folder still has it: any take with `--midi-out` and `--record` writes `band.mid`
+when it ends, a standard MIDI file of every note sent. It has one track per part, on the
+channels above, and the take's tempo, and its time 0 is the start of `machine.wav`, so
+dragged into a DAW at the take's start each note lands where plume's own sound of it
+would have. Use `--midi-only` with `--midi`, a direct input or headphones: on a room
 mic plume can't take Ableton's band out of what it hears, so it would hear the band as
 you.
 

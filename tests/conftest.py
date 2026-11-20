@@ -73,6 +73,11 @@ if str(SRC) not in sys.path:
 
 from plume import realtime  # noqa: E402
 
+# Live-path tests read the key from chroma whether or not the optional note model is
+# installed, so a take decides the same on every machine and the model's cost stays
+# out of the timed tests.  tests/test_key_notes.py covers the note reading itself.
+os.environ.setdefault(realtime.NOTES_ENV, "0")
+
 SR = realtime.SR
 
 #: The longest ``hold`` can pause the fake device: a wedge must still fail the test.

@@ -65,10 +65,12 @@ jobs:
         with:
           node-version: "22"
 
+      # The notes extra (onnxruntime) so the note listener and its key reading are run
+      # on every OS; live-path tests keep the chroma reading (tests/conftest.py).
       - name: Install
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e ".[play,midi]" pytest "pytest-rerunfailures==16.7"
+          python -m pip install -e ".[play,midi,notes]" pytest "pytest-rerunfailures==16.7"
 
       - name: Test
         shell: bash

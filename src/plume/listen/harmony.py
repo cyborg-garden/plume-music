@@ -186,6 +186,55 @@ _KEY_DUTY_FLOOR = 0.5
 # times; what the ramp changes is how loudly an unsettled belief speaks.
 _KEY_COMMIT_EVIDENCE_S = 8.0
 
+# ---- Key from NOTES (optional: listen/notes.py) ---------------------------
+#
+# When the optional pitch model is installed the key is read from transcribed
+# notes instead of from chroma.  Chroma is the energy in each pitch class,
+# overtones included: a note's third harmonic lands on its fifth and its fifth
+# harmonic on its major third, so a chroma histogram leans every key toward its
+# dominant and its major-third colour, and one ringing low string spreads over
+# several pitch classes.  The model reports the notes themselves, one per piano
+# key, so what is counted is how long each note sounded.
+#
+# _NOTE_ON.  A model frame counts a note as sounding above this probability; its
+# weight is then that probability, so a held note counts for its length.
+_NOTE_ON = 0.3
+# The profiles a histogram of note durations is matched against: Albrecht and
+# Shanahan's (2013) key profiles, which are themselves note-duration
+# distributions measured on scores.  The probe-tone profiles above are listener
+# ratings; matched against notes rather than chroma they over-weight the minor
+# third (measured: most of their errors on notes were the parallel key).
+_AS_MAJOR = np.array([0.238, 0.006, 0.111, 0.006, 0.137, 0.094,
+                      0.016, 0.214, 0.009, 0.080, 0.008, 0.081])
+_AS_MINOR = np.array([0.220, 0.006, 0.104, 0.123, 0.019, 0.103,
+                      0.012, 0.214, 0.062, 0.022, 0.061, 0.052])
+# _NOTE_MASS_FLOOR.  Decayed note-frames (probability-weighted) before the note
+# histogram may name a key: about a quarter second of one sounding note.
+_NOTE_MASS_FLOOR = 20.0
+#
+# The OPENING NOTE.  A loop through the same chords holds the same notes for the
+# same lengths whichever chord it calls home: Am F C G and C G Am F give one
+# histogram, and no profile can tell that minor key from its relative major.
+# What differs is the order, and a player most often starts at home.  So the
+# lowest sounding note of the first _OPEN_S seconds of notes (the first chord's
+# root, or a single line's first notes) adds _OPEN_WEIGHT to the correlation of
+# the major and the minor key on that note.  Within those seconds the earliest
+# count most, falling in a straight line to nothing at _OPEN_S, so that at a
+# quick tempo the second bar's root does not share the weight evenly with the
+# first; when more than one note was lowest the weight is shared by that count.
+# It says nothing about mode, only about the tonic.
+#
+# The lowest note of every later frame is NOT weighted as the chroma path
+# weights its bass band: with the opening note counted, an extra bass weight
+# measured slightly worse on entry key and on key at the end of a take.
+#
+# It fades with _OPEN_HALFLIFE_S, so that it helps most where it is needed, when
+# the band comes in a few bars after the first note, and so that a real change
+# of key later in a take can still be followed.
+_OPEN_S = 4.0
+_OPEN_WEIGHT = 0.3
+_OPEN_HALFLIFE_S = 60.0
+
 _HMM_LAG = 3                  # fixed-lag smoothing, frames
 _HMM_BETA = 8.0               # cosine-score -> likelihood sharpness
 _S_N_VOICED = 0.1             # N-state score while voiced (silence scores 1)
@@ -202,10 +251,11 @@ _VOICED_CHROMA_EPS = 1e-6
 _VOICED_RMS_DB = -80.0
 
 
-def _key_profiles() -> np.ndarray:
-    """(24, 12) row-z-scored KK profiles; row k<12 = major tonic k, else minor."""
-    rows = [np.roll(_KK_MAJOR, t) for t in range(12)]
-    rows += [np.roll(_KK_MINOR, t) for t in range(12)]
+def _key_profiles(major: np.ndarray = _KK_MAJOR,
+                  minor: np.ndarray = _KK_MINOR) -> np.ndarray:
+    """(24, 12) row-z-scored profiles; row k<12 = major tonic k, else minor."""
+    rows = [np.roll(major, t) for t in range(12)]
+    rows += [np.roll(minor, t) for t in range(12)]
     m = np.array(rows)
     m -= m.mean(axis=1, keepdims=True)
     m /= m.std(axis=1, keepdims=True)
@@ -224,6 +274,10 @@ def _triad_templates() -> np.ndarray:
 
 
 _PROFILES = _key_profiles()
+_NOTE_KEY_PROFILES = _key_profiles(_AS_MAJOR, _AS_MINOR)
+#: pitch class of each of the model's 88 keys (A0 = MIDI 21)
+_NOTE_PC = (np.arange(88) + 21) % 12
+_NOTE_PC_ONEHOT = np.eye(12)[_NOTE_PC]
 _TEMPLATES = _triad_templates()
 _N_STATES = 25  # 24 triads + N
 _N_IDX = 24
@@ -295,8 +349,17 @@ def _chord_name(idx: int, key: Key | None) -> str:
 
 
 class HarmonyTracker:
-    def __init__(self, *, key_halflife_s: float = 15.0, chord_selftrans: float = 0.9):
+    def __init__(self, *, key_halflife_s: float = 15.0, chord_selftrans: float = 0.9,
+                 notes=None):
+        """``notes``: a :class:`~plume.listen.notes.NoteListener`, or None.  With one,
+        :meth:`listen` feeds it the input audio and the key is read from the notes
+        it hears; without, from the chroma of the frames."""
         self._key_hl = float(key_halflife_s)
+        self._notes = notes
+        self._note_hist = np.zeros(12)
+        self._note_t: float | None = None
+        self._open_hist = np.zeros(12)       # lowest notes of the opening
+        self._open_t: float | None = None    # when the first note sounded
         off = (1.0 - float(chord_selftrans)) / (_N_STATES - 1)
         self._trans = np.full((_N_STATES, _N_STATES), off)
         np.fill_diagonal(self._trans, float(chord_selftrans))
@@ -332,6 +395,35 @@ class HarmonyTracker:
         for f in frames:
             self._step(f)
         return self._state
+
+    @property
+    def hears_notes(self) -> bool:
+        return self._notes is not None
+
+    def listen(self, block) -> None:
+        """Input audio for the note listener, if there is one.  Call it with each
+        block before :meth:`process` on that block's frames."""
+        if self._notes is not None:
+            self.hear_notes(self._notes.process(block))
+
+    def hear_notes(self, frames) -> None:
+        """Note frames ``(t_s, probs)``: 88 note probabilities from A0 up."""
+        for t, p in frames:
+            t = float(t)
+            if self._note_t is not None and t > self._note_t:
+                self._note_hist *= 0.5 ** ((t - self._note_t) / self._key_hl)
+            self._note_t = t
+            p = np.asarray(p, dtype=np.float64)
+            on = p > _NOTE_ON
+            if not on.any():
+                continue
+            self._note_hist += np.where(on, p, 0.0) @ _NOTE_PC_ONEHOT
+            if self._open_t is None:
+                self._open_t = t
+            age = (t - self._open_t) / _OPEN_S
+            if age < 1.0:
+                low = int(np.argmax(on))
+                self._open_hist[_NOTE_PC[low]] += p[low] * (1.0 - age)
 
     # ------------------------------------------------------------- internals
 
@@ -380,15 +472,26 @@ class HarmonyTracker:
             self._hist += chroma + _KEY_BASS_WEIGHT * chroma_low
             self._evidence_s += dt
 
-        mass = self._hist.sum()
-        std = self._hist.std()
-        if self._evidence_s < _KEY_MIN_EVIDENCE_S \
-                or mass < _KEY_MASS_FLOOR or std <= 0.0:
+        if self._notes is not None:
+            # Read from notes (see _NOTE_ON); the chroma still says when there is
+            # enough sustained tonal sound to read at all.
+            hist, profiles = self._note_hist, _NOTE_KEY_PROFILES
+            enough = hist.sum() >= _NOTE_MASS_FLOOR
+        else:
+            hist, profiles = self._hist, _PROFILES
+            enough = hist.sum() >= _KEY_MASS_FLOOR
+        std = hist.std()
+        if self._evidence_s < _KEY_MIN_EVIDENCE_S or not enough or std <= 0.0:
             if self._key_idx is not None:
                 self._key_conf = 0.0
             return
-        hz = (self._hist - self._hist.mean()) / std
-        corr = _PROFILES @ hz / 12.0          # Pearson r vs each of 24 keys
+        hz = (hist - hist.mean()) / std
+        corr = profiles @ hz / 12.0           # Pearson r vs each of 24 keys
+        if self._notes is not None and self._open_hist.sum() > 0.0:
+            # the opening note: see _OPEN_S
+            fade = 0.5 ** ((self._note_t - self._open_t) / _OPEN_HALFLIFE_S)
+            start = self._open_hist / self._open_hist.sum()
+            corr = corr + _OPEN_WEIGHT * fade * np.concatenate([start, start])
 
         # Confidence is the incumbent's correlation DISCOUNTED by how much
         # evidence stands behind it, so a fresh reading cannot announce itself

@@ -28,6 +28,9 @@ voice = [
     "faster-whisper>=1.1; sys_platform != 'darwin' or platform_machine != 'arm64'",
 ]
 midi = ["mido", "python-rtmidi"]
+# Read the key from transcribed notes (listen/notes.py): a 230 kB pitch model run
+# with onnxruntime.  Without it the key is read from chroma.
+notes = ["onnxruntime>=1.17"]
 
 [project.scripts]
 plume = "plume.cli:main"
@@ -40,7 +43,8 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 plume = ["styles/*.json", "samples/README.md", "samples/kit/*", "samples/tuned/*",
-         "gui_static/*", "gui_static/fonts/*", "guide/*.md"]
+         "gui_static/*", "gui_static/fonts/*", "guide/*.md",
+         "listen/models/*"]
 
 [tool.pytest.ini_options]
 # A worker thread that dies must fail the run: a live-path test whose planner

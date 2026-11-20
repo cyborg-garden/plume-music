@@ -548,18 +548,18 @@ def test_hiss_between_notes_on_a_quiet_input_is_not_strokes():
     assert ear.strokes / 28.0 == pytest.approx(0.5, abs=0.15), ear.strokes
 
 
-def _legato(*, bpm, attack_ms, gain_db=-6.0, bars=9, seed=2):
-    """A legato lead, bowed, blown or a soft synth: eighth notes of A minor, each swelling
+def _legato(*, bpm, attack_ms, gain_db=-6.0, bars=9, seed=2, per_beat=2):
+    """A legato lead, bowed, blown or a soft synth: ``per_beat`` notes of A minor, each swelling
     in over ``attack_ms`` as the last one fades over the same time, with a little vibrato,
     over the runner's hiss.  Its level hardly moves from note to note; its pitch does."""
     from plume.theory import midi_to_hz
     rng = np.random.default_rng(seed)
     scale = (57, 59, 60, 62, 64, 65, 67, 69, 72)
-    step = 60.0 / bpm / 2.0
+    step = 60.0 / bpm / per_beat
     ramp = attack_ms / 1000.0
-    buf = np.zeros(int(round((bars * 8 * step + 2.0) * SR)))
+    buf = np.zeros(int(round((bars * 4 * per_beat * step + 2.0) * SR)))
     m = 4
-    for i in range(bars * 8):
+    for i in range(bars * 4 * per_beat):
         m = int(np.clip(m + rng.choice((-2, -1, 1, 2)), 0, len(scale) - 1))
         t = np.arange(int((step + ramp) * SR)) / SR
         phase = 2 * np.pi * midi_to_hz(scale[m]) * (t + 0.004 * np.sin(2 * np.pi * 5.5 * t)
@@ -579,6 +579,16 @@ def test_a_legato_lead_is_as_busy_as_its_notes(attack_ms):
     pick, got = _picked(_legato(bpm=86.0, attack_ms=attack_ms), bpm=86.0, key="A minor")
     assert 1.55 <= pick.busy <= 3.0, pick.why
     assert got == "midwest", pick.why
+
+
+@pytest.mark.parametrize("gain_db", [-6.0, -26.0, -46.0])
+def test_a_slow_legato_lead_has_room_in_it(gain_db):
+    """One note a beat, each crossing into the next over 60 ms: the crossing holds a new
+    pitch and then a dip and a lift in level, and it is still one note."""
+    pick, got = _picked(_legato(bpm=86.0, attack_ms=60.0, per_beat=1, gain_db=gain_db),
+                        bpm=86.0, key="A minor")
+    assert 0.8 <= pick.busy <= 1.3, pick.why
+    assert got == "hiphop", pick.why
 
 
 def test_a_legato_lead_s_pick_does_not_turn_with_the_gain_knob():
@@ -631,6 +641,45 @@ def test_a_ringing_tail_on_a_loud_input_is_not_strokes():
         counts.append(ear.strokes - before)
     # the first note has nothing heard before it to rise from
     assert counts == [1, 0, 2, 0, 2, 0, 2, 0], counts
+
+
+def test_what_she_barely_touches_is_not_a_stroke_at_any_gain():
+    """Two notes a bar, and between them a string brushed 30 dB under those: clear at the
+    top of the gain knob, under the hiss at the bottom.  The count is of her notes at
+    both, so it is measured against her own level and not against a fixed one."""
+    from test_acoustic import _add, _string
+    seen = {}
+    for gain_db in (-6.0, -46.0):
+        rng = np.random.default_rng(3)
+        beat = 60.0 / 85.0
+        buf = np.zeros(int(round((9 * 4 * beat + 2.0) * SR)))
+        for b in range(9):
+            for at, soft in ((0.0, False), (1.0, True), (1.5, False), (3.0, True)):
+                y = _string(57 + 2 * (b % 3) + (5 if soft else 0), dur_s=0.6, velocity=0.8,
+                            rng=rng, attack_ms=5.0, tau_s=0.12)
+                _add(buf, y * (10.0 ** (-30.0 / 20.0) if soft else 1.0), (b * 4 + at) * beat)
+        buf = buf * 10.0 ** (gain_db / 20.0) / float(np.max(np.abs(buf)))
+        audio = (buf + rng.standard_normal(buf.size) * _HISS).astype(np.float32)
+        pick, _ = _picked(audio, bpm=85.0, key="A minor")
+        seen[gain_db] = pick.busy
+    assert all(b == pytest.approx(0.5, abs=0.1) for b in seen.values()), seen
+
+
+@pytest.mark.parametrize("bar_hops", [33, 47, 64, 200])
+def test_every_legato_note_is_counted_once_wherever_the_bar_lines_fall(bar_hops):
+    """A new pitch every 20 hops, and 6 hops into each a dip and a lift in level with an
+    attack of its own: one note each, cut into bars of any length."""
+    from types import SimpleNamespace
+
+    from plume.bandentry import StrokeEar
+    frames = [SimpleNamespace(rms_db=-23.0 if i % 20 in (3, 4, 5) else -20.0,
+                              attack=0.2 * (i % 20 in (0, 6)),
+                              chroma=np.eye(12)[(i // 20) % 12]) for i in range(1600)]
+    ear = StrokeEar()
+    for i in range(0, len(frames), bar_hops):
+        ear.bar(frames[i:i + bar_hops])
+    # one for each of the 80 notes: the first by its lift, the rest by their new pitch
+    assert ear.strokes == 80, ear.strokes
 
 
 def test_the_stroke_ear_keeps_a_bounded_memory():

@@ -452,7 +452,7 @@ def test_the_route_table_is_exactly_what_the_page_needs():
                               "/api/take/{id}", "/api/take/{id}/audio/{track}",
                               "/api/home", "/api/live", "/api/setup", "/api/guide",
                               "/api/take/{id}/video", "/api/take/{id}/video/preview")
-    assert sorted(gui.POST_OPS) == ["cue", "keep", "rename", "reveal", "setup/answer", "setup/cancel",
+    assert sorted(gui.POST_OPS) == ["cue", "keep", "midi", "rename", "reveal", "setup/answer", "setup/cancel",
                                     "setup/listen", "setup/reset", "start", "stop", "style",
                                     "video/cancel", "video/place", "video/show"]
     # One more POST, the only one whose body is not JSON: a video, for a take.

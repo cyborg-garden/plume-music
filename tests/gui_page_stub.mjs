@@ -128,6 +128,7 @@ export async function start(html, { takes, docs, guide = null, home = null, live
     if (op === 'stop') { if (page.live.state !== 'elsewhere') page.live = { state: 'stopping' }; return reply(200, page.live); }
     if (op === 'cue') return reply(200, { ok: true, cue: body.cue });
     if (op === 'style') { page.home.style = body.style || null; return reply(200, { style: page.home.style }); }
+    if (op === 'midi') { page.home.midi = { ...(page.home.midi || { problem: null }), choice: body.midi }; return reply(200, { midi: body.midi }); }
     if (path === '/api/session') return reply(200, { csrf: 'ab'.repeat(32), open_take: pinned });
     if (path === '/api/takes') return reply(200, { takes: takes.map((t) => Object.assign({}, t, page.saved[t.id])) });
     if (op.startsWith('video/')) return reply(op === 'video/upload' ? 202 : 200, page.video);

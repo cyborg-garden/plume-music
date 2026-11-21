@@ -3508,8 +3508,9 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--instrument", default=None, metavar="NAME",
                    help="what you play, if you want to say: guitar, bass, keys, lead "
                         "(a voice or a single lead line) or other.  Optional: with it the "
-                        "band's parts in your register step back a little, and a bass or "
-                        "lead line is never heard as strumming (default: not set)")
+                        "band's parts in your register step back a little, and on a bass or "
+                        "lead line the style guess leans a little away from folk "
+                        "(default: not set)")
     p.add_argument("--seed", type=int, default=0,
                    help="integer rng seed (default: 0)")
     p.add_argument("--tightness", type=float, default=None,

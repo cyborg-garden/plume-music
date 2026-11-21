@@ -5095,6 +5095,27 @@ def lead_bar_plan(bar: int, section, duet_roles, role_state, form_plan, *,
     )
 
 
+def _band_engine(name: str, instrument: str | None, *, plain: bool = False,
+                 bridge: bool = False, key_fallback: str, seed: int):
+    """The band for a lead take in style ``name``: every engine a take plays, the first
+    and each change of style, is built here.  ``plain``: that style's harmony under the
+    plain beat (bandentry.plain_intro_style).  ``bridge``: the style taking over from the
+    plain beat (bandentry.bridged_style).  Her register steps back (plume.instrument);
+    not set, the style is handed on as it is."""
+    from . import instrument as _instrument  # noqa: PLC0415
+    from .duet import DuetEngine  # noqa: PLC0415
+    if plain:
+        from .bandentry import plain_intro_style  # noqa: PLC0415
+        spec = plain_intro_style(name)
+    elif bridge:
+        from .bandentry import bridged_style  # noqa: PLC0415
+        spec = bridged_style(name)
+    else:
+        spec = name
+    return DuetEngine(style=_instrument.make_room(spec, instrument),
+                      key_fallback=key_fallback, seed=seed, sr=SR)
+
+
 def _named_key(prompt: str | None) -> str | None:
     """The key the player wrote in their prompt, spelled "F major", or None."""
     if not prompt:
@@ -5237,7 +5258,6 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
     band_in_mic_doc: list = [None]      # the decision, once made, for every row after it
     max_minutes = resolve_max_minutes(max_minutes)
 
-    from .duet import DuetEngine  # noqa: PLC0415
     from .listen.beat import BeatTracker  # noqa: PLC0415
     from .listen.features import FeatureExtractor  # noqa: PLC0415
     from .mind import (BarFeatures, Cue, Mind,  # noqa: PLC0415
@@ -5311,15 +5331,17 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
                           phrase_bars=int(params.entry_boundary_bars))
         if detect:
             from .compose import parse_prompt  # noqa: PLC0415
+            # What she plays may hold against a style a little (plume.instrument).
+            prior = _instrument.style_prior(instrument)
             if not parse_prompt(prompt or "").styles:
                 # Until the count lands ``style`` is only compose's placeholder.
                 style_pick = StylePick(key=named_key,
                                        trust_busy=hears_only_her or midi_port is not None,
                                        # whether she strums: only an instrument plugged
-                                       # in, which is all this has been tried against,
-                                       # and one that can strum
-                                       hear_technique=is_direct
-                                       and _instrument.hears_strum(instrument))
+                                       # in, which is all this has been tried against
+                                       hear_technique=is_direct,
+                                       **({} if prior is None
+                                          else {"style_prior": prior}))
         # A room mic cannot hear her stop over the band, so it keeps the long wait.
         silence_ending = (SilenceEnding(end_after_s=END_AFTER_S)
                           if hears_only_her or midi_port is not None else SilenceEnding())
@@ -5339,9 +5361,8 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
     mind = Mind(params, form_params) if form_params is not None else Mind(params)
     negotiator = RoleNegotiator(role, composed_bpm=composed_bpm,
                                 composed_key=composed_key)
-    # Her register in the band: the parts where she plays step back (plume.instrument).
-    duet = DuetEngine(style=_instrument.make_room(style, instrument),
-                      key_fallback=str(composed_key or "A minor"), seed=seed, sr=SR)
+    duet = _band_engine(style, instrument, key_fallback=str(composed_key or "A minor"),
+                        seed=seed)
 
     def swing_of(name: str) -> float:
         # The machine's own swing, so the human's phase is measured against the
@@ -5367,16 +5388,8 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
         kept to fade out under the drums (bridged_style)."""
         nonlocal duet, style, machine_swing
         old = duet
-        if plain:
-            from .bandentry import plain_intro_style  # noqa: PLC0415
-            spec = plain_intro_style(name)
-        elif bridge:
-            from .bandentry import bridged_style  # noqa: PLC0415
-            spec = bridged_style(name)
-        else:
-            spec = name
-        duet = DuetEngine(style=_instrument.make_room(spec, instrument),
-                          key_fallback=str(composed_key or "A minor"), seed=seed, sr=SR)
+        duet = _band_engine(name, instrument, plain=plain, bridge=bridge,
+                            key_fallback=str(composed_key or "A minor"), seed=seed)
         bridged[0] = bridge
         style = name
         plain_intro[0] = plain

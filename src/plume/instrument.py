@@ -5,10 +5,11 @@ it was before this choice existed.  Told, a take uses it in two small ways:
 
 - **The strum.**  The style guess counts a strummed chord for folk and against every
   other style (plume.playstyle).  A strum is strings sounding together; a bass line or a
-  single voice or lead line plays one note at a time, so a long attack there is a slide
-  or a swell.  On those the strum is not listened for (:func:`hears_strum`), and the
-  guess is made on the rest of what was heard.  A named style is never guessed, so this
-  never touches one.
+  single voice or lead line mostly plays one note at a time, so a long attack there is
+  more likely a slide or a swell than a strum.  On those folk costs a little in the
+  guess (:data:`STYLE_PRIOR`): a close call with folk goes the other way, while a strum
+  heard plainly, such as double stops strummed on a bass, still gets folk.  A named
+  style is never guessed, so this never touches one.
 - **Her register.**  The band's parts that sit where she plays step back a little
   (:data:`ROOM_DB`): under a bass player the band's bass and sub, under keys the band's
   keys and pad, under a lead line the band's lead and arpeggio.  Nothing is taken out
@@ -25,17 +26,20 @@ import json
 INSTRUMENTS = ("guitar", "bass", "keys", "lead", "other")
 LABELS = {"guitar": "Guitar", "bass": "Bass", "keys": "Keys", "lead": "Voice or lead line",
           "other": "Something else"}
-NOT_SET_LABEL = "Not set"
 #: Other words for a choice, as someone might type them.
-_ALIASES = {"piano": "keys", "keyboard": "keys", "keyboards": "keys", "synth": "keys",
+_ALIASES = {"piano": "keys", "keyboard": "keys", "keyboards": "keys",
             "voice": "lead", "vocals": "lead", "singing": "lead", "melody": "lead",
             "not set": None, "none": None}
 #: How far the band's parts in her register step back, dB on the role's own level.
 ROOM_DB = {"bass": {"bass": -6.0, "sub": -6.0},
            "keys": {"keys": -4.0, "pad": -4.0},
            "lead": {"lead": -4.0, "arp": -4.0}}
-#: The instruments that play one note at a time, so never strum.
-_ONE_NOTE = frozenset({"bass", "lead"})
+#: What each choice costs a style in the guess (plume.playstyle.score_styles), on the
+#: same scale as a reading a full step outside a style's band (1).  Bass and a lead
+#: line mostly play one note at a time, so folk, which a strum makes, costs a little:
+#: half of one reading's full misfit.  A strum share just inside folk's band then
+#: loses to the next best style; one heard plainly, a few points further in, does not.
+STYLE_PRIOR = {"bass": {"folk": 0.5}, "lead": {"folk": 0.5}}
 
 
 def canonical(value) -> str | None:
@@ -54,10 +58,11 @@ def canonical(value) -> str | None:
     raise ValueError(f"unknown instrument {value!r} (instruments: {', '.join(INSTRUMENTS)})")
 
 
-def hears_strum(instrument: str | None) -> bool:
-    """Whether a strum is listened for on this instrument: not on one that plays one
-    note at a time."""
-    return instrument not in _ONE_NOTE
+def style_prior(instrument: str | None) -> dict | None:
+    """What this choice holds against a style in the guess (:data:`STYLE_PRIOR`), None
+    for not set and for a choice that holds nothing."""
+    prior = STYLE_PRIOR.get(instrument)
+    return dict(prior) if prior else None
 
 
 def make_room(spec, instrument: str | None):

@@ -16,8 +16,8 @@ from conftest import fake_audio, patched_module, playhead_rate, short_socket_pat
 
 from plume import cli, governor, realtime
 from plume import roles as roles_mod
-from plume.bandentry import (DETECT_KEY_FALLBACK_BARS, FOLK_CONFIDENCE, BandEntry,
-                              FolkEar, StylePick, detect_style)
+from plume.bandentry import (_RAKE_FULL, _RAKE_NONE, DETECT_KEY_FALLBACK_BARS, BandEntry,
+                             FolkEar, StylePick, detect_style)
 from plume.listen.harmony import HarmonyState
 from plume.watch import Listener
 
@@ -108,45 +108,32 @@ def test_the_transport_refuses_too_before_touching_a_device(kw, monkeypatch):
 
 # ------------------------------------------------------------------- the rule
 
+# The rule itself, and a player of every style, are in tests/test_playstyle.py.  Here:
+# what it says with the tempo alone, and with the tempo and how many strokes she plays,
+# which is all a MIDI input knows.
+
 @pytest.mark.parametrize("bpm,mode,busy,style", [
     (60.0, None, None, "lofi"),
-    (60.0, "major", 0.2, "lofi"),
-    (59.9, "minor", 0.2, "lofi"),
     (50.0, "minor", None, "lofi"),
-    (60.0, "minor", 0.2, "rnb"),
     (79.9, "minor", None, "rnb"),
-    (79.9, "minor", 3.0, "lofi"),
     (80.0, None, None, "lofi"),
-    (85.0, "major", 1.54, "lofi"),
-    (85.0, "major", 1.55, "midwest"),
-    (85.0, "minor", 0.2, "hiphop"),
-    (89.9, "minor", 2.0, "midwest"),
     (90.0, None, None, "midwest"),
-    (95.0, "major", 0.2, "midwest"),
-    (95.0, "minor", 0.2, "hiphop"),
-    (95.0, "minor", 1.55, "midwest"),
-    (100.0, "major", 0.2, "midwest"),
-    (100.0, "minor", 0.2, "synthwave"),
     (100.0, "minor", None, "synthwave"),
-    (100.0, "minor", 1.55, "midwest"),
-    (117.9, "minor", 0.0, "synthwave"),
-    (118.0, "minor", 0.0, "house"),
     (124.0, None, None, "midwest"),
-    (124.0, "minor", 1.55, "midwest"),
     (129.9, "minor", None, "house"),
-    (129.9, "major", 0.0, "midwest"),
     (130.0, None, None, "trap"),
-    (140.0, "minor", 0.79, "trap"),
-    (140.0, "minor", 0.8, "midwest"),
-    (150.0, "major", 0.1, "trap"),
-    (150.1, "major", 0.1, "jazz"),
-    (170.0, "minor", 0.79, "jazz"),
-    (220.0, "major", 0.2, "jazz"),
-    # Fast and not known to be sparse is the older answer: nothing there says jazz.
     (170.0, None, None, "midwest"),
     (170.0, "major", None, "midwest"),
-    (170.0, "minor", 0.8, "midwest"),
-    (170.0, "major", 2.0, "midwest"),
+    # how many strokes she plays, and nothing else known
+    (85.0, "major", 0.5, "lofi"),
+    (85.0, "major", 1.75, "midwest"),
+    (89.9, "minor", 2.0, "midwest"),
+    (95.0, "minor", 0.5, "hiphop"),
+    (100.0, "minor", 2.0, "synthwave"),
+    (100.0, "major", 2.0, "midwest"),
+    (124.0, "minor", 1.5, "house"),
+    (140.0, "minor", 0.5, "trap"),
+    (140.0, "minor", 1.5, "midwest"),
     (170.0, "minor", 3.0, "midwest"),
     (220.1, "major", 0.2, "midwest"),
 ])
@@ -178,39 +165,8 @@ def test_a_key_she_named_informs_the_first_pick():
     assert StylePick(key="A minor").at_count(100.0) == "synthwave"
 
 
-def _every_guess():
-    seen = {}
-    for bpm in np.arange(40.0, 260.0, 0.5):
-        for mode in (None, "major", "minor"):
-            for busy in (None, 0.2, 0.7, 2.0):
-                for folk in (None, 0.5, 0.9):
-                    seen.setdefault(detect_style(float(bpm), mode, busy, folk=folk),
-                                    set()).add(float(bpm))
-    return seen
-
-
-def test_every_bundled_style_can_be_guessed_at_somewhere_in_its_own_range():
-    """Fair means reachable: no style is shipped that detect can never pick."""
-    from plume.styles_lib import list_styles, load_style
-    seen = _every_guess()
-    assert set(seen) == set(list_styles())
-    for style, tempi in seen.items():
-        lo, hi = load_style(style)["bpm_range"]
-        assert any(lo <= t <= hi for t in tempi), style
-
-
-@pytest.mark.parametrize("style", ["jazz", "house", "hiphop", "rnb", "folk"])
-def test_a_new_genre_is_never_guessed_outside_its_own_range(style):
-    """lofi and midwest stay the catch-alls past every range, as they always were.  The
-    four new styles are claims about a tempo, so they never answer outside it."""
-    from plume.styles_lib import load_style
-    lo, hi = load_style(style)["bpm_range"]
-    tempi = _every_guess()[style]
-    assert lo <= min(tempi) and max(tempi) <= hi
-
-
 def test_a_room_mic_never_guesses_jazz():
-    """Jazz needs a player known to be sparse, and a room mic cannot know that."""
+    """Jazz is its swing, and a room mic cannot hear that as hers."""
     pick = StylePick(trust_busy=False)
     pick.heard_bar(0)
     assert pick.at_count(170.0) == "midwest"
@@ -234,19 +190,18 @@ def test_a_settled_pick_says_so():
 
 # --------------------------------------------------------------------- folk
 #
-# Folk is a claim about how the guitar is played, never about tempo alone.  The one
-# signal measured to separate is the strum: a pick dragged across the strings keeps the
-# attack up for 30 ms or more, where a picked note, a drum or a synth is over in one or
-# two hops.  Measured on synthetic strums and picking (tests/folk_fixtures.py) and, locally
-# and never committed, on 15 real direct-input takes.  The numbers are beside
-# bandentry._RAKE_NONE.
+# Folk is a claim about how the guitar is played, never about tempo alone.  Its own sign
+# is the strum: a pick dragged across the strings keeps the attack up for 30 ms or more,
+# where a picked note, a drum or a synth is over in one or two hops.  Measured on
+# synthetic strums and picking (tests/folk_fixtures.py) and, locally and never
+# committed, on 15 real direct-input takes.  The numbers are beside
+# bandentry._RAKE_NONE.  The style rule needs the strum heard before folk is a candidate,
+# and then asks for straight playing mostly on the beat (plume.playstyle); it does not
+# ask for an acoustic sound or a major key.
 
-def test_folk_answers_only_above_its_confidence_and_inside_its_range():
-    assert detect_style(96.0, "major", 0.5, folk=FOLK_CONFIDENCE) == "folk"
-    assert detect_style(96.0, "major", 0.5, folk=FOLK_CONFIDENCE - 0.01) == "midwest"
-    assert detect_style(96.0, "major", 0.5) == "midwest"
-    assert detect_style(150.0, "major", 0.1, folk=1.0) == "trap"
-    assert detect_style(59.0, "major", 0.1, folk=1.0) == "lofi"
+#: The share of her strokes that are strums past which there is more evidence of a strum
+#: than not: folk then loses less on it than any other style does.
+STRUMMED = (_RAKE_NONE + _RAKE_FULL) / 2.0
 
 
 def _ear(audio, *, bars=None):
@@ -277,16 +232,14 @@ def takes():
     }
 
 
-def test_a_slowly_strummed_major_guitar_is_heard_as_folk(takes):
+def test_a_slowly_strummed_major_guitar_is_heard_as_strummed(takes):
     ear = _ear(takes["strum"])
-    assert ear.confidence("major") >= FOLK_CONFIDENCE
-    assert "strummed" in ear.why("major")
+    assert ear.strum_share >= STRUMMED
+    assert "strummed" in ear.why()
 
 
-def test_a_strummed_minor_folk_tune_needs_the_acoustic_sound_as_well(takes):
-    ear = _ear(takes["strum_minor"])
-    assert ear.acoustic
-    assert ear.confidence("minor") >= FOLK_CONFIDENCE
+def test_a_strummed_minor_folk_tune_is_heard_as_strummed_too(takes):
+    assert _ear(takes["strum_minor"]).strum_share >= STRUMMED
 
 
 @pytest.mark.parametrize("name", ["pick", "strum_fast_rake", "tremolo_40", "tremolo_80"])
@@ -294,7 +247,7 @@ def test_what_it_cannot_hear_as_a_strum_is_not_folk(takes, name):
     """Fingerpicking, however folky, is not claimed: nothing measured tells it from a
     twinkly midwest line.  Nor is a strum so quick it lands inside two hops, nor
     tremolo picking, whose next pick lands inside the onset's reading window."""
-    assert _ear(takes[name]).confidence("major") < FOLK_CONFIDENCE
+    assert _ear(takes[name]).strum_share < STRUMMED
 
 
 def _ear_heard(audio, *, bpm=96.0, bars=7):
@@ -322,8 +275,8 @@ def _ear_heard(audio, *, bpm=96.0, bars=7):
 def test_a_strum_is_heard_as_folk_at_any_input_level(gain_db):
     import folk_fixtures as ff
     ear = _ear_heard(ff.make_take("strum", gain_db=gain_db))
-    assert ear.confidence("major") is not None, ear.why("major")
-    assert ear.confidence("major") >= FOLK_CONFIDENCE, ear.why("major")
+    assert ear.strum_share is not None, ear.why()
+    assert ear.strum_share >= STRUMMED, ear.why()
 
 
 @pytest.mark.parametrize("gain_db", [-18.0, -30.0])
@@ -332,8 +285,8 @@ def test_four_plain_downstrokes_a_bar_are_heard_as_folk(gain_db):
     import folk_fixtures as ff
     ear = _ear_heard(ff.make_take("strum", bpm=120.0, gain_db=gain_db,
                                   strums=ff.QUARTER_STRUMS), bpm=120.0)
-    assert ear.confidence("major") is not None, ear.why("major")
-    assert ear.confidence("major") >= FOLK_CONFIDENCE, ear.why("major")
+    assert ear.strum_share is not None, ear.why()
+    assert ear.strum_share >= STRUMMED, ear.why()
 
 
 @pytest.mark.parametrize("seed", [5, 6])
@@ -354,8 +307,8 @@ def test_what_is_not_a_strum_is_not_folk_at_any_input_level(kind, gain_db):
              "tremolo": lambda: ff.make_tremolo(ioi_ms=40.0, gain_db=gain_db)}[kind]()
     for bars in (7, 12):
         ear = _ear_heard(audio, bars=bars)
-        assert ear.confidence("major") is not None, ear.why("major")
-        assert ear.confidence("major") < FOLK_CONFIDENCE, ear.why("major")
+        assert ear.strum_share is not None, ear.why()
+        assert ear.strum_share < STRUMMED, ear.why()
 
 
 @pytest.mark.parametrize("width, strummed", [(1, False), (2, False), (3, True), (4, True)])
@@ -377,24 +330,71 @@ def test_every_stroke_is_counted_once_wherever_the_bar_lines_fall(width, strumme
         assert ear._raked == (read if strummed else 0), per
 
 
+def _swelling_bass(*, bpm=100.0, attack_s=0.02, bars=9):
+    """One bright note on every eighth, an octave up and down in turn, each swelling in
+    over ``attack_s``: an attack as long as a strum's, and one note."""
+    rng = np.random.default_rng(3)
+    beat = 60.0 / bpm
+    buf = np.zeros(int((bars * 4 * beat + 1.0) * SR))
+    n = int((0.4 * beat + 0.12) * SR)
+    t = np.arange(n) / SR
+    env = np.minimum(1.0, t / attack_s)
+    env[-int(0.12 * SR):] *= np.linspace(1.0, 0.0, int(0.12 * SR))
+    for k in range(bars * 8):
+        f = 55.0 * (2 if k % 2 else 1)
+        y = sum(np.sin(2 * np.pi * f * h * t) / h for h in range(1, 20))
+        s0 = int(k * 0.5 * beat * SR)
+        buf[s0:s0 + n] += y * env
+    buf *= 0.5 / float(np.max(np.abs(buf)))
+    return (buf + rng.standard_normal(buf.size) * 3e-4).astype(np.float32)
+
+
+def test_one_note_that_swells_in_is_not_a_strum():
+    """Its attack stays up as long as a pick takes to cross six strings, and it read
+    four strokes in five as strums.  A strum is a chord: more than one note sounds."""
+    ear = _ear_heard(_swelling_bass(), bpm=100.0)
+    assert ear.strum_share is not None, ear.why()
+    assert ear.strum_share < _RAKE_NONE, ear.why()
+
+
+def test_a_strum_s_chord_is_heard_as_one(takes):
+    """The same check leaves a strummed chord a strum."""
+    for name in ("strum", "strum_minor"):
+        assert _ear(takes[name]).strum_share >= STRUMMED, name
+
+
 def test_too_little_heard_is_no_evidence(takes):
     ear = _ear(takes["strum"][: SR * 3], bars=2)
-    assert ear.confidence("major") is None
+    assert ear.strum_share is None
+    assert "not enough heard" in ear.why()
 
 
 def test_a_direct_input_strumming_gets_folk_at_the_entry(takes):
-    from plume.listen.features import FeatureExtractor
+    from plume.listen.features import HOP, FeatureExtractor
     fe = FeatureExtractor(sr=SR)
     frames = []
     for i in range(0, len(takes["strum"]), 4800):
         frames.extend(fe.process(takes["strum"][i:i + 4800]))
     pick = StylePick(trust_busy=True, hear_technique=True)
-    per = len(frames) // 12
-    for i in range(12):
-        bar = frames[i * per:(i + 1) * per]
-        pick.heard_bar(sum(f.onset for f in bar), frames=bar)
+    bar_s = 240.0 / 96.0
+    per = bar_s * SR / HOP
+    for i in range(int(len(frames) / per)):
+        bar = frames[int(round(i * per)):int(round((i + 1) * per))]
+        pick.heard_bar(sum(f.onset for f in bar), frames=bar, bar_start=i * bar_s,
+                       bar_s=bar_s)
     assert pick.at_count(96.0) == "midwest"      # nothing heard yet at the count
     assert pick.at_entry(96.0, "G major") == "folk"
+    assert "strummed" in pick.why, pick.why
+
+
+def test_a_strummed_minor_tune_through_a_pickup_gets_folk_too(takes, monkeypatch):
+    """It used to take an acoustic sound or a major key as well as the strum, and a
+    guitar through a pickup never reads acoustic: the ear reports it, the rule does not
+    ask."""
+    monkeypatch.setattr(FolkEar, "acoustic", property(lambda self: False))
+    pick, got = _picked(takes["strum_minor"], bpm=96.0, key="E minor", hear_technique=True)
+    assert got == "folk", pick.why
+    assert "acoustic" not in pick.why and "strummed" in pick.why
 
 
 def test_a_room_mic_never_guesses_folk(takes):
@@ -415,12 +415,6 @@ def test_the_folk_ear_keeps_a_bounded_memory(takes):
     for _ in range(50):
         ear.bar(frames[:400])
     assert ear.memory_items() < 200
-
-
-def test_folk_s_range_is_the_style_s_own():
-    from plume.bandentry import FOLK_BPM
-    from plume.styles_lib import load_style
-    assert list(FOLK_BPM) == load_style("folk")["bpm_range"]
 
 
 # --------------------------------------------------------------------- busy
@@ -466,11 +460,13 @@ def _picked(audio, *, bpm, key, bars=7, **kw):
     frames = []
     for i in range(0, len(audio), 4800):
         frames.extend(fe.process(audio[i:i + 4800]))
-    per = 4 * 60.0 / bpm * SR / HOP
+    bar_s = 4 * 60.0 / bpm
+    per = bar_s * SR / HOP
     pick = StylePick(trust_busy=True, **kw)
     for b in range(bars):
         bar = frames[int(round(b * per)):int(round((b + 1) * per))]
-        pick.heard_bar(sum(bool(f.onset) for f in bar), frames=bar)
+        pick.heard_bar(sum(bool(f.onset) for f in bar), frames=bar, bar_start=b * bar_s,
+                       bar_s=bar_s)
     return pick, pick.at_entry(bpm, key)
 
 
@@ -492,29 +488,34 @@ def test_how_busy_she_is_does_not_turn_with_the_gain_knob(player):
     assert max(busies) - min(busies) <= 0.25 * max(busies), seen
 
 
-@pytest.mark.parametrize("bpm,style", [(85.0, "hiphop"), (70.0, "rnb")])
-def test_a_sparse_minor_player_reaches_the_styles_that_need_room(bpm, style):
+@pytest.mark.parametrize("bpm,style", [(85.0, "lofi"), (140.0, "trap")])
+def test_a_sparse_player_reaches_the_styles_that_leave_room(bpm, style):
     pick, got = _picked(_line(bpm=bpm, key="D minor", beats=_SPARSE), bpm=bpm, key="D minor")
     assert got == style, pick.why
 
 
 @pytest.mark.parametrize("bpm", [85.0, 95.0])
-def test_a_dense_picked_player_still_gets_midwest(bpm):
+def test_a_dense_picked_player_still_gets_a_busy_style(bpm):
+    """Midwest, or synthwave where her picking reads as an even pulse: this pattern is
+    about two gaps in three the same, between the two."""
     import folk_fixtures as ff
     audio = ff.make_take("pick", key="E minor", bpm=bpm, gain_db=-6.0,
                          numerals=("i", "VI", "III", "VII"))
     audio = audio + np.random.default_rng(1).standard_normal(audio.size).astype(np.float32) * _HISS
     pick, got = _picked(audio, bpm=bpm, key="E minor")
-    assert got == "midwest", pick.why
+    assert got in ("midwest", "synthwave"), pick.why
+    assert pick.busy >= 1.55, pick.why
 
 
 def test_the_log_says_what_the_pick_was_made_from():
     pick, got = _picked(_line(bpm=85.0, key="A minor", beats=_SPARSE), bpm=85.0,
                         key="A minor", hear_technique=True)
     why = pick.why
-    assert got in why and "bpm 85.0" in why and "minor" in why, why
+    assert why.startswith(f"{got} ") and " over " in why, why
+    assert "bpm 85.0" in why and "mode minor" in why, why
     assert f"busy {pick.busy:.2f} strokes a beat" in why, why
-    assert "folk" in why, why
+    assert "swing" in why and "off the beat" in why and "steady" in why, why
+    assert "strum" in why, why
 
 
 def test_a_room_mic_s_pick_says_it_could_not_hear_how_busy():
@@ -578,7 +579,7 @@ def test_a_legato_lead_is_as_busy_as_its_notes(attack_ms):
     stroke, and the vibrato on a held one is not."""
     pick, got = _picked(_legato(bpm=86.0, attack_ms=attack_ms), bpm=86.0, key="A minor")
     assert 1.55 <= pick.busy <= 3.0, pick.why
-    assert got == "midwest", pick.why
+    assert got == "synthwave", pick.why          # busy, and an even pulse
 
 
 @pytest.mark.parametrize("gain_db", [-6.0, -26.0, -46.0])
@@ -588,7 +589,7 @@ def test_a_slow_legato_lead_has_room_in_it(gain_db):
     pick, got = _picked(_legato(bpm=86.0, attack_ms=60.0, per_beat=1, gain_db=gain_db),
                         bpm=86.0, key="A minor")
     assert 0.8 <= pick.busy <= 1.3, pick.why
-    assert got == "hiphop", pick.why
+    assert got == "hiphop", pick.why             # plain playing: the tempo and key decide
 
 
 def test_a_legato_lead_s_pick_does_not_turn_with_the_gain_knob():
@@ -779,9 +780,11 @@ def test_restyling_before_a_key_is_known_commits_to_nothing():
 
 # ------------------------------------------------------- the real transport, no device
 
-def _strummed_take(bpm, *, seconds=70.0, strums_per_beat=2.0, busier_from_s=None):
+def _strummed_take(bpm, *, seconds=70.0, strums_per_beat=2.0, busier_from_s=None,
+                   uneven=False):
     """Four knocks, then C major struck ``strums_per_beat`` a beat until ``seconds``,
-    and six a beat from ``busier_from_s``."""
+    and six a beat from ``busier_from_s``.  An even pulse, or with ``uneven`` a long gap
+    and a short one in turn, as many strokes to the beat."""
     rng = np.random.default_rng(3)
     x = rng.standard_normal(int((seconds + 20.0) * SR)).astype(np.float32) * 3e-4
     period = 60.0 / bpm
@@ -795,11 +798,14 @@ def _strummed_take(bpm, *, seconds=70.0, strums_per_beat=2.0, busier_from_s=None
                 for j, f in enumerate((130.81, 164.81, 196.0, 261.63, 329.63, 392.0, 523.25)))
     chord = (chord * env * 0.1).astype(np.float32)
     at = 2.0 + 12 * period      # drums alone for two bars first
+    k = 0
     while at + 2.0 < seconds:
         i = int(at * SR)
         x[i:i + chord.shape[0]] += chord
         busier = busier_from_s is not None and at >= busier_from_s
-        at += period / (6.0 if busier else strums_per_beat)
+        gap = period / (6.0 if busier else strums_per_beat)
+        at += gap * ((1.5, 0.5)[k % 2] if uneven and not busier else 1.0)
+        k += 1
     return x
 
 
@@ -961,7 +967,7 @@ def _stop_quietly(sock):
 
 
 def test_a_busy_player_at_85_starts_lofi_and_the_band_arrives_as_midwest(tmp_path, consent):
-    rec = _detect_take(tmp_path, _strummed_take(85.0), max_minutes=0.5)
+    rec = _detect_take(tmp_path, _strummed_take(85.0, uneven=True), max_minutes=0.5)
     rows = _rows(rec)
     drums = [r for r in rows if r["entry"] == "drums"]
     band = [r for r in rows if r["entry"] != "drums"]
@@ -993,8 +999,10 @@ def test_a_busy_player_at_85_starts_lofi_and_the_band_arrives_as_midwest(tmp_pat
 
 
 def test_a_change_of_style_changes_the_chords_in_that_very_bar(tmp_path, consent):
-    """Am at the count, from synthwave's own cycle, would be a wrong chord in midwest."""
-    rec = _detect_take(tmp_path, _strummed_take(100.0), prompt="in A minor", max_minutes=0.5)
+    """Am at the count, from synthwave's own cycle, would be a wrong chord in midwest.
+    Busy in long and short gaps: not synthwave's even pulse."""
+    rec = _detect_take(tmp_path, _strummed_take(100.0, uneven=True),
+                       prompt="in A minor", max_minutes=0.5)
     rows = _rows(rec)
     drums = [r for r in rows if r["entry"] == "drums"]
     band = [r for r in rows if r["entry"] != "drums"]
@@ -1008,8 +1016,9 @@ def test_a_change_of_style_changes_the_chords_in_that_very_bar(tmp_path, consent
 
 
 def test_a_style_that_stays_keeps_its_own_chords(tmp_path, consent):
-    """The count's pick has to reach the chords, not just the drums."""
-    rec = _detect_take(tmp_path, _strummed_take(100.0, strums_per_beat=0.5), prompt="in A minor",
+    """The count's pick has to reach the chords, not just the drums.  An even pulse of
+    eighths is synthwave's, so the pick stays where the count put it."""
+    rec = _detect_take(tmp_path, _strummed_take(100.0), prompt="in A minor",
                        max_minutes=0.5)
     band = [r for r in _rows(rec) if r["entry"] != "drums"]
     assert band and {r["style"] for r in band} == {"synthwave"}
@@ -1019,7 +1028,8 @@ def test_a_style_that_stays_keeps_its_own_chords(tmp_path, consent):
 
 @needs_laptop_speed
 def test_the_style_never_moves_once_the_band_is_in(tmp_path, consent):
-    """Sparse until the band is in, then busy enough that a second look would say midwest."""
+    """A chord every other beat until the band is in, plain playing on the beat, then busy
+    enough that a second look would say synthwave."""
     human = _strummed_take(85.0, seconds=110.0, strums_per_beat=0.5, busier_from_s=38.0)
     rec = _detect_take(tmp_path, human, max_minutes=0.5)
     rows = _rows(rec)
@@ -1051,7 +1061,7 @@ def test_the_old_engine_rings_out_under_the_new_one(tmp_path, consent, monkeypat
             return np.full((tail_n, 2), 0.25, dtype=np.float32)
 
     monkeypatch.setattr(duet_mod, "DuetEngine", Marked)
-    rec = _detect_take(tmp_path, _strummed_take(85.0), max_minutes=0.5)
+    rec = _detect_take(tmp_path, _strummed_take(85.0, uneven=True), max_minutes=0.5)
     band = [r for r in _rows(rec) if r["entry"] != "drums"]
     assert band and band[0]["style"] == "midwest"
     machine, _ = sf.read(str(rec / "machine.wav"), dtype="float32")
@@ -1133,7 +1143,10 @@ def test_a_strummed_folk_tune_on_a_direct_input_brings_in_the_folk_band(tmp_path
     assert band, "the band never came in"
     assert {r["style"] for r in band} == {"folk"}
     assert all(r["style_guess"] and not r["style_chosen"] for r in rows)
-    assert "strummed" in band[0]["style_why"]
+    why = band[0]["style_why"]
+    assert why.startswith("folk ") and " over " in why and "strummed" in why, why
+    # Her strokes were placed in the beat, so the take handed on its bar lines.
+    assert "off the beat" in why and "steady" in why, why
     doc = json.loads((rec / "session.json").read_text())
     assert doc["style"] == "detect" and doc["style_chosen"] is False
 
@@ -1153,9 +1166,9 @@ def _ear_late_on_every_read(monkeypatch) -> list:
     heard: list = []
     real = StylePick.heard_bar
 
-    def heard_bar(self, onsets, frames=None):
+    def heard_bar(self, onsets, frames=None, **kw):
         heard.extend(f.t_s for f in frames or [])
-        return real(self, onsets, frames)
+        return real(self, onsets, frames, **kw)
 
     monkeypatch.setattr(StylePick, "heard_bar", heard_bar)
     return heard
@@ -1308,9 +1321,9 @@ def test_strokes_the_ear_hands_on_after_the_bar_was_read_are_still_counted(
     heard: list = []
     real = StylePick.heard_bar
 
-    def heard_bar(self, onsets, frames=None):
+    def heard_bar(self, onsets, frames=None, **kw):
         heard.extend(f.t_s for f in frames or [])
-        return real(self, onsets, frames)
+        return real(self, onsets, frames, **kw)
 
     monkeypatch.setattr(StylePick, "heard_bar", heard_bar)
     rec = _detect_take(tmp_path, _strummed_take(85.0), ends_itself=True,

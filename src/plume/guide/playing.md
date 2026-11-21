@@ -41,14 +41,20 @@ and jazz 70 to 220.
 Midwest changes with tempo: below 70 it plays a swung breakbeat with the snare on 2 and 4,
 and from 70 up it plays half-time with the snare on 3.
 
-A guessed style is only a guess from your tempo, key and how busy you are. Plume never
-guesses jazz below 150 bpm, so pick it if that is what you want.
+A guessed style is only a guess. Your tempo says which styles it could be, and on a direct
+input how you play picks one: whether your eighth notes swing, how many strokes you play to
+a beat, whether they fall on the beat or between, how even they are, and whether you strum.
+Swung eighths lean to jazz, stabs between the beats to house, a busy even pulse to
+synthwave, other busy playing to midwest, and a few notes with space to trap, lofi, hip hop
+or r&b. Plain playing, a note or a chord on each beat, says little, so your tempo and key
+decide it. How loud you play hardly changes the guess, unless the input is turned so low that your
+quietest notes are lost in its hiss. A room mic hears plume's own drums too,
+so there the guess comes from your tempo and key alone.
 
 Plume guesses folk only when it hears you strumming, on a direct input, between 60 and 132
-bpm. A strum drags the pick across the strings, and plume hears the attack last longer
-than a picked note's. It counts more if the guitar sounds acoustic and the key is major.
-Fingerpicking and very quick strums are not heard as folk, and nor is anything on a room
-mic, which hears plume's own drums too. Name `folk` if you want it then.
+bpm. A strum drags the pick across the strings of a chord, and plume hears the attack last
+longer than a picked note's. Fingerpicking and very quick strums are not heard as strums. Name the style
+you want whenever the guess is wrong: a named style always wins.
 
 ## Busier and sparser
 

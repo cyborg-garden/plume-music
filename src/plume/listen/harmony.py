@@ -13,9 +13,10 @@ Key belief
 
     With the optional note model (listen/notes.py) the correlation is mixed
     with the same for a histogram of transcribed notes against note-duration
-    profiles, where a key and its relative score alike: see "Key from chroma
-    AND notes" below.  ``key_margin`` is how far the key's correlation is ahead
-    of the next one's; the band's entry waits a phrase when it is small.
+    profiles, where a minor key scores at least what its relative major does:
+    see "Key from chroma AND notes" below.  ``key_margin`` is how far the key's
+    correlation is ahead of the next one's; the band's entry waits a phrase
+    when it is small.
 
 Chord belief
     Per-frame cosine scores of the chroma against 24 binary maj/min triad
@@ -198,9 +199,9 @@ _KEY_COMMIT_EVIDENCE_S = 8.0
 # once: the chroma histogram above, and a histogram of transcribed notes.  Each
 # is matched against its own key profiles and the two correlations are mixed
 # (_NOTE_SHARE) before the incumbent, margins and sustain above are applied,
-# unchanged.  In the notes' correlation a key and its relative major or minor
-# both get the better of their two scores, so the notes say which set of seven
-# notes is in use and chroma alone says which of its two homes.
+# unchanged.  In the notes' correlation a minor key gets the better of its own
+# score and its relative major's, so the notes can say which set of seven notes
+# is in use but never put a minor part into its relative major.
 #
 # Why both.  Each reading alone is wrong in a way the other is not:
 #   - Chroma is the energy in each pitch class, overtones included.  A note's
@@ -216,17 +217,21 @@ _KEY_COMMIT_EVIDENCE_S = 8.0
 #     of roots outlines the wrong triad as easily as the right one.  Measured,
 #     the notes alone read many minor parts as the relative major (a quick
 #     minor-pentatonic riff, whose notes are its relative major's pentatonic,
-#     every time), and minor bass lines worse than chroma does.  So they get no
-#     say between a key and its relative: that is chroma's, from the low notes.
+#     every time), and minor bass lines worse than chroma does.  So between a
+#     minor key and its relative major they can only side with the minor key;
+#     otherwise it is chroma's call, from the low notes.  The shield is one way
+#     only: lending a major key its relative minor's score too reads minor
+#     pentatonic lines as the major key on their sixth (B flat minor as G flat
+#     major), whose relative minor holds every note of the line.
 # Measured offline (the benchmark's 270 generated parts replayed through this
 # tracker and the band's entry, with its wait when unsure; 77 rendered trouble
 # cases: hum, parts that open away from home, bass lines, single lines, drones),
-# exact key at the entry: chroma alone 125 of 270; both readings with the notes'
-# share at 0.5, 164, and at 0.65 (as here), 166; minor keys 64, 66 and 65 of
-# 135; trouble cases right after 12 s, 62, 72 and 71 of 77.  On the benchmark's
-# 40 recorded guitar excerpts all three read 21 at the entry.  With the notes
-# voting between a key and its relative (and no wait at the entry) minor keys
-# read worse than chroma alone, 61 of 135 against 64.
+# exact key at the entry, chroma alone and then both readings: 125 and 166 of
+# 270, minor keys 64 and 68 of 135, minor bass lines 15 and 14 of 27, trouble
+# cases right after 12 s 62 and 72 of 77; the 40 recorded guitar excerpts 21 and
+# 22 (minor 5 and 7 of 12).  With the notes voting freely between a key and its
+# relative, minor keys read 61; with both of a pair lent the better score (at a
+# share of 0.65), 65, and minor bass lines 10.
 #
 # No weight is given to how a part opens: a term for the lowest note of the
 # opening scores well where every part starts on its home chord, and puts the
@@ -281,10 +286,9 @@ _AS_MINOR = np.array([0.220, 0.006, 0.104, 0.123, 0.019, 0.103,
 # gate) before the note histogram has a say: about a quarter second of one
 # sounding note.
 _NOTE_MASS_FLOOR = 20.0
-# _NOTE_SHARE.  The notes' share of the mixed correlation.  Measured from 0.5
-# to 0.75 the benchmark moves by a take or two; at 0.65 fewer takes changed key
-# after the band was in than at 0.5 (14 and 5 against 18 and 8).
-_NOTE_SHARE = 0.65
+# _NOTE_SHARE.  The notes' share of the mixed correlation.  Even: measured at
+# 0.65 the generated parts gain a take and minor bass lines lose three.
+_NOTE_SHARE = 0.5
 # While the notes have nothing to say (the model's frames arrive about a second
 # behind the chroma's, and some sounds it does not transcribe at all) the key
 # waits for them, rather than be named from chroma alone and then defended
@@ -336,9 +340,8 @@ _NOTE_KEY_PROFILES = _key_profiles(_AS_MAJOR, _AS_MINOR)
 #: pitch class of each of the model's 88 keys (A0 = MIDI 21)
 _NOTE_PC = (np.arange(88) + 21) % 12
 _NOTE_PC_ONEHOT = np.eye(12)[_NOTE_PC]
-#: The relative of each key index: major k and minor (k + 9) % 12 share their notes.
-_RELATIVE = np.array([12 + (k + 9) % 12 for k in range(12)]
-                     + [(m + 3) % 12 for m in range(12)])
+#: The relative major of each minor key index 12 + m: the major key with its notes.
+_RELATIVE_MAJOR = (np.arange(12) + 3) % 12
 _TEMPLATES = _triad_templates()
 _N_STATES = 25  # 24 triads + N
 _N_IDX = 24
@@ -567,9 +570,9 @@ class HarmonyTracker:
             if counts.sum() >= _NOTE_MASS_FLOOR and nstd > 0.0:
                 nz = (counts - counts.mean()) / nstd
                 ncorr = _NOTE_KEY_PROFILES @ nz / 12.0
-                # the notes name the set of notes, not which of its two homes:
-                # a key and its relative get the better of their two scores
-                ncorr = np.maximum(ncorr, ncorr[_RELATIVE])
+                # the notes never put a minor key under its relative major: each
+                # minor key gets the better of its own and its relative's score
+                ncorr[12:] = np.maximum(ncorr[12:], ncorr[_RELATIVE_MAJOR])
                 corr = (1.0 - _NOTE_SHARE) * corr + _NOTE_SHARE * ncorr
             elif self._key_idx is None and self._evidence_s < _KEY_COMMIT_EVIDENCE_S:
                 return                        # no notes yet: wait (see _NOTE_SHARE)

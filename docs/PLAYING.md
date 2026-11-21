@@ -439,9 +439,9 @@ beside the take on a thread of its own, one two-second window each second, and t
 `PLUME_NOTES=inline` is for replaying a recording faster than real time: it runs the model
 in step with the audio instead of beside it.
 
-The notes say which seven notes you are using; which of the two keys that share them is
-home (C major or A minor, say) still comes from the first reading, which hears your low
-notes. So far this has only been measured on rendered parts and on a public set of guitar
+The notes never turn a minor key into the major key with the same notes (A minor into C
+major, say): between those two the first reading, which hears your low notes, decides,
+unless the notes say minor. So far this has only been measured on rendered parts and on a public set of guitar
 recordings, through a fake device.
 
 When the band is ready to come in but two keys are about level, it waits for one more of

@@ -339,7 +339,7 @@ def test_the_key_is_the_two_readings_averaged(monkeypatch):
     assert key(1.0) == "F# major"
     assert H._NOTE_SHARE == 1.0                               # (still patched)
     monkeypatch.undo()
-    assert H._NOTE_SHARE == 0.65
+    assert H._NOTE_SHARE == 0.5
     assert key(H._NOTE_SHARE) not in ("C major", "F# major")
 
 

@@ -42,10 +42,11 @@ ENTRY_KEY_BARS = 2
 #: When the band is ready to come in but the tracker's key is less than this far ahead
 #: of the next key (HarmonyState.key_margin, a difference of profile correlations),
 #: it waits once, for her next phrase, and comes in then on whatever the tracker holds.
-#: Measured offline on 40 recorded guitar excerpts: 10 of the 25 entries in a wrong
-#: key and none of the 14 right ones were under 0.05 at the entry bar, and the tracker
-#: was right on 19 of them two bars later.  Entries that wait come in one phrase later;
-#: on generated parts, whose key is as clear at the entry as it gets, it changes little.
+#: Measured offline on 40 recorded guitar excerpts: 21 of the 25 entries in a wrong
+#: key and 1 of the 14 right ones were under 0.05 at the entry bar, and with the wait
+#: 22 entered in the right key instead of 14.  On generated parts the margin does not
+#: tell right from wrong (under it: 58 of 97 wrong entries, 64 of 166 right), and the
+#: wait gains nothing there; about half of all takes enter one phrase later.
 ENTRY_KEY_MARGIN = 0.05
 
 DRUMS, BAND, FULL = "drums", "band", "full"

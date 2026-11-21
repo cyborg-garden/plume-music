@@ -667,7 +667,7 @@ class StylePick(HeardPlaying):
     part of the entrance.  After that it goes on listening, and may change its mind
     once (:meth:`reconsider`): on a phrase line, when another style has fitted how she
     played all through the phrase clearly better than the one playing, or when the key's
-    mode has turned and with it the answer on all she has played.  What it hears, and
+    mode has turned and with it, clearly, the answer on all she has played.  What it hears, and
     on which inputs, is :class:`HeardPlaying`'s.  ``why`` gives the best two styles with
     their scores and every input of the latest pick.
     """
@@ -739,13 +739,13 @@ class StylePick(HeardPlaying):
           :data:`REGUESS_LEAD` or more over the style playing (playstyle.fit).
         - The key's mode turned since the band came in and has held for a phrase, and
           all she has played since the start, scored in the new mode, gives another
-          style than it does in the old one.  Where how she plays is heard, the new
-          answer must also be a clear one, not a near-tie or the tempo's default for
-          playing that fits no style, and fit what she played by more than
-          playstyle.MARGIN over the style playing: a mode only breaks ties, and a key
-          that wobbles for a while must not move the band to a style that fits her no
-          better.  On a room mic, where nothing of how she plays is hers to hear and
-          the style is the tempo's default for the key, this is the only way it moves.
+          style than it does in the old one.  The new answer must also be a clear
+          one, not a near-tie or the tempo's default for playing that fits no style,
+          and fit what she played by more than playstyle.MARGIN over the style
+          playing: a mode only breaks ties, and a key that wobbles for a while must not
+          move the band to a style that fits her no better.  So where nothing of how
+          she plays is hers to hear (a room mic, or an input distrusted), every style
+          ties and the style never moves after the band is in.
         """
         if self._part is None or len(self.changes) >= REGUESS_CHANGES:
             return None
@@ -754,10 +754,13 @@ class StylePick(HeardPlaying):
             self._mode_now, self._mode_since = mode, int(bars_in)
         if bars_in < self._next_part:
             return None
-        # Each part goes on from the last, and finds her again in its first bar.
+        # Each part goes on from the last, and finds her again in its first bar.  The
+        # next is a whole part long or more and ends back on the part grid, so a bar
+        # the loop missed never shifts the parts off the section lines.
         part = self._part
         self._part = part.carry_on(find=True)
-        self._next_part = int(bars_in) + REGUESS_PART_BARS
+        self._next_part = -(-(int(bars_in) + REGUESS_PART_BARS) // REGUESS_PART_BARS
+                            ) * REGUESS_PART_BARS
         self._parts = [*self._parts, part][-(REGUESS_PHRASE_BARS // REGUESS_PART_BARS):]
         if bars_in < 2 * REGUESS_PHRASE_BARS or not section_line(bars_in):
             return None
@@ -799,12 +802,16 @@ class StylePick(HeardPlaying):
                 or bars_in - self._mode_since < REGUESS_PHRASE_BARS):
             return None
         playing = self.playing
+        if playing is None:
+            # Every style fits nothing heard alike, so the mode would only pick the
+            # tempo's default out of a tie, and a key read after the band is in moves
+            # between relative major and minor, the same notes, with no change in her.
+            return None
         was = score_styles(bpm, self._entry_mode, playing)[0].style
         scores = score_styles(bpm, mode, playing)
         if scores[0].style == was or scores[0].style == self.style:
             return None
-        if playing is not None and (
-                scores[0].score <= -NO_FIT
+        if (scores[0].score <= -NO_FIT
                 or (len(scores) > 1 and scores[0].score - scores[1].score <= MARGIN)
                 or scores[0].score - fit(self.style, playing) <= MARGIN):
             return None
@@ -1171,9 +1178,8 @@ class BandEntry:
                 and self._gov.committed_key not in (None, self._latest_key)):
             # Until the band is in, a commitment is one nobody has heard, so it is
             # only a first guess.  The guess is the first run of bars that agreed,
-            # and a player who opens on another chord than her home one (a real
-            # take opened on the ii, G# minor, of F# major) makes that run the wrong
-            # key.  The tracker's present belief has heard every bar since, and its
+            # and a player who opens on another chord than her home one (the ii, say)
+            # makes that run the wrong key.  The tracker's present belief has heard every bar since, and its
             # own hysteresis keeps a passing phrase from moving it, so the band comes
             # in on that, once it has held for ENTRY_KEY_BARS of her bars: one bar of
             # it is a passing chord.  Its latest word, so a rest on the entry bar

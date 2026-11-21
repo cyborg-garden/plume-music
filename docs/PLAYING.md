@@ -77,10 +77,9 @@ have played over the bars it heard. After that it keeps listening and may change
 once, at the start of one of the song's sections and never in the first phrase after the
 band comes in: when another style has fitted how you play clearly better through the last
 eight bars, or when the key's mode turns and holds for eight bars and that gives another
-style. On a direct input or with `--midi` the new style must also fit all you have played
-clearly better; on a room mic, or whenever it can't trust what it hears of how you play,
-the mode alone decides. A style
-you name never changes. Your tempo says which styles it could be, each style's
+style that fits all you have played clearly better. On a room mic, or whenever it can't
+trust what it hears of how you play, the style stays as the band came in. A style you name
+never changes. Your tempo says which styles it could be, each style's
 own range, and five things heard on a direct input pick among them: whether your eighths
 swing, how many strokes you play to a beat, how many of them fall off the beat, how even the
 gaps between them are, and how many of them are strummed chords. All five come from when and

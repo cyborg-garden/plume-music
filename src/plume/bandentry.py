@@ -1,6 +1,6 @@
 """When the band joins a tap-started take: drums first, then you, then them.
 
-The order is Juniper's (2026-11-02).  She taps four, the drums start and hold
+The order is the player's own.  She taps four, the drums start and hold
 that tempo, and she plays over them for a while.  Only once plume has heard her
 settle in one key do the bass and chords come in, in that key, with the melody
 a few bars after them.
@@ -20,7 +20,7 @@ import numpy as np
 
 from .governor import HarmonyGovernor
 from .listen.harmony import HarmonyState
-from .playstyle import NOTE_LAG_S, Playing, RhythmEar, explain, score_styles
+from .playstyle import MARGIN, NOTE_LAG_S, NO_FIT, Playing, RhythmEar, explain, fit, score_styles
 from .theory import parse_key
 
 HARMONY_ROLES = ("bass", "pad", "keys", "shimmer")
@@ -82,9 +82,9 @@ def _mode_of(key: str | None) -> str | None:
         return None
 
 
-#: The beat a detected take plays until it knows her style and key.  Juniper,
-#: 2026-11-06: "the lofi intro drum beat felt weird and clunky ... it should give a
-#: simple beat until it both key and genre deduces".  The count's pick was a guess from
+#: The beat a detected take plays until it knows her style and key: a style's own
+#: drums under a player it has not placed yet feel clunky, so a simple beat holds until
+#: both key and style are known.  The count's pick was a guess from
 #: the tempo alone, so its swing, its pushed and dragged hits and its 808 were a style
 #: she had not chosen yet.  A plain kick, snare and hat was still "too opinionated --
 #: it should almost just be like a metronome or a wood block".  So: one recorded
@@ -129,8 +129,8 @@ _CLICK_ROLE_DB = -6.0
 def bridged_style(name: str) -> dict:
     """``name``'s own style, with the plain beat's click kept as one more role.
 
-    Juniper, 2026-11-07: when the click stopped dead on the entry bar and the style's
-    drums came in under it, the beat "came in awkwardly".  So the click carries on
+    When the click stopped dead on the entry bar and the style's drums came in under
+    it, the beat came in awkwardly.  So the click carries on
     through the entry, at the level the plain beat had it, and fades out as the
     drums swell in (click_bridge_level).  The plain beat's bus was
     :data:`PLAIN_INTRO_GAIN_DB` under the band's, so the click's own gain takes that
@@ -182,15 +182,14 @@ _RAKE_HOPS = 3
 #: counted are one unbroken run around the peak: tremolo picking puts the next pick
 #: inside the reading window, so its attack rises again after dipping, and counting from
 #: the first hop above half to the last called it a strum (0.88 to 0.96).  Measured that
-#: way (2026-11-10) over every seven bars of each take, at input levels up to 30 dB
+#: way over every seven bars of each take, at input levels up to 30 dB
 #: apart: slowly raked synthetic strums 0.22 to 0.57, nineteen in twenty over 0.29; a
 #: strum quicker than about 20 ms 0.09 to 0.20, which is not heard as one; fingerpicking
-#: 0.00 to 0.08; tremolo picking 0.00 to 0.03.  15 real direct-input takes, which were
-#: never strummed folk, read 0.03 in the middle and under 0.35 nineteen times in twenty;
-#: one of them has a strummed passage that reads up to 0.61.  Between those levels one
-#: take's share moves by 0.13 at most, where with the flux onsets it moved by 0.56.
-#: Full sits where those real takes reach it as often as they reached the old mark with
-#: the flux onsets, 27 of their 1129 windows, 26 of them in that one passage.  The style
+#: 0.00 to 0.08; tremolo picking 0.00 to 0.03.  Picked direct-input playing reads low,
+#: under 0.35 nineteen times in twenty, and a strummed passage within it up to about
+#: 0.6.  Between those levels one take's share moves by 0.13 at most, where with the
+#: flux onsets it moved by 0.56.  Full sits where picked playing reaches it about as
+#: rarely as it reached the old mark with the flux onsets.  The style
 #: rule's bands for the strum are these two marks (plume.playstyle.PROFILES).
 _RAKE_NONE, _RAKE_FULL = 0.18, 0.40
 #: A strum is a chord.  One note that swells in, a soft synth, a bowed or blown line, a
@@ -201,7 +200,8 @@ _RAKE_NONE, _RAKE_FULL = 0.18, 0.40
 #: softer ones less.
 _STRUM_CHORD = 0.35
 #: Before this much is heard there is no strum evidence either way: four strokes a bar.
-#: The strummed takes had 29 to 52 strokes in seven bars.  One real take read 0.50 on 14.
+#: Strummed playing gives 29 to 52 strokes in seven bars; a sparse picked line can read
+#: a strum share of 0.50 on as few as 14.
 _FOLK_MIN_BARS, _FOLK_MIN_ONSETS = 6, 24
 #: Attack-breadth histogram bins for the acoustic measure's 75th percentile.
 _BREADTH_BINS = 25
@@ -303,6 +303,13 @@ class FolkEar:
         self._raked += sum(int(w >= _RAKE_HOPS and self._chord(seen[k + _CHROMA_AHEAD]))
                            for w, k in zip(widths, found))
         self._keep_tail(seen, last)
+
+    def carry_on(self) -> "FolkEar":
+        """A new ear that has counted nothing, holding the frames a strum across the
+        next bar line needs."""
+        ear = FolkEar()
+        ear._tail, ear._last_stroke = list(self._tail), self._last_stroke
+        return ear
 
     @staticmethod
     def _chord(frame) -> bool:
@@ -422,6 +429,14 @@ class StrokeEar:
         #: frame, s), for whoever places them in the beat.  Empty for frames with no time.
         self.last_at: tuple = ()
 
+    def carry_on(self) -> "StrokeEar":
+        """A new ear that has counted no strokes, but knows her level and holds the
+        frames the next bar's first strokes are read against."""
+        ear = StrokeEar()
+        ear._tail, ear._last_stroke = list(self._tail), self._last_stroke
+        ear._last_slow, ear._levels = self._last_slow, self._levels.copy()
+        return ear
+
     def own_level_db(self) -> float | None:
         """Her level so far (dBFS), None before anything audible."""
         n = int(self._levels.sum())
@@ -506,41 +521,68 @@ class StrokeEar:
         return len(self._tail) + int(self._levels.size)
 
 
-class StylePick:
-    """Where a detected style comes from over a take.
+#: A second look at the style weighs the last phrase of this many bars, and comes only on
+#: a section line of the song (SONG_ARC, :func:`section_line`), never before the end of
+#: the phrase after the band came in: that first phrase is the band's entrance.
+REGUESS_PHRASE_BARS = 8
+#: The phrase is heard in parts of this many bars, each on its own, and another style
+#: must win every part, so it has led over the whole phrase: a fill of a phrase's
+#: length or less, wherever it falls, leaves a part it does not reach.
+REGUESS_PART_BARS = 2
+#: And fit each part by this much more than the style playing does: half a point, what
+#: one reading well outside a band costs, and over three times what parts a near-tie
+#: (playstyle.MARGIN), so a style a reading or two from the one playing never wins it.
+REGUESS_LEAD = 0.5
+#: How many times a detected style may change after the band is in.
+REGUESS_CHANGES = 1
 
-    Drums need a style the moment the count lands, when only the tempo is known, so it
-    picks once there.  It picks once more as the band enters, on how she has played over
-    the bars heard till then (plume.playstyle), and the drums changing then reads as
-    part of the entrance.  After that it never moves.  A room mic hears the drums as
-    strokes too, so its ``trust_busy`` is off, and so is ``hear_technique``: how she
-    plays is only hers to hear on an input that carries nothing else.
+
+class HeardPlaying:
+    """How she plays, heard bar by bar: the readings a style is scored on
+    (plume.playstyle.Playing).
 
     What is heard comes from her frames when there are any (StrokeEar, RhythmEar,
     FolkEar), so it does not move with her input gain.  With no frames, notes on a MIDI
     input, each onset is a stroke, and when they are given their times RhythmEar places
-    them in the beat as it does strokes: all but the strum is known.  ``why`` gives the best two styles with their scores and every input of the pick.
+    them in the beat as it does strokes: all but the strum is known.  A room mic hears
+    the drums as strokes too, so its ``trust_busy`` is off, and so is
+    ``hear_technique``: how she plays is only hers to hear on an input that carries
+    nothing else.
     """
 
-    def __init__(self, *, key: str | None = None, trust_busy: bool = False,
-                 hear_technique: bool = False):
-        self._mode = _mode_of(key)
+    def __init__(self, *, trust_busy: bool = False, hear_technique: bool = False):
         self._trust_busy = bool(trust_busy)
         self._onsets = 0
         self._beats = 0
         self._stroke_beats = 0
         self._note_beats = 0
-        self.settled = False
         #: Whether she strums, which only an input hearing her alone can tell (FolkEar).
         self.folk_ear = FolkEar() if hear_technique else None
         self.stroke_ear = StrokeEar() if trust_busy else None
         self.rhythm_ear = RhythmEar() if trust_busy else None
-        self.why = ""
 
     @property
     def wants_frames(self) -> bool:
         """Whether her frames are worth handing over: something here reads them."""
         return self.folk_ear is not None or self.stroke_ear is not None
+
+    @property
+    def bars(self) -> int:
+        """Bars heard of her."""
+        return self._beats // 4
+
+    def carry_on(self, *, find: bool = False) -> "HeardPlaying":
+        """A new hearing of her from here on: nothing counted, but each ear knows where
+        she is (her level, her place in the beat, the frames that run on into the next
+        bar), so a few bars of her read as they do in the middle of a long take.
+        ``find``: her place in the beat is found again from there (RhythmEar.carry_on)."""
+        part = HeardPlaying(trust_busy=self._trust_busy)
+        part.folk_ear = None if self.folk_ear is None else self.folk_ear.carry_on()
+        if self.stroke_ear is not None:
+            part.stroke_ear = self.stroke_ear.carry_on()
+        if self.rhythm_ear is not None:
+            part.rhythm_ear = self.rhythm_ear.carry_on(find=find)
+        return part
 
     def distrust(self) -> None:
         """The input turned out to hold the band: how it sounds is no longer hers."""
@@ -595,19 +637,9 @@ class StylePick:
                        steady=self.rhythm_ear.steady,
                        strum=None if self.folk_ear is None else self.folk_ear.strum_share)
 
-    def at_count(self, bpm: float) -> str:
-        return detect_style(bpm, self._mode)
-
-    def at_entry(self, bpm: float, key: str | None) -> str:
-        self.settled = True
-        mode = _mode_of(key) or self._mode
+    def heard_why(self) -> list[str]:
+        """Everything heard, in words, for a log."""
         playing = self.playing
-        scores = score_styles(bpm, mode, playing)
-        self.why = "; ".join([explain(scores), f"bpm {bpm:.1f}", f"mode {mode or 'unknown'}",
-                              *self._heard_why(playing)])
-        return scores[0].style
-
-    def _heard_why(self, playing: Playing | None) -> list[str]:
         if playing is None:
             return ["busy: unknown, nothing heard yet" if self._trust_busy
                     else "busy: not hers alone to hear on this input"]
@@ -626,6 +658,170 @@ class StylePick:
         return out
 
 
+class StylePick(HeardPlaying):
+    """Where a detected style comes from over a take.
+
+    Drums need a style the moment the count lands, when only the tempo is known, so it
+    picks once there.  It picks once more as the band enters, on how she has played over
+    the bars heard till then (plume.playstyle), and the drums changing then reads as
+    part of the entrance.  After that it goes on listening, and may change its mind
+    once (:meth:`reconsider`): on a phrase line, when another style has fitted how she
+    played all through the phrase clearly better than the one playing, or when the key's
+    mode has turned and with it, clearly, the answer on all she has played.  What it hears, and
+    on which inputs, is :class:`HeardPlaying`'s.  ``why`` gives the best two styles with
+    their scores and every input of the latest pick.
+    """
+
+    def __init__(self, *, key: str | None = None, trust_busy: bool = False,
+                 hear_technique: bool = False):
+        super().__init__(trust_busy=trust_busy, hear_technique=hear_technique)
+        self._mode = _mode_of(key)
+        self.settled = False
+        self.why = ""
+        #: The style picked as the band came in, then the one it changed to.
+        self.style: str | None = None
+        #: Each change after the band came in: (bars in, from, to, why).
+        self.changes: list = []
+        self._entry_mode: str | None = None
+        self._mode_now: str | None = None
+        self._mode_since = 0
+        self._part: HeardPlaying | None = None   # this part of the phrase, heard alone
+        self._parts: list = []       # the phrase's last parts heard, the latest last
+        self._next_part = 0
+
+    @property
+    def listening(self) -> bool:
+        """Whether a bar heard can still change the answer."""
+        return not self.settled or (self._part is not None
+                                    and len(self.changes) < REGUESS_CHANGES)
+
+    def distrust(self) -> None:
+        super().distrust()
+        if self._part is not None:
+            self._part.distrust()
+            self._parts = []
+
+    def heard_bar(self, onsets: int, frames=None, *, bar_start: float | None = None,
+                  bar_s: float | None = None, onset_times=None) -> None:
+        if self._part is not None:
+            self._part.heard_bar(onsets, frames, bar_start=bar_start, bar_s=bar_s,
+                                 onset_times=onset_times)
+        super().heard_bar(onsets, frames, bar_start=bar_start, bar_s=bar_s,
+                          onset_times=onset_times)
+
+    def at_count(self, bpm: float) -> str:
+        return detect_style(bpm, self._mode)
+
+    def at_entry(self, bpm: float, key: str | None) -> str:
+        self.settled = True
+        mode = _mode_of(key) or self._mode
+        scores = score_styles(bpm, mode, self.playing)
+        self.why = "; ".join([explain(scores), f"bpm {bpm:.1f}", f"mode {mode or 'unknown'}",
+                              *self.heard_why()])
+        self.style = scores[0].style
+        self._entry_mode = self._mode_now = mode
+        self._part = self.carry_on()
+        self._next_part = REGUESS_PART_BARS
+        return self.style
+
+
+    def reconsider(self, bars_in: int, bpm: float, key: str | None) -> str | None:
+        """Called on every bar after the band came in, ``bars_in`` bars after it, with
+        the key committed now.  The style to change to on this bar, or None to stay.
+
+        At most :data:`REGUESS_CHANGES` changes, each on a section line of the song
+        (:func:`section_line`) after the first phrase (:data:`REGUESS_PHRASE_BARS`), for
+        one of two reasons:
+
+        - Her feel changed.  Each part of the phrase just ended
+          (:data:`REGUESS_PART_BARS`) is scored on its own (score_styles), every bar of
+          it played, and one other style won every part, fitting each by
+          :data:`REGUESS_LEAD` or more over the style playing (playstyle.fit).
+        - The key's mode turned since the band came in and has held for a phrase, and
+          all she has played since the start, scored in the new mode, gives another
+          style than it does in the old one.  The new answer must also be a clear
+          one, not a near-tie or the tempo's default for playing that fits no style,
+          and fit what she played by more than playstyle.MARGIN over the style
+          playing: a mode only breaks ties, and a key that wobbles for a while must not
+          move the band to a style that fits her no better.  So where nothing of how
+          she plays is hers to hear (a room mic, or an input distrusted), every style
+          ties and the style never moves after the band is in.
+        """
+        if self._part is None or len(self.changes) >= REGUESS_CHANGES:
+            return None
+        mode = _mode_of(key) or self._mode_now
+        if mode != self._mode_now:
+            self._mode_now, self._mode_since = mode, int(bars_in)
+        if bars_in < self._next_part:
+            return None
+        # Each part goes on from the last, and finds her again in its first bar.  The
+        # next is a whole part long or more and ends back on the part grid, so a bar
+        # the loop missed never shifts the parts off the section lines.
+        part = self._part
+        self._part = part.carry_on(find=True)
+        self._next_part = -(-(int(bars_in) + REGUESS_PART_BARS) // REGUESS_PART_BARS
+                            ) * REGUESS_PART_BARS
+        self._parts = [*self._parts, part][-(REGUESS_PHRASE_BARS // REGUESS_PART_BARS):]
+        if bars_in < 2 * REGUESS_PHRASE_BARS or not section_line(bars_in):
+            return None
+        why = self._feel_changed(bpm, mode)
+        if why is None:
+            why = self._mode_turned(bars_in, bpm, mode)
+        if why is None:
+            return None
+        to, why = why
+        self.changes.append((int(bars_in), self.style, to, why))
+        self.style, self.why = to, why
+        return to
+
+    def _feel_changed(self, bpm: float, mode: str | None) -> tuple[str, str] | None:
+        parts = self._parts
+        if (len(parts) < REGUESS_PHRASE_BARS // REGUESS_PART_BARS
+                or any(p.playing is None or p.bars < REGUESS_PART_BARS for p in parts)):
+            return None
+        tops, leads = [], []
+        for part in parts:
+            top = score_styles(bpm, mode, part.playing)[0]
+            if top.score <= -NO_FIT:
+                return None          # nothing fits: the tempo's default, not a feel
+            tops.append(top.style)
+            leads.append(top.score - fit(self.style, part.playing))
+        if len(set(tops)) != 1 or tops[0] == self.style or min(leads) < REGUESS_LEAD:
+            return None
+        last = parts[-1]
+        why = "; ".join([
+            explain(score_styles(bpm, mode, last.playing)),
+            f"led {self.style} by {min(leads):.2f} or more in every {REGUESS_PART_BARS} "
+            f"bars of the last {REGUESS_PHRASE_BARS}",
+            f"bpm {bpm:.1f}", f"mode {mode or 'unknown'}", *last.heard_why()])
+        return tops[0], why
+
+    def _mode_turned(self, bars_in: int, bpm: float,
+                     mode: str | None) -> tuple[str, str] | None:
+        if (mode is None or mode == self._entry_mode
+                or bars_in - self._mode_since < REGUESS_PHRASE_BARS):
+            return None
+        playing = self.playing
+        if playing is None:
+            # Every style fits nothing heard alike, so the mode would only pick the
+            # tempo's default out of a tie, and a key read after the band is in moves
+            # between relative major and minor, the same notes, with no change in her.
+            return None
+        was = score_styles(bpm, self._entry_mode, playing)[0].style
+        scores = score_styles(bpm, mode, playing)
+        if scores[0].style == was or scores[0].style == self.style:
+            return None
+        if (scores[0].score <= -NO_FIT
+                or (len(scores) > 1 and scores[0].score - scores[1].score <= MARGIN)
+                or scores[0].score - fit(self.style, playing) <= MARGIN):
+            return None
+        why = "; ".join([explain(scores),
+                         f"the key turned {mode} (was {self._entry_mode or 'unknown'}) "
+                         f"{bars_in - self._mode_since} bars ago",
+                         f"bpm {bpm:.1f}", f"mode {mode}", *self.heard_why()])
+        return scores[0].style, why
+
+
 @dataclass(frozen=True)
 class EntryState:
     stage: str               # drums | band | full
@@ -642,7 +838,7 @@ _NOTHING_HEARD = HarmonyState(t_s=0.0, key=None, key_conf=0.0, chord=None,
 
 #: How much of a bar's pitch energy its three strongest notes must hold for the bar
 #: to count as someone playing.  Drums barely favour any note: bars measured with
-#: nobody playing (a real take, 2026-11-02) held 0.29-0.37, with guitar 0.46-0.76.
+#: drums alone, nobody playing, hold 0.29-0.37, and a guitar 0.46-0.76.
 TONAL_TOP3 = 0.42
 
 
@@ -852,9 +1048,8 @@ class BandEntry:
         commit to the tracker's latest key instead.  None waits for as long as it takes.
 
         ``phrase_bars``: the band comes in only on the top of one of her groups of this
-        many bars, counted from the bar she last started playing in after a rest.  Juniper,
-        2026-11-06: "the chords came in not at what felt like the end of a group of
-        measures".  It used to come in on whatever bar the key settled, which was bar 8
+        many bars, counted from the bar she last started playing in after a rest, so the chords
+        come in at what feels like the end of a group of measures.  It used to come in on whatever bar the key settled, which was bar 8
         of plume's count and bar 6 of hers.  1 enters as soon as it is ready.
         """
         self._min_drum_bars = int(min_drum_bars)
@@ -983,9 +1178,8 @@ class BandEntry:
                 and self._gov.committed_key not in (None, self._latest_key)):
             # Until the band is in, a commitment is one nobody has heard, so it is
             # only a first guess.  The guess is the first run of bars that agreed,
-            # and a player who opens on another chord than her home one (a real
-            # take opened on the ii, G# minor, of F# major) makes that run the wrong
-            # key.  The tracker's present belief has heard every bar since, and its
+            # and a player who opens on another chord than her home one (the ii, say)
+            # makes that run the wrong key.  The tracker's present belief has heard every bar since, and its
             # own hysteresis keeps a passing phrase from moving it, so the band comes
             # in on that, once it has held for ENTRY_KEY_BARS of her bars: one bar of
             # it is a passing chord.  Its latest word, so a rest on the entry bar
@@ -1243,6 +1437,18 @@ def yield_to(plan_yield: "PlanYield", follow: "BandFollow", section: str, densit
                           density_x=follow.density, bars_in=bars_in)
 
 
+def section_line(bars_in: int) -> bool:
+    """Whether a section of the song (:data:`SONG_ARC`) starts ``bars_in`` bars after
+    the band came in.  The arc repeats, as :func:`song_section` does."""
+    total = sum(bars for _, bars, _ in SONG_ARC)
+    at, start = max(0, int(bars_in)) % total, 0
+    for _, bars, _ in SONG_ARC:
+        if at == start:
+            return True
+        start += bars
+    return False
+
+
 def song_section(bars_in: int) -> tuple[str, float, tuple[str, ...]]:
     """(section name, density, roles resting) ``bars_in`` bars after the band came
     in.  The arc repeats, so a long take keeps moving."""
@@ -1257,9 +1463,8 @@ def song_section(bars_in: int) -> tuple[str, float, tuple[str, ...]]:
 
 # ------------------------------------------------------------ following the player
 #
-# Juniper, 2026-11-06: "the band should follow the player but just with the confidence
-# waiting thing so that if i just make like a little mistake it doesnt assume thats the
-# whole direction we're going."  Before this the band's level never moved and its
+# The band follows the player, but only once a change has held: a small slip must not
+# read as the whole direction the playing is going.  Before this the band's level never moved and its
 # density was the arc's, by bar count, whatever she played.
 
 #: The band follows.  "lead", where plume steers the song itself, is on the roadmap;
@@ -1267,9 +1472,8 @@ def song_section(bars_in: int) -> tuple[str, float, tuple[str, ...]]:
 FOLLOW = "follow"
 FOLLOW_MODES = (FOLLOW,)
 
-#: How long a new way of playing has to hold before the band answers.  Juniper,
-#: 2026-11-06, on a take at 60 bpm: "it did not get quieter when i was playing quieter
-#: tho."  Three whole bars, read two bars late and answered a decibel a bar, was
+#: How long a new way of playing has to hold before the band answers.  At 60 bpm the
+#: band did not get quieter when the player did: three whole bars, read two bars late and answered a decibel a bar, was
 #: sixteen seconds after she went soft: not following.
 #:
 #: Her level is read every half bar, and a clear change is answered sooner than a
@@ -1296,19 +1500,18 @@ FOLLOW_STEADY_HOLD_BARS_ROOM = 4.0
 #: Played bars it listens to before it knows how this player normally plays.
 FOLLOW_LEARN_BARS = 4
 #: How far a bar has to be from what the band already follows to count as different.
-#: 3 dB is mind.py's energy_up_db; half an octave of busyness is about 40% more or
+#: 3 dB matches :mod:`plume.mind`'s ``energy_up_db``; half an octave of busyness is about 40% more or
 #: fewer notes.  Inside these a bar is more of the same.
 FOLLOW_LEVEL_DEADBAND_DB = 3.0
 FOLLOW_BUSY_DEADBAND = 0.5
 #: Notes per beat added to both sides of the busyness ratio, so a sparse player's
-#: second note is not "twice as busy".  mind.py's phrase floor.
+#: second note is not "twice as busy".
 _BUSY_FLOOR = 0.25
-#: The band moves half as far as she did: it answers rather than mirrors (the idea
-#: behind mind.py's delayed recovery), and comes down to find a soft player without
-#: vanishing under her.  Past :data:`FOLLOW_GAIN_BIG_DB` of drop it answers with
-#: :data:`FOLLOW_GAIN_PER_DB_BIG` of each further decibel: she went 14 dB down on
-#: the 2026-11-06 take, and half of that, capped at 6, was too small to hear as an
-#: answer under her.
+#: The band moves half as far as the player did: it answers rather than mirrors,
+#: and comes down to find a soft player without vanishing under them.  Past
+#: :data:`FOLLOW_GAIN_BIG_DB` of drop it answers with :data:`FOLLOW_GAIN_PER_DB_BIG`
+#: of each further decibel: half of a drop as deep as 14 dB, capped at 6, is too
+#: small to hear as an answer.
 FOLLOW_GAIN_PER_DB = 0.5
 FOLLOW_GAIN_BIG_DB = 6.0
 FOLLOW_GAIN_PER_DB_BIG = 0.75
@@ -1330,7 +1533,8 @@ _ROOM_DENSITY = (0.75, 1.15)
 FOLLOW_GAIN_STEP_DB = 3.0
 FOLLOW_GAIN_RETURN_STEP_DB = 4.0
 FOLLOW_DENSITY_STEP = 0.1
-#: Notes per beat past which more band buries the player: mind.py's density_high.
+#: Notes per beat past which more band buries the player (the same 2.5 as
+#: :mod:`plume.mind`'s ``density_high``).
 #: Over it the band never fills in, however busy that is for them.
 FOLLOW_TORRENT = 2.5
 #: Bars a "busier" or "sparser" cue holds the band's density where the cue left it.
@@ -1995,7 +2199,7 @@ MIN_REST_S = 6.0
 
 
 class SilenceEnding:
-    """Nobody playing: wait, then fade out and end (Juniper, 2026-11-02).
+    """Nobody playing: wait, then fade out and end.
 
     Times are bar starts in stream seconds.  A bar of playing during the fade
     brings the band straight back, so a rest costs at most a short dip.  Bars are read
@@ -2069,8 +2273,8 @@ def count_start(taps, soft_hits, *, tol_frac: float = 0.15,
     """The whole count, including knocks too quiet to have confirmed it.
 
     A count is confirmed by its four clearest knocks, which need not be its
-    first four: on 2026-11-02 the first three of a count were quiet, the band
-    counted from the fourth, and the drums came in three beats late.  So walk
+    first four: when the first three of a count are quiet, the band would count
+    from the fourth and the drums would come in three beats late.  So walk
     back along the confirmed spacing through quieter hits, until a beat is
     missing.  The first knock found is where she started counting.
     """

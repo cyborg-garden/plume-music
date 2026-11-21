@@ -164,6 +164,20 @@ class RhythmEar:
         self._lead = 0.0             # how far ahead of the bar line her eighths run, beats
         self._found = False
 
+    def carry_on(self, *, find: bool = False) -> "RhythmEar":
+        """A new ear that has heard nothing yet but knows where she is: placed on her
+        eighths as this one has her, and with her last stroke for the next gap.  A new
+        ear placing her from the bar line alone would find a player who has drifted off
+        it a long way into the take on the wrong side of the beat.  ``find``: its first
+        bar finds her again from there, as the first bar of a take does from the bar
+        line, so a player whose tempo is not quite the band's is followed past where
+        following alone loses her (she moves more than _FOLLOW_WITHIN between two of
+        the strokes it follows her by)."""
+        ear = RhythmEar()
+        ear._last, ear._lead = self._last, self._lead
+        ear._found = self._found and not find
+        return ear
+
     def bar(self, strokes_at, *, bar_start: float, bar_s: float,
             lag_s: float = STROKE_LAG_S) -> None:
         beat = float(bar_s) / 4.0
@@ -349,6 +363,29 @@ def _cost(value: float, band: tuple[float, float], soft: float) -> float:
     return min(1.0, out / soft)
 
 
+def _against(style: str, heard: Playing) -> list:
+    """What ``style`` loses on ``heard``: (thing heard, cost) for each reading outside
+    its band."""
+    profile = PROFILES[style]
+    against = []
+    for f in fields(Playing):
+        value = getattr(heard, f.name)
+        band = profile.get(f.name, NOT_STRUMMED if f.name == "strum" else None)
+        if value is not None and band is not None:
+            cost = _cost(float(value), band, SOFT[f.name])
+            if cost > 0.0:
+                against.append((f.name, cost))
+    return against
+
+
+def fit(style: str, playing: Playing | None) -> float:
+    """How well ``style`` fits what was heard, as :func:`score_styles` scores it, but
+    whatever the tempo and whether or not what makes it that style was heard: 0 fits
+    all of it, each misfit takes away up to 1.  The score a style already playing is
+    held to when another is weighed against it."""
+    return -sum(c for _, c in _against(style, playing or Playing()))
+
+
 def score_styles(bpm: float, mode: str | None = None,
                  playing: Playing | None = None) -> list[StyleScore]:
     """Every candidate style for this tempo with its score, the answer first and then
@@ -356,18 +393,11 @@ def score_styles(bpm: float, mode: str | None = None,
     default = tempo_default(bpm, mode, None if playing is None else playing.strokes)
     heard = playing or Playing()
     out = []
-    for style, profile in PROFILES.items():
+    for style in PROFILES:
         lo, hi = tempo_range(style)
         if style != default and not lo <= bpm <= hi:
             continue
-        against = []
-        for f in fields(Playing):
-            value = getattr(heard, f.name)
-            band = profile.get(f.name, NOT_STRUMMED if f.name == "strum" else None)
-            if value is not None and band is not None:
-                cost = _cost(float(value), band, SOFT[f.name])
-                if cost > 0.0:
-                    against.append((f.name, cost))
+        against = _against(style, heard)
         lost = dict(against)
         if style != default and playing is not None and any(
                 getattr(heard, need) is None or lost.get(need, 0.0) > 0.0

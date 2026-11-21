@@ -777,3 +777,388 @@ def test_a_room_mic_hears_nothing_of_how_she_plays():
     assert pick.playing is None
     assert pick.at_entry(124.0, "A minor") == tempo_default(124.0, "minor") == "house"
     assert "not hers alone" in pick.why
+
+
+# ------------------------------------------------------------- a second look
+#
+# The style is picked as the band comes in, and may change once after, on how she plays
+# now (StylePick.reconsider).  Fed one bar at a time, as the take feeds it.
+
+def _take(feels, *, bpm, keys, pick=None, jitter_s=0.006, seed=5, entry_bars=7,
+          tempo_off=0.0):
+    """A MIDI input's StylePick fed ``entry_bars`` bars of the first feel, its pick as
+    the band comes in, then bar by bar: ``feels`` is a list of (bars, places) and ``keys``
+    the committed key of every bar after the band is in.  ``tempo_off``: she holds her
+    own tempo, this share faster than the bar lines.  Returns the pick, its answer as
+    the band came in, and every (bars in, style) it changed to."""
+    from plume.listen.features import HOP
+    rng = np.random.default_rng(seed)
+    bar_s, hop = 240.0 / bpm, HOP / SR
+    hers = bar_s / (1.0 + tempo_off)
+    pick = pick or StylePick(trust_busy=True)
+    plan = [places for n, places in feels for _ in range(n)]
+    changes, at_entry, b = [], None, 0
+    for i, places in enumerate(plan):
+        if places is not None:
+            at = [b * hers + p * hers / 4.0 + float(rng.normal(0.0, jitter_s))
+                  for p in places]
+            stamped = [np.ceil(t / hop) * hop for t in at]
+            pick.heard_bar(len(stamped), bar_start=b * bar_s, bar_s=bar_s,
+                           onset_times=stamped)
+        b += 1
+        if i + 1 == entry_bars:
+            at_entry = pick.at_entry(bpm, keys[0])
+        elif i + 1 > entry_bars:
+            bars_in = i + 1 - entry_bars
+            got = pick.reconsider(bars_in, bpm, keys[min(bars_in, len(keys) - 1)])
+            if got is not None:
+                changes.append((bars_in, got))
+    return pick, at_entry, changes
+
+
+_SPARSE = (0.0, 2.0)
+
+
+@pytest.mark.parametrize("places,bpm,key", [
+    (_SPARSE, 140.0, "C minor"), (_EIGHTHS, 96.0, "D major"), (_STABS, 124.0, "C major"),
+    (_swung(0.66), 120.0, "F major"), ((0.0, 0.58, 1.58, 2.58, 3.58), 94.0, "D major"),
+    (_QUARTERS, 85.0, "A minor"),
+])
+def test_a_player_who_keeps_her_feel_keeps_her_style(places, bpm, key):
+    for seed in (5, 6, 7):
+        pick, first, changes = _take([(60, places)], bpm=bpm, keys=[key], seed=seed,
+                                     jitter_s=0.012)
+        assert changes == [], (first, changes, pick.why)
+        assert pick.style == first
+
+
+@pytest.mark.parametrize("tempo_off", [0.001, 0.002, 0.003])
+def test_a_player_who_drifts_off_the_bar_lines_keeps_her_style(tempo_off):
+    """She swings, holding her own tempo a little faster than the count, and is a good
+    part of a beat ahead of the bar lines well into the take.  Each part of a phrase is
+    heard from where she is by then: placed from the bar line, her swung eighths
+    landed off the beat and she was house."""
+    pick, first, changes = _take([(60, _swung(0.66))], bpm=120.0, keys=["F major"],
+                                 tempo_off=tempo_off)
+    assert first == "jazz" and changes == [], (changes, pick.why)
+
+
+def test_a_part_finds_her_again_where_following_lost_her():
+    """Quarter notes on the beat, then from bar 6 a sixth of a beat late, as a player
+    whose tempo is not quite the band's ends up in time: more than following moves in
+    a bar, so the ear that followed her now hears every stroke off the beat.  A part
+    that finds her again from there hears them on it."""
+    from plume.playstyle import STROKE_LAG_S
+    bpm, bar_s = 100.0, 2.4
+    ear = RhythmEar()
+
+    def bar(e, b, late):
+        e.bar([b * bar_s + p * bar_s / 4.0 + late + STROKE_LAG_S for p in _QUARTERS],
+              bar_start=b * bar_s, bar_s=bar_s)
+    for b in range(6):
+        bar(ear, b, 0.0)
+    followed, found = ear.carry_on(), ear.carry_on(find=True)
+    for b in range(6, 8):
+        for e in (ear, followed, found):
+            bar(e, b, bar_s / 4.0 / 6.0)
+    assert followed.offbeat > 0.9
+    assert found.offbeat == 0.0
+
+
+def test_sparse_and_minor_then_dense_and_major_changes_style_once_on_a_phrase():
+    """Two notes a bar in C minor, then even eighths in C major from 13 bars in: hip hop,
+    which a minor key at 96 is when nothing else fits, then synthwave's even pulse."""
+    keys = ["C minor"] * 13 + ["C major"] * 60
+    pick, first, changes = _take([(20, _SPARSE), (60, _EIGHTHS)], bpm=96.0, keys=keys)
+    assert first == "hiphop", pick.why
+    assert len(changes) == 1, changes
+    bars_in, style = changes[0]
+    assert style == "synthwave", pick.why
+    from plume.bandentry import section_line
+    assert section_line(bars_in) and bars_in > 13
+    assert pick.style == "synthwave"
+    assert pick.why.startswith("synthwave ") and "led hiphop by" in pick.why, pick.why
+
+
+def test_the_style_changes_never_twice():
+    """Sparse, then an even pulse, then swung: three feels that each fit a style of
+    their own, so a second change would have something to change to."""
+    pick, first, changes = _take([(20, _SPARSE), (24, _EIGHTHS), (40, _swung(0.66))],
+                                 bpm=96.0, keys=["C minor"])
+    assert first == "hiphop"
+    assert [s for _, s in changes] == ["synthwave"], changes
+    assert pick.style == "synthwave"
+    assert pick.reconsider(200, 96.0, "C minor") is None
+
+
+def test_each_feel_after_the_first_could_change_the_style_on_its_own():
+    """The two later feels of the take above each move a pick that hears them alone
+    after the first: so only the limit keeps the third from changing the style."""
+    for feel, style in ((_EIGHTHS, "synthwave"), (_swung(0.66), "jazz")):
+        _, first, changes = _take([(20, _SPARSE), (40, feel)], bpm=96.0, keys=["C minor"])
+        assert first == "hiphop" and [s for _, s in changes] == [style], (feel, changes)
+    _, first, changes = _take([(20, _EIGHTHS), (40, _swung(0.66))], bpm=96.0,
+                              keys=["C minor"])
+    assert first == "synthwave" and [s for _, s in changes] == ["jazz"], changes
+
+
+def test_never_in_the_first_phrase_after_the_band_comes_in():
+    """She turns busy on the very bar the band comes in: the first phrase is the band's
+    entrance, so the earliest change is at the end of the phrase after it."""
+    from plume.bandentry import REGUESS_PHRASE_BARS
+    pick, first, changes = _take([(7, _SPARSE), (60, _EIGHTHS)], bpm=96.0,
+                                 keys=["C minor"])
+    assert first == "hiphop"
+    assert changes and changes[0][0] == 2 * REGUESS_PHRASE_BARS, changes
+
+
+def test_a_fill_shorter_than_a_phrase_changes_nothing():
+    """Four busy bars in the middle of a sparse take."""
+    for at in range(13, 22):
+        pick, first, changes = _take([(at, _SPARSE), (4, _EIGHTHS), (40, _SPARSE)],
+                                     bpm=96.0, keys=["C minor"])
+        assert first == "hiphop" and changes == [], (at, changes)
+
+
+_DOTTED = (0.0, 0.75, 1.5, 2.0, 2.75, 3.5)
+_OFF_EIGHTHS = (0.0, 0.58, 1.58, 2.58, 3.58)
+
+
+def test_a_phrase_that_fits_another_style_barely_better_changes_nothing():
+    """A dotted figure after an even pulse: midwest fits each part of the phrase only a
+    little better than synthwave, well under REGUESS_LEAD."""
+    for seed in (5, 6, 7):
+        pick, first, changes = _take([(8, _EIGHTHS), (60, _DOTTED)], bpm=96.0,
+                                     keys=["C major"], entry_bars=8, seed=seed)
+        assert first == "synthwave" and changes == [], (seed, changes, pick.why)
+
+
+def test_a_phrase_split_between_two_other_styles_changes_nothing():
+    """Two bars off the beat, two bars swung, over and over: each part clearly fits
+    another style than the one playing, hip hop then jazz, but no one style led the
+    whole phrase."""
+    feels = [(8, _EIGHTHS)] + [(2, _OFF_EIGHTHS), (2, _swung(0.66))] * 20
+    for seed in (5, 6, 7):
+        pick, first, changes = _take(feels, bpm=96.0, keys=["C major"], entry_bars=8,
+                                     seed=seed)
+        assert first == "synthwave" and changes == [], (seed, changes, pick.why)
+
+
+def test_a_phrase_of_one_style_then_another_changes_nothing():
+    """Four bars off the beat, then four swung, over and over: each half of every phrase
+    clearly fits another style than the one playing, but neither led the whole of it."""
+    feels = [(8, _EIGHTHS)] + [(4, _OFF_EIGHTHS), (4, _swung(0.66))] * 10
+    for seed in (5, 6, 7):
+        pick, first, changes = _take(feels, bpm=96.0, keys=["C major"], entry_bars=8,
+                                     seed=seed)
+        assert first == "synthwave" and changes == [], (seed, changes, pick.why)
+
+
+@pytest.mark.parametrize("late", [1.0 / 6.0, 0.25])
+def test_a_player_who_comes_back_in_behind_the_band_keeps_her_style(late):
+    """Quarter notes, then the same a sixth of a beat or more behind the bar lines, as
+    after a rest she comes back in a little late: further than following her moves in
+    a bar.  Each part of a phrase finds her again where she is, so she still plays on
+    her own beat; followed from where she was, she would be off it, and house."""
+    behind = tuple(p + late for p in _QUARTERS)
+    for seed in (5, 6, 7):
+        pick, first, changes = _take([(20, _QUARTERS), (60, behind)], bpm=120.0,
+                                     keys=["C major"], seed=seed)
+        assert first == "midwest" and changes == [], (seed, changes, pick.why)
+
+
+def test_a_rest_is_not_a_feel():
+    """Bars she sat out say nothing: a phrase mostly resting changes nothing."""
+    pick, first, changes = _take([(20, _SPARSE), (10, None), (2, _EIGHTHS), (30, None)],
+                                 bpm=96.0, keys=["C minor"])
+    assert changes == [], changes
+
+
+def test_a_part_played_only_half_through_is_not_a_feel():
+    """A busy bar, a bar's rest, over and over: every part of the phrase has a busy bar
+    in it, but none was played all through, so none of them is heard as her feel."""
+    feels = [(20, _SPARSE)] + [(1, _EIGHTHS), (1, None)] * 40
+    for seed in (5, 6, 7):
+        pick, first, changes = _take(feels, bpm=96.0, keys=["C minor"], seed=seed)
+        assert first == "hiphop" and changes == [], (seed, changes, pick.why)
+    # The same busy bars played through do change it, so it is the rests that held it.
+    _, _, changes = _take([(20, _SPARSE), (80, _EIGHTHS)], bpm=96.0, keys=["C minor"])
+    assert [s for _, s in changes] == ["synthwave"], changes
+
+
+def test_the_first_phrase_holds_whatever_the_song_s_sections(monkeypatch):
+    """Never in the first phrase after the band comes in, even where a section line
+    would fall inside it."""
+    import plume.bandentry as be
+    monkeypatch.setattr(be, "section_line", lambda bars_in: True)
+    pick, first, changes = _take([(7, _SPARSE), (60, _EIGHTHS)], bpm=96.0,
+                                 keys=["C minor"])
+    assert first == "hiphop"
+    assert changes and changes[0][0] == 2 * be.REGUESS_PHRASE_BARS, changes
+
+
+def test_a_room_mic_keeps_its_style_when_the_key_s_mode_turns():
+    """Nothing of how she plays is hers to hear, so every style fits her alike and the
+    tempo's default for the key is the answer: a near-tie the mode only breaks.  A key
+    read with the band in the room moves between relative major and minor, the same
+    notes, while she plays on unchanged, so the mode alone never moves the band."""
+    keys = ["A minor"] * 10 + ["C major"] * 60
+    pick, first, changes = _take([(60, _EIGHTHS)], bpm=95.0, keys=keys,
+                                 pick=StylePick(trust_busy=False))
+    assert first == "hiphop"
+    assert score_styles(95.0, "major", pick.playing)[0].style == "midwest"
+    assert changes == [] and pick.style == "hiphop", (changes, pick.why)
+
+
+def test_an_input_that_turns_out_to_hold_the_band_keeps_its_style_when_the_mode_turns():
+    """A direct input distrusted after the band came in hears nothing of her from then
+    on, as a room mic does: the mode alone moves nothing there either."""
+    keys = ["A minor"] * 10 + ["C major"] * 60
+    pick = StylePick(trust_busy=True)
+    real = pick.at_entry
+
+    def entry_then_distrust(bpm, key):
+        out = real(bpm, key)
+        pick.distrust()
+        return out
+    pick.at_entry = entry_then_distrust
+    pick, first, changes = _take([(60, _EIGHTHS)], bpm=95.0, keys=keys, pick=pick)
+    assert pick.playing is None
+    assert changes == [] and pick.style == first, (changes, pick.why)
+
+
+def test_a_mode_that_does_not_turn_the_style_changes_nothing():
+    """Swung eighths are jazz in either mode."""
+    keys = ["F minor"] * 10 + ["F major"] * 60
+    pick, first, changes = _take([(60, _swung(0.66))], bpm=120.0, keys=keys)
+    assert first == "jazz" and changes == [], changes
+
+
+@pytest.mark.parametrize("places,why", [
+    (_DOTTED, "a near-tie: hip hop and midwest fit the dotted figure alike"),
+    (_SPARSE, "nothing fits two notes a bar: only the tempo's default moves"),
+])
+def test_a_key_whose_mode_turns_moves_only_a_clear_answer(places, why):
+    """On a direct input the key's mode only breaks ties and picks the default where
+    nothing fits.  So a key that turns, rightly or as a long wobble, must not move the
+    band on its own: the new answer has to fit what she played clearly better."""
+    keys = ["C major"] * 10 + ["A minor"] * 60
+    pick, first, changes = _take([(60, places)], bpm=95.0, keys=keys)
+    assert first == "midwest" and changes == [], (why, changes, pick.why)
+    assert score_styles(95.0, "minor", pick.playing)[0].style == "hiphop"
+
+
+def test_a_key_whose_mode_turns_never_moves_to_a_style_that_fits_her_worse():
+    """A figure hip hop fits a little in A minor at 95.  In C major hip hop is no
+    candidate and midwest, the tempo's default, is the only one left, so it is the
+    answer there without a tie: but it fits what she played worse than hip hop does."""
+    from plume.playstyle import fit
+    keys = ["A minor"] * 10 + ["C major"] * 60
+    for seed in (5, 6, 7):
+        pick, first, changes = _take([(60, (0.25, 1.0, 1.5, 2.0, 2.25))], bpm=95.0,
+                                     keys=keys, seed=seed)
+        assert first == "hiphop" and changes == [], (seed, changes, pick.why)
+        major = score_styles(95.0, "major", pick.playing)
+        assert major[0].style == "midwest"
+        assert major[0].score <= fit("hiphop", pick.playing) + MARGIN
+
+
+def test_a_key_whose_mode_turns_moves_a_style_that_now_fits_better():
+    """Uneven gaps with notes off the beat at 95: hip hop's, but hip hop is no
+    candidate in a major key, where nothing heard fits and midwest is the tempo's
+    default.  The key turning minor makes hip hop the clear answer."""
+    keys = ["C major"] * 10 + ["A minor"] * 60
+    pick, first, changes = _take([(60, (0.0, 1.57, 2.0, 3.57))], bpm=95.0, keys=keys)
+    assert first == "midwest"
+    assert [s for _, s in changes] == ["hiphop"], (changes, pick.why)
+    assert "was major" in pick.why, pick.why
+
+
+def test_a_key_that_wobbles_back_before_a_phrase_changes_nothing():
+    """The figure a minor key moves to hip hop (above), with the key minor for only the
+    five bars up to the section line at 16: the turn has not held a phrase there."""
+    keys = ["C major"] * 12 + ["A minor"] * 5 + ["C major"] * 60
+    pick, first, changes = _take([(60, (0.0, 1.57, 2.0, 3.57))], bpm=95.0, keys=keys)
+    assert first == "midwest" and changes == [], (changes, pick.why)
+
+
+def test_a_bar_the_loop_misses_never_shifts_the_parts_off_the_section_lines():
+    """Sparse, then even eighths, with bars in 10 never handed to reconsider: two parts
+    run a bar long and the next ends back on the grid, so the change still lands on
+    16."""
+    pick = StylePick(trust_busy=True)
+    real = pick.reconsider
+    pick.reconsider = lambda bars_in, bpm, key: None if bars_in == 10 else real(
+        bars_in, bpm, key)
+    pick, first, changes = _take([(7, _SPARSE), (60, _EIGHTHS)], bpm=96.0,
+                                 keys=["C minor"], pick=pick)
+    assert first == "hiphop" and changes == [(16, "synthwave")], changes
+
+
+def test_a_pick_that_has_not_seen_the_band_in_never_reconsiders():
+    pick = _notes(_EIGHTHS, bpm=140.0)
+    assert pick.reconsider(16, 140.0, "C major") is None
+
+
+def test_the_style_changes_only_on_a_section_line():
+    """The song's sections (SONG_ARC) after its first break start four bars off an
+    eight-bar grid counted from the entry, at 44, 60 and 76: a change lands on one of
+    those, never in the middle of a section."""
+    from plume.bandentry import SONG_ARC, section_line, song_section
+    lines = [b for b in range(1, 130) if section_line(b)]
+    assert lines == [16, 32, 40, 44, 60, 76, 80, 104, 120]
+    assert all(song_section(b)[0] != song_section(b - 1)[0] for b in lines[:-1])
+    assert section_line(sum(bars for _, bars, _ in SONG_ARC))
+    # She turns busy late, after the break: the change waits for the lift at 44.
+    pick, first, changes = _take([(7 + 34, _SPARSE), (60, _EIGHTHS)], bpm=96.0,
+                                 keys=["C minor"])
+    assert first == "hiphop" and changes == [(44, "synthwave")], changes
+
+
+def _played(parts, *, bpm, key):
+    """Generated parts, (places, bars, _part's options), one after another, as a direct
+    input's frames."""
+    from plume.listen.features import FeatureExtractor
+    bar_n = int(round(240.0 / bpm * SR))
+    total = sum(bars for _, bars, _ in parts)
+    audio = np.zeros(total * bar_n + 2 * SR, dtype=np.float32)
+    at = 0
+    for i, (places, bars, kw) in enumerate(parts):
+        y = _part(places, bpm=bpm, key=key, bars=bars, seed=4 + i, **kw)
+        n = min(y.size, audio.size - at * bar_n) if i == len(parts) - 1 else bars * bar_n
+        audio[at * bar_n:at * bar_n + n] += y[:n]
+        at += bars
+    fe = FeatureExtractor(sr=SR)
+    frames = []
+    for i in range(0, len(audio), 4800):
+        frames.extend(fe.process(audio[i:i + 4800]))
+    return frames, total
+
+
+@pytest.mark.parametrize("then,style", [
+    ((_STABS, 18, {"ring_s": 0.15, "held_s": 0.2, "chord": True}), "house"),
+    ((_QUARTERS, 18, {"ring_s": 1.2}), None),
+])
+def test_a_direct_input_hears_her_feel_change_from_her_frames(then, style):
+    """The second look as a guitar input feeds it: frames through the stroke, rhythm and
+    strum ears, each part of a phrase heard on from where the last left off.  Plain
+    quarter notes, then stabs between the beats changes to house once; the same quarter
+    notes all through change nothing."""
+    from plume.listen.features import HOP
+    bpm, key, entry = 120.0, "C major", 8
+    frames, bars = _played([(_QUARTERS, entry, {"ring_s": 1.2}), then], bpm=bpm, key=key)
+    bar_s = 240.0 / bpm
+    per = bar_s * SR / HOP
+    pick = StylePick(trust_busy=True, hear_technique=True)
+    changes = []
+    for b in range(bars):
+        bar = frames[int(round(b * per)):int(round((b + 1) * per))]
+        pick.heard_bar(sum(bool(f.onset) for f in bar), frames=bar,
+                       bar_start=b * bar_s, bar_s=bar_s)
+        if b + 1 == entry:
+            assert pick.at_entry(bpm, key) == "midwest", pick.why
+        elif b + 1 > entry:
+            got = pick.reconsider(b + 1 - entry, bpm, key)
+            if got is not None:
+                changes.append((b + 1 - entry, got))
+    assert changes == ([] if style is None else [(16, style)]), (changes, pick.why)

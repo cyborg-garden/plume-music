@@ -5590,7 +5590,7 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
                     if tap_start:
                         shared["chroma"].append(
                             (f.t_s, f.chroma, getattr(f, "chroma_low", None)))
-                    if want_technique and not style_pick.settled:
+                    if want_technique and style_pick.listening:
                         shared["technique"].append(f)
                     shared["events"].append((f.t_s, f.rms_db, f.onset))
                     if f.onset:
@@ -5751,6 +5751,7 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
         plan = lead_bar_plan(bar, sec_spec, duet.roles, role_state, form,
                              human=human, density_scale=lead_cues.density_scale)
         entered = None
+        style_change = None
         loop_db = 0.0
         entry_feel = None
         if entry is not None:
@@ -5782,25 +5783,37 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
             if playing and not is_direct and not entry.band_is_in:
                 heard_bar -= guitar_ear.began_bars_ago
             entered = entry.update(bar, harm_state, playing, heard_bar=heard_bar)
-            if style_pick is not None and not style_pick.settled:
+            if style_pick is not None and style_pick.listening:
                 if playing:
                     style_pick.heard_bar(len(onsets),
                                          frames=technique_frames if want_technique else None,
                                          bar_start=w_start, bar_s=bar_len,
                                          onset_times=onsets)
-                if entry.band_is_in:
-                    picked = style_pick.at_entry(bpm, entered.key)
-                    # Style and key are both known now, so the plain beat gives way to
-                    # the style's own drums, on this bar line.
-                    if picked != style or plain_intro[0]:
-                        # Before anything of this bar is rendered, and it rings out
-                        # under the new engine's first bar, so there is no gap.
-                        rung = change_style(picked, bridge=plain_intro[0])
-                        if band_midi is not None:
-                            rung = band_midi.heard(rung)
-                        timeline.write_at(int(round(t_bar * SR)) - comp_samples[0], rung)
-                        entered = dataclasses.replace(
-                            entered, chord=entry.chord_at(bar, harm_state))
+                picked = None
+                if not style_pick.settled:
+                    if entry.band_is_in:
+                        # Style and key are both known now, so the plain beat gives way
+                        # to the style's own drums, on this bar line.
+                        picked = style_pick.at_entry(bpm, entered.key)
+                        if picked == style and not plain_intro[0]:
+                            picked = None
+                elif entry.band_is_in:
+                    # A second look, on a phrase line (StylePick.reconsider): the band
+                    # changes over as it did coming in.
+                    picked = style_pick.reconsider(entry.bars_in, bpm, entered.key)
+                    if picked is not None:
+                        _, was, _, why = style_pick.changes[-1]
+                        style_change = {"from": was, "to": picked,
+                                        "bars_in": entry.bars_in, "why": why}
+                if picked is not None:
+                    # Before anything of this bar is rendered, and it rings out under
+                    # the new engine's first bar, so there is no gap.
+                    rung = change_style(picked, bridge=plain_intro[0])
+                    if band_midi is not None:
+                        rung = band_midi.heard(rung)
+                    timeline.write_at(int(round(t_bar * SR)) - comp_samples[0], rung)
+                    entered = dataclasses.replace(
+                        entered, chord=entry.chord_at(bar, harm_state))
             # Her chords (herchords): what she played in the window bar, then the
             # band's chord for this bar, hers when she holds or loops one clearly, the
             # template otherwise.
@@ -6027,6 +6040,9 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
             doc["style_chosen"] = style_chosen
             if style_pick is not None and style_pick.why:
                 doc["style_why"] = style_pick.why
+            if style_change is not None:
+                # The one change of mind after the band came in, on this bar, and why.
+                doc["style_change"] = style_change
             # plain until a detected take knows her style and key, else the style's own
             doc["intro_beat"] = "plain" if plain_intro[0] else "style"
             doc["key_guess"] = named_key is None

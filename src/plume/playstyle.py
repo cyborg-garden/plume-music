@@ -29,6 +29,8 @@ nobody anything.  Then:
   given no times, a MIDI input that only counts them, choose only between busy and
   sparse.  Given their times, notes are placed in the beat as strokes are.
 - A strum counts against every style but folk.
+- What she said she plays, if she did, may cost a style a little (``prior``): a
+  close call then goes the other way, a clear answer does not.
 - The best score wins, but scores within :data:`MARGIN` of the best are a near-tie:
   what was heard does not tell those styles apart.  A near-tie goes to the tempo's
   default if it is among them, and otherwise to the one listed first in
@@ -363,11 +365,13 @@ def _cost(value: float, band: tuple[float, float], soft: float) -> float:
     return min(1.0, out / soft)
 
 
-def _against(style: str, heard: Playing) -> list:
+def _against(style: str, heard: Playing, prior: dict | None = None) -> list:
     """What ``style`` loses on ``heard``: (thing heard, cost) for each reading outside
-    its band."""
+    its band, and ("instrument", cost) for what ``prior`` holds against it."""
     profile = PROFILES[style]
     against = []
+    if prior and prior.get(style):
+        against.append(("instrument", float(prior[style])))
     for f in fields(Playing):
         value = getattr(heard, f.name)
         band = profile.get(f.name, NOT_STRUMMED if f.name == "strum" else None)
@@ -378,18 +382,19 @@ def _against(style: str, heard: Playing) -> list:
     return against
 
 
-def fit(style: str, playing: Playing | None) -> float:
+def fit(style: str, playing: Playing | None, prior: dict | None = None) -> float:
     """How well ``style`` fits what was heard, as :func:`score_styles` scores it, but
     whatever the tempo and whether or not what makes it that style was heard: 0 fits
     all of it, each misfit takes away up to 1.  The score a style already playing is
     held to when another is weighed against it."""
-    return -sum(c for _, c in _against(style, playing or Playing()))
+    return -sum(c for _, c in _against(style, playing or Playing(), prior))
 
 
 def score_styles(bpm: float, mode: str | None = None,
-                 playing: Playing | None = None) -> list[StyleScore]:
+                 playing: Playing | None = None, prior: dict | None = None) -> list[StyleScore]:
     """Every candidate style for this tempo with its score, the answer first and then
-    the best of the rest: see the module's docstring for the rule."""
+    the best of the rest: see the module's docstring for the rule.  ``prior``: a cost on
+    a style for what she said she plays (plume.instrument.STYLE_PRIOR), None for none."""
     default = tempo_default(bpm, mode, None if playing is None else playing.strokes)
     heard = playing or Playing()
     out = []
@@ -397,7 +402,7 @@ def score_styles(bpm: float, mode: str | None = None,
         lo, hi = tempo_range(style)
         if style != default and not lo <= bpm <= hi:
             continue
-        against = _against(style, heard)
+        against = _against(style, heard, prior)
         lost = dict(against)
         if style != default and playing is not None and any(
                 getattr(heard, need) is None or lost.get(need, 0.0) > 0.0

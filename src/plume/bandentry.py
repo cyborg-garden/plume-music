@@ -673,8 +673,10 @@ class StylePick(HeardPlaying):
     """
 
     def __init__(self, *, key: str | None = None, trust_busy: bool = False,
-                 hear_technique: bool = False):
+                 hear_technique: bool = False, style_prior: dict | None = None):
         super().__init__(trust_busy=trust_busy, hear_technique=hear_technique)
+        #: What she said she plays holds against a style (playstyle.score_styles).
+        self._prior = dict(style_prior) if style_prior else None
         self._mode = _mode_of(key)
         self.settled = False
         self.why = ""
@@ -715,7 +717,7 @@ class StylePick(HeardPlaying):
     def at_entry(self, bpm: float, key: str | None) -> str:
         self.settled = True
         mode = _mode_of(key) or self._mode
-        scores = score_styles(bpm, mode, self.playing)
+        scores = score_styles(bpm, mode, self.playing, self._prior)
         self.why = "; ".join([explain(scores), f"bpm {bpm:.1f}", f"mode {mode or 'unknown'}",
                               *self.heard_why()])
         self.style = scores[0].style
@@ -781,16 +783,16 @@ class StylePick(HeardPlaying):
             return None
         tops, leads = [], []
         for part in parts:
-            top = score_styles(bpm, mode, part.playing)[0]
+            top = score_styles(bpm, mode, part.playing, self._prior)[0]
             if top.score <= -NO_FIT:
                 return None          # nothing fits: the tempo's default, not a feel
             tops.append(top.style)
-            leads.append(top.score - fit(self.style, part.playing))
+            leads.append(top.score - fit(self.style, part.playing, self._prior))
         if len(set(tops)) != 1 or tops[0] == self.style or min(leads) < REGUESS_LEAD:
             return None
         last = parts[-1]
         why = "; ".join([
-            explain(score_styles(bpm, mode, last.playing)),
+            explain(score_styles(bpm, mode, last.playing, self._prior)),
             f"led {self.style} by {min(leads):.2f} or more in every {REGUESS_PART_BARS} "
             f"bars of the last {REGUESS_PHRASE_BARS}",
             f"bpm {bpm:.1f}", f"mode {mode or 'unknown'}", *last.heard_why()])
@@ -807,13 +809,13 @@ class StylePick(HeardPlaying):
             # tempo's default out of a tie, and a key read after the band is in moves
             # between relative major and minor, the same notes, with no change in her.
             return None
-        was = score_styles(bpm, self._entry_mode, playing)[0].style
-        scores = score_styles(bpm, mode, playing)
+        was = score_styles(bpm, self._entry_mode, playing, self._prior)[0].style
+        scores = score_styles(bpm, mode, playing, self._prior)
         if scores[0].style == was or scores[0].style == self.style:
             return None
         if (scores[0].score <= -NO_FIT
                 or (len(scores) > 1 and scores[0].score - scores[1].score <= MARGIN)
-                or scores[0].score - fit(self.style, playing) <= MARGIN):
+                or scores[0].score - fit(self.style, playing, self._prior) <= MARGIN):
             return None
         why = "; ".join([explain(scores),
                          f"the key turned {mode} (was {self._entry_mode or 'unknown'}) "

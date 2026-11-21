@@ -3374,3 +3374,64 @@ def test_a_refused_daw_choice_is_said_and_unticked(tmp_path, docs):
     assert out["out"] is False and out["onlyRow"] is False and out["disabled"] is False
     # The boxes give way to the reason, said once, as if the page had known all along.
     assert out["row"] is False and out["words"] == guitake.MIDI_NO_PORT and out["shown"] is False
+
+
+# ---------------------------------------------------------------- what she plays
+
+INSTRUMENT = """{ value: $('set-instrument').value, labels: $('set-instrument').children.map((o) => o.textContent),
+  values: $('set-instrument').children.map((o) => o.value), disabled: !!$('set-instrument').disabled }"""
+
+
+def test_what_she_plays_is_in_settings_and_never_beside_start():
+    html = (STATIC / "index.html").read_text()
+    home = html[html.index('<main id="home"'):html.index('<main id="settings"')]
+    assert "set-instrument" not in home
+    assert 'id="set-instrument"' in _settings_html()
+
+
+def test_the_instrument_starts_not_set_and_start_sends_nothing_new(tmp_path, docs):
+    out = run_page(tmp_path, docs, f"""
+        const seen = {INSTRUMENT};
+        $('start').click(); await page.settle();
+        return {{ ...seen, body: page.posts('start')[0], saved: page.posts('instrument') }};""")
+    assert out["value"] == "" and out["labels"][0] == "Not set"
+    assert out["values"][1:] == [c["id"] for c in docs["home"]["instruments"]]
+    assert out["labels"][1:] == [c["label"] for c in docs["home"]["instruments"]]
+    assert out["body"] == {"style": ""} and out["saved"] == []
+
+
+def test_a_remembered_instrument_is_shown_and_start_still_says_only_the_style(tmp_path, docs):
+    docs["home"]["instrument"] = "bass"
+    out = run_page(tmp_path, docs, f"""
+        const seen = {INSTRUMENT};
+        $('start').click(); await page.settle();
+        return {{ ...seen, body: page.posts('start')[0] }};""")
+    assert out["value"] == "bass" and out["body"] == {"style": ""}
+
+
+def test_choosing_an_instrument_is_saved_at_once_and_not_set_too(tmp_path, docs):
+    out = run_page(tmp_path, docs, f"""
+        $('set-instrument').value = 'keys'; $('set-instrument').fire('change'); await page.settle();
+        const mid = $('set-instrument').value;
+        $('set-instrument').value = ''; $('set-instrument').fire('change'); await page.settle();
+        return {{ ...{INSTRUMENT}, mid, saved: page.posts('instrument') }};""")
+    assert out["saved"] == [{"instrument": "keys"}, {"instrument": ""}]
+    assert out["mid"] == "keys" and out["value"] == "" and out["disabled"] is False
+
+
+def test_a_refused_instrument_is_said_and_the_choice_goes_back(tmp_path, docs):
+    docs["home"]["instrument"] = "lead"
+    out = run_page(tmp_path, docs, f"""
+        page.replies.instrument = [400, {{ error: 'That is not something the instrument choice understands.' }}];
+        $('set-instrument').value = 'kazoo'; $('set-instrument').fire('change'); await page.settle();
+        return {{ ...{INSTRUMENT}, note: $('settings-note').textContent, shown: !$('settings-note').hidden }};""")
+    assert out["value"] == "lead" and out["disabled"] is False
+    assert out["note"] and out["shown"] is True
+
+
+def test_an_instrument_that_did_not_reach_the_bridge_is_said_and_put_back(tmp_path, docs):
+    out = run_page(tmp_path, docs, f"""
+        page.failNext.instrument = 1;
+        $('set-instrument').value = 'bass'; $('set-instrument').fire('change'); await page.settle();
+        return {{ ...{INSTRUMENT}, note: $('settings-note').textContent }};""")
+    assert out["value"] == "" and out["note"]

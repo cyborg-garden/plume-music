@@ -905,6 +905,7 @@ function drawSettings() {
   drawOptions($('set-channel'), channels, String(channelNow()));
   $('set-channel').hidden = $('channel-label').hidden = most < 2;
   drawStyle();
+  drawInstrument();
   $('set-folder').textContent = doc.folder;
   drawOutput();
   drawHear();
@@ -1025,6 +1026,29 @@ function drawSummary() {
   /* Said at home too, so a band muted for a DAW is never a surprise. */
   const midi = !midiOn() ? '' : (midiDoc().choice === 'only' ? ', band only through a DAW' : ', band through a DAW');
   $('home-gear').textContent = line + midi;
+}
+/* What she plays, if she wants to say: saved as it changes, like the DAW choice, and never sent
+   with Start, so it is never a step before playing. Not set is the default and changes nothing. */
+function drawInstrument() {
+  const doc = S.home;
+  if (!doc) return;
+  const options = [{ value: '', label: 'Not set' }].concat((doc.instruments || []).map(function (c) {
+    return { value: c.id, label: c.label };
+  }));
+  drawOptions($('set-instrument'), options, doc.instrument || '');
+}
+async function sendInstrument(value) {
+  const select = $('set-instrument');
+  select.disabled = true;
+  S.settingsNote = '';
+  let answer = null;
+  try { answer = await send('instrument', { instrument: value }); } catch (err) { /* said below */ }
+  select.disabled = false;
+  if (settingsAnswerLeft(answer)) return;
+  if (answer && answer.ok) { if (S.home) S.home.instrument = answer.doc.instrument || null; }
+  else S.settingsNote = (answer && answer.doc && answer.doc.error) || 'That did not reach plume gui. Is it still running in your terminal?';
+  drawInstrument();
+  drawSettingsNote();
 }
 /* The band through a DAW, as MIDI. A saved choice of three words, kept by the bridge like the
    style and never sent with Start, so nothing here can become a port name. Off unless she says. */
@@ -1700,6 +1724,7 @@ $('nav-takes').addEventListener('click', goShelf);
   /* Typing a fix answers the complaint about what was there. */
   $('set-key').addEventListener('input', function () { S.homeNote = ''; S.settingsNote = ''; drawSummary(); drawHomeState(); drawSettingsNote(); });
   $('home-style').addEventListener('change', function () { sendStyle($('home-style').value); });
+  $('set-instrument').addEventListener('change', function () { sendInstrument($('set-instrument').value); });
   window.addEventListener('popstate', showRoute);
   /* A reload or a closed tab leaves no screen behind to come through leaveSetup. keepalive lets
      this outlast the page. If it never arrives the child still ends by itself within seconds. */

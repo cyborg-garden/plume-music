@@ -2422,6 +2422,11 @@ def cmd_lead(args):
     max_minutes = _parse_max_minutes(getattr(args, "max_minutes", None))
     midi_extra = _midi_args(args)
     midi_extra.update(_midi_out_args(args))
+    # What she plays, only when she says: not set hands the transport nothing new.
+    try:
+        instrument = _import("plume.instrument").canonical(getattr(args, "instrument", None))
+    except ValueError as e:
+        raise CliError(str(e)) from None
     try:
         # Fail fast (and clean) on the no-device path, before composing.
         realtime.check_device(args.device)
@@ -2465,6 +2470,7 @@ def cmd_lead(args):
                 **({"tap_start": True} if args.tap_start else {}),
                 **({"detect": True} if args.detect else {}),
                 **({} if args.wind_down is None else {"wind_down_s": args.wind_down}),
+                **({} if instrument is None else {"instrument": instrument}),
                 **midi_extra,
                 **in_extra,
                 **_route_kwargs(args),
@@ -3499,6 +3505,12 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--style", default=None,
                    help="not read when a prompt or session is given, which is every "
                         "take: name the style in the prompt")
+    p.add_argument("--instrument", default=None, metavar="NAME",
+                   help="what you play, if you want to say: guitar, bass, keys, lead "
+                        "(a voice or a single lead line) or other.  Optional: with it the "
+                        "band's parts in your register step back a little, and on a bass or "
+                        "lead line the style guess leans a little away from folk "
+                        "(default: not set)")
     p.add_argument("--seed", type=int, default=0,
                    help="integer rng seed (default: 0)")
     p.add_argument("--tightness", type=float, default=None,

@@ -964,6 +964,29 @@ def test_a_rest_is_not_a_feel():
     assert changes == [], changes
 
 
+def test_a_part_played_only_half_through_is_not_a_feel():
+    """A busy bar, a bar's rest, over and over: every part of the phrase has a busy bar
+    in it, but none was played all through, so none of them is heard as her feel."""
+    feels = [(20, _SPARSE)] + [(1, _EIGHTHS), (1, None)] * 40
+    for seed in (5, 6, 7):
+        pick, first, changes = _take(feels, bpm=96.0, keys=["C minor"], seed=seed)
+        assert first == "hiphop" and changes == [], (seed, changes, pick.why)
+    # The same busy bars played through do change it, so it is the rests that held it.
+    _, _, changes = _take([(20, _SPARSE), (80, _EIGHTHS)], bpm=96.0, keys=["C minor"])
+    assert [s for _, s in changes] == ["synthwave"], changes
+
+
+def test_the_first_phrase_holds_whatever_the_song_s_sections(monkeypatch):
+    """Never in the first phrase after the band comes in, even where a section line
+    would fall inside it."""
+    import plume.bandentry as be
+    monkeypatch.setattr(be, "section_line", lambda bars_in: True)
+    pick, first, changes = _take([(7, _SPARSE), (60, _EIGHTHS)], bpm=96.0,
+                                 keys=["C minor"])
+    assert first == "hiphop"
+    assert changes and changes[0][0] == 2 * be.REGUESS_PHRASE_BARS, changes
+
+
 def test_a_room_mic_changes_style_when_the_key_s_mode_turns_it():
     """Nothing of how she plays is hers to hear, so only the key can move it: at 95 bpm
     a minor key is hip hop and a major one midwest."""

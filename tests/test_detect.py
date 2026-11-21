@@ -1053,6 +1053,56 @@ def test_a_player_who_turns_busy_changes_the_style_once_on_a_section_line(tmp_pa
     assert turn["chords"]["template"] in governor.progression_symbols("synthwave", turn["key"])
 
 
+@pytest.mark.ends_by_what_was_heard
+def test_the_bar_loop_carries_a_second_look_through_to_the_band(tmp_path, consent,
+                                                                  monkeypatch):
+    """The live path of a change of mind, on any runner: her frames still
+    reach the style pick after the band is in, it is asked again on each bar after,
+    and the style it answers swaps the engine there and is logged on that bar.  The
+    answer is forced on the third bar after the band came in, so the take stays short
+    (the rule itself is test_playstyle's).  After the one change it stops listening."""
+    heard_after, asked = [], []
+    real_heard = StylePick.heard_bar
+
+    def heard_bar(self, onsets, frames=None, **kw):
+        if self.settled:
+            heard_after.append(len(frames or ()))
+        return real_heard(self, onsets, frames, **kw)
+
+    def reconsider(self, bars_in, bpm, key):
+        asked.append(bars_in)
+        if self.changes or bars_in < 3:
+            return None
+        to = "synthwave" if self.style != "synthwave" else "lofi"
+        self.changes.append((int(bars_in), self.style, to, f"{to} forced by the test"))
+        self.style, self.why = to, f"{to} forced by the test"
+        return to
+
+    monkeypatch.setattr(StylePick, "heard_bar", heard_bar)
+    monkeypatch.setattr(StylePick, "reconsider", reconsider)
+    # Long enough after the band came in that the bars heard were played after it too.
+    monkeypatch.setitem(globals(), "BARS_WITH_THE_BAND", 6)
+    rec = _detect_take(tmp_path, _strummed_take(85.0, uneven=True), until_band=True)
+    band = [r for r in _rows(rec) if r["entry"] != "drums"]
+    assert len(band) >= 2, "the band was not in long enough to be asked again"
+    assert asked == [1, 2, 3], asked
+    # Still on the last bar heard before the change: frames from before the band came
+    # in can reach the first bar after it, which is heard a bar late.
+    assert len(heard_after) >= 3 and heard_after[-1] > 0, heard_after
+    changed = [r for r in band if "style_change" in r]
+    assert len(changed) == 1, changed
+    turn, first = changed[0], band[0]
+    assert turn is not first
+    to = turn["style_change"]["to"]
+    assert turn["style_change"]["from"] == first["style"] != to
+    assert turn["style_change"]["bars_in"] == 3
+    assert turn["style_why"] == f"{to} forced by the test"
+    # The engine swapped on that bar: its style and its own chords from there.
+    after = band[band.index(turn):]
+    assert {r["style"] for r in after} == {to}
+    assert turn["chords"]["template"] in governor.progression_symbols(to, turn["key"])
+
+
 def test_a_fast_count_gets_its_style_before_the_first_bar(tmp_path, consent):
     rec = _detect_take(tmp_path, _strummed_take(140.0, seconds=8.0), max_minutes=0.1)
     rows = _rows(rec)

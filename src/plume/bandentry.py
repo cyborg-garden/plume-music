@@ -182,15 +182,14 @@ _RAKE_HOPS = 3
 #: counted are one unbroken run around the peak: tremolo picking puts the next pick
 #: inside the reading window, so its attack rises again after dipping, and counting from
 #: the first hop above half to the last called it a strum (0.88 to 0.96).  Measured that
-#: way (2026-11-10) over every seven bars of each take, at input levels up to 30 dB
+#: way over every seven bars of each take, at input levels up to 30 dB
 #: apart: slowly raked synthetic strums 0.22 to 0.57, nineteen in twenty over 0.29; a
 #: strum quicker than about 20 ms 0.09 to 0.20, which is not heard as one; fingerpicking
-#: 0.00 to 0.08; tremolo picking 0.00 to 0.03.  15 real direct-input takes, which were
-#: never strummed folk, read 0.03 in the middle and under 0.35 nineteen times in twenty;
-#: one of them has a strummed passage that reads up to 0.61.  Between those levels one
-#: take's share moves by 0.13 at most, where with the flux onsets it moved by 0.56.
-#: Full sits where those real takes reach it as often as they reached the old mark with
-#: the flux onsets, 27 of their 1129 windows, 26 of them in that one passage.  The style
+#: 0.00 to 0.08; tremolo picking 0.00 to 0.03.  Picked direct-input playing reads low,
+#: under 0.35 nineteen times in twenty, and a strummed passage within it up to about
+#: 0.6.  Between those levels one take's share moves by 0.13 at most, where with the
+#: flux onsets it moved by 0.56.  Full sits where picked playing reaches it about as
+#: rarely as it reached the old mark with the flux onsets.  The style
 #: rule's bands for the strum are these two marks (plume.playstyle.PROFILES).
 _RAKE_NONE, _RAKE_FULL = 0.18, 0.40
 #: A strum is a chord.  One note that swells in, a soft synth, a bowed or blown line, a
@@ -201,7 +200,8 @@ _RAKE_NONE, _RAKE_FULL = 0.18, 0.40
 #: softer ones less.
 _STRUM_CHORD = 0.35
 #: Before this much is heard there is no strum evidence either way: four strokes a bar.
-#: The strummed takes had 29 to 52 strokes in seven bars.  One real take read 0.50 on 14.
+#: Strummed playing gives 29 to 52 strokes in seven bars; a sparse picked line can read
+#: a strum share of 0.50 on as few as 14.
 _FOLK_MIN_BARS, _FOLK_MIN_ONSETS = 6, 24
 #: Attack-breadth histogram bins for the acoustic measure's 75th percentile.
 _BREADTH_BINS = 25
@@ -831,7 +831,7 @@ _NOTHING_HEARD = HarmonyState(t_s=0.0, key=None, key_conf=0.0, chord=None,
 
 #: How much of a bar's pitch energy its three strongest notes must hold for the bar
 #: to count as someone playing.  Drums barely favour any note: bars measured with
-#: nobody playing (a real take, 2026-11-02) held 0.29-0.37, with guitar 0.46-0.76.
+#: drums alone, nobody playing, hold 0.29-0.37, and a guitar 0.46-0.76.
 TONAL_TOP3 = 0.42
 
 
@@ -1494,19 +1494,18 @@ FOLLOW_STEADY_HOLD_BARS_ROOM = 4.0
 #: Played bars it listens to before it knows how this player normally plays.
 FOLLOW_LEARN_BARS = 4
 #: How far a bar has to be from what the band already follows to count as different.
-#: 3 dB is mind.py's energy_up_db; half an octave of busyness is about 40% more or
+#: 3 dB matches :mod:`plume.mind`'s ``energy_up_db``; half an octave of busyness is about 40% more or
 #: fewer notes.  Inside these a bar is more of the same.
 FOLLOW_LEVEL_DEADBAND_DB = 3.0
 FOLLOW_BUSY_DEADBAND = 0.5
 #: Notes per beat added to both sides of the busyness ratio, so a sparse player's
-#: second note is not "twice as busy".  mind.py's phrase floor.
+#: second note is not "twice as busy".
 _BUSY_FLOOR = 0.25
-#: The band moves half as far as she did: it answers rather than mirrors (the idea
-#: behind mind.py's delayed recovery), and comes down to find a soft player without
-#: vanishing under her.  Past :data:`FOLLOW_GAIN_BIG_DB` of drop it answers with
-#: :data:`FOLLOW_GAIN_PER_DB_BIG` of each further decibel: she went 14 dB down on
-#: the 2026-11-06 take, and half of that, capped at 6, was too small to hear as an
-#: answer under her.
+#: The band moves half as far as the player did: it answers rather than mirrors,
+#: and comes down to find a soft player without vanishing under them.  Past
+#: :data:`FOLLOW_GAIN_BIG_DB` of drop it answers with :data:`FOLLOW_GAIN_PER_DB_BIG`
+#: of each further decibel: half of a drop as deep as 14 dB, capped at 6, is too
+#: small to hear as an answer.
 FOLLOW_GAIN_PER_DB = 0.5
 FOLLOW_GAIN_BIG_DB = 6.0
 FOLLOW_GAIN_PER_DB_BIG = 0.75
@@ -1528,7 +1527,8 @@ _ROOM_DENSITY = (0.75, 1.15)
 FOLLOW_GAIN_STEP_DB = 3.0
 FOLLOW_GAIN_RETURN_STEP_DB = 4.0
 FOLLOW_DENSITY_STEP = 0.1
-#: Notes per beat past which more band buries the player: mind.py's density_high.
+#: Notes per beat past which more band buries the player (the same 2.5 as
+#: :mod:`plume.mind`'s ``density_high``).
 #: Over it the band never fills in, however busy that is for them.
 FOLLOW_TORRENT = 2.5
 #: Bars a "busier" or "sparser" cue holds the band's density where the cue left it.
@@ -2267,8 +2267,8 @@ def count_start(taps, soft_hits, *, tol_frac: float = 0.15,
     """The whole count, including knocks too quiet to have confirmed it.
 
     A count is confirmed by its four clearest knocks, which need not be its
-    first four: on 2026-11-02 the first three of a count were quiet, the band
-    counted from the fourth, and the drums came in three beats late.  So walk
+    first four: when the first three of a count are quiet, the band would count
+    from the fourth and the drums would come in three beats late.  So walk
     back along the confirmed spacing through quieter hits, until a beat is
     missing.  The first knock found is where she started counting.
     """

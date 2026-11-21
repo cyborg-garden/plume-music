@@ -3064,9 +3064,9 @@ human.wav + machine.wav + decisions.ndjson. Ctrl-C ends gracefully.
 
 --tap-start --detect needs no PROMPT at all: whatever the prompt does not name,
 plume works out as you play. The key comes from what it hears, and the style
-from your tempo, then from how you play once a direct input has heard a few
-bars: swing, how busy, on or off the beat, even or uneven, strummed. Both are
-guesses.
+from your tempo, then from how you play once a direct input or --midi has
+heard a few bars: swing, how busy, on or off the beat, even or uneven,
+strummed. Both are guesses.
 
 Needs sounddevice + a duplex-capable audio device; without one it errors
 cleanly — use 'plume simlead' for the offline twin. Run 'plume roles' for the

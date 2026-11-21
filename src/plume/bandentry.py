@@ -20,7 +20,7 @@ import numpy as np
 
 from .governor import HarmonyGovernor
 from .listen.harmony import HarmonyState
-from .playstyle import Playing, RhythmEar, explain, score_styles
+from .playstyle import NOTE_LAG_S, Playing, RhythmEar, explain, score_styles
 from .theory import parse_key
 
 HARMONY_ROLES = ("bass", "pad", "keys", "shimmer")
@@ -509,8 +509,8 @@ class StylePick:
 
     What is heard comes from her frames when there are any (StrokeEar, RhythmEar,
     FolkEar), so it does not move with her input gain.  With no frames, notes on a MIDI
-    input, the onsets counted for her are her strokes and that is all that is known.
-    ``why`` gives the best two styles with their scores and every input of the pick.
+    input, each onset is a stroke, and when they are given their times RhythmEar places
+    them in the beat as it does strokes: all but the strum is known.  ``why`` gives the best two styles with their scores and every input of the pick.
     """
 
     def __init__(self, *, key: str | None = None, trust_busy: bool = False,
@@ -520,6 +520,7 @@ class StylePick:
         self._onsets = 0
         self._beats = 0
         self._stroke_beats = 0
+        self._note_beats = 0
         self.settled = False
         #: Whether she strums, which only an input hearing her alone can tell (FolkEar).
         self.folk_ear = FolkEar() if hear_technique else None
@@ -537,12 +538,18 @@ class StylePick:
         self._trust_busy = False
 
     def heard_bar(self, onsets: int, frames=None, *, bar_start: float | None = None,
-                  bar_s: float | None = None) -> None:
+                  bar_s: float | None = None, onset_times=None) -> None:
         """One bar she played: the onsets counted in it, her frames, None if they were
         not kept, and the bar line they were played against (when it starts, s on the
-        frames' clock, and how long it is), which places her strokes in the beat."""
+        frames' clock, and how long it is), which places her strokes in the beat.  With
+        no frames, ``onset_times`` (s, the same clock) places the onsets instead."""
         self._onsets += int(onsets)
         self._beats += 4
+        if (frames is None and onset_times is not None and self.rhythm_ear is not None
+                and bar_start is not None and bar_s):
+            self.rhythm_ear.bar(onset_times, bar_start=bar_start, bar_s=bar_s,
+                                lag_s=NOTE_LAG_S)
+            self._note_beats += 4
         if frames is not None:
             if self.stroke_ear is not None:
                 self.stroke_ear.bar(frames)
@@ -570,7 +577,10 @@ class StylePick:
         if busy is None:
             return None
         if not self._stroke_beats:
-            return Playing(strokes=busy)
+            if not self._note_beats:
+                return Playing(strokes=busy)
+            return Playing(strokes=busy, swing=self.rhythm_ear.swing,
+                           offbeat=self.rhythm_ear.offbeat, steady=self.rhythm_ear.steady)
         return Playing(strokes=busy, swing=self.rhythm_ear.swing,
                        offbeat=self.rhythm_ear.offbeat,
                        steady=self.rhythm_ear.steady,
@@ -594,7 +604,7 @@ class StylePick:
                     else "busy: not hers alone to hear on this input"]
         what = "strokes" if self._stroke_beats else "onsets"
         out = [f"busy {playing.strokes:.2f} {what} a beat"]
-        if not self._stroke_beats:
+        if not self._stroke_beats and not self._note_beats:
             return out
         out.append("swing: too few off-beat eighths" if playing.swing is None
                    else f"swing {playing.swing:.2f}")
@@ -603,7 +613,7 @@ class StylePick:
         out.append("steady: too few strokes" if playing.steady is None
                    else f"steady {playing.steady:.0%}")
         out.append("strum: not heard on this input" if self.folk_ear is None
-                   else self.folk_ear.why())
+                   or not self._stroke_beats else self.folk_ear.why())
         return out
 
 

@@ -5760,7 +5760,8 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
                 if playing:
                     style_pick.heard_bar(len(onsets),
                                          frames=technique_frames if want_technique else None,
-                                         bar_start=w_start, bar_s=bar_len)
+                                         bar_start=w_start, bar_s=bar_len,
+                                         onset_times=onsets)
                 if entry.band_is_in:
                     picked = style_pick.at_entry(bpm, entered.key)
                     # Style and key are both known now, so the plain beat gives way to

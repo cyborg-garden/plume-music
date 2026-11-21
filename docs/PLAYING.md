@@ -81,12 +81,14 @@ how you strike, not from how loud you are, so the input gain barely moves them u
 level nears the input's noise, where the quietest strokes go unheard. Each style
 has a band for the ones that tell it, a style loses for what falls outside its bands, and the
 best score wins (`plume/playstyle.py` has the bands). Swung eighths are `jazz`, and nothing is
-jazz without them. A busy even pulse is `synthwave`, busy and uneven is `midwest`, stabs off
-the beat are `house`, and a few notes with room are `trap`, `lofi`, `hiphop` or `rnb`. `folk`
-is plain playing on the beat, and a strum counts for it: an attack that lasts while the pick
-crosses the strings of a chord, so a very quick strum is not heard as one. When two styles
-fit about equally, or none fits, your tempo and key decide, as they do on a room mic, which
-can't tell your notes from the drums. These are guesses, and the bands were set on generated
+jazz without them. A busy even pulse is `synthwave`, other busy straight playing is
+`midwest`, stabs off the beat are `house`, and a few notes with room are `trap`, `lofi`,
+`hiphop` or `rnb`. `folk` needs a strum, straight and on the beat: an attack that lasts while
+the pick crosses the strings of a chord, so a very quick strum is not heard as one, and
+nothing is folk without one. When two styles fit about equally, or none fits, as with a
+plain note or chord on each beat, your tempo and key decide, as they do on a room mic, which
+can't tell your notes from the drums. With `--midi` your notes and when you play them count
+the same way, all but the strum. These are guesses, and the bands were set on generated
 parts, not on real players: name the style you want when it is wrong. Each take's
 `decisions.ndjson` gives the answer and the next best style with
 their scores and everything heard, in `style_why`. So far this has only run on a simulated device, never with a real guitar.

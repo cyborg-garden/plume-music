@@ -195,9 +195,9 @@ def test_a_settled_pick_says_so():
 # where a picked note, a drum or a synth is over in one or two hops.  Measured on
 # synthetic strums and picking (tests/folk_fixtures.py) and, locally and never
 # committed, on 15 real direct-input takes.  The numbers are beside
-# bandentry._RAKE_NONE.  The style rule asks for the strum and for steady strokes that
-# ring on, straight and on the beat (plume.playstyle); it does not ask for an acoustic
-# sound or a major key.
+# bandentry._RAKE_NONE.  The style rule needs the strum heard before folk is a candidate,
+# and then asks for straight playing mostly on the beat (plume.playstyle); it does not
+# ask for an acoustic sound or a major key.
 
 #: The share of her strokes that are strums past which there is more evidence of a strum
 #: than not: folk then loses less on it than any other style does.
@@ -589,7 +589,7 @@ def test_a_slow_legato_lead_has_room_in_it(gain_db):
     pick, got = _picked(_legato(bpm=86.0, attack_ms=60.0, per_beat=1, gain_db=gain_db),
                         bpm=86.0, key="A minor")
     assert 0.8 <= pick.busy <= 1.3, pick.why
-    assert got == "folk", pick.why               # a note on every beat, and nothing else
+    assert got == "hiphop", pick.why             # plain playing: the tempo and key decide
 
 
 def test_a_legato_lead_s_pick_does_not_turn_with_the_gain_knob():
@@ -1036,8 +1036,7 @@ def test_the_style_never_moves_once_the_band_is_in(tmp_path, consent):
     assert rows[-1]["t_s"] > 80.0, "too short to have been tempted"
     band = [r for r in rows if r["entry"] != "drums"]
     assert band and band[0]["t_s"] < 38.0
-    assert {r["style"] for r in rows if r["entry"] == "drums"} == {"lofi"}
-    assert {r["style"] for r in band} == {"folk"}
+    assert {r["style"] for r in rows} == {"lofi"}
 
 
 def test_a_fast_count_gets_its_style_before_the_first_bar(tmp_path, consent):

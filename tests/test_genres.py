@@ -1042,8 +1042,5 @@ def test_a_named_genre_plays_a_whole_tap_started_take(tmp_path, consent, prompt,
 def test_a_guessed_genre_says_it_is_a_guess(tmp_path, consent):
     rec = _fake_take(tmp_path, "guess", bpm=85.0, detect=True, prompt="in A minor")
     rows = _take_rows(rec)
-    # At the count the tempo and the key are all there is; as the band comes in, a chord
-    # every other beat, on the beat and nothing else, is plain playing: folk's.
-    assert rows and {r["style"] for r in rows if r["entry"] == "drums"} == {"hiphop"}
-    assert {r["style"] for r in rows if r["entry"] != "drums"} == {"folk"}
+    assert rows and {r["style"] for r in rows} == {"hiphop"}
     assert all(r["style_guess"] for r in rows)

@@ -22,20 +22,20 @@ between.  What a style has no band for costs it nothing, and what was not heard 
 nobody anything.  Then:
 
 - Every style but trap and midwest, which are told by how many strokes she plays, has
-  one thing heard that is its own (:data:`NEEDS`): jazz its swing, synthwave and lofi
-  how even her strokes are, house, hip hop, r&b and folk how many fall off the beat.
-  A style is not a candidate until its own thing has been heard, and less than a
-  whole step outside its band.  So nothing is ever jazz on no swing heard, and notes
-  alone, a MIDI input, choose only between busy and sparse.
-- A strum counts against every style but folk.  Folk is otherwise only plain playing,
-  straight and on the beat, and comes last in the order: it is where a strummer goes,
-  and also where anyone goes who plays plainly and fits nothing else at her tempo.
+  what makes it that style (:data:`NEEDS`): jazz its swing, synthwave a busy, even
+  pulse, lofi uneven gaps, house, hip hop and r&b strokes off the beat, folk a strum.
+  A style is not a candidate until that has been heard inside its band.  So nothing
+  is jazz on a light swing or on none heard, nothing is folk without a strum, and notes
+  given no times, a MIDI input that only counts them, choose only between busy and
+  sparse.  Given their times, notes are placed in the beat as strokes are.
+- A strum counts against every style but folk.
 - The best score wins, but scores within :data:`MARGIN` of the best are a near-tie:
   what was heard does not tell those styles apart.  A near-tie goes to the tempo's
   default if it is among them, and otherwise to the one listed first in
   :data:`PROFILES`, the style that asks the most of her playing.
 - When every candidate loses a whole point or more (:data:`NO_FIT`), her playing is
-  none of these styles' and the tempo's default answers.
+  none of these styles' and the tempo's default answers.  Plain playing, a note or a
+  chord on each beat, fits none, so it gets what the tempo and key give it.
 
 The bands are few and wide on purpose, and each one says in a word or two what the
 style is.  They were written from that description and then adjusted by hand against
@@ -43,14 +43,17 @@ style is.  They were written from that description and then adjusted by hand aga
 guitar excerpts whose labels map onto three of the styles.  The generated parts are 45
 written figures (nine styles by five instruments) at three tempi and two keys each,
 so the count on them is how well the rule knows those figures, not a forecast for a
-real player.  The light swing that hip hop, r&b and lofi often have is not asked of
-them, because a player of those may well play straight: a swing only counts against
-the styles that are straight.  With the true tempo and key the rule names the
-generated part's own style for 191 of 270 (the rule before this one, on tempo, mode
-and strokes: 105) and the recorded excerpt's for 10 of 24 (before: 8).  Moving any
-one band edge by 15%, or a swing edge by 0.02, leaves 179 to 193 of 270 and 8 to 11
-of 24.  Chord colour (sevenths against triads) would separate more and is not here:
-the live chroma does not carry it.
+real player.  Some of those figures are the same figure in two styles: straight even
+eighths are written for folk, house, synthwave and midwest alike, and a note on each
+beat for folk and jazz, so only the tempo and key can tell those apart.  The light
+swing that hip hop, r&b and lofi often have is not asked of them, because a player of
+those may well play straight: a swing only counts against the styles that are
+straight.  With the true tempo and key the rule names the generated part's own style
+for 172 of 270 (the rule before this one, on tempo, mode and strokes: 105) and the
+recorded excerpt's for 7 of 24 (before: 8).  Moving any one band edge by 15%, or a
+swing edge by 0.02, leaves 164 to 174 of 270 and 5 to 7 of 24.  Chord colour
+(sevenths against triads) would separate more and is not here: the live chroma does
+not carry it.
 
 :class:`RhythmEar` measures swing, offbeat and steady.  Pure, cheap and bounded: it is
 fed one bar of stroke times at a time on the planning thread, and keeps two histograms
@@ -62,12 +65,14 @@ from dataclasses import dataclass, fields
 
 import numpy as np
 
-from .listen.features import WIN
+from .listen.features import HOP, WIN
 
 #: A frame's time is the end of its window, and a stroke that peaks in it sits in the
 #: middle of that window on average: measured on generated parts with every note on a
 #: known grid, the median stroke read 18 to 21 ms after its note.
 STROKE_LAG_S = WIN / 2.0 / 48000.0
+#: A MIDI note is stamped on the first frame at or after it: half a hop late on average.
+NOTE_LAG_S = HOP / 2.0 / 48000.0
 #: Strokes are counted by where in the beat they fall, in this many equal bins.  A hop is
 #: a 36th of a beat at 160 bpm, so finer bins than this would hold nothing more.
 PHASE_BINS = 48
@@ -159,14 +164,15 @@ class RhythmEar:
         self._lead = 0.0             # how far ahead of the bar line her eighths run, beats
         self._found = False
 
-    def bar(self, strokes_at, *, bar_start: float, bar_s: float) -> None:
+    def bar(self, strokes_at, *, bar_start: float, bar_s: float,
+            lag_s: float = STROKE_LAG_S) -> None:
         beat = float(bar_s) / 4.0
         for t in strokes_at:
             if self._last is not None:
                 gap = int(round((float(t) - self._last) / beat * 12.0))
                 self._gaps[min(max(gap, 0), GAP_BINS - 1)] += 1
             self._last = float(t)
-        at = np.array([(float(t) - STROKE_LAG_S - float(bar_start)) / beat
+        at = np.array([(float(t) - lag_s - float(bar_start)) / beat
                        for t in strokes_at]) - self._lead
         if not at.size:
             return
@@ -254,11 +260,12 @@ SOFT = {"strokes": 0.4, "swing": 0.05, "offbeat": 0.25, "steady": 0.25, "strum":
 #: hard; house is straight and off the beat; synthwave is a busy, straight, even pulse;
 #: trap is sparse and straight; hip hop and r&b leave room, more off the beat than on
 #: it, in uneven gaps, straight or lightly swung; lofi is sparse, mostly on the beat, in
-#: uneven gaps, straight or lightly swung; midwest is busy and straight, on and off
-#: the beat, and not an even pulse; folk is straight and on the beat.  The
-#: edges sit between the values plain figures give (quarters one stroke a beat,
-#: eighths two; none, half or all of them off the beat; all one gap or long and short
-#: in turn), not on them, so a reading that moves a little does not cross one.
+#: uneven gaps, straight or lightly swung; folk is strummed, straight and on the beat;
+#: midwest is busy and straight, on and off the beat, and no more even than a picked
+#: pattern is, so an even pulse costs it a little and synthwave takes one where both
+#: can.  The edges sit between the values plain figures give (quarters one stroke a
+#: beat, eighths two; none, half or all of them off the beat; all one gap or long and
+#: short in turn), not on them, so a reading that moves a little does not cross one.
 PROFILES = {
     "jazz":      {"swing": (0.62, 1.0)},
     "house":     {"swing": (0.0, 0.55), "offbeat": (0.7, 1.0)},
@@ -270,23 +277,27 @@ PROFILES = {
                   "steady": (0.0, 0.7)},
     "lofi":      {"strokes": (0.0, 1.3), "swing": (0.0, 0.63), "offbeat": (0.0, 0.62),
                   "steady": (0.0, 0.7)},
+    "folk":      {"swing": (0.0, 0.55), "offbeat": (0.0, 0.6), "strum": (0.29, 1.0)},
     "midwest":   {"strokes": (1.3, _ANY), "swing": (0.0, 0.55), "offbeat": (0.3, 0.8),
-                  "steady": (0.0, 0.7)},
-    "folk":      {"swing": (0.0, 0.55), "offbeat": (0.0, 0.6), "strum": (0.0, 1.0)},
+                  "steady": (0.0, 0.8)},
 }
 #: The strum band of every style but folk: FolkEar's marks, no evidence of a strum
 #: under 0.18 of her strokes and full evidence from 0.40.
 NOT_STRUMMED = (0.0, 0.18)
-#: The one thing heard that is each style's own.  A style is not a candidate until it
-#: has been heard, and is less than a whole step outside its band.
-NEEDS = {"jazz": "swing", "house": "offbeat", "synthwave": "steady", "hiphop": "offbeat",
-         "rnb": "offbeat", "lofi": "steady", "folk": "offbeat"}
+#: What makes each style that style, which must be heard inside its band before the
+#: style is a candidate at all.
+NEEDS = {"jazz": ("swing",), "house": ("offbeat",), "synthwave": ("strokes", "steady"),
+         "hiphop": ("offbeat",), "rnb": ("offbeat",), "lofi": ("steady",),
+         "folk": ("strum",)}
 #: Scores this close are a near-tie: what was heard does not tell the styles apart, so
 #: the tempo's default takes it, or the style that comes first in PROFILES.
 MARGIN = 0.15
 #: A style that loses this much does not fit what was heard.  When none fits, her
 #: playing is not one of these styles' and the tempo's default answers.
 NO_FIT = 1.0
+
+#: Strokes a beat from which a player is too busy for trap, the default from 130 to 150.
+BUSY_DEFAULT = 0.85
 
 _RANGES: dict = {}
 
@@ -300,10 +311,13 @@ def tempo_range(style: str) -> tuple[float, float]:
     return _RANGES[style]
 
 
-def tempo_default(bpm: float, mode: str | None = None) -> str:
+def tempo_default(bpm: float, mode: str | None = None, strokes: float | None = None) -> str:
     """The style for a tempo when nothing has been heard of how she plays: at the count,
     on a room mic.  Each band is one style's own range, and a minor key, when it is
-    known, turns the band to the style that leaves room.  It is also where a tie goes."""
+    known, turns the band to the style that leaves room.  It is also where a tie goes,
+    and where playing that fits no style goes: from 130 to 150, trap's range, a player
+    known to be too busy for trap (``strokes`` a beat, :data:`BUSY_DEFAULT`) gets
+    midwest, the one other style there."""
     minor = mode == "minor"
     if bpm < 80.0:
         return "rnb" if minor and bpm >= 60.0 else "lofi"
@@ -316,7 +330,7 @@ def tempo_default(bpm: float, mode: str | None = None) -> str:
     if bpm < 130.0:
         return "house" if minor else "midwest"
     if bpm <= 150.0:
-        return "trap"
+        return "midwest" if strokes is not None and strokes >= BUSY_DEFAULT else "trap"
     return "midwest"
 
 
@@ -339,7 +353,7 @@ def score_styles(bpm: float, mode: str | None = None,
                  playing: Playing | None = None) -> list[StyleScore]:
     """Every candidate style for this tempo with its score, the answer first and then
     the best of the rest: see the module's docstring for the rule."""
-    default = tempo_default(bpm, mode)
+    default = tempo_default(bpm, mode, None if playing is None else playing.strokes)
     heard = playing or Playing()
     out = []
     for style, profile in PROFILES.items():
@@ -354,9 +368,10 @@ def score_styles(bpm: float, mode: str | None = None,
                 cost = _cost(float(value), band, SOFT[f.name])
                 if cost > 0.0:
                     against.append((f.name, cost))
-        need = NEEDS.get(style)
-        if (need is not None and style != default and playing is not None
-                and (getattr(heard, need) is None or dict(against).get(need, 0.0) >= 1.0)):
+        lost = dict(against)
+        if style != default and playing is not None and any(
+                getattr(heard, need) is None or lost.get(need, 0.0) > 0.0
+                for need in NEEDS.get(style, ())):
             continue
         against.sort(key=lambda a: -a[1])
         out.append(StyleScore(style, -sum(c for _, c in against), tuple(against)))

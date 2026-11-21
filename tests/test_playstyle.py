@@ -288,19 +288,19 @@ def test_with_nothing_heard_the_tempo_answers(bpm, mode, style):
 
 
 def test_a_near_tie_goes_to_the_tempo_s_default():
-    """On the beat with room, in gaps a shade more even than lofi's: folk fits it whole
-    and lofi but for that shade.  What was heard does not tell them apart, so the tempo
-    does."""
-    playing = Playing(strokes=0.9, swing=0.5, offbeat=0.3, steady=0.73)
-    scores = score_styles(85.0, "major", playing)
-    assert tempo_default(85.0, "major") == "lofi"
-    assert [s.style for s in scores[:2]] == ["lofi", "folk"], explain(scores)
+    """Busy and straight, in gaps a shade more even than a picked pattern's: synthwave
+    fits it whole and midwest but for that shade.  What was heard does not tell them
+    apart, so the tempo does."""
+    playing = Playing(strokes=2.0, swing=0.5, offbeat=0.5, steady=0.82)
+    scores = score_styles(110.0, "major", playing)
+    assert tempo_default(110.0, "major") == "midwest"
+    assert [s.style for s in scores[:2]] == ["midwest", "synthwave"], explain(scores)
     assert scores[1].score - MARGIN <= scores[0].score < scores[1].score
     assert explain(scores).endswith("a near-tie")
     # further out it is no longer a tie, and the style that fits takes it
-    clearly = Playing(strokes=0.9, swing=0.5, offbeat=0.3, steady=0.9)
-    assert detect_style(85.0, "major", playing=clearly) == "folk"
-    assert not explain(score_styles(85.0, "major", clearly)).endswith("a near-tie")
+    clearly = Playing(strokes=2.0, swing=0.5, offbeat=0.5, steady=1.0)
+    assert detect_style(110.0, "major", playing=clearly) == "synthwave"
+    assert not explain(score_styles(110.0, "major", clearly)).endswith("a near-tie")
 
 
 def test_a_near_tie_without_the_default_goes_by_the_order_of_the_styles():
@@ -349,15 +349,28 @@ def test_jazz_is_its_swing():
     assert detect_style(170.0, "minor", 3.0) == "midwest"      # strokes alone, busy
 
 
+@pytest.mark.parametrize("swing", [0.57, 0.59, 0.61])
+def test_a_light_swing_is_not_jazz(swing):
+    """Jazz needs its swing heard inside its band, not merely near it."""
+    for bpm in np.arange(70.0, 221.0, 3.0):
+        for strokes in (0.6, 1.3, 2.0):
+            playing = Playing(strokes=strokes, swing=swing, offbeat=0.5, steady=0.5, strum=0.0)
+            styles = [s.style for s in score_styles(float(bpm), "major", playing)]
+            assert "jazz" not in styles, (bpm, strokes)
+    assert detect_style(78.0, "major", playing=Playing(strokes=2.0, swing=0.59, offbeat=0.5,
+                                                       steady=0.5, strum=0.0)) != "jazz"
+
+
 @pytest.mark.parametrize("bpm", [110.0, 125.0, 170.0, 200.0])
 @pytest.mark.parametrize("mode", ["major", "minor"])
 def test_with_no_swing_heard_jazz_is_not_even_a_candidate(bpm, mode):
     """Short notes on every beat have no off-beat eighths to hear a swing in.  Jazz
-    used to lose one point for that and win whenever every other style lost more."""
+    used to lose one point for that and win whenever every other style lost more.  It
+    is plain playing, and fits nothing: the tempo and key answer."""
     quarters = Playing(strokes=1.0, swing=None, offbeat=0.0, steady=1.0, strum=0.0)
     scores = score_styles(bpm, mode, quarters)
     assert "jazz" not in [s.style for s in scores]
-    assert scores[0].style in ("folk", "trap", "midwest"), explain(scores)
+    assert scores[0].style == tempo_default(bpm, mode, 1.0), explain(scores)
 
 
 def test_a_swing_counts_against_the_straight_styles_and_no_others():
@@ -406,12 +419,62 @@ def test_a_strum_is_not_enough_for_folk():
     assert detect_style(100.0, "major", playing=swung) == "jazz"
 
 
-def test_plain_playing_on_the_beat_is_folk_without_a_strum():
-    """Folk is where plain playing goes when it fits nothing else at her tempo: a note
-    on every beat in a minor key at 110, where the tempo alone says synthwave."""
-    quarters = Playing(strokes=1.0, swing=None, offbeat=0.0, steady=1.0, strum=0.0)
-    scores = score_styles(110.0, "minor", quarters)
-    assert scores[0].style == "folk" and scores[0].score == 0.0, explain(scores)
+@pytest.mark.parametrize("strum", [None, 0.0, 0.1, 0.18])
+def test_nothing_is_folk_without_a_strum(strum):
+    """Plain playing, straight and on the beat, used to be folk wherever it fit
+    nothing else.  Folk is a strum; without one it is not even a candidate."""
+    for bpm in np.arange(60.0, 133.0, 2.0):
+        for mode in ("major", "minor", None):
+            for playing in (
+                    Playing(strokes=1.0, swing=None, offbeat=0.0, steady=1.0, strum=strum),
+                    Playing(strokes=0.5, swing=None, offbeat=0.0, steady=1.0, strum=strum),
+                    Playing(strokes=2.0, swing=0.5, offbeat=0.5, steady=1.0, strum=strum),
+                    Playing(strokes=1.4, swing=0.5, offbeat=0.45, steady=0.67, strum=strum)):
+                styles = [s.style for s in score_styles(float(bpm), mode, playing)]
+                assert "folk" not in styles, (bpm, mode, playing)
+
+
+@pytest.mark.parametrize("bpm,mode,playing,style", [
+    (110.0, "minor", Playing(strokes=1.0, swing=None, offbeat=0.0, steady=1.0), "synthwave"),
+    (96.0, "major", Playing(strokes=1.0, swing=None, offbeat=0.0, steady=1.0), "midwest"),
+    (92.0, "minor", Playing(strokes=1.0, swing=None, offbeat=0.0, steady=1.0), "hiphop"),
+    (124.0, "minor", Playing(strokes=1.0, swing=None, offbeat=0.0, steady=1.0), "house"),
+    (70.0, "minor", Playing(strokes=0.5, swing=None, offbeat=0.0, steady=1.0), "rnb"),
+])
+def test_plain_playing_gets_what_the_tempo_and_key_give_it(bpm, mode, playing, style):
+    """Quarter-note chords, a bass on the roots, half notes: what was heard tells no
+    style, so the answer is the one the count gave."""
+    playing = Playing(**{**playing.__dict__, "strum": 0.0})
+    scores = score_styles(bpm, mode, playing)
+    assert scores[0].style == style == tempo_default(bpm, mode), explain(scores)
+
+
+@pytest.mark.parametrize("mode", ["major", "minor", None])
+@pytest.mark.parametrize("steady", [0.7, 0.85, 1.0])
+@pytest.mark.parametrize("strum", [0.0, 0.5])
+def test_a_busy_even_pulse_has_a_style_that_fits_at_every_tempo(mode, steady, strum):
+    """Straight eighths, picked or strummed.  From 119 to 150 nothing used to take them:
+    they were folk to 132 without a strum, and then trap, the style for leaving room."""
+    playing = Playing(strokes=2.0, swing=0.5, offbeat=0.5, steady=steady, strum=strum)
+    for bpm in np.arange(80.0, 150.5, 1.0):
+        scores = score_styles(float(bpm), mode, playing)
+        got = scores[0].style
+        assert got != "trap", (bpm, explain(scores))
+        assert got != "folk" or strum, (bpm, explain(scores))
+        if bpm >= 133.0:
+            assert got == "midwest", (bpm, explain(scores))
+        elif not strum:
+            assert scores[0].score > -1.0, (bpm, explain(scores))
+
+
+def test_too_busy_for_trap_is_midwest_when_nothing_fits():
+    """Trap's range is the tempo band that defaults to it, and trap leaves room."""
+    assert tempo_default(140.0, "minor") == tempo_default(140.0, "minor", 0.5) == "trap"
+    assert tempo_default(140.0, "minor", 2.0) == "midwest"
+    odd = Playing(strokes=2.0, swing=0.5, offbeat=1.0, steady=0.3, strum=0.6)
+    scores = score_styles(140.0, "minor", odd)
+    assert max(s.score for s in scores) <= -1.0
+    assert scores[0].style == "midwest", explain(scores)
 
 
 def test_strokes_alone_choose_only_between_busy_and_sparse():
@@ -665,6 +728,47 @@ def test_notes_alone_are_scored_on_how_many_there_are():
     for _ in range(4):
         busy.heard_bar(8)
     assert busy.at_entry(140.0, "C minor") == "midwest"
+
+
+def _notes(places, *, bpm, bars=7, jitter_s=0.006, seed=5):
+    """A MIDI input's StylePick fed ``bars`` bars of notes at ``places`` with their times,
+    each stamped on the first frame at or after it, as MidiFrames stamps them."""
+    from plume.listen.features import HOP
+    rng = np.random.default_rng(seed)
+    bar_s, hop = 240.0 / bpm, HOP / SR
+    pick = StylePick(trust_busy=True)
+    for b in range(bars):
+        at = [b * bar_s + p * bar_s / 4.0 + float(rng.normal(0.0, jitter_s)) for p in places]
+        stamped = [np.ceil(t / hop) * hop for t in at]
+        pick.heard_bar(len(stamped), bar_start=b * bar_s, bar_s=bar_s, onset_times=stamped)
+    return pick
+
+
+@pytest.mark.parametrize("places,bpm,key,style", [
+    (_swung(0.66), 120.0, "F major", "jazz"),
+    (_STABS, 124.0, "C major", "house"),
+    (_EIGHTHS, 96.0, "D major", "synthwave"),
+    ((0.0, 0.58, 1.58, 2.58, 3.58), 94.0, "D major", "hiphop"),
+])
+def test_notes_with_their_times_are_placed_in_the_beat(places, bpm, key, style):
+    """A MIDI input that hands on when each note was played is heard as a direct input
+    is, but for the strum: notes alone could only ever say busy or sparse."""
+    pick = _notes(places, bpm=bpm)
+    assert pick.playing.strum is None and pick.playing.offbeat is not None, pick.why
+    assert pick.at_entry(bpm, key) == style, pick.why
+    assert "swing" in pick.why and "strum: not heard on this input" in pick.why, pick.why
+
+
+@pytest.mark.parametrize("bpm,key", [(125.0, "C major"), (135.0, "A minor"),
+                                     (145.0, "E major")])
+def test_a_busy_even_picker_past_synthwave_s_range_is_midwest(bpm, key):
+    """Straight eighths picked from 119 to 150 were folk, then trap, the style that
+    leaves room: nothing fitted them.  (In a minor key up to 130 they are as near
+    house's as midwest's, and the tempo's default, house, takes them.)"""
+    audio = _part(_EIGHTHS, bpm=bpm, key=key, ring_s=0.6, held_s=None)
+    pick, got = _hear(audio, bpm=bpm, key=key)
+    assert got == "midwest", pick.why
+    assert "no style fits" not in pick.why, pick.why
 
 
 def test_a_room_mic_hears_nothing_of_how_she_plays():

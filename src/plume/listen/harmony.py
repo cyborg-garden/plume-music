@@ -230,8 +230,8 @@ _KEY_COMMIT_EVIDENCE_S = 8.0
 # 270, minor keys 64 and 68 of 135, minor bass lines 15 and 14 of 27, trouble
 # cases right after 12 s 62 and 72 of 77; the 40 recorded guitar excerpts 21 and
 # 22 (minor 5 and 7 of 12).  With the notes voting freely between a key and its
-# relative, minor keys read 61; with both of a pair lent the better score (at a
-# share of 0.65), 65, and minor bass lines 10.
+# relative (and no wait at the entry), minor keys read 61; with both of a pair
+# lent the better score (at a share of 0.65), 65, and minor bass lines 10.
 #
 # No weight is given to how a part opens: a term for the lowest note of the
 # opening scores well where every part starts on its home chord, and puts the

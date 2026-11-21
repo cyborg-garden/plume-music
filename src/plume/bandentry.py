@@ -39,6 +39,14 @@ PHRASE_REST_BARS = 2
 #: Bars on the tracker's key before the band will come in on it rather than on the
 #: key it settled earlier.
 ENTRY_KEY_BARS = 2
+#: When the band is ready to come in but the tracker's key is less than this far ahead
+#: of the next key (HarmonyState.key_margin, a difference of profile correlations),
+#: it waits once, for her next phrase, and comes in then on whatever the tracker holds.
+#: Measured offline on 40 recorded guitar excerpts: 10 of the 25 entries in a wrong
+#: key and none of the 14 right ones were under 0.05 at the entry bar, and the tracker
+#: was right on 19 of them two bars later.  Entries that wait come in one phrase later;
+#: on generated parts, whose key is as clear at the entry as it gets, it changes little.
+ENTRY_KEY_MARGIN = 0.05
 
 DRUMS, BAND, FULL = "drums", "band", "full"
 
@@ -861,6 +869,7 @@ class BandEntry:
         self._rest = PHRASE_REST_BARS
         self._rest_before_run = PHRASE_REST_BARS
         self._ready_since: int | None = None
+        self._waited_unsure = False
         self._latest_key_bars = 0
         self.bars_in = 0
 
@@ -916,6 +925,15 @@ class BandEntry:
         # count moves, a ready band is in within phrase_bars bars.
         ready = ready and (self._on_her_phrase(bar)
                            or bar - self._ready_since >= self._phrase_bars)
+        if (ready and self._band_bar is None and self._known_key is None
+                and not self._waited_unsure and harmony is not None
+                and harmony.key is not None and harmony.key_margin < ENTRY_KEY_MARGIN):
+            # Two keys are about level: one more of her phrases says which (see
+            # ENTRY_KEY_MARGIN).  Once only, so an ambiguous player still gets a band
+            # within a phrase.
+            self._waited_unsure = True
+            self._ready_since = bar
+            ready = False
         if self._known_key is not None:
             # She told us the key, so nothing heard can change it.  The band still
             # waits for her to start: drums alone are for playing over.

@@ -1027,16 +1027,30 @@ def test_a_style_that_stays_keeps_its_own_chords(tmp_path, consent):
 
 
 @needs_laptop_speed
-def test_the_style_never_moves_once_the_band_is_in(tmp_path, consent):
-    """A chord every other beat until the band is in, plain playing on the beat, then busy
-    enough that a second look would say synthwave."""
+def test_a_player_who_turns_busy_changes_the_style_once_on_a_phrase_line(tmp_path, consent):
+    """A chord every other beat until the band is in, plain playing on the beat, then an
+    even pulse busy enough for synthwave.  The band changes over once, on a phrase line,
+    and says so in the log (StylePick.reconsider)."""
+    from plume.bandentry import REGUESS_PHRASE_BARS
     human = _strummed_take(85.0, seconds=110.0, strums_per_beat=0.5, busier_from_s=38.0)
     rec = _detect_take(tmp_path, human, max_minutes=0.5)
     rows = _rows(rec)
     assert rows[-1]["t_s"] > 80.0, "too short to have been tempted"
     band = [r for r in rows if r["entry"] != "drums"]
     assert band and band[0]["t_s"] < 38.0
-    assert {r["style"] for r in rows} == {"lofi"}
+    runs = [s for i, s in enumerate(r["style"] for r in band) if not i or s != band[i - 1]["style"]]
+    assert runs == ["lofi", "synthwave"], runs
+    changed = [r for r in band if "style_change" in r]
+    assert len(changed) == 1, changed
+    turn = changed[0]
+    assert turn["style"] == "synthwave" and turn["style_change"]["from"] == "lofi"
+    assert turn["style_change"]["bars_in"] % REGUESS_PHRASE_BARS == 0
+    assert turn["style_change"]["bars_in"] >= 2 * REGUESS_PHRASE_BARS
+    assert turn["t_s"] > 38.0
+    assert turn["style_why"].startswith("synthwave ") and "led lofi by" in turn["style_why"]
+    assert all(r["style_guess"] for r in band)
+    # It takes the bar it changes on: the new style's own chords from there.
+    assert turn["chords"]["template"] in governor.progression_symbols("synthwave", turn["key"])
 
 
 def test_a_fast_count_gets_its_style_before_the_first_bar(tmp_path, consent):
@@ -1365,7 +1379,7 @@ def test_a_style_she_named_is_not_a_guess(tmp_path, consent):
     assert not any(r["style_guess"] for r in rows)
     # Chosen, so the live guess never runs: no reasons for one, and its own drums from bar 1.
     assert all(r["style_chosen"] for r in rows)
-    assert not any("style_why" in r for r in rows)
+    assert not any("style_why" in r or "style_change" in r for r in rows)
     assert {r["intro_beat"] for r in rows} == {"style"}
     assert all(r["key_guess"] for r in rows)
     doc = json.loads((rec / "session.json").read_text())

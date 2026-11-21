@@ -11,9 +11,11 @@ Key belief
     clears ``_KEY_CONF_FLOOR``; ``key_conf`` is the incumbent's correlation
     clipped to [0, 1].
 
-    With the optional note model (listen/notes.py) the correlation is the
-    average of that one and the same for a histogram of transcribed notes
-    against note-duration profiles: see "Key from chroma AND notes" below.
+    With the optional note model (listen/notes.py) the correlation is mixed
+    with the same for a histogram of transcribed notes against note-duration
+    profiles, where a key and its relative score alike: see "Key from chroma
+    AND notes" below.  ``key_margin`` is how far the key's correlation is ahead
+    of the next one's; the band's entry waits a phrase when it is small.
 
 Chord belief
     Per-frame cosine scores of the chroma against 24 binary maj/min triad
@@ -194,9 +196,11 @@ _KEY_COMMIT_EVIDENCE_S = 8.0
 #
 # When the optional pitch model is installed the key is read from two things at
 # once: the chroma histogram above, and a histogram of transcribed notes.  Each
-# is matched against its own key profiles and the two correlations are averaged
+# is matched against its own key profiles and the two correlations are mixed
 # (_NOTE_SHARE) before the incumbent, margins and sustain above are applied,
-# unchanged.
+# unchanged.  In the notes' correlation a key and its relative major or minor
+# both get the better of their two scores, so the notes say which set of seven
+# notes is in use and chroma alone says which of its two homes.
 #
 # Why both.  Each reading alone is wrong in a way the other is not:
 #   - Chroma is the energy in each pitch class, overtones included.  A note's
@@ -210,15 +214,19 @@ _KEY_COMMIT_EVIDENCE_S = 8.0
 #     tell chroma that a chord stands on its root.  A minor-seventh home chord
 #     holds exactly the notes of its relative major's sixth chord, and a line
 #     of roots outlines the wrong triad as easily as the right one.  Measured,
-#     the notes alone read many minor parts as the relative major, and minor
-#     bass lines worse than chroma does.
+#     the notes alone read many minor parts as the relative major (a quick
+#     minor-pentatonic riff, whose notes are its relative major's pentatonic,
+#     every time), and minor bass lines worse than chroma does.  So they get no
+#     say between a key and its relative: that is chroma's, from the low notes.
 # Measured offline (the benchmark's 270 generated parts replayed through this
-# tracker and the band's entry; 77 rendered trouble cases: hum, parts that open
-# away from home, bass lines, single lines, drones), exact key at the entry:
-# chroma alone 123 of 270, notes alone 152, the average 159; minor keys 64, 47
-# and 61 of 135; trouble cases right after 12 s, 62, 65 and 71 of 77.  On the
-# benchmark's 40 recorded guitar excerpts the three are level at the entry (14,
-# 16, 14) and the average is ahead by the end of the take (21, 23, 23).
+# tracker and the band's entry, with its wait when unsure; 77 rendered trouble
+# cases: hum, parts that open away from home, bass lines, single lines, drones),
+# exact key at the entry: chroma alone 125 of 270; both readings with the notes'
+# share at 0.5, 164, and at 0.65 (as here), 166; minor keys 64, 66 and 65 of
+# 135; trouble cases right after 12 s, 62, 72 and 71 of 77.  On the benchmark's
+# 40 recorded guitar excerpts all three read 21 at the entry.  With the notes
+# voting between a key and its relative (and no wait at the entry) minor keys
+# read worse than chroma alone, 61 of 135 against 64.
 #
 # No weight is given to how a part opens: a term for the lowest note of the
 # opening scores well where every part starts on its home chord, and puts the
@@ -273,10 +281,10 @@ _AS_MINOR = np.array([0.220, 0.006, 0.104, 0.123, 0.019, 0.103,
 # gate) before the note histogram has a say: about a quarter second of one
 # sounding note.
 _NOTE_MASS_FLOOR = 20.0
-# _NOTE_SHARE.  The notes' share of the averaged correlation.  Even: measured
-# between 0.35 and 0.65, more weight on the notes gained major keys and lost
-# minor bass lines, less did the reverse, and the total moved little.
-_NOTE_SHARE = 0.5
+# _NOTE_SHARE.  The notes' share of the mixed correlation.  Measured from 0.5
+# to 0.75 the benchmark moves by a take or two; at 0.65 fewer takes changed key
+# after the band was in than at 0.5 (14 and 5 against 18 and 8).
+_NOTE_SHARE = 0.65
 # While the notes have nothing to say (the model's frames arrive about a second
 # behind the chroma's, and some sounds it does not transcribe at all) the key
 # waits for them, rather than be named from chroma alone and then defended
@@ -328,6 +336,9 @@ _NOTE_KEY_PROFILES = _key_profiles(_AS_MAJOR, _AS_MINOR)
 #: pitch class of each of the model's 88 keys (A0 = MIDI 21)
 _NOTE_PC = (np.arange(88) + 21) % 12
 _NOTE_PC_ONEHOT = np.eye(12)[_NOTE_PC]
+#: The relative of each key index: major k and minor (k + 9) % 12 share their notes.
+_RELATIVE = np.array([12 + (k + 9) % 12 for k in range(12)]
+                     + [(m + 3) % 12 for m in range(12)])
 _TEMPLATES = _triad_templates()
 _N_STATES = 25  # 24 triads + N
 _N_IDX = 24
@@ -342,6 +353,9 @@ class HarmonyState:
     chord_conf: float
     register_low_midi: float | None
     register_high_midi: float | None
+    # how far the key's correlation is ahead of the next key's (negative while a
+    # challenger leads but has not yet held long enough to take over)
+    key_margin: float = 1.0
 
 
 _MAJOR_SCALE = (0, 2, 4, 5, 7, 9, 11)
@@ -411,6 +425,7 @@ class HarmonyTracker:
         self._note_hist = np.zeros((_NOTE_LEVEL_BINS, 12))
         self._note_t: float | None = None
         self._note_level = 0.0               # smoothed notes sounding per frame
+        self._key_margin = 0.0
         off = (1.0 - float(chord_selftrans)) / (_N_STATES - 1)
         self._trans = np.full((_N_STATES, _N_STATES), off)
         np.fill_diagonal(self._trans, float(chord_selftrans))
@@ -519,6 +534,7 @@ class HarmonyTracker:
             chord_conf=self._chord_conf(),
             register_low_midi=reg_lo,
             register_high_midi=reg_hi,
+            key_margin=self._key_margin,
         )
 
     # ---- key
@@ -545,13 +561,16 @@ class HarmonyTracker:
         hz = (hist - hist.mean()) / std
         corr = _PROFILES @ hz / 12.0          # Pearson r vs each of 24 keys
         if self._notes is not None:
-            # the same for the notes, and the two averaged: see _NOTE_SHARE
+            # the same for the notes, and the two mixed: see _NOTE_SHARE
             counts = self._note_counts()
             nstd = counts.std()
             if counts.sum() >= _NOTE_MASS_FLOOR and nstd > 0.0:
                 nz = (counts - counts.mean()) / nstd
-                corr = ((1.0 - _NOTE_SHARE) * corr
-                        + _NOTE_SHARE * (_NOTE_KEY_PROFILES @ nz / 12.0))
+                ncorr = _NOTE_KEY_PROFILES @ nz / 12.0
+                # the notes name the set of notes, not which of its two homes:
+                # a key and its relative get the better of their two scores
+                ncorr = np.maximum(ncorr, ncorr[_RELATIVE])
+                corr = (1.0 - _NOTE_SHARE) * corr + _NOTE_SHARE * ncorr
             elif self._key_idx is None and self._evidence_s < _KEY_COMMIT_EVIDENCE_S:
                 return                        # no notes yet: wait (see _NOTE_SHARE)
 
@@ -564,6 +583,8 @@ class HarmonyTracker:
             return float(np.clip(corr[idx], 0.0, 1.0) * settled)
 
         best = int(np.argmax(corr))
+        lead = self._key_idx if self._key_idx is not None else best
+        self._key_margin = float(corr[lead] - np.max(np.delete(corr, lead)))
         if self._key_idx is None:
             # ACQUISITION.  Needs sustained tonal content, not merely enough
             # accumulated frames: see _KEY_DUTY_FLOOR.

@@ -191,6 +191,18 @@ def test_bass_lines_and_a_single_line_are_read():
 
 
 @needs_model
+@pytest.mark.parametrize("root,key", [(40, "E minor"), (45, "A minor"), (50, "D minor")])
+def test_a_fast_minor_pentatonic_riff_stays_minor(root, key):
+    # Eighth notes a quarter second each, the riff's notes those of its relative
+    # major's pentatonic: the notes alone cannot say which of the two is home, so
+    # they must not outvote chroma, which hears the riff's low root.
+    riff = [0, 3, 5, 7, 10, 7, 5, 3, 0, 3, 5, 3, 0, -2, 0, 0]
+    x = render(line([root + i for i in riff], step_s=0.25, reps=5, hold=0.9), 16.5)
+    assert read_key(x) == key
+    assert read_key(x, notes=False) == key
+
+
+@needs_model
 def test_a_change_to_a_near_key_is_followed():
     # C to G, one sharp apart, the change at 12 s.
     ev = strums(["C", "F", "G", "C"], bar_s=1.5) + strums(["G", "C", "D", "G"], bar_s=1.5,
@@ -312,7 +324,7 @@ def test_the_key_waits_for_the_notes_and_then_reads_chroma_alone():
 
 def test_the_key_is_the_two_readings_averaged(monkeypatch):
     # Chroma that says C major, notes that say F sharp major: with all of the weight
-    # on one reading the key is that reading's, and neither wins the even average.
+    # on one reading the key is that reading's, and neither wins the mix.
     blocks = _chroma_frames(render(strums(["C", "F", "G", "C"], bars=4), 8.5))
 
     def key(share):
@@ -327,8 +339,8 @@ def test_the_key_is_the_two_readings_averaged(monkeypatch):
     assert key(1.0) == "F# major"
     assert H._NOTE_SHARE == 1.0                               # (still patched)
     monkeypatch.undo()
-    assert H._NOTE_SHARE == 0.5
-    assert key(0.5) not in ("C major", "F# major")
+    assert H._NOTE_SHARE == 0.65
+    assert key(H._NOTE_SHARE) not in ("C major", "F# major")
 
 
 def test_without_the_model_the_key_comes_from_chroma(monkeypatch):

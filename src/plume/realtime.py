@@ -1249,8 +1249,36 @@ def analysis_step(*, extractor, hop_rms, masker, tracker, harmony,
     machine_db = hop_rms.process(machine_block)
     masked_frames, flags = masker.mask(frames, machine_db)
     beat_state = tracker.process(masked_frames, masked=flags)
+    # The note listener (listen/notes.py), when the tracker has one, hears the same
+    # unmasked input before the tracker reads this block's frames.
+    listen = getattr(harmony, "listen", None)
+    if listen is not None:
+        listen(human_block)
     harm_state = harmony.process(frames)
     return masked_frames, flags, beat_state, harm_state
+
+
+#: The note reading of the key (listen/notes.py), when its optional model is
+#: installed: unset, it runs on a thread of its own; 0 switches it off and the
+#: key is read from chroma alone; inline runs the model in the analysis thread,
+#: for a replay faster than real time, where a thread of its own would fall behind.
+NOTES_ENV = "PLUME_NOTES"
+
+
+def harmony_tracker(midi_port: str | None = None):
+    """The key and chord tracker for a live take.
+
+    It reads the key from chroma and transcribed notes together when the optional
+    note model is installed (``pip install plume-music[notes]``) and the input is
+    audio, and from chroma alone otherwise.  A MIDI take's frames are its notes
+    already.
+    """
+    from .listen.harmony import HarmonyTracker  # noqa: PLC0415
+    from .listen.notes import note_listener  # noqa: PLC0415
+    how = os.environ.get(NOTES_ENV, "")
+    notes = (None if midi_port is not None or how == "0"
+             else note_listener(SR, background=how != "inline"))
+    return HarmonyTracker() if notes is None else HarmonyTracker(notes=notes)
 
 
 # ------------------------------------------------------------------ device I/O
@@ -2916,7 +2944,6 @@ def jam(*, style: str, seed: int, params, device: str | None = None,
     from .duet import DuetEngine  # noqa: PLC0415
     from .listen.beat import BeatTracker  # noqa: PLC0415
     from .listen.features import FeatureExtractor  # noqa: PLC0415
-    from .listen.harmony import HarmonyTracker  # noqa: PLC0415
     from .mind import Mind  # noqa: PLC0415
 
     rec_path = None if record_dir is None else Path(record_dir)
@@ -2933,7 +2960,7 @@ def jam(*, style: str, seed: int, params, device: str | None = None,
     if count_in:
         tkw["count_in"] = True
     tracker = BeatTracker(**tkw)
-    harmony = HarmonyTracker()
+    harmony = harmony_tracker(midi_port)
     mind = Mind(params)
     from .governor import HarmonyGovernor  # noqa: PLC0415 — lazy, like siblings
     governor = HarmonyGovernor(style, params)
@@ -5203,7 +5230,6 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
     from .duet import DuetEngine  # noqa: PLC0415
     from .listen.beat import BeatTracker  # noqa: PLC0415
     from .listen.features import FeatureExtractor  # noqa: PLC0415
-    from .listen.harmony import HarmonyTracker  # noqa: PLC0415
     from .mind import (BarFeatures, Cue, Mind,  # noqa: PLC0415
                        MindParams, flatten_sections, parse_cue)
     from .roles import (RoleNegotiator, RoleParams,  # noqa: PLC0415
@@ -5239,7 +5265,7 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
     if count_in and not tap_start:
         tkw["count_in"] = True
     tracker = BeatTracker(**tkw)
-    harmony = HarmonyTracker()
+    harmony = harmony_tracker(midi_port)
     entry = None
     tap_detector = None
     style_pick = None
@@ -5522,7 +5548,7 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
                 # The loop set the tempo.  As after a count: never listen for one
                 # again, and the key starts from what comes next.
                 tap_detector = None
-                harmony = HarmonyTracker()
+                harmony = harmony_tracker(midi_port)
                 harm_state = None
                 with state_lock:
                     shared["events"].clear()
@@ -5543,7 +5569,7 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
                     taps = count_start(taps, soft_knocks)
                     tap_detector = None     # once: playing cannot re-set tempo
                     # Knocks are not harmony; her key starts from her first note.
-                    harmony = HarmonyTracker()
+                    harmony = harmony_tracker(midi_port)
                     harm_state = None
                     with state_lock:
                         shared["events"].clear()

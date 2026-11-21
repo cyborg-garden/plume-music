@@ -250,6 +250,34 @@ def test_a_detect_take_with_a_monitor_leaves_the_callback_alone(env):
     assert watcher.problems() == []
 
 
+@pytest.mark.parametrize("run,extra", [
+    (run_lead, {"voice_channel": 2}),
+    (run_jam, {}),
+], ids=["lead", "jam"])
+def test_the_note_reading_on_its_own_thread_leaves_the_callback_alone(env, run, extra,
+                                                                      monkeypatch):
+    # conftest reads the key from chroma by default; this is the setting an install
+    # with the notes extra ships: the model on a thread of its own.
+    from plume.listen import notes as notes_mod
+    if not notes_mod.notes_available():
+        pytest.skip("optional notes extra (onnxruntime) not installed")
+    monkeypatch.delenv(realtime.NOTES_ENV, raising=False)
+    made = []
+    real = notes_mod.note_listener
+
+    def listener(sr, **kw):
+        made.append(kw)
+        return real(sr, **kw)
+    monkeypatch.setattr(notes_mod, "note_listener", listener)
+    sd, watcher = watched_device()
+    with patched_module("sounddevice", sd), patched_module("mido", FakeMido()):
+        run(env, short_socket_path("notes"), monitor=True, input_device="audio interface",
+            input_channel=1, **extra)
+    assert made and all(kw == {"background": True} for kw in made)
+    assert watcher.blocks > 50, "the callback barely ran, so this proves nothing"
+    assert watcher.problems() == []
+
+
 class Dirty:
     """Stands in for the things a callback must not touch."""
 

@@ -164,6 +164,20 @@ class RhythmEar:
         self._lead = 0.0             # how far ahead of the bar line her eighths run, beats
         self._found = False
 
+    def carry_on(self, *, find: bool = False) -> "RhythmEar":
+        """A new ear that has heard nothing yet but knows where she is: placed on her
+        eighths as this one has her, and with her last stroke for the next gap.  A new
+        ear placing her from the bar line alone would find a player who has drifted off
+        it a long way into the take on the wrong side of the beat.  ``find``: its first
+        bar finds her again from there, as the first bar of a take does from the bar
+        line, so a player whose tempo is not quite the band's is followed past where
+        following alone loses her (she moves more than _FOLLOW_WITHIN between two of
+        the strokes it follows her by)."""
+        ear = RhythmEar()
+        ear._last, ear._lead = self._last, self._lead
+        ear._found = self._found and not find
+        return ear
+
     def bar(self, strokes_at, *, bar_start: float, bar_s: float,
             lag_s: float = STROKE_LAG_S) -> None:
         beat = float(bar_s) / 4.0

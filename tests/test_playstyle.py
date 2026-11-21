@@ -784,20 +784,23 @@ def test_a_room_mic_hears_nothing_of_how_she_plays():
 # The style is picked as the band comes in, and may change once after, on how she plays
 # now (StylePick.reconsider).  Fed one bar at a time, as the take feeds it.
 
-def _take(feels, *, bpm, keys, pick=None, jitter_s=0.006, seed=5, entry_bars=7):
+def _take(feels, *, bpm, keys, pick=None, jitter_s=0.006, seed=5, entry_bars=7,
+          tempo_off=0.0):
     """A MIDI input's StylePick fed ``entry_bars`` bars of the first feel, its pick as
     the band comes in, then bar by bar: ``feels`` is a list of (bars, places) and ``keys``
-    the committed key of every bar after the band is in.  Returns the pick, its answer
-    as the band came in, and every (bars in, style) it changed to."""
+    the committed key of every bar after the band is in.  ``tempo_off``: she holds her
+    own tempo, this share faster than the bar lines.  Returns the pick, its answer as
+    the band came in, and every (bars in, style) it changed to."""
     from plume.listen.features import HOP
     rng = np.random.default_rng(seed)
     bar_s, hop = 240.0 / bpm, HOP / SR
+    hers = bar_s / (1.0 + tempo_off)
     pick = pick or StylePick(trust_busy=True)
     plan = [places for n, places in feels for _ in range(n)]
     changes, at_entry, b = [], None, 0
     for i, places in enumerate(plan):
         if places is not None:
-            at = [b * bar_s + p * bar_s / 4.0 + float(rng.normal(0.0, jitter_s))
+            at = [b * hers + p * hers / 4.0 + float(rng.normal(0.0, jitter_s))
                   for p in places]
             stamped = [np.ceil(t / hop) * hop for t in at]
             pick.heard_bar(len(stamped), bar_start=b * bar_s, bar_s=bar_s,
@@ -827,6 +830,39 @@ def test_a_player_who_keeps_her_feel_keeps_her_style(places, bpm, key):
                                      jitter_s=0.012)
         assert changes == [], (first, changes, pick.why)
         assert pick.style == first
+
+
+@pytest.mark.parametrize("tempo_off", [0.001, 0.002, 0.003])
+def test_a_player_who_drifts_off_the_bar_lines_keeps_her_style(tempo_off):
+    """She swings, holding her own tempo a little faster than the count, and is a good
+    part of a beat ahead of the bar lines well into the take.  Each part of a phrase is
+    heard from where she is by then: placed from the bar line, her swung eighths
+    landed off the beat and she was house."""
+    pick, first, changes = _take([(60, _swung(0.66))], bpm=120.0, keys=["F major"],
+                                 tempo_off=tempo_off)
+    assert first == "jazz" and changes == [], (changes, pick.why)
+
+
+def test_a_part_finds_her_again_where_following_lost_her():
+    """Quarter notes on the beat, then from bar 6 a sixth of a beat late, as a player
+    whose tempo is not quite the band's ends up in time: more than following moves in
+    a bar, so the ear that followed her now hears every stroke off the beat.  A part
+    that finds her again from there hears them on it."""
+    from plume.playstyle import STROKE_LAG_S
+    bpm, bar_s = 100.0, 2.4
+    ear = RhythmEar()
+
+    def bar(e, b, late):
+        e.bar([b * bar_s + p * bar_s / 4.0 + late + STROKE_LAG_S for p in _QUARTERS],
+              bar_start=b * bar_s, bar_s=bar_s)
+    for b in range(6):
+        bar(ear, b, 0.0)
+    followed, found = ear.carry_on(), ear.carry_on(find=True)
+    for b in range(6, 8):
+        for e in (ear, followed, found):
+            bar(e, b, bar_s / 4.0 / 6.0)
+    assert followed.offbeat > 0.9
+    assert found.offbeat == 0.0
 
 
 def test_sparse_and_minor_then_dense_and_major_changes_style_once_on_a_phrase():

@@ -295,6 +295,13 @@ class FolkEar:
                            for w, k in zip(widths, found))
         self._keep_tail(seen, last)
 
+    def carry_on(self) -> "FolkEar":
+        """A new ear that has counted nothing, holding the frames a strum across the
+        next bar line needs."""
+        ear = FolkEar()
+        ear._tail, ear._last_stroke = list(self._tail), self._last_stroke
+        return ear
+
     @staticmethod
     def _chord(frame) -> bool:
         """More than one note sounds in ``frame`` (_STRUM_CHORD).  True where it has no
@@ -412,6 +419,14 @@ class StrokeEar:
         #: When the strokes the last bar() found were played (the time of each one's
         #: frame, s), for whoever places them in the beat.  Empty for frames with no time.
         self.last_at: tuple = ()
+
+    def carry_on(self) -> "StrokeEar":
+        """A new ear that has counted no strokes, but knows her level and holds the
+        frames the next bar's first strokes are read against."""
+        ear = StrokeEar()
+        ear._tail, ear._last_stroke = list(self._tail), self._last_stroke
+        ear._last_slow, ear._levels = self._last_slow, self._levels.copy()
+        return ear
 
     def own_level_db(self) -> float | None:
         """Her level so far (dBFS), None before anything audible."""
@@ -546,6 +561,19 @@ class HeardPlaying:
     def bars(self) -> int:
         """Bars heard of her."""
         return self._beats // 4
+
+    def carry_on(self, *, find: bool = False) -> "HeardPlaying":
+        """A new hearing of her from here on: nothing counted, but each ear knows where
+        she is (her level, her place in the beat, the frames that run on into the next
+        bar), so a few bars of her read as they do in the middle of a long take.
+        ``find``: her place in the beat is found again from there (RhythmEar.carry_on)."""
+        part = HeardPlaying(trust_busy=self._trust_busy)
+        part.folk_ear = None if self.folk_ear is None else self.folk_ear.carry_on()
+        if self.stroke_ear is not None:
+            part.stroke_ear = self.stroke_ear.carry_on()
+        if self.rhythm_ear is not None:
+            part.rhythm_ear = self.rhythm_ear.carry_on(find=find)
+        return part
 
     def distrust(self) -> None:
         """The input turned out to hold the band: how it sounds is no longer hers."""
@@ -683,13 +711,10 @@ class StylePick(HeardPlaying):
                               *self.heard_why()])
         self.style = scores[0].style
         self._entry_mode = self._mode_now = mode
-        self._part = self._fresh()
+        self._part = self.carry_on()
         self._next_part = REGUESS_PART_BARS
         return self.style
 
-    def _fresh(self) -> HeardPlaying:
-        return HeardPlaying(trust_busy=self._trust_busy,
-                            hear_technique=self.folk_ear is not None)
 
     def reconsider(self, bars_in: int, bpm: float, key: str | None) -> str | None:
         """Called on every bar after the band came in, ``bars_in`` bars after it, with
@@ -714,7 +739,9 @@ class StylePick(HeardPlaying):
             self._mode_now, self._mode_since = mode, int(bars_in)
         if bars_in < self._next_part:
             return None
-        part, self._part = self._part, self._fresh()
+        # Each part goes on from the last, and finds her again in its first bar.
+        part = self._part
+        self._part = part.carry_on(find=True)
         self._next_part = int(bars_in) + REGUESS_PART_BARS
         self._parts = [*self._parts, part][-(REGUESS_PHRASE_BARS // REGUESS_PART_BARS):]
         if bars_in < 2 * REGUESS_PHRASE_BARS or bars_in % REGUESS_PHRASE_BARS:

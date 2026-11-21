@@ -433,16 +433,20 @@ input. With `--midi` your keys are the notes already, and the model is not used.
 
 The model is 230 kB and comes with plume; what the extra installs is `onnxruntime`. It runs
 beside the take on a thread of its own, one two-second window each second, and takes 3 to
-8% of one processor core and about 70 MB of memory.
+8% of one processor core and about 40 MB of memory.
 
 `PLUME_NOTES=0` switches it off for a take, and the key comes from the first reading alone.
 `PLUME_NOTES=inline` is for replaying a recording faster than real time: it runs the model
 in step with the audio instead of beside it.
 
-So far this has only been measured on rendered parts and on a public set of guitar
-recordings, through a fake device. There it named clearly more major keys correctly and
-slightly fewer minor ones. A lone major-seventh chord held on its own can still come out as
-the minor key on its third.
+The notes say which seven notes you are using; which of the two keys that share them is
+home (C major or A minor, say) still comes from the first reading, which hears your low
+notes. So far this has only been measured on rendered parts and on a public set of guitar
+recordings, through a fake device.
+
+When the band is ready to come in but two keys are about level, it waits for one more of
+your phrases and then comes in on the key it hears by then. It waits like this once at
+most, with or without the extra.
 
 ### MIDI
 

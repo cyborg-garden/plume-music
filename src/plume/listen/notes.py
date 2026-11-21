@@ -34,10 +34,15 @@ faster than real time.
 
 Cost, measured: 30 to 75 ms of one core per window with the resampling, so one
 window a second is 3 to 8 % of one core, on one thread (the session is held to
-one); handing a window to the background thread costs the caller under 0.1 ms.  Memory: about 70 MB over a process that has numpy and scipy loaded (the
-runtime's import, the 230 kB model's session and its working buffers), and at
-most two windows of audio.  Both are fixed: the window never grows and at most
-one runs per ``hop_s`` of input.
+one); handing a window to the background thread costs the caller under 0.1 ms.
+Memory: peak resident about 140 MB for a tracker and feature extractor with the
+listener against about 105 MB without it, so about 40 MB for the runtime's
+import, the 230 kB model's session and its working buffers, and at most two
+windows of audio.  Both are fixed: the window never grows and at most one runs
+per ``hop_s`` of input.  The model's thread shares the interpreter lock: a probe
+thread's 0.5 ms sleeps overran by about 1.8 ms at the 99th percentile with it
+running, against about 1 ms without.  The audio callback never runs Python that
+waits on it.
 """
 
 from __future__ import annotations

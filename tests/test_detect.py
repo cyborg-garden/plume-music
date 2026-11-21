@@ -1027,11 +1027,11 @@ def test_a_style_that_stays_keeps_its_own_chords(tmp_path, consent):
 
 
 @needs_laptop_speed
-def test_a_player_who_turns_busy_changes_the_style_once_on_a_phrase_line(tmp_path, consent):
+def test_a_player_who_turns_busy_changes_the_style_once_on_a_section_line(tmp_path, consent):
     """A chord every other beat until the band is in, plain playing on the beat, then an
-    even pulse busy enough for synthwave.  The band changes over once, on a phrase line,
+    even pulse busy enough for synthwave.  The band changes over once, on a section line,
     and says so in the log (StylePick.reconsider)."""
-    from plume.bandentry import REGUESS_PHRASE_BARS
+    from plume.bandentry import REGUESS_PHRASE_BARS, section_line
     human = _strummed_take(85.0, seconds=110.0, strums_per_beat=0.5, busier_from_s=38.0)
     rec = _detect_take(tmp_path, human, max_minutes=0.5)
     rows = _rows(rec)
@@ -1044,7 +1044,7 @@ def test_a_player_who_turns_busy_changes_the_style_once_on_a_phrase_line(tmp_pat
     assert len(changed) == 1, changed
     turn = changed[0]
     assert turn["style"] == "synthwave" and turn["style_change"]["from"] == "lofi"
-    assert turn["style_change"]["bars_in"] % REGUESS_PHRASE_BARS == 0
+    assert section_line(turn["style_change"]["bars_in"])
     assert turn["style_change"]["bars_in"] >= 2 * REGUESS_PHRASE_BARS
     assert turn["t_s"] > 38.0
     assert turn["style_why"].startswith("synthwave ") and "led lofi by" in turn["style_why"]

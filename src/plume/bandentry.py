@@ -1,6 +1,6 @@
 """When the band joins a tap-started take: drums first, then you, then them.
 
-The order is the player's own (2026-11-02).  She taps four, the drums start and hold
+The order is the player's own.  She taps four, the drums start and hold
 that tempo, and she plays over them for a while.  Only once plume has heard her
 settle in one key do the bass and chords come in, in that key, with the melody
 a few bars after them.
@@ -20,7 +20,7 @@ import numpy as np
 
 from .governor import HarmonyGovernor
 from .listen.harmony import HarmonyState
-from .playstyle import NOTE_LAG_S, NO_FIT, Playing, RhythmEar, explain, fit, score_styles
+from .playstyle import MARGIN, NOTE_LAG_S, NO_FIT, Playing, RhythmEar, explain, fit, score_styles
 from .theory import parse_key
 
 HARMONY_ROLES = ("bass", "pad", "keys", "shimmer")
@@ -512,9 +512,9 @@ class StrokeEar:
         return len(self._tail) + int(self._levels.size)
 
 
-#: A second look at the style comes only at the end of a phrase of this many bars,
-#: counted from the bar the band came in on, and never at the end of the first: that
-#: phrase is the band's entrance.  It also lands on every section line of SONG_ARC.
+#: A second look at the style weighs the last phrase of this many bars, and comes only on
+#: a section line of the song (SONG_ARC, :func:`section_line`), never before the end of
+#: the phrase after the band came in: that first phrase is the band's entrance.
 REGUESS_PHRASE_BARS = 8
 #: The phrase is heard in parts of this many bars, each on its own, and another style
 #: must win every part, so it has led over the whole phrase: a fill of a phrase's
@@ -720,8 +720,9 @@ class StylePick(HeardPlaying):
         """Called on every bar after the band came in, ``bars_in`` bars after it, with
         the key committed now.  The style to change to on this bar, or None to stay.
 
-        At most :data:`REGUESS_CHANGES` changes, each on a phrase line
-        (:data:`REGUESS_PHRASE_BARS`) after the first phrase, for one of two reasons:
+        At most :data:`REGUESS_CHANGES` changes, each on a section line of the song
+        (:func:`section_line`) after the first phrase (:data:`REGUESS_PHRASE_BARS`), for
+        one of two reasons:
 
         - Her feel changed.  Each part of the phrase just ended
           (:data:`REGUESS_PART_BARS`) is scored on its own (score_styles), every bar of
@@ -729,8 +730,13 @@ class StylePick(HeardPlaying):
           :data:`REGUESS_LEAD` or more over the style playing (playstyle.fit).
         - The key's mode turned since the band came in and has held for a phrase, and
           all she has played since the start, scored in the new mode, gives another
-          style than it does in the old one.  On a room mic, where nothing of how she
-          plays is hers to hear, this is the only way the style moves.
+          style than it does in the old one.  Where how she plays is heard, the new
+          answer must also be a clear one, not a near-tie or the tempo's default for
+          playing that fits no style, and fit what she played by more than
+          playstyle.MARGIN over the style playing: a mode only breaks ties, and a key
+          that wobbles for a while must not move the band to a style that fits her no
+          better.  On a room mic, where nothing of how she plays is hers to hear and
+          the style is the tempo's default for the key, this is the only way it moves.
         """
         if self._part is None or len(self.changes) >= REGUESS_CHANGES:
             return None
@@ -744,7 +750,7 @@ class StylePick(HeardPlaying):
         self._part = part.carry_on(find=True)
         self._next_part = int(bars_in) + REGUESS_PART_BARS
         self._parts = [*self._parts, part][-(REGUESS_PHRASE_BARS // REGUESS_PART_BARS):]
-        if bars_in < 2 * REGUESS_PHRASE_BARS or bars_in % REGUESS_PHRASE_BARS:
+        if bars_in < 2 * REGUESS_PHRASE_BARS or not section_line(bars_in):
             return None
         why = self._feel_changed(bpm, mode)
         if why is None:
@@ -787,6 +793,11 @@ class StylePick(HeardPlaying):
         was = score_styles(bpm, self._entry_mode, playing)[0].style
         scores = score_styles(bpm, mode, playing)
         if scores[0].style == was or scores[0].style == self.style:
+            return None
+        if playing is not None and (
+                scores[0].score <= -NO_FIT
+                or (len(scores) > 1 and scores[0].score - scores[1].score <= MARGIN)
+                or scores[0].score - fit(self.style, playing) <= MARGIN):
             return None
         why = "; ".join([explain(scores),
                          f"the key turned {mode} (was {self._entry_mode or 'unknown'}) "
@@ -1399,6 +1410,18 @@ def yield_to(plan_yield: "PlanYield", follow: "BandFollow", section: str, densit
     gain = follow.yield_db if follow.trusted else 0.0
     return plan_yield.bar(section, density, resting, gain_db=gain,
                           density_x=follow.density, bars_in=bars_in)
+
+
+def section_line(bars_in: int) -> bool:
+    """Whether a section of the song (:data:`SONG_ARC`) starts ``bars_in`` bars after
+    the band came in.  The arc repeats, as :func:`song_section` does."""
+    total = sum(bars for _, bars, _ in SONG_ARC)
+    at, start = max(0, int(bars_in)) % total, 0
+    for _, bars, _ in SONG_ARC:
+        if at == start:
+            return True
+        start += bars
+    return False
 
 
 def song_section(bars_in: int) -> tuple[str, float, tuple[str, ...]]:

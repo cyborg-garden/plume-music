@@ -73,7 +73,11 @@ out whatever the prompt doesn't name as you play. It listens for the key, and af
 with no settled key it takes its latest reading. If it has no reading at all, as with playing
 that has no tonal centre, the band keeps waiting on drums until it gets one. It picks a
 style from your tempo when you count, then once more as the band comes in, from how you
-have played over the bars it heard. Your tempo says which styles it could be, each style's
+have played over the bars it heard. After that it keeps listening and may change the style
+once, at the start of one of the song's sections and never in the first phrase after the
+band comes in: when another style has fitted how you play clearly better through the last
+eight bars, or when the key's mode turns and that makes another style a clear better fit for
+all you have played. A style you name never changes. Your tempo says which styles it could be, each style's
 own range, and five things heard on a direct input pick among them: whether your eighths
 swing, how many strokes you play to a beat, how many of them fall off the beat, how even the
 gaps between them are, and how many of them are strummed chords. All five come from when and
@@ -91,7 +95,9 @@ can't tell your notes from the drums. With `--midi` your notes and when you play
 the same way, all but the strum. These are guesses, and the bands were set on generated
 parts, not on real players: name the style you want when it is wrong. Each take's
 `decisions.ndjson` gives the answer and the next best style with
-their scores and everything heard, in `style_why`. So far this has only run on a simulated device, never with a real guitar.
+their scores and everything heard, in `style_why`; the row of the bar where the style
+changed also has `style_change`, with the old style, the new one, the bars since the band
+came in and why. So far this has only run on a simulated device, never with a real guitar.
 
 To stop from another terminal, run `plume stop` (`plume play` and `plume calibrate` too), or `plume sessions` to see what is
 running. A take also stops by itself after 60 minutes; `--max-minutes N` changes that.

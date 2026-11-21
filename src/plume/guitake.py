@@ -75,6 +75,7 @@ from .midiout import VIRTUAL as MIDI_VIRTUAL
 from .realtime import (AUDIO_CONSENT_ENV, AUDIO_CONSENT_OFF, OPEN_TOGETHER_FAILED, REC_CUES,
                        REC_DECISIONS, REC_ENDING, REC_HUMAN, REC_MACHINE, REC_MANIFEST, REC_MIDI, REC_STREAM, REC_VOICE,
                        LiveSession, RealtimeError, list_sessions, send_cue, stop_session)
+from . import instrument as _instrument
 from .styles_lib import list_styles
 from .theory import key_name, parse_key
 
@@ -649,7 +650,7 @@ class SetupStore:
         self._doc: dict | None = None
 
     def _read(self) -> dict:
-        empty = {"last": None, "devices": {}, "style": None, "midi": MIDI_OFF}
+        empty = {"last": None, "devices": {}, "style": None, "midi": MIDI_OFF, "instrument": None}
         if self._path_of is None:
             return empty
         try:
@@ -674,9 +675,11 @@ class SetupStore:
         last = doc.get("last")
         style = doc.get("style")
         midi = doc.get("midi")
+        instrument = doc.get("instrument")
         return {"last": last if last in kept else None, "devices": kept,
                 "style": style if isinstance(style, str) and style in list_styles() else None,
-                "midi": midi if isinstance(midi, str) and midi in MIDI_CHOICES else MIDI_OFF}
+                "midi": midi if isinstance(midi, str) and midi in MIDI_CHOICES else MIDI_OFF,
+                "instrument": instrument if instrument in _instrument.INSTRUMENTS else None}
 
     def _loaded(self) -> dict:
         if self._doc is None:
@@ -747,11 +750,25 @@ class SetupStore:
                 doc["midi"] = midi
                 self._write()
 
-    def forget(self) -> None:
-        """Set up again is about her gear: the style she chose stays, and so does the DAW."""
+    def instrument(self) -> str | None:
+        """What she said she plays, None for not set."""
+        with self._lock:
+            return self._loaded()["instrument"]
+
+    def put_instrument(self, instrument: str | None) -> None:
         with self._lock:
             doc = self._loaded()
-            self._doc = {"last": None, "devices": {}, "style": doc["style"], "midi": doc["midi"]}
+            if doc["instrument"] != instrument:
+                doc["instrument"] = instrument
+                self._write()
+
+    def forget(self) -> None:
+        """Set up again is about her gear: the style she chose stays, and so do the DAW
+        and what she plays."""
+        with self._lock:
+            doc = self._loaded()
+            self._doc = {"last": None, "devices": {}, "style": doc["style"], "midi": doc["midi"],
+                         "instrument": doc["instrument"]}
             self._write()
 
 
@@ -890,15 +907,19 @@ def _text_field(body: dict, name: str) -> str:
 
 
 def build_argv(route: Route, folder: Path, *, key: str | None, style: str | None,
-               seed: int, sound: str | None = None, midi: str = MIDI_OFF) -> list[str]:
+               seed: int, sound: str | None = None, midi: str = MIDI_OFF,
+               instrument: str | None = None) -> list[str]:
     """Every value is one token, glued to its flag, so none can read as a flag of its own.
 
     No ``--max-minutes``: the take keeps the session cap.  After ``--`` a prompt is only
     ever a prompt.  ``midi`` is one of :data:`MIDI_CHOICES`; the port is always plume's
-    own, never a name from anywhere else.
+    own, never a name from anywhere else.  ``instrument`` is one of
+    plume.instrument.INSTRUMENTS, or None for not set, which adds nothing.
     """
     if not isinstance(midi, str) or midi not in MIDI_CHOICES:
         raise ValueError("midi must be one of " + ", ".join(MIDI_CHOICES))
+    if instrument is not None and instrument not in _instrument.INSTRUMENTS:
+        raise ValueError("instrument must be one of " + ", ".join(_instrument.INSTRUMENTS))
     argv = [*PLUME_CHILD, "lead", "--tap-start", "--detect",
             f"--record={folder}/", f"--seed={int(seed)}"]
     if route.mode == "direct":
@@ -921,6 +942,8 @@ def build_argv(route: Route, folder: Path, *, key: str | None, style: str | None
         argv.append(f"--midi-out={MIDI_VIRTUAL}")
         if midi == MIDI_ONLY:
             argv.append("--midi-only")
+    if instrument is not None:
+        argv.append(f"--instrument={instrument}")
     words = [w for w in (style, f"in {key}" if key else None) if w]
     if words:
         argv += ["--", " ".join(words)]
@@ -1153,6 +1176,10 @@ class TakeRunner:
             "sounds": [{"id": name, "label": label} for name, label in SOUND_CHOICES],
             # The saved choice even while it cannot be had, so it comes back with the midi part.
             "midi": {"choice": self._setup.midi(), "problem": self._midi_check()},
+            # What she plays, if she said: None is not set.
+            "instruments": [{"id": name, "label": _instrument.LABELS[name]}
+                            for name in _instrument.INSTRUMENTS],
+            "instrument": self._setup.instrument(),
             "problem": problem,
             "setup": self._setup_doc(chosen, rows, mark, output),
         }
@@ -1531,6 +1558,16 @@ class TakeRunner:
         self._setup.put_midi(midi)
         return {"midi": midi}
 
+    def choose_instrument(self, body: dict) -> dict:
+        """Remember what she plays for the next Start, or "" for not set.  Nothing plays."""
+        if not isinstance(body, dict) or set(body) != {"instrument"} \
+                or not isinstance(body["instrument"], str) \
+                or (body["instrument"] and body["instrument"] not in _instrument.INSTRUMENTS):
+            raise Refused(400, "That is not something the instrument choice understands.")
+        instrument = body["instrument"] or None
+        self._setup.put_instrument(instrument)
+        return {"instrument": instrument}
+
     def reset_setup(self) -> dict:
         """Set up again.  The next press of Start begins from the first step."""
         self._release(self._call_off_listening())
@@ -1731,7 +1768,7 @@ class TakeRunner:
         # still plays through plume, and the page already says why.
         midi = self._setup.midi() if self._midi_check() is None else MIDI_OFF
         argv = build_argv(route, folder, key=key, style=style, seed=secrets.randbelow(100000),
-                          sound=sound, midi=midi)
+                          sound=sound, midi=midi, instrument=self._setup.instrument())
         with self._lock:
             if self._cancelled:          # Stop was clicked while the devices were being listed
                 self._preparing = False

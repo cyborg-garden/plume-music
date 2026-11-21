@@ -21,6 +21,7 @@ import soundfile as sf
 from conftest import fake_audio, patched_module, short_socket_path, wait_until
 from conftest import WINDOWS, needs_posix_modes, needs_symlinks  # noqa: E402
 from plume import cli, gui, guitake, realtime, roles as roles_mod
+from plume import instrument as instrument_mod
 from test_gui_bridge import Client
 from test_gui_take import AUDIO_BOX, LAPTOP_MIC, LAPTOP_OUT, VIRTUAL_DEVICE, Rig, _ask, _parsed
 
@@ -1507,3 +1508,94 @@ def test_the_midi_choice_over_http(rig, meter, tmp_path, monkeypatch, plume_regi
         assert _ask(page, "POST", "/api/midi", **{"Content-Type": "text/plain"}) == 415
     finally:
         srv.close()
+
+
+# ------------------------------------------------------------- what she plays
+#
+# A saved choice like the MIDI one: chosen in Settings, never a step before Start, and
+# with none chosen Start's argv is exactly what it was.
+
+def test_build_argv_says_no_instrument_unless_one_is_chosen(tmp_path):
+    argv = guitake.build_argv(_route(), tmp_path / "t", key=None, style=None, seed=1)
+    assert not [a for a in argv if a.startswith("--instrument")]
+    assert _parsed(argv).instrument is None
+
+
+def test_build_argv_puts_the_instrument_before_the_prompt(tmp_path):
+    argv = guitake.build_argv(_route(), tmp_path / "t", key="F major", style="folk", seed=1,
+                              instrument="bass")
+    assert "--instrument=bass" in argv and argv[-2:] == ["--", "folk in F major"]
+    args = _parsed(argv)
+    assert args.instrument == "bass" and args.prompt == "folk in F major"
+
+
+@pytest.mark.parametrize("instrument", ["", "kazoo", "--midi-out=x", True, 1])
+def test_build_argv_takes_only_a_known_instrument(tmp_path, instrument):
+    with pytest.raises(ValueError):
+        guitake.build_argv(_route(), tmp_path / "t", key=None, style=None, seed=1,
+                           instrument=instrument)
+
+
+def test_the_instrument_starts_not_set_and_start_says_none(rig, meter, setup_file):
+    runner = _midi_runner(rig, meter, setup_file)
+    home = runner.home()
+    assert home["instrument"] is None
+    assert [c["id"] for c in home["instruments"]] == list(instrument_mod.INSTRUMENTS)
+    assert all(c["label"] for c in home["instruments"])
+    runner.start({})
+    assert not [a for a in rig.spawned[-1] if a.startswith("--instrument")]
+
+
+def test_an_instrument_is_remembered_and_used_by_start(rig, meter, setup_file):
+    runner = _midi_runner(rig, meter, setup_file)
+    assert runner.choose_instrument({"instrument": "keys"}) == {"instrument": "keys"}
+    again = _midi_runner(rig, meter, setup_file)
+    assert again.home()["instrument"] == "keys"
+    again.start({})
+    assert [a for a in rig.spawned[-1] if a.startswith("--instrument")] == ["--instrument=keys"]
+
+
+def test_going_back_to_not_set_is_remembered_too(rig, meter, setup_file):
+    runner = _midi_runner(rig, meter, setup_file)
+    runner.choose_instrument({"instrument": "bass"})
+    assert runner.choose_instrument({"instrument": ""}) == {"instrument": None}
+    again = _midi_runner(rig, meter, setup_file)
+    assert again.home()["instrument"] is None
+    again.start({})
+    assert not [a for a in rig.spawned[-1] if a.startswith("--instrument")]
+
+
+def test_set_up_again_keeps_the_instrument(rig, meter, setup_file):
+    runner = _midi_runner(rig, meter, setup_file)
+    runner.choose_instrument({"instrument": "lead"})
+    runner.reset_setup()
+    assert runner.home()["instrument"] == "lead"
+
+
+@pytest.mark.parametrize("body", [{}, {"instrument": "kazoo"}, {"instrument": True},
+                                  {"instrument": ["bass"]}, {"instrument": "bass", "x": 1},
+                                  {"style": "folk"}, {"instrument": "b" * 500}])
+def test_an_instrument_must_be_one_of_the_choices(rig, meter, setup_file, body):
+    runner = _midi_runner(rig, meter, setup_file)
+    with pytest.raises(guitake.Refused) as e:
+        runner.choose_instrument(body)
+    assert e.value.status == 400
+    assert runner.home()["instrument"] is None
+
+
+def test_start_takes_no_instrument_word_of_its_own(rig, meter, setup_file):
+    runner = _midi_runner(rig, meter, setup_file)
+    with pytest.raises(guitake.Refused):
+        runner.start({"instrument": "bass"})
+    assert rig.spawned == []
+
+
+@pytest.mark.parametrize("stored", ['"kazoo"', '"--midi-only"', "true", '["bass"]', "7"])
+def test_a_hand_edited_instrument_is_not_set(rig, meter, setup_file, stored):
+    setup_file.parent.mkdir(parents=True)
+    setup_file.write_text('{"version": 1, "last": null, "devices": {}, "style": null, '
+                          '"midi": "off", "instrument": %s}' % stored)
+    runner = _midi_runner(rig, meter, setup_file)
+    assert runner.home()["instrument"] is None
+    runner.start({})
+    assert not [a for a in rig.spawned[-1] if a.startswith("--instrument")]

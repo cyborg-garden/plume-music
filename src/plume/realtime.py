@@ -2338,7 +2338,7 @@ def session_manifest(*, kind: str, style: str, role: str, seed: int,
                      input_route: "InputRoute | None" = None,
                      midi_port: str | None = None, detect: bool = False,
                      monitor: bool = False, sound: str | None = None,
-                     style_chosen: bool = False) -> dict:
+                     style_chosen: bool = False, instrument: str | None = None) -> dict:
     """What ``session.json`` says, written before the first bar is planned.
 
     Pure: everything except the pid and the clock is passed in, so the shape
@@ -2359,6 +2359,8 @@ def session_manifest(*, kind: str, style: str, role: str, seed: int,
         "detect": bool(detect),
         # The player named the style, so it is not plume's guess.
         "style_chosen": bool(style_chosen),
+        # What she said she plays (plume.instrument), None when not set.
+        "instrument": instrument,
         "monitor": bool(monitor),
         "sound": sound,
         "bpm": (None if bpm is None else float(bpm)),
@@ -5156,8 +5158,11 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
          detect: bool = False, output_device: str | None = None,
          sound: str | None = None, band_in_headphones: bool = False,
          midi_out: str | None = None, midi_only: bool = False,
-         midi_out_offset_s: float = 0.0) -> None:
+         midi_out_offset_s: float = 0.0, instrument: str | None = None) -> None:
     """The machine starts; you join (SPEC-V2 section 5).
+
+    ``instrument``: what she plays, if she said (:mod:`plume.instrument`).  None, not
+    set, changes nothing.
 
     ``midi_out``, ``midi_only``, ``midi_out_offset_s``: the band sent as MIDI too,
     or instead, as in :func:`jam`.
@@ -5199,6 +5204,11 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
     """
     if detect and (session is not None or not tap_start):
         raise RealtimeError("--detect works with --tap-start and without a session")
+    from . import instrument as _instrument  # noqa: PLC0415
+    try:
+        instrument = _instrument.canonical(instrument)
+    except ValueError as e:
+        raise RealtimeError(str(e)) from None
     sd = _import_sounddevice()
     route = resolve_input(sd, device, input_device=input_device,
                           input_channel=input_channel, voice_channel=voice_channel,
@@ -5306,8 +5316,10 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
                 style_pick = StylePick(key=named_key,
                                        trust_busy=hears_only_her or midi_port is not None,
                                        # whether she strums: only an instrument plugged
-                                       # in, which is all this has been tried against
-                                       hear_technique=is_direct)
+                                       # in, which is all this has been tried against,
+                                       # and one that can strum
+                                       hear_technique=is_direct
+                                       and _instrument.hears_strum(instrument))
         # A room mic cannot hear her stop over the band, so it keeps the long wait.
         silence_ending = (SilenceEnding(end_after_s=END_AFTER_S)
                           if hears_only_her or midi_port is not None else SilenceEnding())
@@ -5327,8 +5339,9 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
     mind = Mind(params, form_params) if form_params is not None else Mind(params)
     negotiator = RoleNegotiator(role, composed_bpm=composed_bpm,
                                 composed_key=composed_key)
-    duet = DuetEngine(style=style, key_fallback=str(composed_key or "A minor"),
-                      seed=seed, sr=SR)
+    # Her register in the band: the parts where she plays step back (plume.instrument).
+    duet = DuetEngine(style=_instrument.make_room(style, instrument),
+                      key_fallback=str(composed_key or "A minor"), seed=seed, sr=SR)
 
     def swing_of(name: str) -> float:
         # The machine's own swing, so the human's phase is measured against the
@@ -5362,7 +5375,7 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
             spec = bridged_style(name)
         else:
             spec = name
-        duet = DuetEngine(style=spec,
+        duet = DuetEngine(style=_instrument.make_room(spec, instrument),
                           key_fallback=str(composed_key or "A minor"), seed=seed, sr=SR)
         bridged[0] = bridge
         style = name
@@ -5471,7 +5484,7 @@ def lead(*, session=None, prompt: str | None = None, style: str = "lofi",
             bpm=composed_bpm, params=params, role_params=role,
             started_at=time.time(), input_route=route, midi_port=midi_port,
             detect=detect, monitor=monitor,
-            sound=started_sound, style_chosen=style_chosen))
+            sound=started_sound, style_chosen=style_chosen, instrument=instrument))
         with cue_log_lock:
             for doc in held_cues:
                 recorder.cue_soon(doc)

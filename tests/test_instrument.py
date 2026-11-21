@@ -232,8 +232,10 @@ RIG = [{"name": "Audio Interface 4x4", "max_input_channels": 4, "max_output_chan
 @pytest.mark.parametrize("name", [None, "bass"])
 def test_a_detect_take_uses_the_choice_where_it_should(tmp_path, monkeypatch, plume_registry,
                                                        name):
-    """A very short take: whether the strum is listened for, the room each engine is
-    given, and the record.  Not set hands the pick and the engine what main does."""
+    """A short take, just past the count: the lean the style pick is given, the room
+    each engine is given (the first, and the one the count's change of style builds),
+    and the record.  Not set hands the pick and the engines what main does."""
+    from test_bandentry import _take
     monkeypatch.setenv("PLUME_CALIBRATION_FILE", str(tmp_path / "none.json"))
     monkeypatch.setenv(realtime.AUDIO_CONSENT_ENV, "1")      # the FAKE device only
     picks, specs = [], []
@@ -251,12 +253,15 @@ def test_a_detect_take_uses_the_choice_where_it_should(tmp_path, monkeypatch, pl
     monkeypatch.setattr(bandentry, "StylePick", Pick)
     monkeypatch.setattr(duet, "DuetEngine", Engine)
     kw = {} if name is None else {"instrument": name}
-    with patched_module("sounddevice", fake_audio(None, devices=RIG, rate_x=6.0)):
+    with patched_module("sounddevice", fake_audio(_take(seconds=9.0), devices=RIG,
+                                                   rate_x=6.0)):
         realtime.lead(prompt=None, detect=True, tap_start=True, seed=0, status=False,
-                      role=roles_mod.RoleParams(role="lead"), max_minutes=0.04,
+                      role=roles_mod.RoleParams(role="lead"), max_minutes=0.06,
                       socket_path=short_socket_path("inst"), record_dir=str(tmp_path / "rec"),
                       input_device="audio interface", input_channel=1, direct=True, **kw)
-    assert picks and specs
+    assert picks and len(specs) >= 2, "the count changes the style"
+    assert isinstance(specs[1], dict) and specs[1]["drum_patterns"] == \
+        bandentry.plain_intro_style(specs[1]["name"])["drum_patterns"]
     assert picks[0]["hear_technique"] is True
     if name is None:
         assert "style_prior" not in picks[0]

@@ -4,8 +4,8 @@ Not a test — the measurement behind the "54 re-reads, only 2 of them octaves"
 paragraph in ``listen/beat._grid_hysteresis``, kept runnable so the numbers in
 that comment can be checked instead of believed.  Run with::
 
-    .venv/bin/python tests/grid_guard_replay.py takes6/
-    .venv/bin/python tests/grid_guard_replay.py takes6/ takes7/ takes5/
+    .venv/bin/python tests/grid_guard_replay.py takes/
+    .venv/bin/python tests/grid_guard_replay.py takes/ another-take/
 
 It cannot be a test and must never become one, for the same reason
 ``relock_replay.py`` cannot: it reads a jam recording, and ``*.wav`` is

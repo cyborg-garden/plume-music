@@ -18,7 +18,7 @@ what a player or an agent sees.
 - **Hear me.** The player's own input in the mix, with a choice of sounds.
 - **Styles.** `jazz`, `house`, `hiphop`, `rnb` and `folk` join `trap`, `lofi`,
   `midwest` and `synthwave`.
-- **Voices.** Recorded bass, piano, electric piano, vibraphone, brush and cajon.
+- **Voices.** Recorded upright bass, piano, brush and cajon.
   Ten stereo synths and pads, with a palette for each style.
 - **Style and key by ear.** `--detect` guesses the style from the playing and may
   change its mind once. The key is read from chroma and from notes, and plume

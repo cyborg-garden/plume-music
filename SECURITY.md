@@ -10,7 +10,11 @@ Report a security problem in private. On the repository page, open the **Securit
 tab and choose **Report a vulnerability**. That opens a private thread with the
 maintainers.
 
-Do not open a public issue or pull request for a security problem.
+If the tab shows no **Report a vulnerability** button, open an issue titled
+"Security contact" and leave the details out. A maintainer answers there with a
+private way to send them.
+
+Do not put the details of a security problem in a public issue or pull request.
 
 Useful things to include:
 

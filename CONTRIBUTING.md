@@ -20,7 +20,7 @@ interpreter is `.venv\Scripts\python`.
 - Do not set `PLUME_ALLOW_AUDIO` to run tests. The suite runs with it unset.
 - A test never reads a recording that git ignores. Tests make every input they
   need, with `tests/fixtures_gen.py` or by rendering into `tmp_path`.
-- No audio is tracked. If a test wants a WAV, write a generator.
+- No test audio is tracked. If a test wants a WAV, write a generator.
 
 Run the tests that cover what you touch:
 

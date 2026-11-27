@@ -5016,7 +5016,7 @@ def machine_harmony_state(t_s: float, key: str | None, chord: str | None, *,
 #: playing along to have to state the beat.
 TAP_START_MIN_DENSITY = 0.55
 #: Real knocks on a guitar body read 1.0-1.9 with the laptop across the room
-#: (2026-11-02, projector take), under the detector's default floor of 1.5.
+#: (2026-11-02 take), under the detector's default floor of 1.5.
 TAP_START_KNOCK_FLOOR = 1.0
 #: How strong a quieter knock has to be for an already-confirmed count to claim
 #: it as an earlier beat.  Her real first knocks read 0.6-1.0.

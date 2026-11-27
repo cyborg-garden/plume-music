@@ -83,10 +83,12 @@ from .theory import key_name, parse_key
 DEVICE_MISSING = "Plume could not find that device. Check it is plugged in."
 NO_INPUT = "Plume could not find a microphone or an audio interface."
 NO_INPUT_NEXT = NO_INPUT + " Plug one in, then try again."
-OPEN_FAILED = "Plume could not open the device. Check it is set to 48 kHz."
-AUDIO_PART_MISSING = "Plume needs its audio part: pip install with the play extra."
+OPEN_FAILED = ("Plume could not open the device. Set it to 48000 Hz in this computer's "
+               "sound settings, or choose another device.")
+AUDIO_PART_MISSING = ("Plume needs its audio part, and this copy does not have it. "
+                      "Install Plume with its audio part, then open it again.")
 NO_LISTING = "Plume could not ask this computer for its audio devices."
-SOUND_OFF = "This terminal has sound turned off."
+SOUND_OFF = "Plume was started with sound turned off. Quit Plume and open it again."
 TERMINAL_TAKE = "A take is already running from a terminal."
 ALREADY_RUNNING = "A take is already running."
 DID_NOT_START = "The take did not start."
@@ -97,12 +99,27 @@ OPENING = "Still opening the device. This computer may be asking to use the micr
 STALLED = "The audio device stopped answering."
 ENDED_EARLY = "The take ended early."
 NO_PAGE = "No page was open, so plume stopped this take."
-WEDGED = "Still stopping. Run plume stop in a terminal."
+WEDGED = "Still stopping. If it stays stuck, quit Plume and open it again."
 FLAT_CHANNEL = "Nothing on channel {channel}. Press Stop, then try another channel in Settings."
 FLAT_CHANNEL_HOME = "Nothing came in on channel {channel}. Try another channel."
+#: Where each system keeps the switch that lets a program use the microphone.
+_MIC_HOWTOS = {
+    "darwin": "To allow the microphone on a Mac, open System Settings, then Privacy & Security, then Microphone.",
+    "win32": "To allow the microphone on Windows, open Settings, then Privacy & security, then Microphone.",
+}
+_MIC_HOWTO_OTHER = "To check the microphone on Linux, open your sound settings and look at the input."
+
+
+def mic_howto(platform: str | None = None) -> str:
+    """One line on where this system lets a program use the microphone."""
+    return _MIC_HOWTOS.get(sys.platform if platform is None else platform, _MIC_HOWTO_OTHER)
+
+
+MIC_HOWTO = mic_howto()
 FLAT_MIC = ("Plume hears nothing. Check this computer lets it use the microphone, "
-            "or press Stop and pick another device.")
-FLAT_MIC_HOME = "Plume heard nothing. Check this computer lets it use the microphone, or pick another device."
+            "or press Stop and pick another device. " + MIC_HOWTO)
+FLAT_MIC_HOME = ("Plume heard nothing. Check this computer lets it use the microphone, "
+                 "or pick another device. " + MIC_HOWTO)
 KEPT_NOTHING = "The band had not come in yet, so plume kept nothing."
 BAD_KEY = "Plume did not understand that key. Try F major or A minor."
 ONLY_MAJOR_MINOR = "Plume plays major and minor keys. Try F major or A minor."
@@ -121,13 +138,15 @@ LOW_GAIN = "Barely hearing you. Turn the gain up a little and play again."
 HOT_ROOM = "A bit hot. Move back a little and play again."
 LOW_ROOM = "Barely hearing you. Move closer and play again."
 NOTHING_GAIN = "Nothing came in on {name}. Check the cable and the gain, then play again."
-NOTHING_ROOM = "Nothing came in on {name}. Check this computer lets plume use the microphone."
+NOTHING_ROOM = ("Nothing came in on {name}. Check this computer lets plume use the microphone. "
+                + MIC_HOWTO)
 LATE_GUESS = ("Try wired headphones. This output looks wireless (a guess), "
               "and wireless ones can arrive late.")
 LATE_REPORTED = ("Try wired headphones. This output reports about {ms} ms, "
                  "and wireless ones can arrive late.")
-MIDI_PART_MISSING = "Playing through a DAW needs plume's MIDI part: pip install with the midi extra."
-MIDI_NO_PORT = "Plume cannot make its own MIDI port on this computer. Use a terminal instead."
+MIDI_PART_MISSING = ("Playing through a DAW needs plume's MIDI part, and this copy does not have it. "
+                     "Install Plume with its MIDI part to use it.")
+MIDI_NO_PORT = "Plume cannot make its own MIDI port on this computer, so Play through a DAW is off."
 MIDI_FAILED = "Plume could not open its MIDI port. Try again, or turn off Play through a DAW in Settings."
 COUNT_LINE = "Knock or clap 8 even beats."
 COUNT_PICKUP = "A knock may not reach a pickup, so chuck muted strings."

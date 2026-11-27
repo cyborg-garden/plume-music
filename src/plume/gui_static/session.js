@@ -23,9 +23,9 @@ export function pinnedRoute(cameByLink, pinned, address) {
 export function lostWords(hasKey) {
   return hasKey ? {
     title: 'This page\'s link has stopped working.',
-    text: 'plume gui restarted, or a newer link was opened. Run plume gui url in a terminal and open the new link.'
+    text: 'Plume restarted, or a newer link was opened. Close this tab and open Plume again.'
   } : {
     title: 'This tab has no key.',
-    text: 'The key stays in the tab that opened the link, so a second tab cannot use it. Go back to that tab, or run plume gui url in a terminal and open the new link.'
+    text: 'The key stays in the tab that opened the link, so a second tab cannot use it. Go back to that tab, or close this one and open Plume again.'
   };
 }

@@ -980,6 +980,27 @@ def test_a_crash_with_audio_still_lands_on_the_record(rig, runner):
     assert "Traceback" not in json.dumps(doc) and "/secret" not in json.dumps(doc)
 
 
+def test_the_pages_words_never_send_the_player_to_a_terminal():
+    """Each message gives a next step inside the app.  TERMINAL_TAKE names where a take runs."""
+    words = {name: value for name, value in vars(guitake).items()
+             if name.isupper() and isinstance(value, str) and " " in value and name != "TERMINAL_TAKE"}
+    assert "WEDGED" in words and "MIDI_NO_PORT" in words
+    for name, value in words.items():
+        low = value.lower()
+        for phrase in ("pip", "terminal", "plume gui url", "48 khz"):
+            assert phrase not in low, f"{name} says {phrase!r}"
+
+
+def test_a_blocked_microphone_gets_one_line_for_each_system():
+    mac, windows, linux = (guitake.mic_howto(name) for name in ("darwin", "win32", "linux"))
+    assert "System Settings" in mac and "Windows" in windows and "Linux" in linux
+    assert len({mac, windows, linux}) == 3
+    for line in (mac, windows, linux):
+        assert "\n" not in line and line.count(".") == 1 and line.endswith(".")
+    for words in (guitake.FLAT_MIC, guitake.FLAT_MIC_HOME, guitake.NOTHING_ROOM):
+        assert words.endswith(guitake.mic_howto())
+
+
 @pytest.mark.parametrize("stderr,message", [
     ("error: no audio device matching 'x' (devices: y)", guitake.DEVICE_MISSING),
     ("error: 'x' has no inputs", guitake.DEVICE_MISSING),

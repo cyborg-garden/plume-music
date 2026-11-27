@@ -98,7 +98,7 @@ function problem(err) {
   $('problem-title').textContent = lost ? lost.title : 'That did not load.';
   $('problem-text').textContent = lost
     ? lost.text
-    : 'The take may have moved. Is plume gui still running in your terminal? If it is not, plume stop does not need it, and neither do your takes.';
+    : 'The take may have moved. If Plume has closed, open it again. Your takes stay on this computer either way.';
 }
 
 /* ------------------------------------------------------------------ the record */
@@ -1046,7 +1046,7 @@ async function sendInstrument(value) {
   select.disabled = false;
   if (settingsAnswerLeft(answer)) return;
   if (answer && answer.ok) { if (S.home) S.home.instrument = answer.doc.instrument || null; }
-  else S.settingsNote = (answer && answer.doc && answer.doc.error) || 'That did not reach plume gui. Is it still running in your terminal?';
+  else S.settingsNote = (answer && answer.doc && answer.doc.error) || 'That did not reach Plume. If it has closed, open it again.';
   drawInstrument();
   drawSettingsNote();
 }
@@ -1104,7 +1104,7 @@ async function sendStyle(value) {
   select.disabled = false;
   if (answer && answer.status === 401) { problem(answer); return; }
   if (answer && answer.ok) { if (S.home) S.home.style = answer.doc.style || null; }
-  else S.homeNote = (answer && answer.doc && answer.doc.error) || 'That did not reach plume gui. Is it still running in your terminal?';
+  else S.homeNote = (answer && answer.doc && answer.doc.error) || 'That did not reach Plume. If it has closed, open it again.';
   drawStyle();
   drawHomeState();
 }
@@ -1176,7 +1176,7 @@ async function openGuide(page) {
       if (err.status === 401) { problem(err); return; }
       $('guide-pages').textContent = '';
       $('guide-next').textContent = '';
-      $('guide-body').textContent = 'The guide did not load. Is plume gui still running in your terminal?';
+      $('guide-body').textContent = 'The guide did not load. If Plume has closed, open it again.';
       return;
     }
     if (turn !== S.nav) return;
@@ -1259,7 +1259,7 @@ async function startTake(heard) {
   else {
     /* Nothing started, as far as this page knows. The next look at the bridge corrects that. */
     S.live = { state: 'idle' };
-    if (!answer) backHome('Plume could not reach plume gui. Is it still running in your terminal?');
+    if (!answer) backHome('This page could not reach Plume. If it has closed, open it again.');
     else if (answer.status === 400 && answer.doc && answer.doc.field === 'style') { drawStyle(); backHome(answer.doc.error); }
     else if (answer.status === 400 && answer.doc && answer.doc.error) backHome(answer.doc.error, true);
     else backHome('The take did not start.');
@@ -1537,7 +1537,7 @@ async function stopTake(ev) {
     if (err.status === 401) { problem(err); return; }
     S.liveLost = true;
     if (S.screen === 'live') drawLive();
-    else if (S.screen === 'home') { S.homeNote = 'That did not reach plume gui. plume stop in a terminal still ends the take.'; drawHomeState(); }
+    else if (S.screen === 'home') { S.homeNote = 'That did not reach Plume. If it has closed, open it again and press Stop it.'; drawHomeState(); }
   }
 }
 async function sendCue(cue) {

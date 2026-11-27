@@ -238,12 +238,21 @@ def test_the_line_on_home_says_what_start_will_use(tmp_path):
 def test_a_tab_with_no_key_is_told_why_and_how_to_get_one(tmp_path):
     words = run_js(tmp_path, "session", body="return session.lostWords(false);")
     assert "session" not in words["title"].lower()
-    assert "tab" in words["text"] and "plume gui url" in words["text"]
+    assert "tab" in words["text"] and "open Plume again" in words["text"]
 
 
 def test_a_stale_key_is_told_why_and_how_to_get_one(tmp_path):
     words = run_js(tmp_path, "session", body="return session.lostWords(true);")
-    assert "restarted" in words["text"] and "plume gui url" in words["text"]
+    assert "restarted" in words["text"] and "open Plume again" in words["text"]
+
+
+def test_no_page_script_sends_the_player_to_a_terminal():
+    """The page's own words give a next step inside the app."""
+    static = Path(gui.__file__).with_name("gui_static")
+    for path in sorted(static.glob("*.js")):
+        text = path.read_text(encoding="utf-8")
+        for phrase in ("plume gui url", "in a terminal", "your terminal", "pip install"):
+            assert phrase not in text, f"{path.name} says {phrase!r}"
 
 
 def test_only_day_and_night_are_offered():

@@ -678,7 +678,7 @@ def test_a_start_that_cannot_reach_the_bridge_says_so(tmp_path, docs):
         page.down = true;
         $('start').click(); await page.settle();
         return {{ ...{LOOK}, note: $('home-note').textContent }};""")
-    assert out["screen"] == "home" and "still running" in out["note"]
+    assert out["screen"] == "home" and "open it again" in out["note"] and "terminal" not in out["note"]
 
 
 def test_a_lost_key_on_start_says_how_to_get_a_new_link(tmp_path, docs):
@@ -686,7 +686,7 @@ def test_a_lost_key_on_start_says_how_to_get_a_new_link(tmp_path, docs):
         page.replies.start = [401, {{ error: 'no' }}];
         $('start').click(); await page.settle();
         return {{ ...{LOOK}, text: $('problem-text').textContent }};""")
-    assert out["screen"] == "problem" and "plume gui url" in out["text"]
+    assert out["screen"] == "problem" and "open Plume again" in out["text"]
 
 
 def test_an_answer_from_before_start_cannot_land_on_the_old_take(tmp_path, docs):

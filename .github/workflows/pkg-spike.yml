@@ -25,9 +25,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Mac (both chips) and Windows ran green at 230f8b2 and c9e864e.  While the window check is
-        # being worked on, only Linux runs here: the Mac runners are shared and scarce.
-        os: [ubuntu-latest]
+        os: [ubuntu-latest, windows-latest, macos-latest, macos-15-intel]
     env:
       PYTHONUNBUFFERED: "1"
       PYTHONUTF8: "1"

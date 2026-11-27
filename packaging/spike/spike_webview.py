@@ -76,7 +76,7 @@ PAGE_SCRIPT = r"""
       out.upload.file_input = box ? { type: box.type, accept: box.accept } : null;
       await post('/api/video/cancel', JSON.stringify({ take: id })).catch(() => null);
       out.audio = {};
-      for (const track of ['together', 'human']) {
+      for (const track of ['human', 'machine']) {
         const a = new Audio('/api/take/' + where + '/audio/' + track + '?k=' + key());
         a.muted = true; a.volume = 0; a.preload = 'auto';
         const got = await Promise.race([
@@ -139,7 +139,8 @@ def _judge(out: dict, folder: Path, revealed: list) -> None:
         **audio,
         "audio_requests": [r for r in RESULT["responses"] if "/audio/" in r["path"]],
         "pass": bool(audio) and all(plays(got) for got in audio.values()),
-        "note": "play() here has no click behind it; in the app a person clicks Listen"}
+        "note": "muted, with no click behind play(); the two tracks as files, since a made-up take "
+                "has no both-together stream"}
     bridge = out.get("bridge") or {}
     checks["no JS bridge"] = {**bridge, "pass": bool(bridge) and not bridge.get("api_names"),
                               "note": "no js_api is passed; what the toolkit injects by itself is listed"}

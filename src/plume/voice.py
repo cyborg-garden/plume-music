@@ -30,7 +30,7 @@ import numpy as np
 import soundfile as sf
 from scipy.signal import resample_poly
 
-from . import oscompat
+from . import childproc, oscompat
 from .looper import _LOOP_WORD
 
 #: The same model, whisper-large-v3-turbo, packaged for each backend.  mlx-whisper
@@ -386,7 +386,7 @@ class Band:
             self._proc = self._popen(
                 # After "--" a prompt is only ever a prompt.  Before the flags, one
                 # spelled "--max-minutes=0" would turn off the session cap.
-                [sys.executable, "-m", "plume", "lead", "--tap-start",
+                [*childproc.plume_argv(), "lead", "--tap-start",
                  "--input", "acoustic", "--record", f"{self.dir}/",
                  "--seed", str(int(time.time()) % 100000), *self._extra, "--", self._prompt],
                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=log, env=env,
@@ -438,7 +438,7 @@ def run(*, prompt: str, base=".", extra_args=(), poll_s: float = 0.25, write=pri
         elif name == "restart":
             loop.retarget(band.start())
         else:
-            sent = subprocess.run([sys.executable, "-m", "plume", "cue", _CUES[name], "--source", "voice"],
+            sent = subprocess.run([*childproc.plume_argv(), "cue", _CUES[name], "--source", "voice"],
                                   capture_output=True, check=False)
             if sent.returncode != 0:
                 write(json.dumps({"cue_failed": name}))

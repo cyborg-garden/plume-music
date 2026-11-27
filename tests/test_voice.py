@@ -465,8 +465,8 @@ def _thread_band(fake, patched):
     class Proc:
         def __init__(self, cmd, **kw):
             self.cmd = cmd
-            assert cmd[1:3] == ["-m", "plume"]
-            self.argv = cmd[3:]
+            assert cmd[1:4] == ["-P", "-m", "plume"]
+            self.argv = cmd[4:]
             self.code = None
             self.thread = threading.Thread(target=self._go, daemon=True)
             self.thread.start()

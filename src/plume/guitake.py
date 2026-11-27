@@ -67,6 +67,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
+from . import childproc
 from . import inputfx as _inputfx
 from . import oscompat
 from .compose import parse_prompt
@@ -179,9 +180,6 @@ _MAX_TEXT = 80
 _LOG_TAIL_BYTES = 8192
 
 CUES = ("busier", "sparser")
-#: Runs this plume whatever folder the bridge was started from: without -P, ``-m`` puts that
-#: folder first on the path, and a plume.py in it would run with the click's consent.
-PLUME_CHILD = (sys.executable, "-P", "-m", "plume")
 _TYPED_TONIC = re.compile(r"[A-Ga-g][#sb]?")
 #: No word about headphones: a page can be hours old, on other gear.  That is said to setup, and
 #: saved there, where a change in what is plugged in can take it back.
@@ -285,7 +283,7 @@ def default_lister() -> list[dict]:
     if _under_pytest():
         raise TakeError("the real device lister does not run under pytest")
     try:
-        done = subprocess.run([*PLUME_CHILD, "inputs", "--json"],
+        done = subprocess.run([*childproc.plume_argv(), "inputs", "--json"],
                               stdin=subprocess.DEVNULL, capture_output=True, check=False,
                               timeout=LIST_TIMEOUT_S, **oscompat.detached_kwargs())
         doc = json.loads(done.stdout)
@@ -332,7 +330,7 @@ def default_meter(name: str, seconds: float, cancelled: threading.Event) -> dict
     try:
         proc = subprocess.Popen(
             # Glued to its flag, so a name cannot read as a flag of its own.
-            [*PLUME_CHILD, "inputs", f"--meter={name}", f"--seconds={seconds}", "--json"],
+            [*childproc.plume_argv(), "inputs", f"--meter={name}", f"--seconds={seconds}", "--json"],
             stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             env={**os.environ, AUDIO_CONSENT_ENV: "1"}, **oscompat.detached_kwargs())
     except OSError:
@@ -920,7 +918,7 @@ def build_argv(route: Route, folder: Path, *, key: str | None, style: str | None
         raise ValueError("midi must be one of " + ", ".join(MIDI_CHOICES))
     if instrument is not None and instrument not in _instrument.INSTRUMENTS:
         raise ValueError("instrument must be one of " + ", ".join(_instrument.INSTRUMENTS))
-    argv = [*PLUME_CHILD, "lead", "--tap-start", "--detect",
+    argv = [*childproc.plume_argv(), "lead", "--tap-start", "--detect",
             f"--record={folder}/", f"--seed={int(seed)}"]
     if route.mode == "direct":
         argv += [f"--device={route.name}", f"--input-channel={route.channel}", "--direct"]

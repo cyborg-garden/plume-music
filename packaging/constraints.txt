@@ -4,22 +4,29 @@
 #
 # Covers Python 3.11 and 3.12 on:
 #   macOS 14 or newer on Apple Silicon
+#   macOS 13 or newer on an Intel Mac
 #   Linux x86_64 with glibc 2.28 or newer
 #   Windows x64
-# Anywhere else, install without -c.  onnxruntime 1.32.0 has no wheel for an
-# Intel Mac or for macOS 13 and older, and python-rtmidi 1.5.8 has none for
-# Python 3.13 or newer, so an install with these pins fails there.
+# Anywhere else, install without -c.  python-rtmidi 1.5.8 has no wheel for
+# Python 3.13 or newer, and onnxruntime 1.32.0 has none for macOS 13 on Apple
+# Silicon, so an install with these pins fails there.
 #
 # These are the versions the `tests` workflow installs on a green run on main,
 # on macOS, Linux and Windows.  numpy and scipy have one pin per Python, because
 # their current releases need Python 3.12.
 #
+# The exception is an Intel Mac.  It gets onnxruntime 1.23.2, the newest release
+# with an Intel Mac wheel, and the four packages it brings that 1.32.0 does not.
+# No `tests` run has used those five; the `constraints` workflow installs and
+# imports them on an Intel runner, and that is all.  Run the suite on an Intel
+# Mac before a build for one ships.
+#
 # To move a pin: find a green `tests` run on main, read the version from its
 # install log on all three systems, and write it here.  Then run
 # `python packaging/check_wheels.py`, which asks PyPI whether every pin has a
 # wheel for every system and Python listed above, and install with the pins
-# using `--only-binary :all:` on each of those systems.  A version no green run
-# has used does not belong in this file.
+# using `--only-binary :all:` on each of those systems.  Apart from the Intel Mac
+# lines, a version no green run has used does not belong in this file.
 
 # Direct dependencies.
 numpy==2.4.6 ; python_version < "3.12"
@@ -33,7 +40,9 @@ imageio-ffmpeg==0.6.0
 sounddevice==0.5.6
 mido==1.3.3
 python-rtmidi==1.5.8
-onnxruntime==1.32.0
+onnxruntime==1.32.0 ; sys_platform != "darwin"
+onnxruntime==1.32.0 ; sys_platform == "darwin" and platform_machine == "arm64"
+onnxruntime==1.23.2 ; sys_platform == "darwin" and platform_machine == "x86_64"
 
 # What those bring with them.
 cffi==2.1.1
@@ -42,3 +51,9 @@ flatbuffers==25.12.19
 protobuf==7.36.2
 packaging==26.3
 typing-extensions==4.16.0
+
+# What onnxruntime 1.23.2 brings with it, on an Intel Mac only.
+coloredlogs==15.0.1 ; sys_platform == "darwin" and platform_machine == "x86_64"
+humanfriendly==10.0 ; sys_platform == "darwin" and platform_machine == "x86_64"
+sympy==1.14.0 ; sys_platform == "darwin" and platform_machine == "x86_64"
+mpmath==1.3.0 ; sys_platform == "darwin" and platform_machine == "x86_64"

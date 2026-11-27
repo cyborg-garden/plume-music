@@ -25,21 +25,41 @@ def cw():
 ONNX = [f"onnxruntime-1.32.0-cp{v}-cp{v}-{p}.whl"
         for v in ("311", "312", "313")
         for p in ("macosx_14_0_arm64", "manylinux_2_28_x86_64", "win_amd64")]
+# onnxruntime 1.23.2: the newest with an Intel Mac wheel.
+ONNX_INTEL = [f"onnxruntime-1.23.2-cp{v}-cp{v}-{p}.whl"
+              for v in ("311", "312")
+              for p in ("macosx_13_0_arm64", "macosx_13_0_x86_64", "manylinux_2_27_x86_64", "win_amd64")]
 # python-rtmidi 1.5.8: nothing newer than cp312.
 RTMIDI = [f"python_rtmidi-1.5.8-cp{v}-cp{v}-{p}.whl"
           for v in ("311", "312")
           for p in ("macosx_11_0_arm64", "macosx_10_9_x86_64", "manylinux_2_28_x86_64", "win_amd64")]
 
 
+SPLIT = ('onnxruntime==1.32.0 ; sys_platform != "darwin"\n'
+         'onnxruntime==1.32.0 ; sys_platform == "darwin" and platform_machine == "arm64"\n'
+         'onnxruntime==1.23.2 ; sys_platform == "darwin" and platform_machine == "x86_64"\n')
+
+
 def test_covered_systems_pass(cw):
-    pins = [cw.Pin("onnxruntime", "1.32.0"), cw.Pin("python-rtmidi", "1.5.8")]
-    files = {("onnxruntime", "1.32.0"): ONNX, ("python-rtmidi", "1.5.8"): RTMIDI}
+    pins = cw.read_pins(SPLIT + "python-rtmidi==1.5.8\n")
+    files = {("onnxruntime", "1.32.0"): ONNX, ("onnxruntime", "1.23.2"): ONNX_INTEL,
+             ("python-rtmidi", "1.5.8"): RTMIDI}
     assert cw.gaps(pins, files) == []
 
 
+def test_one_onnxruntime_pin_for_every_mac_is_a_gap(cw):
+    pins = [cw.Pin("onnxruntime", "1.32.0")]
+    out = cw.gaps(pins, {("onnxruntime", "1.32.0"): ONNX}, pythons=("3.12",))
+    assert out == ["onnxruntime==1.32.0: no wheel for Python 3.12 on macOS 13 or newer on an Intel Mac"]
+
+
+def _system(cw, label):
+    return next(s for s in cw.SYSTEMS if s.label == label)
+
+
 def test_intel_mac_and_macos_13_are_gaps(cw):
-    intel = cw.System("Intel Mac", "macos", "x86_64", (14, 0))
-    old = cw.System("macOS 13", "macos", "arm64", (13, 0))
+    intel = cw.System("Intel Mac", "macos", "x86_64", (14, 0), "darwin", "x86_64")
+    old = cw.System("macOS 13", "macos", "arm64", (13, 0), "darwin", "arm64")
     out = cw.gaps([cw.Pin("onnxruntime", "1.32.0")], {("onnxruntime", "1.32.0"): ONNX},
                   pythons=("3.12",), systems=(intel, old))
     assert out == ["onnxruntime==1.32.0: no wheel for Python 3.12 on Intel Mac",
@@ -54,29 +74,70 @@ def test_python_313_is_a_gap_for_rtmidi(cw):
 
 
 def test_pure_python_and_abi3_wheels_count(cw):
-    win = cw.SYSTEMS[2]
+    win = _system(cw, "Windows x64")
     assert cw.has_wheel(["mido-1.3.3-py3-none-any.whl"], "3.12", win)
     assert cw.has_wheel(["protobuf-7.36.2-cp310-abi3-win_amd64.whl"], "3.12", win)
     assert not cw.has_wheel(["x-1.0-cp310-cp310-win_amd64.whl"], "3.12", win)
     assert not cw.has_wheel(["x-1.0.tar.gz"], "3.12", win)
 
 
-def test_legacy_manylinux_tags(cw):
-    linux = cw.SYSTEMS[1]
+def test_pep600_manylinux_tags(cw):
+    linux = _system(cw, "Linux x86_64 with glibc 2.28 or newer")
     assert cw.has_wheel(["cffi-2.1.1-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.whl"],
                         "3.11", linux)
     assert not cw.has_wheel(["x-1-cp311-cp311-manylinux_2_34_x86_64.whl"], "3.11", linux)
 
 
+def test_legacy_manylinux_tags(cw):
+    """A wheel tagged only with a legacy manylinux name, no PEP 600 tag beside it."""
+    linux = _system(cw, "Linux x86_64 with glibc 2.28 or newer")
+    old = cw.System("glibc 2.12", "linux", "x86_64", (2, 12), "linux", "x86_64")
+    assert cw.has_wheel(["x-1-cp311-cp311-manylinux2014_x86_64.whl"], "3.11", linux)
+    assert cw.has_wheel(["x-1-cp311-cp311-manylinux2010_x86_64.whl"], "3.11", old)
+    assert not cw.has_wheel(["x-1-cp311-cp311-manylinux2014_x86_64.whl"], "3.11", old)
+    assert not cw.has_wheel(["x-1-cp311-cp311-manylinux2014_aarch64.whl"], "3.11", linux)
+
+
 def test_markers_pick_one_pin_per_python(cw):
     pins = cw.read_pins('numpy==2.4.6 ; python_version < "3.12"\nnumpy==2.5.5 ; python_version >= "3.12"\n')
-    assert [p.version for p in pins if p.applies("3.11")] == ["2.4.6"]
-    assert [p.version for p in pins if p.applies("3.12")] == ["2.5.5"]
+    win = _system(cw, "Windows x64")
+    assert [p.version for p in pins if p.applies("3.11", win)] == ["2.4.6"]
+    assert [p.version for p in pins if p.applies("3.12", win)] == ["2.5.5"]
 
 
-def test_unreadable_marker_is_refused(cw):
+def test_platform_markers_pick_the_intel_mac_pin(cw):
+    pins = cw.read_pins(SPLIT)
+    picked = {s.label: [p.version for p in pins if p.applies("3.12", s)] for s in cw.SYSTEMS}
+    assert picked == {
+        "macOS 14 or newer on Apple Silicon": ["1.32.0"],
+        "macOS 13 or newer on an Intel Mac": ["1.23.2"],
+        "Linux x86_64 with glibc 2.28 or newer": ["1.32.0"],
+        "Windows x64": ["1.32.0"],
+    }
+
+
+@pytest.mark.parametrize("marker", [
+    'platform_release == "23"',  # a variable the check does not model
+    'sys_platform == "darwin" or platform_machine == "x86_64"',  # `or`
+    'python_version == "3.12"',  # an operator it does not model
+])
+def test_unreadable_marker_is_refused(cw, marker):
     with pytest.raises(ValueError):
-        cw.read_pins('numpy==2.5.5 ; sys_platform == "darwin"\n')
+        cw.read_pins(f"numpy==2.5.5 ; {marker}\n")
+
+
+def test_pin_counts_catch_a_hole_and_a_double(cw):
+    hole = cw.read_pins(
+        'onnxruntime==1.32.0 ; sys_platform != "darwin"\n'
+        'onnxruntime==1.23.2 ; sys_platform == "darwin" and platform_machine == "x86_64"\n')
+    out = cw.pin_counts(hole, pythons=("3.12",), direct=("onnxruntime",))
+    assert out == ["onnxruntime: no pin for Python 3.12 on macOS 14 or newer on Apple Silicon"]
+    double = cw.read_pins('mido==1.3.3\nmido==1.3.2 ; sys_platform == "win32"\n')
+    out = cw.pin_counts(double, pythons=("3.12",), direct=("mido",))
+    assert out == ["mido: 2 pins for Python 3.12 on Windows x64"]
+    # A package pinned for one system only is fine when nothing asks for it by name.
+    assert cw.pin_counts(cw.read_pins('sympy==1.14.0 ; sys_platform == "darwin"\n'),
+                         direct=()) == []
 
 
 def test_header_lists_what_the_check_covers(cw):
@@ -87,4 +148,6 @@ def test_header_lists_what_the_check_covers(cw):
     for system in cw.SYSTEMS:
         assert system.label in header
     pins = cw.read_pins(text)  # every line parses
-    assert {p.name for p in pins} >= {"numpy", "onnxruntime", "python-rtmidi"}
+    assert {p.name for p in pins} >= set(cw.DIRECT)
+    assert cw.pin_counts(pins) == []
+

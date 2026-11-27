@@ -13,7 +13,7 @@ on:
     paths: ["packaging/constraints.txt", "packaging/check_wheels.py", "pyproject.toml", ".github/workflows/constraints.yml"]
   push:
     branches: [main]
-    paths: ["packaging/constraints.txt", "packaging/check_wheels.py", "pyproject.toml"]
+    paths: ["packaging/constraints.txt", "packaging/check_wheels.py", "pyproject.toml", ".github/workflows/constraints.yml"]
 
 permissions:
   contents: read

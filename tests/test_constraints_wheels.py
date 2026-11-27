@@ -3,6 +3,7 @@
 Offline: the file lists are the shapes PyPI gives for these releases.
 """
 import importlib.util
+import re
 import sys
 from pathlib import Path
 
@@ -151,3 +152,12 @@ def test_header_lists_what_the_check_covers(cw):
     assert {p.name for p in pins} >= set(cw.DIRECT)
     assert cw.pin_counts(pins) == []
 
+
+def test_workflow_runs_on_the_same_paths_for_pr_and_main():
+    """An edit that triggers the check on a PR triggers it again once on main."""
+    text = (ROOT / ".github" / "workflows" / "constraints.yml").read_text(encoding="utf-8")
+    on = text[text.index("\non:"): text.index("\npermissions:")]
+    pr = re.search(r"pull_request:\s*\n\s*paths:\s*(\[.*\])", on).group(1)
+    push = re.search(r"push:\s*\n(?:.*\n)*?\s*paths:\s*(\[.*\])", on).group(1)
+    assert pr == push
+    assert ".github/workflows/constraints.yml" in pr

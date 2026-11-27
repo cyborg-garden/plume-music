@@ -3849,26 +3849,36 @@ class CueServer:
 
     def _bind_unix(self) -> socket.socket:
         s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        # bind() makes the file, with the mode the umask leaves.  Mask it for the
+        # bind so the socket is owner-only from its first instant.  The umask
+        # belongs to the whole process: a file another thread makes in this window
+        # comes out narrower than it asked for, never wider.
+        saved = os.umask(0o177)
         try:
-            s.bind(self.path)
-        except OSError:
-            if _socket_is_live(self.path):
-                s.close()
-                raise RealtimeError(
-                    f"another plume session is already listening at "
-                    f"{self.path} — end it, or set {SOCKET_ENV} to a "
-                    f"different path") from None
-            try:
-                os.unlink(self.path)
-            except OSError:
-                pass
             try:
                 s.bind(self.path)
-            except OSError as e:
-                s.close()
-                raise RealtimeError(
-                    f"cannot open the cue socket at {self.path}: {e}") from None
+            except OSError:
+                if _socket_is_live(self.path):
+                    s.close()
+                    raise RealtimeError(
+                        f"another plume session is already listening at "
+                        f"{self.path} — end it, or set {SOCKET_ENV} to a "
+                        f"different path") from None
+                try:
+                    os.unlink(self.path)
+                except OSError:
+                    pass
+                try:
+                    s.bind(self.path)
+                except OSError as e:
+                    s.close()
+                    raise RealtimeError(
+                        f"cannot open the cue socket at {self.path}: {e}") from None
+        finally:
+            os.umask(saved)
         # Before it listens.  Linux /tmp is shared, and this socket can stop a take.
+        # The mask above already made it owner-only; this holds on a system whose
+        # bind() ignores the umask.
         try:
             os.chmod(self.path, 0o600)
         except OSError as e:

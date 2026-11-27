@@ -28,6 +28,7 @@ import io
 import json
 import os
 import signal
+import socket
 import stat
 import subprocess
 import sys
@@ -2006,6 +2007,59 @@ class TestTheControlPathsAreHers:
         old = os.umask(0o022)
         try:
             with realtime.CueServer(path):
+                assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
+        finally:
+            os.umask(old)
+
+    @needs_posix_modes
+    def test_the_cue_socket_is_owner_only_from_the_bind(self, monkeypatch):
+        """With the chmod taken away, the mode is the one bind() gave the file."""
+        path = short_sock("born")
+        monkeypatch.setattr(realtime.os, "chmod", lambda *a, **k: None)
+        old = os.umask(0o000)
+        try:
+            with realtime.CueServer(path):
+                assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
+        finally:
+            os.umask(old)
+
+    @needs_posix_modes
+    def test_a_stale_cue_socket_is_replaced_owner_only_from_the_bind(self, monkeypatch):
+        path = short_sock("stale")
+        dead = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        dead.bind(path)
+        dead.close()                       # the file stays; nobody is listening
+        os.chmod(path, 0o666)
+        monkeypatch.setattr(realtime.os, "chmod", lambda *a, **k: None)
+        old = os.umask(0o000)
+        try:
+            with realtime.CueServer(path):
+                assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
+        finally:
+            os.umask(old)
+
+    @needs_posix_modes
+    def test_the_bind_puts_the_umask_back(self):
+        path = short_sock("mask")
+        old = os.umask(0o027)
+        try:
+            with realtime.CueServer(path):
+                pass
+            after = os.umask(0o027)
+            assert after == 0o027
+        finally:
+            os.umask(old)
+
+    @needs_posix_modes
+    def test_a_refused_bind_puts_the_umask_back(self):
+        path = short_sock("busy")
+        old = os.umask(0o027)
+        try:
+            with realtime.CueServer(path):
+                with pytest.raises(realtime.RealtimeError, match="already listening"):
+                    realtime.CueServer(path).start()
+                after = os.umask(0o027)
+                assert after == 0o027
                 assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
         finally:
             os.umask(old)

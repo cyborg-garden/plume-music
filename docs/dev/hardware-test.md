@@ -36,6 +36,9 @@ winget install --id Git.Git -e
 powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
 ```
 
+If Windows asks you to agree to terms, or to allow changes to your computer, say yes. If
+it says it does not know `winget`, stop here and send that back.
+
 Linux (Debian, Ubuntu and their relatives):
 
 ```
@@ -62,8 +65,12 @@ It takes a minute or two and ends with `Installed 1 executable: plume`.
 plume doctor
 ```
 
-The last line says `all good`. If it says `problems found`, or the terminal says it does
-not know `plume`, stop here and send back everything on the screen.
+It prints a list of checks, each starting with `ok`, and the last line says `all good`.
+If any line starts with `warn` or `ERR`, or the last line says `problems found`, or the
+terminal says it does not know `plume`, stop here and send back everything on the screen.
+
+A `warn` on the `sounddevice` line means the sound part did not load. On Linux that is
+the PortAudio library from step 1.
 
 ## Part 2: your devices (about 3 minutes)
 
@@ -143,10 +150,11 @@ Copy this, fill it in, and reply to whoever sent you this page.
 ```
 System (for example Windows 11, or Ubuntu 24.04):
 Laptop or desktop:
+Windows only, is it an ARM computer: yes / no / not sure
 Device list from step 5 (names as shown, your own name removed):
 Device you played into, and what was plugged into it:
 Where the band came out (headphones or speakers, wired or wireless):
-Step 4, plume doctor: all good / problems found
+Step 4, plume doctor: all ok / a warn or ERR line (paste it) / problems found
 Step 6, the 5-second listen: worked / error (paste it)
 Did you have to change the device to 48000 Hz: yes / no / could not
 Step 8, Start: worked / the page said (paste its words)

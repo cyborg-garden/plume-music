@@ -32,6 +32,10 @@ def _bind_without_reverse_lookup():
 def main():
     argv = _own_argv(sys.argv[1:])
     _bind_without_reverse_lookup()
+    if argv[:1] == ["--spike-webview"]:
+        import spike_webview
+
+        return spike_webview.run()
     if argv[:1] and argv[0].startswith("--spike-"):
         import spike_selftest
 

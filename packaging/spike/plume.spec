@@ -17,6 +17,8 @@ HERE = Path(SPECPATH)
 SRC = HERE.parent.parent / "src"
 PKG = SRC / "plume"
 WITH_FFMPEG = os.environ.get("PLUME_SPIKE_FFMPEG", "1") != "0"
+# PLUME_SPIKE_WEBVIEW=1 adds pywebview and the window check (macOS, second step).
+WITH_WEBVIEW = os.environ.get("PLUME_SPIKE_WEBVIEW", "0") == "1"
 
 # plume imports its own modules by name (cli._import, plume.__getattr__), which the
 # analysis cannot follow.  Take every one.
@@ -59,7 +61,8 @@ a = Analysis(
     pathex=[str(SRC), str(HERE)],
     binaries=binaries,
     datas=datas,
-    hiddenimports=[*plume_modules, *[m for m in third_party if m not in missing], "spike_selftest"],
+    hiddenimports=[*plume_modules, *[m for m in third_party if m not in missing], "spike_selftest",
+                   *(["spike_webview", "webview"] if WITH_WEBVIEW else [])],
     runtime_hooks=[str(HERE / "rth_portaudio.py")],
     # pytest: plume refuses to start a real child when pytest is loaded.  The rest is
     # weight nothing here uses.

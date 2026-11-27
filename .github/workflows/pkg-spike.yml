@@ -118,6 +118,16 @@ jobs:
             done
           done
 
+      # A runner has no sound server.  These two say whether the audio library loads
+      # there at all, outside the bundle and inside it, before anything is removed.
+      - name: Audio library with the system's PortAudio (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          python -c "import sounddevice as sd; print('RESULT not frozen, system PortAudio: loads,', [a['name'] for a in sd.query_hostapis()])" \
+            || echo "RESULT not frozen, system PortAudio: does not load"
+          "dist/ffmpeg/$REL" inputs --json > inputs-before.json || true
+          echo "RESULT frozen, system PortAudio still installed: $(head -c 300 inputs-before.json)"
+
       # The build machine's own PortAudio and libsndfile go, so the bundle is shown to
       # carry what it needs.
       - name: Remove the system libraries (Linux)
@@ -150,7 +160,67 @@ jobs:
           unset PLUME_ALLOW_AUDIO
           "dist/noffmpeg/$REL" --spike-selftest --ci --expect-ffmpeg=0
 
+      # The same self-test with a sound server running: PulseAudio with a null sink,
+      # which is no device and makes no sound.
+      - name: Self-test with a sound server (Linux)
+        if: always() && runner.os == 'Linux'
+        run: |
+          unset PLUME_ALLOW_AUDIO
+          sudo apt-get install -y --no-install-recommends pulseaudio
+          ldconfig -p | grep -E "portaudio" || echo "still no system PortAudio"
+          pulseaudio --start --exit-idle-time=-1 --load="module-null-sink" || true
+          sleep 2
+          "dist/ffmpeg/$REL" --spike-selftest --ci --expect-ffmpeg=1
+
       - name: doctor, from the bundle
         if: always()
         run: |
           "dist/ffmpeg/$REL" doctor || true
+
+  # Second step: the page inside a pywebview window, on a Mac runner.  The window's one
+  # sound is muted and at volume zero, and a runner has no audio device.
+  webview:
+    name: webview / macos-latest
+    runs-on: macos-latest
+    timeout-minutes: 30
+    env:
+      PYTHONUNBUFFERED: "1"
+      PYTHONUTF8: "1"
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+        with:
+          python-version: "3.12"
+
+      - name: Install (wheels only)
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --only-binary=:all: numpy scipy soundfile sounddevice mido python-rtmidi \
+            "onnxruntime>=1.17" "imageio-ffmpeg>=0.6.0,<0.7" "pyinstaller==6.22.3"
+          python -m pip install pywebview
+          python -m pip install --no-deps -e .
+          python -m pip list | grep -i -E "webview|pyobjc|bottle|proxy"
+
+      - name: Window check, not frozen
+        run: |
+          unset PLUME_ALLOW_AUDIO
+          python packaging/spike/spike_webview.py
+
+      - name: Build with the window toolkit
+        if: always()
+        env:
+          PLUME_SPIKE_WEBVIEW: "1"
+        run: |
+          python -m PyInstaller packaging/spike/plume.spec --noconfirm --distpath dist/webview --workpath build/webview 2>&1 | tee build-webview.log | grep -E "WARNING|ERROR|spike:|Build complete" || true
+          codesign --force --deep --options runtime --entitlements packaging/spike/entitlements-nolibval.plist -s - dist/webview/Plume.app
+          python packaging/spike/measure.py dist/webview/Plume.app
+
+      - name: Window check, frozen and signed
+        if: always()
+        run: |
+          unset PLUME_ALLOW_AUDIO
+          dist/webview/Plume.app/Contents/MacOS/plume --spike-webview

@@ -1,6 +1,6 @@
 """Music theory: notes, keys, chords, roman numerals, voicing.
 
-SPEC.md section 1. Pure python, no numpy needed here.
+docs/design/SPEC.md section 1. Pure python, no numpy needed here.
 """
 from __future__ import annotations
 

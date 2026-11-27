@@ -3,7 +3,7 @@
 ``Mind.plan_bar`` is called once per predicted bar boundary (or once per second
 while the beat tracker is unlocked, with ``human=None``) and returns a
 :class:`BarPlan` for the *upcoming* bar.  It encodes the negotiation behaviors
-from the jazz research (RESEARCH.md interaction spec / the original research sweep
+from the jazz research (docs/design/RESEARCH.md interaction spec / the original research sweep
 jazz-negotiation recommendations):
 
 Enter like a sideman (enter-late gate)
@@ -99,7 +99,7 @@ Commitment (v1.4 AMENDMENT — the flapping fix; SPEC-V1 section 4)
 
 Reciprocal cueing — announce before you commit (v1.4)
     "if it does really commit to something it has to also give the other
-    musician a chance to adapt to that as well."  RESEARCH.md's anticipation
+    musician a chance to adapt to that as well."  docs/design/RESEARCH.md's anticipation
     protocol, and SPEC-V2 section 2's "Announce it" rule — which existed only
     for v2 FORM changes (``FormPlan.announce``) and not for the thing the
     player actually noticed, the machine appearing and vanishing.
@@ -186,7 +186,7 @@ _ARC_MAX_DB = 6.0
 # which is also how long a player will busk through a patch they cannot hear.
 _UNLOCK_GRACE_BARS = 4
 # The gesture the renderer should use to voice each announcement.  This module
-# does not render; it names the intent (P1-E / RESEARCH.md reciprocal cueing).
+# does not render; it names the intent (P1-E / docs/design/RESEARCH.md reciprocal cueing).
 _ANNOUNCE_GESTURE: dict[str, str] = {
     "entry": "pickup", "exit": "fill", "texture": "swell",
 }
@@ -278,7 +278,7 @@ class BarPlan:
     """The mind's decision for the UPCOMING bar.
 
     The first seven fields are the frozen v1 contract.  The three
-    ``announce*`` fields are v1.4 (P1-E / RESEARCH.md reciprocal cueing) and
+    ``announce*`` fields are v1.4 (P1-E / docs/design/RESEARCH.md reciprocal cueing) and
     are defaulted, so every existing keyword construction still works.  They
     describe a change landing on the bar AFTER ``bar`` — the machine telling
     the human what it is about to do, so they can adapt to it.  The renderer

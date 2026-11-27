@@ -170,10 +170,10 @@ None of these rules is a convention anyone has to remember:
 ## The papers behind the play
 
 - **[DREAM.md](DREAM.md):** why this exists, and the sideman ethic
-- **[RESEARCH.md](RESEARCH.md):** the evidence base (entrainment science, 40 years of
+- **[RESEARCH.md](docs/design/RESEARCH.md):** the evidence base (entrainment science, 40 years of
   interactive music systems, groove microtiming, LLM-tool failure modes), distilled
   from a 10-agent research sweep
-- **[SPEC.md](SPEC.md):** architecture, score model, notation grammar, API
+- **[SPEC.md](docs/design/SPEC.md):** architecture, score model, notation grammar, API
 
 ## Roadmap
 

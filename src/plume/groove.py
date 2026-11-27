@@ -1,4 +1,4 @@
-"""Groove: swing, per-role timing bias, humanization. SPEC.md section 4.
+"""Groove: swing, per-role timing bias, humanization. docs/design/SPEC.md section 4.
 
 One MPC-style swing knob (Roger Linn definition: delay every even-numbered
 16th; 50% = straight, 66% = exact triplet) plus a per-role timing-bias table

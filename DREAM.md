@@ -150,7 +150,7 @@ Nobody notices a new player entered. The music got wider.
   the negotiation layer, entrances and exits, key following for voice/guitar.
 - **v2 — Who's holding time.** ✅ Lead mode: plume starts from a prompt and
   *you* join *it*. Authority as a dial, mutual entrainment (it concedes tempo
-  when you push), role handoff, cues mid-song. See SPEC-V2.md.
+  when you push), role handoff, cues mid-song. See docs/design/SPEC-V2.md.
 
   Two lessons from building it are worth carrying forward, because both are the
   v1 lesson wearing new clothes. **One: a partner must listen to your playing,

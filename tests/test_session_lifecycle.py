@@ -1850,7 +1850,7 @@ class TestTheTransportActuallyMasksItself:
     def test_headphones_are_still_the_no_op_they_should_be(
             self, material, isolated_registry, spy_masker):
         """No bleed, nothing to mask.  The mask must cost nothing here — it is
-        the recommended configuration (RESEARCH.md) and the common one."""
+        the recommended configuration (docs/design/RESEARCH.md) and the common one."""
         sock = short_sock("mask-hp")
         fake = fake_audio(material["loud"], rate_x=14.0)     # bleed_db=None
         stop_when_running(sock, after=5.0)

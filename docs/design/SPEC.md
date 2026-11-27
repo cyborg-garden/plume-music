@@ -1,5 +1,7 @@
 # SPEC — plume v0
 
+> Historical build contract, not current behaviour. For what Plume does today, read the README and `docs/PLAYING.md`.
+
 v0 = **prompted mode end-to-end**: prompt → session (JSON score) → deterministic
 WAV render → analysis → iterate, via an LLM-native CLI. Live mode (v1) builds on
 the same score model; its interaction spec lives in RESEARCH.md and is *not*

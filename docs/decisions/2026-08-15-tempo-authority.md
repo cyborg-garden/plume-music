@@ -43,7 +43,7 @@
 SPEC-V2 made **mutual entrainment the default** in lead mode: the human pushes,
 the machine speeds up to meet them. Juniper's objection: a machine holding the
 groove should **not** chase the human's timing *errors*. That is correct, and it
-is what the research base already said before I wrote the spec — RESEARCH.md
+is what the research base already said before I wrote the spec — docs/design/RESEARCH.md
 records Band-in-a-Box's virtue verbatim: *"an unshakeable clock is a feature,
 not a limitation; musicians adapt to a trustworthy machine."* I quoted that and
 then built the opposite.

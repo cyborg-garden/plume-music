@@ -1,4 +1,4 @@
-"""Prompt -> Session composer. SPEC.md section 6.
+"""Prompt -> Session composer. docs/design/SPEC.md section 6.
 
 parse_prompt() is rule-based and never errors on free text. compose() turns a
 PromptSpec into a full Session: style blend, key/progression choice, track

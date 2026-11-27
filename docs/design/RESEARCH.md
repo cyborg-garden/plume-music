@@ -1,5 +1,7 @@
 # Research Synthesis
 
+> Historical research notes and build decisions, not current behaviour. For what Plume does today, read the README and `docs/PLAYING.md`.
+
 Ten parallel research agents, 2026-08-13. This file is the distilled version: what
 we learned and what we decided because of it. The raw findings are not published.
 

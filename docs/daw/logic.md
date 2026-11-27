@@ -9,8 +9,8 @@ GarageBand. Each claim about them carries a mark:
 - `[untested]` nobody has tried it in the app.
 - `[tested: <app version>]` someone ran it and it worked.
 
-Claims about plume itself (flags, channels, `band.mid`) are covered by plume's tests
-against a simulated port. They carry no mark.
+Plume's flags, its channels and `band.mid` are covered by plume's tests against a
+simulated port. Claims about those carry no mark. Nothing else on this page is tested.
 
 The test sheet is [logic-checklist.md](logic-checklist.md). What waits until after v1
 is in [logic-later.md](logic-later.md).
@@ -20,12 +20,14 @@ is in [logic-later.md](logic-later.md).
 - Plume plays the band. Logic makes the sound, on eight separate tracks.
 - **Plume has no record control and no arm control in Logic.** You press record, you
   press stop, and you arm the tracks, by hand.
-- **This cannot match the Ableton setup in v1.** With Ableton Live, plume can start
-  and stop recording and arm the tracks for you. Logic has no documented way for
-  another program to do that short of acting as a control surface, and plume does not
-  do that in v1.
+- **This cannot match the Ableton setup planned for v1.** Record and arm control in
+  Ableton Live is planned for v1. It is not in plume yet: the Ableton recipe in
+  [PLAYING.md](../PLAYING.md) arms tracks by hand. No such control is planned for
+  Logic in v1. `[untested]` Logic has no documented way for another program to record
+  or arm short of acting as a control surface, and plume does not do that in v1.
 - Logic's tempo does not follow plume. Plume sends no clock and no transport messages.
-- GarageBand does not take the band live. It takes the band's MIDI file after the take.
+- `[untested]` GarageBand does not take the band live. It takes the band's MIDI file
+  after the take.
 
 ## What you need
 
@@ -37,8 +39,9 @@ is in [logic-later.md](logic-later.md).
 
 ## The tracks
 
-Eight software-instrument tracks. Names and channels are the same as the Ableton
-template.
+Eight software-instrument tracks. The channels are plume's fixed map, the same for
+every DAW. The names are the ones planned for the Ableton template, which is not in
+plume yet.
 
 | Track name | MIDI channel | Part | A stock instrument to start with `[untested]` |
 | --- | --- | --- | --- |
@@ -67,8 +70,10 @@ Plume can send to one of two kinds of port.
 
 `[untested]` Which one Logic needs is the main open question. If a track set to the
 `plume` port loses that setting when the port goes away between takes, use the IAC
-Driver. If Logic's tracks listen to every port, either works. With the IAC Driver,
-keep Logic's own MIDI output off that port, or the notes loop.
+Driver. If Logic's tracks listen to every port, either works.
+
+`[untested]` With the IAC Driver, keep Logic's own MIDI output off that port, or the
+notes loop.
 
 ## Set up the project once
 
@@ -86,7 +91,7 @@ Every step here is `[untested]`.
 6. If every track plays every part, look in File > Project Settings > Recording for
    a setting that splits incoming MIDI by channel across record-enabled tracks, and
    turn it on.
-7. Save it: File > Save as Template. Name it `Plume`.
+7. Save it: File > Save as Template. Name it `Plume Band`.
 
 `[untested]` It is not known whether the template keeps the MIDI In Channel and
 record-enable settings. If it does not keep record-enable, step 5 is a step for every
@@ -94,18 +99,19 @@ session.
 
 ## Play a take
 
-1. Open the `Plume` template in Logic. Check that all eight tracks are record-enabled.
+1. Open the `Plume Band` template in Logic. Check that all eight tracks are record-enabled.
 2. Set Logic's tempo to the tempo you ask plume for. This only makes the bar lines
    match; the notes are right either way.
 3. Press record in Logic.
 4. Start plume:
 
    ```bash
-   plume lead --tap-start "lofi at 90 bpm" --midi-out virtual --midi-only --record
+   plume lead --tap-start "lofi at 90 bpm" --midi-out virtual --midi-only --record takes/
    ```
 
    `--midi-only` keeps plume's own band silent, so you hear Logic's. Leave it off to
-   hear both. Use `--midi-out IAC` if you chose the IAC Driver.
+   hear both. Use `--midi-out IAC` if you chose the IAC Driver. `--record` needs a
+   folder. Here it is `takes/`, inside the folder you run plume from.
 5. Play. When you finish, stop plume, then press stop in Logic.
 
 `[untested]` If Logic does not see the `plume` port when it appears after Logic is
@@ -124,8 +130,9 @@ Logic Pro > Settings > Audio, as the resulting latency.
 
 ## After the take: band.mid
 
-A take with `--midi-out` and `--record` writes `band.mid` in the take's folder. It
-holds every note the band sent, one track per part, on the channels above, with the
+A take with `--midi-out` and `--record` writes `band.mid` in the folder you gave
+`--record`. With the command above that is `takes/band.mid`. Give `--record` a new
+folder to keep an earlier take's files. `band.mid` holds every note the band sent, one track per part, on the channels above, with the
 take's tempo. Its time 0 is the start of the take's audio files.
 
 The tracks inside `band.mid` are named for the parts (`bass`, `pad and keys`,
@@ -142,8 +149,8 @@ bar lines close to the take.
 GarageBand has no setting for which MIDI channel a track listens to `[untested]`, so
 it cannot keep the parts apart while you play. Use it after the take:
 
-1. Play the take with plume's own band, and with `--midi-out virtual --record` so
-   plume writes `band.mid`.
+1. Play the take with plume's own band, and with `--midi-out virtual --record takes/`
+   so plume writes `takes/band.mid`.
 2. Open GarageBand with an empty project.
 3. After the take, drag `band.mid` in. Drop it in the empty tracks area at the start
    of the project.

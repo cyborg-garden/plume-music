@@ -1,7 +1,7 @@
 # Logic test sheet
 
 One hour in Logic Pro. The answers decide what [logic.md](logic.md) says and how the
-`Plume` template is built. Nothing here has been run yet.
+`Plume Band` template is built. Nothing here has been run yet.
 
 Write each answer next to its question. "Yes", "no", or what you saw.
 
@@ -15,8 +15,12 @@ Write each answer next to its question. "Yes", "no", or what you saw.
 The take command used all through:
 
 ```bash
-plume lead --tap-start "lofi at 90 bpm" --midi-out virtual --midi-only --record
+plume lead --tap-start "lofi at 90 bpm" --midi-out virtual --midi-only --record takes/
 ```
+
+`--record` needs a folder. `takes/` is made inside the folder you run plume from, and
+the take's `band.mid` lands at `takes/band.mid`. Each take with the same folder writes
+over the last one's files. Part E uses the last take's `band.mid`.
 
 ## A. Build the project (about 20 minutes)
 
@@ -61,8 +65,8 @@ Start the take command. Play for a minute. Stop.
 
 ## C. Does it survive? (about 15 minutes)
 
-1. File > Save as Template, named `Plume`. Quit Logic.
-2. Open Logic. New project from the `Plume` template.
+1. File > Save as Template, named `Plume Band`. Quit Logic.
+2. Open Logic. New project from the `Plume Band` template.
 
 - C1. Did MIDI In Channel persist on all eight tracks? ______
 - C2. Did record-enable persist on all eight tracks? ______
@@ -90,7 +94,7 @@ For a later note only. Plume v1 sends no MMC.
 
 ## E. Afterwards (about 10 minutes)
 
-- E1. Drag the take's `band.mid` into a new Logic project at bar 1. One track per
+- E1. Drag `takes/band.mid` into a new Logic project at bar 1. One track per
   part? Does Logic offer to import the tempo? ______
 - E2. GarageBand: drag the same `band.mid` into an empty project. One track per part,
   or one merged track? Which instruments did it pick? Does the tempo follow? ______

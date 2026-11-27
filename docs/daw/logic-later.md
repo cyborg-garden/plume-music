@@ -4,18 +4,23 @@ v1 gives Logic a template and a recipe. Plume cannot press record, stop, or arm 
 track in Logic. This page lists the routes that could add that, and what each costs.
 None is built. None is tested.
 
+**Every statement about Logic on this page is unverified.** Nothing here has been
+read from Logic's documentation or run in Logic. Each one carries `[untested]`, as
+in [logic.md](logic.md).
+
 ## What is missing
 
-In Ableton Live, plume talks to a remote script inside Live. It can find tracks by
-name, arm them, and start and stop recording. Logic has no such script interface.
-Three routes exist.
+Record and arm control in Ableton Live is planned for v1 and is not in plume yet. The
+plan is for plume to talk to a remote script inside Live, find tracks by name, arm
+them, and start and stop recording. `[untested]` Logic has no such script interface.
+Three routes could stand in for it.
 
 ## Route 1: Mackie Control emulation
 
-Logic supports control surfaces that speak the Mackie Control protocol over MIDI.
-Plume can pretend to be one.
+`[untested]` Logic supports control surfaces that speak the Mackie Control protocol
+over MIDI. Plume could pretend to be one.
 
-What it gives:
+What it gives, `[untested]`:
 
 - Play, stop and record.
 - Record-arm for each track, eight at a time, with bank buttons to reach the rest.
@@ -25,8 +30,8 @@ What it gives:
 What it costs:
 
 - Two ports, one each way. Plume makes one outgoing port today.
-- A one-time setup step in Logic: add a Mackie Control device and point it at
-  plume's ports. Logic may only offer this while plume is running.
+- `[untested]` A one-time setup step in Logic: add a Mackie Control device and point
+  it at plume's ports. Logic may only offer this while plume is running.
 - The protocol's handshake and display messages must be implemented and tested
   against a real copy of Logic. Any mistake arms or records the wrong track, so
   plume must read back the state before it acts.
@@ -40,8 +45,8 @@ track-finding.
 
 ## Route 2: MIDI Machine Control
 
-Logic has a setting to listen to MMC. MMC covers play, stop and record. It has no
-way to arm a named track or to read anything back.
+`[untested]` Logic has a setting to listen to MMC. MMC covers play, stop and record.
+It has no way to arm a named track or to read anything back.
 
 - Whether the setting still exists, and whether Logic obeys play, stop and record
   through it, is a question on the [test sheet](logic-checklist.md). Unanswered.
@@ -72,12 +77,13 @@ What it costs:
 - A decision on whether it is an instrument slot that passes notes on, or a MIDI
   effect in front of the instrument. Hosts differ on which they allow.
 
-Size: weeks, not days. It makes sense only after Route 1 shows that people use
-plume with Logic.
+Size: weeks, not days.
 
-## Order
+## A proposed order
+
+This is a proposal. Nothing here is decided beyond Mackie Control being the first
+thing looked at after v1.
 
 1. Read the test sheet answers.
-2. Mackie Control emulation, behind a `plume logic` command shaped like
-   `plume ableton`.
-3. The plugin, if there is demand.
+2. Mackie Control emulation. What command it sits behind is open.
+3. The plugin, perhaps only once Route 1 shows that people use plume with Logic.

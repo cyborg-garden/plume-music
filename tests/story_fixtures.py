@@ -121,6 +121,22 @@ def waiting_across_the_cut() -> dict:
     return {"rows": rows, "cues": cues, "ending": None, "live": True}
 
 
+def same_words_two_boundaries() -> dict:
+    """Two senders ask for the same thing, and each waits for a different line.
+
+    The first cue waits for the next section and the second for the next bar, so
+    the form takes the second one first.  ``truth`` is which cue each row took:
+    (bar, row field, place in the field) to the cue row's place in ``cues``.
+    """
+    rows = song(13, band_bar=None, cues={4: landed("busier"), 8: landed("busier", 1.43, 1.6)})
+    cues = [{**cue_line("busier", 1, rows[1]["t_s"] + 1.0, "cli"), "sender": "one",
+             "at": "next-section"},
+            {**cue_line("busier", 3, rows[3]["t_s"] + 1.0, "cli"), "sender": "two",
+             "at": "next-bar"}]
+    return {"rows": rows, "cues": cues, "ending": None, "live": True,
+            "truth": {(4, "form.applied_cue", 0): 1, (8, "form.applied_cue", 0): 0}}
+
+
 ALL = {
     "held_cue_before_open": lambda: held_cue(opened=False),
     "held_cue_after_open": lambda: held_cue(opened=True),
@@ -131,4 +147,5 @@ ALL = {
     "not_understood": not_understood,
     "never_used": never_used,
     "row_without_a_cue_log": row_without_a_cue_log,
+    "same_words_two_boundaries": same_words_two_boundaries,
 }

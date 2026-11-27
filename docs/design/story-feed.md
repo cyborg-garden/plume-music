@@ -122,6 +122,28 @@ The result is a different event, and it appears only after the row that proves i
 The page shows `intent` only while `settled` is false. Once the result is in, the
 intent line goes away.
 
+## Which cue a row took
+
+A decision row names a cue by its words. It does not say which cue row it means.
+
+The form takes each waiting cue at the cue's own boundary (`at`), and drops it
+when its own wait (`ttl_bars`) runs out. So the reader pairs by how the waiting
+cue rows with those words wait:
+
+- They all have the same `at` and the same `ttl_bars`. The form takes such cues
+  oldest first, so the row took the oldest. The result names its sender.
+- They differ. A cue for the next bar can pass a cue for the next section. The
+  row cannot say which one it took, so the result names no sender, has no
+  `detail` and no `cue`. Those cue rows show no `intent` from then on, because
+  one of them is no longer waiting. Once rows have taken as many cues as there
+  are such cue rows, each of them is `settled`.
+
+A finished take says "was not used" only of a cue it can place.
+
+Known limit: the rows do not carry which cue was taken. When the take writes
+the cue's `seq` into the row beside its words, every result can name its sender.
+Until then the feed takes the lesser reading above.
+
 ## The sentences
 
 These are the words for the owner's read. Each line is fixed text plus a bar, a
@@ -211,17 +233,20 @@ Rules for the ring:
 
 ### How the two lists age out
 
-A decision row names a cue by its words. The reader finds the cue row by taking
-the oldest cue row with those words that no earlier row took. That is only right
-while a cue row and the row that took it are both held, or both gone. If the
-cue row stays after its row has left, a later row with the same words is read
-as its result, and the wrong sender is credited.
+A decision row names a cue by its words, and the reader pairs it with a cue row
+as "Which cue a row took" says. That is only right while a cue row and the row
+that took it are both held, or both gone. If the cue row stays after its row has
+left, a later row with the same words is read as its result, and the wrong
+sender is credited.
 
 So the two lists age out by one rule:
 
 - A cue row leaves with the decision row that took it, and never before. The
-  ring finds which cue row a leaving row took by the same oldest-first walk.
+  ring finds which cue row a leaving row took by the same pairing.
 - A cue row still waiting stays, however old it is.
+- When a leaving row took one of several cue rows and cannot say which, all of
+  them stay. The ring counts the take. They leave together once rows have taken
+  every one of them.
 - A loop cue or a sound cue leaves once the rows of its bar have left. No row
   can take it.
 - The oldest decision row leaves when there are more than 256. It also leaves
@@ -267,8 +292,8 @@ A sender names itself. Nothing checks the name.
 - Trimmed. Runs of space become one space.
 - Printable characters only.
 - At most 24 characters.
-- A name that is one of plume's own words for a sender ("You", "Someone",
-  "Another terminal", "I") counts as no name.
+- A name that is one of plume's own words ("You", "I", "Someone",
+  "Another terminal", "plume", "a cue") counts as no name, in any letter case.
 
 The page renders the name with `textContent`, never as markup.
 
@@ -357,10 +382,11 @@ limits reads as no cue log. A row cue with no cue row behind it still speaks,
 with no sender: "Busier, from bar 8."
 
 `record.translate` does not say which row and which cue each of its events came
-from. The reader works that out again from the bar, the cue name, the sender
-word and the bar the cue was asked at. Two events it cannot tell apart are about
-the same words, from the same sender, asked at the same bar, on the same row, so
-either sentence is true of either cue.
+from. The reader works that out again from the bar, the cue name, the word for
+the door the cue came through and the bar the cue was asked at. Two of its
+events that match on all four, on the same row, read the same, so either serves.
+That sentence is shown as `detail` only when it is about the cue the reader
+credits.
 
 ## Fixtures
 
@@ -379,6 +405,7 @@ either sentence is true of either cue.
 | Row without a cue log | The row speaks, and names no sender. |
 | Old cue, new cue | Two senders ask for the same thing, far apart. The first cue's row has left, and the later row is credited to the later sender. |
 | Waiting across the cut | A cue asked before the oldest held row still lands as its own sender's. |
+| Same words, two boundaries | Two senders ask for the same thing, one for the next section and one for the next bar. The later cue lands first. Neither result names a sender. |
 
 The test reads every event in every fixture and checks each claim against the
 fact the event points at: the state, every number, the sender, the cue name, the
@@ -386,10 +413,11 @@ intent, and the row field behind a change. A second set of tests breaks a
 sentence on purpose and confirms the check fails. A seeded run of 400 random
 takes checks the same rule on cues that collide.
 
-A cut take is checked against the whole take behind it. A result may credit a
-cue only if the whole take credits the same cue for the same row. A seeded run
-of 30 long random takes checks this at every bar, for the ring and for lists cut
-by hand.
+A result may credit a cue only if that cue is the one the row took. A seeded run
+of 30 long random takes applies each cue at its own boundary, keeps the record
+of which cue each row took, and checks the whole take, the ring and lists cut by
+hand against it at every bar. A second seeded run of 60 takes gets its rows from
+the form planner itself and checks the same rule.
 
 ## Open questions for the owner
 

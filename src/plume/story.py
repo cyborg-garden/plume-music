@@ -21,6 +21,12 @@ already trusts.  This module pairs each of its cue events with a fact and adds a
 short sentence.  A cue's own words are shown only when they are exactly a cue
 plume knows (:func:`plume.record.cue_name`).
 
+A row names a cue by its words, and the form takes each waiting cue at the cue's
+own boundary.  So a row is credited to a cue row only when the waiting cue rows
+with those words all wait the same way; then the oldest is the one taken.  When
+they wait differently the rows cannot say which was taken, and the result names
+no sender: see :class:`_Pairing`.
+
 A running take holds only its newest rows.  :class:`Ring` is the one way to cut
 the two lists, because a cue row and the row that took it have to leave together:
 see ``Ring`` and the spec's "How the two lists age out".
@@ -136,6 +142,56 @@ def _takes(text: str, bar: int, cue: dict) -> bool:
     return cue["text"] == text and (cue["bar"] is None or cue["bar"] <= bar)
 
 
+def _kinds(docs: list, clean: list[dict], origin: list) -> list[tuple]:
+    """How each cue part waits: (its boundary, the bars it may wait), read the way
+    the take reads a cue row.  A wait that cannot be read is like no other."""
+    out = []
+    for k, cue in enumerate(clean):
+        ttl = docs[origin[k][0]].get("ttl_bars", 16)
+        fine = isinstance(ttl, int) and not isinstance(ttl, bool)
+        out.append((cue["at"] or "next-phrase", max(0, ttl) if fine else ("unread", k)))
+    return out
+
+
+class _Pairing:
+    """Which cue part each row cue took, as far as the rows can say.
+
+    The form takes a waiting cue when the cue's own boundary comes, and drops it
+    when its own wait runs out.  Cues that wait the same way are taken oldest
+    first, so among them the oldest is the one a row names.  Cues that wait
+    differently can be taken in any order, and a row names only the words.  Then
+    nothing is credited: the take is counted in ``owed``, the cue parts it may
+    have been are ``hazy``, and once as many takes are owed as there are hazy
+    parts with those words, every one of them is known to be spent (``done``).
+    """
+
+    def __init__(self, clean: list[dict], kinds: list[tuple], *, used=(), owed=None, hazy=()):
+        self.clean, self.kinds = clean, kinds
+        self.used: set[int] = set(used)
+        self.owed: dict[str, int] = dict(owed or {})
+        self.hazy: set[int] = set(hazy)
+        self.done: set[int] = set()
+
+    def take(self, text: str, bar: int) -> tuple[int | None, bool]:
+        """(the cue part a row at ``bar`` took by naming ``text``, whether a cue
+        part was taken that cannot be told from another)."""
+        waiting = [k for k, cue in enumerate(self.clean)
+                   if k not in self.used and _takes(text, bar, cue)]
+        if not waiting:
+            return None, False
+        if not self.owed.get(text) and len({self.kinds[k] for k in waiting}) == 1:
+            self.used.add(waiting[0])
+            return waiting[0], False
+        owed = self.owed.pop(text, 0) + 1
+        self.hazy.update(waiting)
+        if owed >= len(waiting):
+            self.used.update(waiting)
+            self.done.update(waiting)
+        else:
+            self.owed[text] = owed
+        return None, True
+
+
 def _held(rows: list[dict], clock, docs: list, clean: list[dict], origin: list,
           spent: set | None) -> tuple[list, list[dict], list, set[int]] | None:
     """The cue parts a cut take may still speak of, or None to keep them all.
@@ -162,11 +218,13 @@ def _held(rows: list[dict], clock, docs: list, clean: list[dict], origin: list,
     return told, parts, [origin[k] for k in keep], early
 
 
-def _claims(rows: list[dict], clean: list[dict]) -> list[tuple[int, str, int, str, int | None]]:
-    """Each cue a row names: (row, field, place in the field, text, cue part or None).
+def _claims(rows: list[dict], clean: list[dict], pairing: _Pairing) -> list[tuple]:
+    """Each cue a row names: (row, field, place in the field, text, the cue part
+    ``record.translate`` reads it as, the cue part it took, whether that is unsure).
 
-    The same walk as ``record.translate``: rows in order, applied before dropped,
-    and each cue part claimed once by the first row that names its text.
+    The same walk as ``record.translate``: rows in order, applied before dropped.
+    translate claims each cue part once, by the first row that names its text.  That
+    finds its event for the row.  Who is credited is ``pairing``'s answer.
     """
     used: set[int] = set()
     left = record.MAX_CUE_EVENTS
@@ -185,7 +243,8 @@ def _claims(rows: list[dict], clean: list[dict]) -> list[tuple[int, str, int, st
             texts = record._cue_texts(form.get(field))[:left]
             left -= len(texts)
             for n, text in enumerate(texts):
-                out.append((j, field, n, text, claim(text, row["bar"])))
+                out.append((j, field, n, text, claim(text, row["bar"]),
+                            *pairing.take(text, row["bar"])))
     return out
 
 
@@ -193,10 +252,11 @@ def _pair(claim, told: list[dict], taken: set[int], rows: list[dict], clean: lis
           clock) -> dict | None:
     """translate's event for one claimed cue, or None if it has none.
 
-    Two events this cannot tell apart are about the same cue words, from the same
-    sender, asked at the same bar, on the same row, so either is true of either.
+    ``claim`` carries the cue part translate read the row as.  Two of its events
+    this cannot tell apart have the same cue words, the same word for the door,
+    the same asking bar and the same row, so they read the same.
     """
-    j, field, _, text, k = claim
+    j, field, _, text, k = claim[:5]
     row = rows[j]
     after = rows[j + 1] if j + 1 < len(rows) else None
     name = record.cue_name(text)
@@ -305,6 +365,11 @@ def story(rows, cues=None, ending: dict | None = None, *, live: bool = True,
 
     A sentence never holds a cue's raw words, a key, a chord or a style it guessed.
 
+    A result names a sender only when the rows can say which cue was taken.  Two
+    waiting cues with the same words and different boundaries cannot be told
+    apart by a row, so their results name nobody, have no ``detail``, and their
+    own events show no ``intent``.
+
     ``partial`` on lists cut by hand is the safe reading and the lesser one.  A cue
     row logged before the oldest row may have had its result in a row that has
     left, and nothing here can say.  So it gets no event, the row that takes its
@@ -315,7 +380,7 @@ def story(rows, cues=None, ending: dict | None = None, *, live: bool = True,
 
 
 def _story(rows, cues, ending, *, live: bool, partial: bool, route: str,
-           spent: set | None) -> list[dict]:
+           spent: set | None, hazy=(), owed: dict | None = None) -> list[dict]:
     live = bool(live) and not isinstance(ending, dict)
     partial = bool(partial)
     rows = [r for r in (rows if isinstance(rows, (list, tuple)) else ()) if record._is_row(r)]
@@ -334,7 +399,9 @@ def _story(rows, cues, ending, *, live: bool, partial: bool, route: str,
     ghosts = early if spent is None else set()
     ghost_words = {clean[k]["text"] for k in ghosts}
     told = record.translate(rows, ending, told_docs, live=live, route=route)
-    claims = _claims(rows, clean)
+    pairing = _Pairing(clean, _kinds(docs, clean, origin), owed=owed,
+                       hazy={k for k, at in enumerate(origin) if at in hazy})
+    claims = _claims(rows, clean, pairing)
     over = ({"in": "ending", "field": "reason"} if isinstance(ending, dict)
             else {"in": "call", "field": "live"})
     events: list[dict] = []
@@ -386,16 +453,18 @@ def _story(rows, cues, ending, *, live: bool, partial: bool, route: str,
         sentence = (f"{who} sent a cue." if not name
                     else f"{who} asked to end." if kind == "end" else f"{who} asked for {name}.")
         # Behind a cue nobody can place, where this one waits is not known either.
-        intent = None if cue["text"] in ghost_words else _INTENT.get(cue["at"])
+        # Nor is it for a cue a row may have taken already.
+        intent = (None if cue["text"] in ghost_words or k in pairing.hazy
+                  else _INTENT.get(cue["at"]))
         receipts[k] = add(key, ident, "cue", sentence, bar=bar, state="received", intent=intent,
-                          settled=False, who=who, sender=sender, name=name, cue=i,
+                          settled=k in pairing.done, who=who, sender=sender, name=name, cue=i,
                           facts=[fact] + ([{"in": "cues", "index": i, "field": "at"}]
                                           if intent else []))
 
     # ---- what the rows say became of each cue
     taken: set[int] = set()
     for claim in claims:
-        j, field, n, text, k = claim
+        j, field, n, text, read_as, k, unsure = claim
         row = rows[j]
         event = _pair(claim, told, taken, rows, clean, clock)
         name = record.cue_name(text)
@@ -411,10 +480,13 @@ def _story(rows, cues, ending, *, live: bool, partial: bool, route: str,
                  else f"b{row['bar']}-{field[:-4]}{n}")
         key = (row["bar"], float(row["t_s"]))
         # The take page's sentence says when the cue was asked.  For a cue asked
-        # before the oldest row held, it would say "before the first bar".
+        # before the oldest row held, it would say "before the first bar".  For a
+        # cue that cannot be told from another, it would name one of the two.  It
+        # is shown only when it is about the cue credited here.
         shared = dict(who=who, sender=sender, name=name, floor=floors.get(k),
                       cue=origin[k][0] if known else None,
-                      detail=event["sentence"] if event and k not in early else None)
+                      detail=(event["sentence"] if event and k not in early and not unsure
+                              and read_as == k else None))
         if field == "dropped_cue":
             said = name.capitalize() if name else "A cue"
             add(key, ident, "cue", f"{said} ran out of time at bar {row['bar']}.",
@@ -471,7 +543,8 @@ def _story(rows, cues, ending, *, live: bool, partial: bool, route: str,
     # ---- a cue no row ever took, once the take is over
     last = (rows[-1]["bar"], float("inf")) if rows else None
     for k, cue in enumerate(clean):
-        if live or not rows or "loop" in cue or k in ghosts or receipts[k]["settled"]:
+        if (live or not rows or "loop" in cue or k in ghosts or k in pairing.hazy
+                or receipts[k]["settled"]):
             continue
         name = record.cue_name(cue["text"])
         asked = {"who": record._who(cue["source"]), "bar": record._sounding_bar(clock, cue),
@@ -528,11 +601,13 @@ def _story(rows, cues, ending, *, live: bool, partial: bool, route: str,
 class Ring:
     """The newest rows and cue rows of a running take, cut so the story stays true.
 
-    A row that names a cue is paired with its cue row by the cue's words, oldest
-    first.  That holds only while a cue row and the row that took it are both here
-    or both gone.  So the ring cuts by one rule: a cue row leaves with the row that
-    took it, and never before.  A cue still waiting stays, however old.  A cue the
-    looper or a sound answered leaves once the rows of its bar have left.
+    A row that names a cue is paired with its cue row by the cue's words
+    (:class:`_Pairing`).  That holds only while a cue row and the row that took it
+    are both here or both gone.  So the ring cuts by one rule: a cue row leaves
+    with the row that took it, and never before.  A cue still waiting stays,
+    however old.  When a leaving row took one of several cue rows and cannot say
+    which, they all stay until rows have taken every one of them.  A cue the looper
+    or a sound answered leaves once the rows of its bar have left.
 
     At most ``max_rows`` rows are held.  When more than ``max_cues`` cue rows are
     held, the oldest rows leave early, down to one row, taking their cue rows with
@@ -551,6 +626,8 @@ class Ring:
         self.partial = False
         self._count = 0
         self._spent: set[tuple[int, int]] = set()      # (cue seq, part) a gone row took
+        self._hazy: set[tuple[int, int]] = set()       # ... or may have taken
+        self._owed: dict[str, int] = {}                # takes by gone rows, by cue words
         self._blind = False
 
     def add_cue(self, doc) -> int | None:
@@ -574,8 +651,9 @@ class Ring:
         """The events of what is held.  See :func:`story`."""
         at = {doc["seq"]: i for i, doc in enumerate(self.cues)}
         spent = {(at[seq], n) for seq, n in self._spent if seq in at}
+        hazy = {(at[seq], n) for seq, n in self._hazy if seq in at}
         return _story(self.rows, self.cues, None, live=live, partial=self.partial,
-                      route=route, spent=spent)
+                      route=route, spent=spent, hazy=hazy, owed=self._owed)
 
     def _cut(self) -> None:
         while len(self.rows) > self.max_rows or (len(self.cues) > self.max_cues
@@ -590,15 +668,19 @@ class Ring:
             # Too many cue rows to read.  Nothing can say which row took which from
             # here on, so the rest of the take names no sender.
             self.cues, self._spent, self._blind = [], set(), True
+            self._hazy, self._owed = set(), {}
             return
         keys = [(docs[i]["seq"], n) for i, n in origin]
+        walk = _Pairing(clean, _kinds(docs, clean, origin), owed=self._owed,
+                        used={k for k, key in enumerate(keys) if key in self._spent},
+                        hazy={k for k, key in enumerate(keys) if key in self._hazy})
         form = record._form(row)
         for field in ("applied_cue", "dropped_cue"):       # the walk _claims makes
             for text in record._cue_texts(form.get(field)):
-                for k, cue in enumerate(clean):
-                    if keys[k] not in self._spent and _takes(text, row["bar"], cue):
-                        self._spent.add(keys[k])
-                        break
+                walk.take(text, row["bar"])
+        self._spent = {keys[k] for k in walk.used}
+        self._hazy = {keys[k] for k in walk.hazy - walk.used}
+        self._owed = walk.owed
         clock = record._row_clock(self.rows)
         gone = set()
         for i, doc in enumerate(docs):
@@ -609,3 +691,4 @@ class Ring:
                 gone.add(doc["seq"])
         self.cues = [doc for doc in docs if doc["seq"] not in gone]
         self._spent = {key for key in self._spent if key[0] not in gone}
+        self._hazy = {key for key in self._hazy if key[0] not in gone}

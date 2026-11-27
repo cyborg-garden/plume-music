@@ -18,7 +18,8 @@ from plume import record, story
 from plume.mind import parse_cue
 from record_fixture import POISON, cue_line, ending_doc, landed, song
 from story_fixtures import (ALL, EXPIRY_NOTE, POISON_CUES, held_cue, old_cue_new_cue,
-                            two_cues_one_boundary, waiting_across_the_cut)
+                            same_words_two_boundaries, two_cues_one_boundary,
+                            waiting_across_the_cut)
 
 #: Fixed words in sentences ``record.translate`` wrote.  Their numbers are not bars.
 _FIXED = ("30 seconds",)
@@ -51,17 +52,29 @@ def _row_of(event: dict, rows: list[dict]):
     return None
 
 
+def _seq_of(event: dict, cues: list) -> int:
+    """The cue row an event credits: its ``seq``, or its place in the list."""
+    index = next(f["index"] for f in event["facts"] if f["in"] == "cues")
+    return cues[index].get("seq", index)
+
+
 def check_facts(events: list[dict], fx: dict) -> None:
     """Every claim an event makes is in the input it points at, or this raises.
 
-    ``fx["whole"]`` is the uncut take behind a cut one.  With it, a result may
-    credit a cue only if the whole take credits the same cue for the same row.
+    ``fx["truth"]`` says which cue each row took: (bar, row field, place) to the
+    cue's ``seq``, or its place in the list.  With it, a result may credit only
+    that cue, and a cue a row took shows no intent.  ``fx["whole"]`` is the uncut
+    take behind a cut one.  With no ``truth``, the whole take's reading stands in.
     """
     rows = [r for r in fx["rows"] if record._is_row(r)]
     cues = fx["cues"] or []
     whole = fx.get("whole")
-    truth = {}
-    if whole:
+    truth = fx.get("truth")
+    judged = whole or truth is not None
+    last_bar = rows[-1]["bar"] if rows else -1
+    took = {seq for (bar, _, _), seq in (truth or {}).items() if bar <= last_bar}
+    if truth is None and whole:
+        truth = {}
         whole_rows = [r for r in whole["rows"] if record._is_row(r)]
         for e in story.story(whole_rows, whole["cues"], whole.get("ending"), live=fx["live"]):
             if _row_of(e, whole_rows):
@@ -144,9 +157,15 @@ def check_facts(events: list[dict], fx: dict) -> None:
         if event["detail"] is not None:
             assert not (fx.get("partial") and "before the first bar" in event["detail"]), where
         # a cut take credits the cue the whole take credits, or nobody
-        if whole and _row_of(event, rows):
-            credited = cue_docs[0]["seq"] if cue_docs else None
+        if judged and _row_of(event, rows):
+            credited = _seq_of(event, cues) if cue_docs else None
             assert credited is None or credited == truth.get(_row_of(event, rows), "nobody"), where
+        # a cue a row took is not still waiting, and a settled cue was taken
+        if fx.get("truth") is not None and state == "received" and event["settled"] is not None:
+            if _seq_of(event, cues) in took:
+                assert event["intent"] is None or event["settled"], where
+            else:
+                assert not (event["settled"] and fx["live"]), where
 
         # every number in the words is a bar (or tempo) of a row it points at
         for words in (event["sentence"], event["intent"] or ""):
@@ -463,7 +482,7 @@ def test_lists_cut_by_hand_name_no_sender_they_cannot_prove():
 
 
 def test_the_checker_fails_on_a_result_paired_with_a_cue_whose_row_has_left():
-    """What the reader told before it knew how the lists age out."""
+    """A cut that is not declared reads the old cue row as the later row's cue."""
     fx = old_cue_new_cue(landed("busier"))
     whole = {"rows": fx["rows"], "cues": [{**c, "seq": n} for n, c in enumerate(fx["cues"])]}
     cut = {**fx, "rows": fx["rows"][-256:], "cues": whole["cues"][-64:], "partial": True,
@@ -581,46 +600,136 @@ def test_a_change_only_the_bar_before_could_prove_is_not_told_on_the_oldest_row(
         "Busier reached the band at bar 8.", None, None)
 
 
+def test_the_same_words_at_two_boundaries_name_no_sender():
+    """The form takes the later cue first.  The rows name only the words."""
+    fx = same_words_two_boundaries()
+    asked = tell({**fx, "rows": fx["rows"][:4]})
+    assert [(e["id"], e["intent"], e["settled"]) for e in asked if e["kind"] == "cue"] == [
+        ("c0", "Queued for the next section.", False), ("c1", "Queued for the next bar.", False)]
+    one = tell({**fx, "rows": fx["rows"][:8]})
+    check_facts(one, {**fx, "rows": fx["rows"][:8]})
+    assert [(e["id"], e["who"], e["intent"], e["settled"]) for e in one if e["kind"] == "cue"] == [
+        ("c0", "one", None, False), ("c1", "two", None, False), ("b4-applied0", None, None, None)]
+    both = [e for e in tell(fx) if e["kind"] == "cue"]
+    assert lines(both) == [
+        ("c0", "received", "one asked for busier."), ("c1", "received", "two asked for busier."),
+        ("b4-applied0", "applied", "Busier, from bar 4."),
+        ("b8-applied0", "applied", "Busier, from bar 8.")]
+    assert [(e["who"], e["sender"], e["cue"], e["detail"]) for e in both[2:]] == [(None,) * 4] * 2
+    assert [e["settled"] for e in both[:2]] == [True, True], "two rows took two cues"
+    assert [e["outcome"] for e in both[2:]] == ["landed", "landed"]
+
+
+def test_the_checker_fails_on_a_result_credited_to_the_oldest_cue_with_its_words():
+    fx = same_words_two_boundaries()
+    events = tell(fx)
+    check_facts(events, fx)
+    result = next(e for e in events if e["id"] == "b4-applied0")
+    result.update(who="one", sender="one", cue=0)
+    result["facts"].append({"in": "cues", "index": 0, "field": "text", "part": 0})
+    with pytest.raises(AssertionError):
+        check_facts(events, fx)
+    waiting = tell({**fx, "rows": fx["rows"][:8]})
+    next(e for e in waiting if e["id"] == "c1").update(intent="Queued for the next bar.")
+    next(e for e in waiting if e["id"] == "c1")["facts"].append(
+        {"in": "cues", "index": 1, "field": "at"})
+    with pytest.raises(AssertionError):
+        check_facts(waiting, {**fx, "rows": fx["rows"][:8]})
+
+
+def test_a_finished_take_does_not_say_which_of_two_cues_was_never_used():
+    fx = same_words_two_boundaries()
+    rows = fx["rows"][:8]
+    events = story.story(rows, fx["cues"], ending_doc(bars=8), live=False)
+    assert [e["id"] for e in events if e["kind"] == "cue"] == ["c0", "c1", "b4-applied0"]
+
+
+def test_a_ring_keeps_both_cue_rows_until_rows_have_taken_both():
+    fx = same_words_two_boundaries()
+    ring = story.Ring(max_rows=4)
+    for doc in fx["cues"]:
+        ring.add_cue(doc)
+    for row in fx["rows"][:9]:
+        ring.add_row(row)
+    assert ring.rows[0]["bar"] == 5, "the row at bar 4 has left"
+    assert [c["seq"] for c in ring.cues] == [0, 1], "one of the two still waited at bar 5"
+    cut = {"rows": ring.rows, "cues": ring.cues, "ending": None, "live": True, "partial": True,
+           "truth": fx["truth"]}
+    events = ring.story()
+    check_facts(events, cut)
+    assert [(e["id"], e["who"], e["intent"], e["settled"]) for e in events if e["kind"] == "cue"] == [
+        ("c0", "one", None, True), ("c1", "two", None, True), ("b8-applied0", None, None, None)]
+    for row in fx["rows"][9:]:
+        ring.add_row(row)
+    assert ring.cues == [] and ring._owed == {} and ring._hazy == set()
+
+
+def test_cues_that_wait_the_same_way_are_credited_oldest_first():
+    """Same words, same boundary, same wait: the form takes the older one first."""
+    fx = waiting_across_the_cut()
+    for cue in fx["cues"]:
+        cue.update(at="next-section", ttl_bars=24)
+    assert [(e["id"], e["who"]) for e in tell(fx) if e["state"] == "applied"] == [
+        ("c0-applied", "one"), ("c1-applied", "two")]
+    fx["cues"][1]["ttl_bars"] = 8           # the later cue can now be dropped first
+    assert [(e["id"], e["who"]) for e in tell(fx) if e["state"] == "applied"] == [
+        ("b8-applied0", None), ("b12-applied0", None)]
+
+
 def _long_take(rng) -> dict:
-    """A take longer than its ring, with few words and few senders, so cues collide."""
+    """A take longer than its ring, with few words and few senders, so cues collide.
+
+    Cues are taken the way the form takes them: each at its own boundary, each
+    dropped when its own wait runs out.  ``truth`` is which cue each row took.
+    """
     words = ("busier", "faster", "stop", "next section", "purple monkey dishwasher")
     notes = {"busier": "cue 'busier' (texture:busier): density x1.00 -> x1.43",
              "faster": "cue 'faster' (tempo:faster): tempo x1.00 -> x1.08"}
     bars = rng.randint(30, 70)
-    waiting, marks, cues = [], {}, []
+    mixed = rng.random() < 0.7          # some takes use one boundary, as most real ones do
+    waiting, marks, cues, truth = [], {}, [], {}
     for bar in range(bars):
+        applied, dropped, keep = [], [], []
+        for seq in waiting:
+            cue = cues[seq]
+            at, asked = cue["at"], cue["bar_asked"]
+            due = bar > asked and (at == "next-bar" or bar % (4 if at == "next-phrase" else 8) == 0)
+            if due:
+                applied.append(seq)
+            elif bar - asked >= cue["ttl_bars"]:
+                dropped.append(seq)
+            else:
+                keep.append(seq)
+        waiting = keep
+        if applied or dropped:
+            marks[bar] = {"applied": "; ".join(cues[q]["text"] for q in applied) or None,
+                          "dropped": "; ".join(cues[q]["text"] for q in dropped) or None,
+                          "effects": [notes[cues[q]["text"]] for q in applied
+                                      if cues[q]["text"] in notes]}
+            for field, took in (("form.applied_cue", applied), ("form.dropped_cue", dropped)):
+                truth.update({(bar, field, n): seq for n, seq in enumerate(took)})
         for _ in range(rng.choice((0, 0, 0, 1, 1, 2))):
-            word = rng.choice(words)
-            cue = cue_line(word, bar, None, rng.choice(("gui", "cli", "agent")))
+            cue = cue_line(rng.choice(words), bar, None, rng.choice(("gui", "cli", "agent")))
             cue["bar_asked"] = bar
+            if mixed:
+                cue["at"] = rng.choice(("next-phrase", "next-phrase", "next-bar", "next-section"))
+                cue["ttl_bars"] = rng.choice((16, 16, 3))
             if rng.random() < 0.6:
                 cue["sender"] = rng.choice(("Claude", "helper"))
+            waiting.append(len(cues))
             cues.append(cue)
-            waiting.append((bar, word))
-        if bar % 4 == 0 or rng.random() < 0.1:
-            due = [w for w in waiting if w[0] < bar]
-            rng.shuffle(due)
-            cut = rng.randint(0, len(due))
-            applied = [w for _, w in sorted(due[:cut], key=waiting.index)]
-            dropped = [w for b, w in sorted(due[cut:], key=waiting.index) if bar - b > 12]
-            took = applied + dropped
-            for word in took:           # the form takes the oldest cue with those words
-                waiting.remove(next(w for w in waiting if w[1] == word))
-            if took:
-                marks[bar] = {"applied": "; ".join(applied) or None,
-                              "dropped": "; ".join(dropped) or None,
-                              "effects": [notes[w] for w in applied if w in notes]}
     rows = song(bars, band_bar=rng.choice((None, 4)), cues=marks)
     for cue in cues:
         cue["t_s"] = rows[cue.pop("bar_asked")]["t_s"] + rng.uniform(0.1, 2.0)
-    return {"rows": rows, "cues": cues, "ending": None, "live": True}
+    return {"rows": rows, "cues": cues, "ending": None, "live": True, "truth": truth}
 
 
 def test_a_ring_tells_what_the_whole_take_tells_about_the_rows_it_holds():
-    """The ring is checked against the uncut take, at every bar of 30 random takes."""
+    """The ring is checked against the uncut take, and both against which cue the
+    form took, at every bar of 30 random takes."""
     import random
     rng = random.Random(20261127)
-    carried = crediting = 0
+    carried = crediting = nobody = out_of_order = 0
     for _ in range(30):
         fx = _long_take(rng)
         ring = story.Ring(max_rows=rng.choice((4, 9, 16)), max_cues=rng.choice((3, 8, 64)))
@@ -630,16 +739,23 @@ def test_a_ring_tells_what_the_whole_take_tells_about_the_rows_it_holds():
             while left and left[0]["bar"] <= row["bar"]:
                 ring.add_cue(left.pop(0))
             ring.add_row(row)
-            whole = {"rows": fx["rows"][:j + 1], "cues": cues[:len(cues) - len(left)]}
+            whole = {"rows": fx["rows"][:j + 1], "cues": cues[:len(cues) - len(left)],
+                     "ending": None, "live": True, "truth": fx["truth"]}
             cut = {"rows": ring.rows, "cues": ring.cues, "ending": None, "live": True,
-                   "partial": ring.partial, "whole": whole}
+                   "partial": ring.partial, "whole": whole, "truth": fx["truth"]}
             events = ring.story()
             check_facts(events, cut)
+            uncut = story.story(whole["rows"], whole["cues"])
+            check_facts(uncut, whole)
+            # no cue row leaves the ring while its cue waits
+            held = {c["seq"] for c in ring.cues}
+            spent = {seq for (bar, _, _), seq in fx["truth"].items() if bar <= row["bar"]}
+            assert {c["seq"] for c in whole["cues"]} - spent <= held
             assert len({e["id"] for e in events}) == len(events)
             # every result the whole take tells of a held row is told here, the same
             told = {e["id"]: e for e in events}
             first = ring.rows[0]["bar"]
-            for e in story.story(whole["rows"], whole["cues"]):
+            for e in uncut:
                 at = _row_of(e, whole["rows"])
                 if at is None or at[0] < first:
                     continue
@@ -649,10 +765,112 @@ def test_a_ring_tells_what_the_whole_take_tells_about_the_rows_it_holds():
                 if at[0] > first:           # the oldest row has no bar before it
                     assert (mine["sentence"], mine["outcome"]) == (e["sentence"], e["outcome"])
                 crediting += e["cue"] is not None
+                nobody += e["cue"] is None and at in fx["truth"]
+                # a row credited to a cue while an older cue with its words waits
+                out_of_order += e["cue"] is not None and any(
+                    c["seq"] < whole["cues"][e["cue"]]["seq"] and c["seq"] not in spent
+                    and c["text"] == whole["cues"][e["cue"]]["text"] for c in whole["cues"])
             carried += sum(1 for e in events if e["settled"] is False and e["bar"] is None)
             # and the same lists read with no ring never credit the wrong cue
             check_facts(story.story(ring.rows, ring.cues, partial=ring.partial), cut)
-    assert carried > 20 and crediting > 500, (carried, crediting)
+    assert carried > 20 and crediting > 500 and nobody > 100, (carried, crediting, nobody)
+    assert out_of_order == 0, "an out-of-order take is only ever told with no sender"
+
+
+def _form_take(rng) -> dict:
+    """Rows and cue rows from the real form (``Mind.plan_form``), with which cue
+    each row took read off the form's own due check.  No audio: scripted bars."""
+    from plume.listen.beat import BeatState
+    from plume.listen.harmony import HarmonyState
+    from plume.mind import BarFeatures, Cue, Mind, MindParams
+    from plume.score import Movement, SectionSpec, Session
+
+    session = Session(name="map", bpm=120.0, key="C minor", movements=[Movement(name="m0", sections=[
+        SectionSpec(name=n, bars=8, energy=e, plays={})
+        for n, e in (("intro", 0.30), ("verse", 0.50), ("chorus", 0.85), ("break", 0.20))])])
+    harmony = HarmonyState(t_s=0.0, key="C minor", key_conf=0.8, chord="Cm", chord_conf=0.7,
+                           register_low_midi=None, register_high_midi=None)
+    mind = Mind(MindParams())
+    due_seen: dict[int, bool] = {}
+    real_due = mind._form_cue_due
+
+    def due(q, n_bar):
+        due_seen[id(q.cue)] = real_due(q, n_bar)
+        return due_seen[id(q.cue)]
+
+    mind._form_cue_due = due
+    mixed = rng.random() < 0.7
+    sent: list[Cue] = []
+    asked_at: list[int] = []
+    waiting: list[int] = []
+    marks, truth = {}, {}
+    bars = rng.randint(24, 48)
+    for bar in range(bars):
+        cue = None
+        if bar and rng.random() < 0.45:
+            cue = Cue(text=rng.choice(("busier", "sparser")),
+                      at=rng.choice(("next-phrase", "next-bar", "next-section", "next-section",
+                                     "now")) if mixed else "next-phrase",
+                      ttl_bars=rng.choice((16, 3)) if mixed else 16)
+            waiting.append(len(sent))
+            sent.append(cue)
+            asked_at.append(bar)
+        interval = 0.5
+        beat = BeatState(t_s=bar * 4 * interval, bpm=120.0, confidence=0.9, locked=True, bar=bar,
+                         beat_in_bar=0, phase_beats=0.0, next_beat_t_s=interval,
+                         next_downbeat_t_s=4 * interval, beat_interval_s=interval,
+                         tempo_octave_changes=0)
+        human = BarFeatures(bar=bar, rms_db=-20.0, onset_density=1.0, silent=False,
+                            register_low_midi=None, register_high_midi=None)
+        due_seen.clear()
+        plan = mind.plan_form(None, beat, harmony, human, session, cue)
+        still = {id(c) for c in mind.pending_cues()}
+        applied = [q for q in waiting if due_seen.get(id(sent[q]))]
+        dropped = [q for q in waiting if id(sent[q]) not in still and q not in applied]
+        waiting = [q for q in waiting if id(sent[q]) in still]
+        assert plan.applied_cue == ("; ".join(sent[q].text for q in applied) or None)
+        assert plan.dropped_cue == ("; ".join(sent[q].text for q in dropped) or None)
+        if applied or dropped:
+            marks[bar] = {"applied": plan.applied_cue, "dropped": plan.dropped_cue}
+            for field, took in (("form.applied_cue", applied), ("form.dropped_cue", dropped)):
+                truth.update({(bar, field, n): q for n, q in enumerate(took)})
+    rows = song(bars, band_bar=None, cues=marks)
+    cues = [{**cue_line(c.text, at, rows[at - 1]["t_s"] + rng.uniform(0.1, 2.0), "cli"),
+             "at": c.at, "ttl_bars": c.ttl_bars, "sender": rng.choice(("one", "two"))}
+            for c, at in zip(sent, asked_at)]
+    return {"rows": rows, "cues": cues, "ending": None, "live": True, "truth": truth}
+
+
+def test_the_reader_credits_the_cue_the_real_form_took_or_nobody():
+    """The pairing rule is checked against ``Mind.plan_form`` itself, whole and
+    through a ring, at every bar of 60 random takes."""
+    import random
+    rng = random.Random(20261127)
+    credited = nobody = later_first = 0
+    for _ in range(60):
+        fx = _form_take(rng)
+        seqs = sorted(fx["truth"].items())
+        later_first += any(a[0] < b[0] and a[1] > b[1] and fx["cues"][a[1]]["text"]
+                           == fx["cues"][b[1]]["text"] for a in seqs for b in seqs)
+        ring = story.Ring(max_rows=rng.choice((4, 9, 64)))
+        left = list(fx["cues"])
+        for j, row in enumerate(fx["rows"]):
+            while left and left[0]["bar"] <= row["bar"]:
+                ring.add_cue(left.pop(0))
+            ring.add_row(row)
+            whole = {**fx, "rows": fx["rows"][:j + 1], "cues": fx["cues"][:len(fx["cues"]) - len(left)]}
+            events = story.story(whole["rows"], whole["cues"])
+            check_facts(events, whole)
+            cut = {"rows": ring.rows, "cues": ring.cues, "ending": None, "live": True,
+                   "partial": ring.partial, "truth": fx["truth"]}
+            check_facts(ring.story(), cut)
+            spent = {q for (bar, _, _), q in fx["truth"].items() if bar <= row["bar"]}
+            assert {c["seq"] for c in ring.cues} >= set(range(len(whole["cues"]))) - spent
+        results = [e for e in events if _row_of(e, fx["rows"])]
+        assert len(results) == len(fx["truth"])
+        credited += sum(e["cue"] is not None for e in results)
+        nobody += sum(e["cue"] is None for e in results)
+    assert credited > 200 and nobody > 50 and later_first > 10, (credited, nobody, later_first)
 
 
 # --------------------------------------------------- reaching is not changing
@@ -734,21 +952,30 @@ def test_random_takes_never_say_a_thing_their_input_does_not_hold():
     import random
     rng = random.Random(20261127)
     said = set()
+    unsure = 0
     for _ in range(400):
         fx = _random_take(rng)
         events = tell(fx)
         check_facts(events, fx)
         assert len({e["id"] for e in events}) == len(events)
         said.update((e["state"], e["outcome"]) for e in events)
-        # every result found the take page's own sentence for it
-        assert not [e["id"] for e in events
-                    if e["kind"] == "cue" and e["settled"] is None and e["detail"] is None]
+        # every result found the take page's own sentence for it, and shows it unless
+        # the cue it names waits two ways, where that sentence would pick a sender
+        for e in events:
+            if e["kind"] == "cue" and e["settled"] is None and e["detail"] is None:
+                text = next(t for t in fx["rows"][e["facts"][0]["index"]]["form"][
+                    e["facts"][0]["field"][5:]].split("; ")[e["facts"][0]["part"]:])
+                ways = {(c["at"] if c["at"] in _INTENTS else "next-phrase")
+                        for c in fx["cues"] if "loop" not in c and c["text"] == text}
+                assert e["cue"] is None and len(ways) > 1, e["id"]
+                unsure += 1
         # every cue row the reader kept has exactly one event of its own
         own = [e["cue"] for e in events if e["settled"] is not None]
         assert sorted(own) == list(range(len(fx["cues"])))
     # the generator reached the cases that matter
     assert {("applied", "landed"), ("applied", "nothing"), ("applied", "ended"), ("dropped", None),
             ("not_understood", None), ("answered", None), ("received", None)} <= said
+    assert unsure > 20, unsure
 
 
 # --------------------------------------------------------------- order and ids
@@ -799,7 +1026,8 @@ def test_the_same_input_tells_the_same_story_and_is_left_alone():
     ("x" * 40, "x" * 24), ("ab " * 20, "ab ab ab ab ab ab ab ab"),
     ("\x1b[31mred", "[31mred"), ("dr‮um", "drum"), ("na​me", "name"),
     ("", None), ("   ", None), ("\x00\x07", None), (7, None), (None, None), (["Claude"], None),
-    ("You", None), ("you", None), ("Someone", None), ("ANOTHER TERMINAL", None), ("I", None)])
+    ("You", None), ("you", None), ("Someone", None), ("ANOTHER TERMINAL", None), ("I", None),
+    ("plume ", None), ("a  cue", None)])
 def test_a_sender_name_is_trimmed_printable_and_at_most_24_characters(claimed, shown):
     assert story.clean_sender(claimed) == shown
     if shown is not None:

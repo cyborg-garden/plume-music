@@ -86,9 +86,11 @@ HOLD_MAX_S = 30.0
 #: On a shared runner the fake device waits while the ear is this far behind it: more
 #: than this much of the input not yet read by the analysis thread.
 EAR_BEHIND_S = 0.5
-#: ... unless nothing has read that ring for this long: its reader has finished (a
-#: take's tail plays on after the ear has stopped), and waiting would only stall.
-EAR_GONE_S = 1.0
+#: ... unless its reader has finished (a take's tail plays on after the ear has
+#: stopped), or has not read it for this long: a wedged ear must not hold the take.
+#: Long, as a shared runner can leave a working ear unscheduled for over a second, and
+#: a device that plays on then runs whole bars past it: her strokes go unheard.
+EAR_GONE_S = 5.0
 #: Every live ring the transports feed the ear through (in, machine, voice).
 _EAR_RINGS: "weakref.WeakSet" = weakref.WeakSet()
 
@@ -107,6 +109,7 @@ def _watch_the_ear() -> None:
 
     def read(self, *a, **kw):
         self._ear_read_at = time.perf_counter()
+        self._ear_reader = threading.current_thread()
         return real_read(self, *a, **kw)
 
     ring.__init__, ring.read, ring._ear_watched = __init__, read, True
@@ -116,7 +119,9 @@ def ear_behind() -> bool:
     """Whether the analysis thread has fallen behind a fake device's input."""
     now = time.perf_counter()
     for ring in list(_EAR_RINGS):
+        reader = getattr(ring, "_ear_reader", None)
         if (ring.available > EAR_BEHIND_S * SR
+                and (reader is None or reader.is_alive())
                 and now - getattr(ring, "_ear_read_at", now) < EAR_GONE_S):
             return True
     return False

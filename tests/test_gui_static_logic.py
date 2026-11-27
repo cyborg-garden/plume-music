@@ -246,13 +246,32 @@ def test_a_stale_key_is_told_why_and_how_to_get_one(tmp_path):
     assert "restarted" in words["text"] and "open Plume again" in words["text"]
 
 
+#: The live screen's lost-touch hint names a command, and that line is not this test's to judge.
+LIVE_LOST_HINT = "'Lost touch with plume gui. If it has closed, plume stop still ends the take.'"
+
+
+def page_script_commands(text):
+    """The command-line steps a page script's words hand the player."""
+    text = text.replace(LIVE_LOST_HINT, "")
+    return [phrase for phrase in ("plume gui", "plume stop", "in a terminal", "your terminal", "pip install")
+            if phrase in text]
+
+
 def test_no_page_script_sends_the_player_to_a_terminal():
     """The page's own words give a next step inside the app."""
     static = Path(gui.__file__).with_name("gui_static")
     for path in sorted(static.glob("*.js")):
-        text = path.read_text(encoding="utf-8")
-        for phrase in ("plume gui url", "in a terminal", "your terminal", "pip install"):
-            assert phrase not in text, f"{path.name} says {phrase!r}"
+        assert page_script_commands(path.read_text(encoding="utf-8")) == [], path.name
+
+
+@pytest.mark.parametrize("line", [
+    "note = 'That did not reach plume gui. Run plume stop to end the take.';",
+    "note = 'Is plume gui still running?';",
+    "note = 'Open a new link from your terminal.';",
+    "note = 'Lost touch with plume gui. Run plume stop.';"])
+def test_the_terminal_check_sees_a_command_however_it_is_spelled(line):
+    assert page_script_commands(line) != []
+    assert page_script_commands("hint = " + LIVE_LOST_HINT + ";") == []
 
 
 def test_only_day_and_night_are_offered():

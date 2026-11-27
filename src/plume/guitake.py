@@ -88,7 +88,8 @@ OPEN_FAILED = ("Plume could not open the device. Set it to 48000 Hz in this comp
 AUDIO_PART_MISSING = ("Plume needs its audio part, and this copy does not have it. "
                       "Install Plume with its audio part, then open it again.")
 NO_LISTING = "Plume could not ask this computer for its audio devices."
-SOUND_OFF = "Plume was started with sound turned off. Quit Plume and open it again."
+SOUND_OFF = ("Plume was started with sound turned off, so it cannot listen or play. "
+             "Start it with sound on to play.")
 TERMINAL_TAKE = "A take is already running from a terminal."
 ALREADY_RUNNING = "A take is already running."
 DID_NOT_START = "The take did not start."
@@ -105,9 +106,9 @@ FLAT_CHANNEL_HOME = "Nothing came in on channel {channel}. Try another channel."
 #: Where each system keeps the switch that lets a program use the microphone.
 _MIC_HOWTOS = {
     "darwin": "To allow the microphone on a Mac, open System Settings, then Privacy & Security, then Microphone.",
-    "win32": "To allow the microphone on Windows, open Settings, then Privacy & security, then Microphone.",
+    "win32": "To allow the microphone on Windows, open Settings, then the privacy section, then Microphone.",
 }
-_MIC_HOWTO_OTHER = "To check the microphone on Linux, open your sound settings and look at the input."
+_MIC_HOWTO_OTHER = "To check the microphone, open this computer's sound settings and look at the input."
 
 
 def mic_howto(platform: str | None = None) -> str:

@@ -991,9 +991,18 @@ def test_the_pages_words_never_send_the_player_to_a_terminal():
             assert phrase not in low, f"{name} says {phrase!r}"
 
 
+def test_sound_turned_off_does_not_promise_that_reopening_fixes_it():
+    """The setting comes from where Plume was started, so opening it again there changes nothing."""
+    low = guitake.SOUND_OFF.lower()
+    assert "sound turned off" in low and "open it again" not in low and "quit" not in low
+
+
 def test_a_blocked_microphone_gets_one_line_for_each_system():
     mac, windows, linux = (guitake.mic_howto(name) for name in ("darwin", "win32", "linux"))
-    assert "System Settings" in mac and "Windows" in windows and "Linux" in linux
+    assert "System Settings" in mac and "Windows" in windows
+    # Any other system gets a line that names none, since it may not be the one guessed.
+    assert not any(name in linux for name in ("Linux", "Mac", "Windows"))
+    assert guitake.mic_howto("freebsd14") == linux
     assert len({mac, windows, linux}) == 3
     for line in (mac, windows, linux):
         assert "\n" not in line and line.count(".") == 1 and line.endswith(".")

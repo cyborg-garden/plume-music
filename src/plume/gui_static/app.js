@@ -963,7 +963,7 @@ async function sendHear(on) {
     else if (S.home.hear_me) S.home.hear_me.default = answer.doc.hear_me;
   } else {
     note.hidden = false;
-    note.textContent = (answer && answer.doc && answer.doc.error) || 'That did not reach plume gui.';
+    note.textContent = (answer && answer.doc && answer.doc.error) || 'That did not reach Plume.';
   }
   drawHear();
 }
@@ -981,7 +981,7 @@ async function sendOutput(value) {
   if (answer && answer.ok) {
     const holder = asked ? S.home.devices.find(function (d) { return d.id === asked.id; }) : S.home;
     if (holder) { holder.output = answer.doc.output || null; holder.output_problem = null; holder.send_channel = null; }
-  } else showSettingsNote((answer && answer.doc && answer.doc.error) || 'That did not reach plume gui.');
+  } else showSettingsNote((answer && answer.doc && answer.doc.error) || 'That did not reach Plume.');
   drawOutput();
   drawHear();
   drawSummary();
@@ -999,7 +999,7 @@ async function sendSend(on) {
   if (answer && answer.ok) {
     const device = asked && S.home.devices.find(function (d) { return d.id === asked.id; });
     if (device) device.send_channel = on ? channel : null;
-  } else showSettingsNote((answer && answer.doc && answer.doc.error) || 'That did not reach plume gui.');
+  } else showSettingsNote((answer && answer.doc && answer.doc.error) || 'That did not reach Plume.');
   drawHear();
 }
 /* A lost page key, or a take started since: then there is nothing here to redraw. */
@@ -1079,7 +1079,7 @@ async function sendMidi(choice) {
   else if (answer && answer.status === 409 && answer.doc && answer.doc.error && S.home) S.home.midi = { ...midiDoc(), problem: answer.doc.error };
   else {
     note.hidden = false;
-    note.textContent = (answer && answer.doc && answer.doc.error) || 'That did not reach plume gui.';
+    note.textContent = (answer && answer.doc && answer.doc.error) || 'That did not reach Plume.';
   }
   drawMidi();
   drawSummary();
@@ -1332,7 +1332,7 @@ async function answerMoved(answer) {
   if (reply && reply.ok) { S.setupShown = settled; followSetup(then.step === 'listen' ? then : reply.doc); return; }
   if (reply && reply.status === 400 && reply.doc && reply.doc.error) { backHome(reply.doc.error, true); return; }
   if (reply && (reply.status === 401 || (reply.status === 409 && reply.doc && reply.doc.live))) { settleSetup(reply); return; }
-  S.setup = Object.assign({}, asked, { note: (reply && reply.doc && reply.doc.error) || 'That did not reach plume gui. Try again.' });
+  S.setup = Object.assign({}, asked, { note: (reply && reply.doc && reply.doc.error) || 'That did not reach Plume. Try again.' });
   drawSetup();
 }
 function pickedName() {
@@ -1437,7 +1437,7 @@ async function resetSetup() {
   let answer = null;
   try { answer = await send('setup/reset', {}); } catch (err) { /* said below */ }
   if (answer && answer.status === 401) { problem(answer); return; }
-  if (!answer || !answer.ok) { note.textContent = 'That did not reach plume gui.'; return; }
+  if (!answer || !answer.ok) { note.textContent = 'That did not reach Plume.'; return; }
   S.form.channel = null;
   if (S.home) {
     S.home.devices.forEach(function (d) { d.hear_me = false; d.output = null; d.output_problem = null; d.send_channel = null; });

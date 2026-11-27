@@ -806,7 +806,7 @@ def test_a_tick_that_cannot_reach_the_bridge_does_not_stay_ticked(tmp_path, docs
         page.down = true;
         {TICK}
         return {{ ticked: $('hear-me').checked, note: $('hear-note').textContent }};""")
-    assert out == {"ticked": False, "note": "That did not reach plume gui."}
+    assert out == {"ticked": False, "note": "That did not reach Plume."}
 
 
 def test_each_device_shows_its_own_tick(tmp_path, docs):
@@ -2011,7 +2011,7 @@ def test_a_set_up_again_that_fails_says_so(tmp_path, docs):
         page.failNext['setup/reset'] = 1;
         $('set-again').click(); await page.settle();
         return $('set-again-note').textContent;""")
-    assert out == "That did not reach plume gui."
+    assert out == "That did not reach Plume."
 
 
 def test_real_bridge_answers_walk_the_whole_flow_into_the_take(tmp_path, docs, monkeypatch):
@@ -2509,7 +2509,7 @@ def test_a_yes_that_never_arrived_can_still_be_a_no(tmp_path, docs):
         page.down = false;
         $('setup-no').click(); await page.settle();
         return {{ note, saved: page.posts('setup/answer').length, starts: page.posts('start') }};""")
-    assert out["note"] == "That did not reach plume gui. Try again."
+    assert out["note"] == "That did not reach Plume. Try again."
     assert out["starts"] == [{"style": "", "device": BOX}]
 
 

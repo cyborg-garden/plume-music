@@ -3,9 +3,10 @@
 One list of true events for a take. The page reads it. An agent reads it. Both
 read the same list, so they never disagree about what happened.
 
-Status: draft for the owner's read. The reader (`plume.story`) is built and
-tested. The socket parts (the `events` op, the ring, named senders) are specified
-here and not built.
+Status: draft for the owner's read. The reader and the ring (`plume.story`) are
+built and tested. These are specified here and not built: the `events` op, the
+take holding a ring, named senders (`--from`, `sender`, the `agent` source), the
+protocol number in the `status` reply, and the "No take found" lines.
 
 ## The rule
 
@@ -36,7 +37,8 @@ says less.
   "cue": 3,
   "facts": [
     {"in": "rows", "index": 33, "field": "form.applied_cue", "part": 0},
-    {"in": "cues", "index": 3, "field": "text"}
+    {"in": "cues", "index": 3, "field": "text", "part": 0},
+    {"in": "rows", "index": 33, "field": "cue_effects", "part": 0}
   ]
 }
 ```
@@ -48,7 +50,7 @@ says less.
 | `kind` | `cue`, `band` or `end`. |
 | `state` | For a cue, what may be claimed. See the next section. |
 | `outcome` | For an applied cue, what it did. |
-| `bar` | The bar the event belongs to. `null` if no bar had sounded yet. |
+| `bar` | The bar the event belongs to. `null` if no bar had sounded yet, or if a cue was asked at a bar the ring no longer holds. |
 | `sentence` | One short line. This is the story line. |
 | `intent` | Where a received cue waits. Never a result. |
 | `settled` | On a cue's own event: `true` once its result is known. `null` on other events. |
@@ -97,6 +99,14 @@ So `applied` means "reached the band", and `outcome` says what happened next.
 The outcome comes from `record.translate`, the reader the take page already
 uses. The story feed does not decide outcomes a second way.
 
+A sentence that says the music changed names the row field that shows the
+change, beside the field that names the cue.
+
+| Outcome | The field in `facts` |
+|---|---|
+| `landed` | The row's `cue_effects` note for the cue. For a cue that moved the form, `form.action` and `form.reason`. |
+| `ended` | `form.action` of the row that ended the take. That is the cue's row, or the next row when another cue on the same line took the action. |
+
 ## Intent and fact are separate sentences
 
 A received cue has two sentences, in two fields.
@@ -131,6 +141,7 @@ cue name or a sender.
 | Held | "Faster is on hold. A loop is holding the tempo." |
 | Waiting | "Faster reached the band at bar 33. What it did is not written yet." |
 | Changed nothing | "Busier reached the band at bar 33 and changed nothing." |
+| Reached the band, and the records say no more | "Busier reached the band at bar 33." / "A cue reached the band at bar 33." |
 | Unsure | "The band jumped at bar 33. The log does not say this cue did it." |
 | Tone | "Darker reached the band at bar 33. I can't find that the tone changed." |
 | Dropped | "Busier ran out of time at bar 49." |
@@ -178,13 +189,14 @@ A new `events` op on the cue socket.
     "events": [ ... the newest 50 events ... ]}
 ```
 
-The take keeps two small lists in memory:
+The take keeps one `story.Ring` in memory. It holds two small lists:
 
 - the last 256 decision rows, added where a decision row is made;
-- the last 64 cue rows, added where the socket accepts a cue.
+- the cue rows those decision rows can still speak of, added where the socket
+  accepts a cue.
 
-The op runs `story.story()` over those two lists and returns the newest events.
-No file is read. A take without `--record` has a story.
+The op asks the ring for its story and returns the newest events. No file is
+read. A take without `--record` has a story.
 
 Rules for the ring:
 
@@ -192,12 +204,45 @@ Rules for the ring:
   for a recorder, a bar, or the take folder.
 - Each cue row gets a `seq`, counting up from the first cue of the take. Event
   ids use it, so they stay steady when old rows leave the ring.
-- Once a decision row has left the ring, the take passes `partial=True`. The
-  reader then says nothing about how the take began, because the oldest row it
-  holds is not the first bar.
-- The op is read-only. It never touches the cue queue and never blocks the band.
+- The op is read-only. It never touches the cue queue. The read runs outside
+  the audio path, and its cost is measured when the op is built.
 - The reply is whole each time. A reader replaces its list, keyed by `id`.
   No cursor, no "since".
+
+### How the two lists age out
+
+A decision row names a cue by its words. The reader finds the cue row by taking
+the oldest cue row with those words that no earlier row took. That is only right
+while a cue row and the row that took it are both held, or both gone. If the
+cue row stays after its row has left, a later row with the same words is read
+as its result, and the wrong sender is credited.
+
+So the two lists age out by one rule:
+
+- A cue row leaves with the decision row that took it, and never before. The
+  ring finds which cue row a leaving row took by the same oldest-first walk.
+- A cue row still waiting stays, however old it is.
+- A loop cue or a sound cue leaves once the rows of its bar have left. No row
+  can take it.
+- The oldest decision row leaves when there are more than 256. It also leaves
+  early while more than 64 cue rows are held, down to one row. A waiting cue row
+  is never dropped, so the socket has to bound how many cues can wait at once.
+
+Once a decision row has left, the story is of a cut take, and the reader holds
+to these rules:
+
+- It says nothing about how the take began. The oldest row is not the first bar.
+- A cue asked before the oldest row has `bar: null`, and its result has no
+  `detail`. The bar it was asked at has left, and the take page's sentence would
+  say "before the first bar".
+- On the oldest row, a change that only the bar before could prove is not told
+  either way. The line is "Busier reached the band at bar 33."
+
+`story.story(rows, cues, partial=True)` reads two lists that were cut some other
+way. It cannot know which old cue rows are still waiting. A cue row logged
+before the oldest row then gets no event, the row that takes its words speaks
+with no sender, and a later cue with the same words shows no `intent`. This
+reading says less and is never wrong. The ring is the way to keep the senders.
 
 ## Where finished-take events come from
 
@@ -211,7 +256,8 @@ so the recorder holds such a cue and writes it once the folder opens.
 
 The ring does not wait. The cue row goes into the ring at once, with no bar, and
 the feed shows it as received at once. Its `bar` is `null`. When the take opens
-and a row applies the cue, the result joins the list under the same `id`.
+and a row applies the cue, the result joins the list. The cue's own event keeps
+its `id` (`c1`), and the result's `id` is built from it (`c1-applied`).
 
 ## The sender
 
@@ -235,8 +281,10 @@ Names:
 - `--from NAME` on the command line.
 - `sender` in code and in JSON. `from` is a Python keyword.
 - `source` stays what it is: which door the cue came through (`gui`, `cli`,
-  `voice`, and `agent` once named senders are built). A cue with a `sender` and
-  no known source reads as the sender's claimed name.
+  `voice`, and `agent` once named senders are built).
+- A cue with a `sender` reads as the claimed name, whichever door it came
+  through. A cue with no `sender` reads as the door's word: "You", "Another
+  terminal" or "Someone".
 
 The take page's longer sentence (`detail`) uses `record.py`'s own word for the
 sender. It names the source until the named-sender change teaches it the name.
@@ -295,6 +343,11 @@ appears only on takes the page started.
 ```python
 story.story(rows, cues=None, ending=None, *, live=True, partial=False, route="unknown")
 story.clean_sender(value)
+
+ring = story.Ring(max_rows=256, max_cues=64)
+ring.add_cue(cue_row)      # returns the cue's seq
+ring.add_row(decision_row)
+ring.story(live=True, route="unknown")
 ```
 
 Pure. No file, no audio, no device, no network, no clock.
@@ -316,7 +369,7 @@ either sentence is true of either cue.
 | Fixture | What it proves |
 |---|---|
 | Held cue, before the take opens | A cue with no bar and no row shows as received at once. |
-| Held cue, after the take opens | The same cue lands, under the same id. |
+| Held cue, after the take opens | The same cue lands. Its own event keeps its id. |
 | No record folder | Lists in memory are enough. No ending, no file. |
 | Unknown source | An unknown source is "Someone". A bad name is no name. |
 | Dropped cue | Dropped comes only from the row that says so. |
@@ -324,12 +377,19 @@ either sentence is true of either cue.
 | Not understood | The parser's reply, and the words are never repeated. |
 | Never used | A cue no row took is only ever received. |
 | Row without a cue log | The row speaks, and names no sender. |
+| Old cue, new cue | Two senders ask for the same thing, far apart. The first cue's row has left, and the later row is credited to the later sender. |
+| Waiting across the cut | A cue asked before the oldest held row still lands as its own sender's. |
 
 The test reads every event in every fixture and checks each claim against the
-fact the event points at: the state, every number, the sender, the cue name and
-the intent. A second set of tests breaks a sentence on purpose and confirms the
-check fails. A seeded run of 400 random takes checks the same rule on cues that
-collide.
+fact the event points at: the state, every number, the sender, the cue name, the
+intent, and the row field behind a change. A second set of tests breaks a
+sentence on purpose and confirms the check fails. A seeded run of 400 random
+takes checks the same rule on cues that collide.
+
+A cut take is checked against the whole take behind it. A result may credit a
+cue only if the whole take credits the same cue for the same row. A seeded run
+of 30 long random takes checks this at every bar, for the ring and for lists cut
+by hand.
 
 ## Open questions for the owner
 
@@ -339,3 +399,5 @@ collide.
    leave those cues out of the story line and keep them in Details.
 4. "Claude asked to end." for an end cue, or the cue's own word ("Claude asked
    for stop.").
+5. A claimed name on a cue from the page or the mic. The feed shows the name.
+   The other choice is that those two doors always read "You".

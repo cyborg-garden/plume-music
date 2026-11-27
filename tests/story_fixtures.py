@@ -104,6 +104,23 @@ def row_without_a_cue_log() -> dict:
     return {"rows": rows, "cues": None, "ending": ending_doc(bars=12), "live": False}
 
 
+def old_cue_new_cue(first: dict) -> dict:
+    """A take longer than a ring holds.  Two senders ask for the same thing, 290
+    bars apart, and ``first`` is what the row at bar 12 did with the first cue."""
+    rows = song(320, band_bar=8, cues={12: first, 304: landed("busier")})
+    cues = [_named(cue_line("busier", 10, rows[9]["t_s"] + 1.0), "Claude"),
+            cue_line("busier", 300, rows[299]["t_s"] + 1.0, "gui")]
+    return {"rows": rows, "cues": cues, "ending": None, "live": True}
+
+
+def waiting_across_the_cut() -> dict:
+    """Two senders ask for the same thing, and each waits for its own phrase line."""
+    rows = song(13, band_bar=None, cues={8: landed("busier"), 12: landed("busier", 1.43, 1.6)})
+    cues = [{**cue_line("busier", 3, rows[2]["t_s"] + 1.0, "cli"), "sender": "one"},
+            {**cue_line("busier", 5, rows[5]["t_s"] + 1.0, "cli"), "sender": "two"}]
+    return {"rows": rows, "cues": cues, "ending": None, "live": True}
+
+
 ALL = {
     "held_cue_before_open": lambda: held_cue(opened=False),
     "held_cue_after_open": lambda: held_cue(opened=True),
@@ -115,4 +132,3 @@ ALL = {
     "never_used": never_used,
     "row_without_a_cue_log": row_without_a_cue_log,
 }
-

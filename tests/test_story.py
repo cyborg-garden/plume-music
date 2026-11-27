@@ -17,7 +17,8 @@ import pytest
 from plume import record, story
 from plume.mind import parse_cue
 from record_fixture import POISON, cue_line, ending_doc, landed, song
-from story_fixtures import ALL, EXPIRY_NOTE, POISON_CUES, held_cue, two_cues_one_boundary
+from story_fixtures import (ALL, EXPIRY_NOTE, POISON_CUES, held_cue, old_cue_new_cue,
+                            two_cues_one_boundary, waiting_across_the_cut)
 
 #: Fixed words in sentences ``record.translate`` wrote.  Their numbers are not bars.
 _FIXED = ("30 seconds",)
@@ -42,14 +43,36 @@ def _dig(doc: dict, path: str):
     return doc
 
 
+def _row_of(event: dict, rows: list[dict]):
+    """(bar, field, place) of the row cue an event is the result of, or None."""
+    for fact in event["facts"]:
+        if fact["in"] == "rows" and fact["field"] in ("form.applied_cue", "form.dropped_cue"):
+            return rows[fact["index"]]["bar"], fact["field"], fact["part"]
+    return None
+
+
 def check_facts(events: list[dict], fx: dict) -> None:
-    """Every claim an event makes is in the input it points at, or this raises."""
+    """Every claim an event makes is in the input it points at, or this raises.
+
+    ``fx["whole"]`` is the uncut take behind a cut one.  With it, a result may
+    credit a cue only if the whole take credits the same cue for the same row.
+    """
     rows = [r for r in fx["rows"] if record._is_row(r)]
     cues = fx["cues"] or []
+    whole = fx.get("whole")
+    truth = {}
+    if whole:
+        whole_rows = [r for r in whole["rows"] if record._is_row(r)]
+        for e in story.story(whole_rows, whole["cues"], whole.get("ending"), live=fx["live"]):
+            if _row_of(e, whole_rows):
+                truth[_row_of(e, whole_rows)] = (
+                    whole["cues"][e["cue"]]["seq"] if e["cue"] is not None else None)
+    oldest_t = float(rows[0]["t_s"]) if rows else None
     for event in events:
         where = f"{event['id']}: {event['sentence']!r}"
         assert event["facts"], f"no fact behind {where}"
         bars, texts, fields, cue_docs = set(), [], set(), []
+        actions, notes, reasons = [], [], []
         for fact in event["facts"]:
             if fact["in"] == "rows":
                 row = rows[fact["index"]]
@@ -57,6 +80,12 @@ def check_facts(events: list[dict], fx: dict) -> None:
                 assert value is not None, f"{fact} is empty, behind {where}"
                 bars.add(row["bar"])
                 fields.add(fact["field"])
+                if fact["field"] == "form.action":
+                    actions.append(value)
+                if fact["field"] == "form.reason":
+                    reasons.append(value)
+                if fact["field"] == "cue_effects":
+                    notes.append(value[fact["part"]])
                 if fact["field"] in ("form.applied_cue", "form.dropped_cue"):
                     texts.append(value.split("; ")[fact["part"]])
                 if fact["field"] == "follow":
@@ -97,6 +126,27 @@ def check_facts(events: list[dict], fx: dict) -> None:
             assert event["kind"] in ("band", "end") and not cue_docs, where
         if event["outcome"] is not None:
             assert state == "applied" and event["outcome"] in story.OUTCOMES, where
+        # a sentence that says the music changed names the row field that shows it
+        if event["outcome"] == "landed":
+            said = f"cue {texts[0]!r} ("
+            assert (any(n.startswith(said) for n in notes)
+                    or "jump" in actions and any(said in r for r in reasons)), where
+        if event["outcome"] == "ended":
+            assert "end" in actions, where
+
+        # a cut take: the bar a cue was asked at leaves with the rows before the oldest
+        if fx.get("partial") and cue_docs and oldest_t is not None:
+            t = cue_docs[0].get("t_s")
+            if isinstance(t, (int, float)) and t < oldest_t:
+                if event["settled"] is not None:
+                    assert event["bar"] is None, where
+                assert event["detail"] is None, where
+        if event["detail"] is not None:
+            assert not (fx.get("partial") and "before the first bar" in event["detail"]), where
+        # a cut take credits the cue the whole take credits, or nobody
+        if whole and _row_of(event, rows):
+            credited = cue_docs[0]["seq"] if cue_docs else None
+            assert credited is None or credited == truth.get(_row_of(event, rows), "nobody"), where
 
         # every number in the words is a bar (or tempo) of a row it points at
         for words in (event["sentence"], event["intent"] or ""):
@@ -187,9 +237,14 @@ def _tamper_fact(event):
     event["facts"] = []
 
 
+def _tamper_effect(event):
+    event["facts"] = [f for f in event["facts"] if f["field"] != "cue_effects"]
+
+
 @pytest.mark.parametrize("ident, tamper", [
     ("c0-applied", _tamper_bar), ("c0", _tamper_who), ("c0", _tamper_state),
-    ("c0", _tamper_name), ("c0", _tamper_intent), ("c0-applied", _tamper_fact)])
+    ("c0", _tamper_name), ("c0", _tamper_intent), ("c0-applied", _tamper_fact),
+    ("c0-applied", _tamper_effect)])
 def test_the_checker_fails_on_a_sentence_no_fact_supports(ident, tamper):
     fx = two_cues_one_boundary()
     events = tell(fx)
@@ -197,6 +252,30 @@ def test_the_checker_fails_on_a_sentence_no_fact_supports(ident, tamper):
     tamper(next(e for e in events if e["id"] == ident))
     with pytest.raises(AssertionError):
         check_facts(events, fx)
+
+
+def test_a_result_with_no_translated_sentence_says_only_that_the_cue_arrived(monkeypatch):
+    """The reader pairs each result with the take page's event.  With none to pair,
+    the row still proves the cue reached the band, and nothing more."""
+    fx = two_cues_one_boundary()
+    monkeypatch.setattr(record, "translate", lambda *a, **k: [])
+    events = tell(fx)
+    check_facts(events, fx)
+    assert [(e["sentence"], e["outcome"], e["detail"]) for e in events if e["state"] == "applied"] == [
+        ("A cue reached the band at bar 16.", None, None)] * 2
+
+
+def test_a_running_take_never_says_a_cue_was_not_used(monkeypatch):
+    """Even if the take page's reader called it too late: the take is not over."""
+    fx = ALL["never_used"]()
+    late = [e for e in record.translate(fx["rows"], fx["ending"], fx["cues"], live=False)
+            if e.get("cue_outcome") == "unused"]
+    assert late and late[0]["label"].endswith(", too late")
+    monkeypatch.setattr(record, "translate", lambda *a, **k: late)
+    over = story.story(fx["rows"], fx["cues"], fx["ending"], live=False)
+    assert [e["id"] for e in over if e["kind"] == "cue"] == ["c0", "c0-unused"]
+    running = story.story(fx["rows"], fx["cues"], None, live=True)
+    assert [e["id"] for e in running if e["kind"] == "cue"] == ["c0"]
 
 
 def test_a_fact_taken_out_of_the_input_takes_its_sentence_with_it():
@@ -335,6 +414,247 @@ def test_a_row_with_no_cue_log_names_no_sender():
     assert (cue["id"], cue["sentence"], cue["who"]) == ("b8-applied0", "Busier, from bar 8.", None)
 
 
+# ------------------------------------------------------------- a take cut short
+
+def _ring_fx(fx: dict, **limits) -> dict:
+    """The fixture as a running take's ring holds it, with the uncut take beside it."""
+    ring = story.Ring(**limits)
+    cues = sorted(enumerate(fx["cues"]), key=lambda c: (c[1]["bar"], c[0]))
+    for row in fx["rows"]:
+        while cues and cues[0][1]["bar"] <= row["bar"]:
+            ring.add_cue(cues.pop(0)[1])
+        ring.add_row(row)
+    whole = {"rows": fx["rows"], "cues": [{**c, "seq": n} for n, c in enumerate(fx["cues"])]}
+    return {"rows": ring.rows, "cues": ring.cues, "ending": None, "live": True,
+            "partial": ring.partial, "whole": whole, "ring": ring}
+
+
+def test_a_cue_whose_row_has_left_is_not_paired_with_a_later_row():
+    """Two senders ask for the same thing, far apart.  The first one's row leaves."""
+    for first in (landed("busier"), {"dropped": "busier"}):
+        fx = _ring_fx(old_cue_new_cue(first))
+        assert fx["partial"] and len(fx["rows"]) == 256
+        assert [c["seq"] for c in fx["cues"]] == [1], "the old cue row left with its row"
+        events = fx["ring"].story()
+        check_facts(events, fx)
+        assert lines([e for e in events if e["kind"] == "cue"]) == [
+            ("c1", "received", "You asked for busier."),
+            ("c1-applied", "applied", "Busier, from bar 304.")]
+        result = events[-1]
+        assert (result["who"], result["cue"], events[-2]["settled"]) == ("You", 0, True)
+        assert result["detail"].startswith("Bar 304. You asked for busier at bar 299.")
+
+
+def test_lists_cut_by_hand_name_no_sender_they_cannot_prove():
+    """No ring: the old cue row is still in the list and its row is not."""
+    fx = old_cue_new_cue(landed("busier"))
+    whole = {"rows": fx["rows"], "cues": [{**c, "seq": n} for n, c in enumerate(fx["cues"])]}
+    cut = {**fx, "rows": fx["rows"][-256:], "cues": whole["cues"][-64:], "partial": True,
+           "whole": whole}
+    events = tell(cut, partial=True)
+    check_facts(events, cut)
+    assert lines([e for e in events if e["kind"] == "cue"]) == [
+        ("c1", "received", "You asked for busier."),
+        ("b304-applied0", "applied", "Busier, from bar 304.")]
+    asked, result = [e for e in events if e["kind"] == "cue"]
+    assert (result["who"], result["sender"], result["cue"], result["detail"]) == (None,) * 4
+    assert (asked["intent"], asked["settled"]) == (None, False)
+    assert "Claude" not in json.dumps(events)
+
+
+def test_the_checker_fails_on_a_result_paired_with_a_cue_whose_row_has_left():
+    """What the reader told before it knew how the lists age out."""
+    fx = old_cue_new_cue(landed("busier"))
+    whole = {"rows": fx["rows"], "cues": [{**c, "seq": n} for n, c in enumerate(fx["cues"])]}
+    cut = {**fx, "rows": fx["rows"][-256:], "cues": whole["cues"][-64:], "partial": True,
+           "whole": whole}
+    wrong = story.story(cut["rows"], cut["cues"], live=True)      # the cut is not declared
+    assert ("c0-applied", "Claude") in [(e["id"], e["who"]) for e in wrong]
+    with pytest.raises(AssertionError):
+        check_facts(wrong, cut)
+
+
+def test_a_cue_still_waiting_when_its_bar_leaves_keeps_its_sender():
+    """The first cue is asked at bar 3 and lands at bar 8, with rows 5 to 8 held."""
+    fx = waiting_across_the_cut()
+    ring = story.Ring(max_rows=4)
+    for doc in fx["cues"]:
+        ring.add_cue(doc)
+    for row in fx["rows"][:9]:
+        ring.add_row(row)
+    cut = {"rows": ring.rows, "cues": ring.cues, "ending": None, "live": True, "partial": True,
+           "whole": {"rows": fx["rows"][:9],
+                     "cues": [{**c, "seq": n} for n, c in enumerate(fx["cues"])]}}
+    events = ring.story()
+    check_facts(events, cut)
+    assert [(e["id"], e["bar"], e["sentence"], e["who"]) for e in events if e["kind"] == "cue"] == [
+        ("c0", None, "one asked for busier.", "one"),
+        ("c1", 5, "two asked for busier.", "two"),
+        ("c0-applied", 8, "Busier, from bar 8.", "one")]
+    by_id = {e["id"]: e for e in events}
+    assert by_id["c0-applied"]["detail"] is None, "the take page would say 'before the first bar'"
+    assert (by_id["c0"]["settled"], by_id["c1"]["settled"]) == (True, False)
+    assert by_id["c1"]["intent"] == "Queued for the next phrase."
+    # the same lists with no ring: the row speaks, and names nobody
+    plain = story.story(ring.rows, ring.cues, live=True, partial=True)
+    check_facts(plain, cut)
+    assert [(e["id"], e["who"], e["intent"]) for e in plain if e["kind"] == "cue"] == [
+        ("c1", "two", None), ("b8-applied0", None, None)]
+    # four bars on, the second cue lands as itself
+    for row in fx["rows"][9:]:
+        ring.add_row(row)
+    assert [c["seq"] for c in ring.cues] == [1]
+    assert [(e["id"], e["who"]) for e in ring.story() if e["state"] == "applied"] == [
+        ("c1-applied", "two")]
+
+
+def test_a_loop_cue_leaves_the_ring_with_the_rows_of_its_bar():
+    ring = story.Ring(max_rows=4)
+    rows = song(12, band_bar=None)
+    ring.add_cue({**cue_line("make a loop", 2, rows[1]["t_s"] + 1.0), "at": "now", "ttl_bars": 0,
+                  "loop": {"op": "record", "ok": True}})
+    for row in rows[:5]:
+        ring.add_row(row)
+    assert [e["state"] for e in ring.story() if e["kind"] == "cue"] == ["answered"]
+    for row in rows[5:]:
+        ring.add_row(row)
+    assert ring.cues == [] and not [e for e in ring.story() if e["kind"] == "cue"]
+
+
+def test_one_part_of_a_cue_row_can_leave_while_the_other_waits():
+    """One cue row asks for two things.  The row that took the first has left."""
+    rows = song(13, band_bar=None, cues={4: landed("busier"), 12: landed("busier", 1.43, 1.6)})
+    ring = story.Ring(max_rows=4)
+    ring.add_cue({**cue_line("busier; next section", 2, rows[1]["t_s"] + 1.0, "cli"),
+                  "sender": "one"})
+    ring.add_cue({**cue_line("busier", 10, rows[9]["t_s"] + 1.0, "cli"), "sender": "two"})
+    for row in rows:
+        ring.add_row(row)
+    assert [c["seq"] for c in ring.cues] == [0, 1]
+    assert [(e["id"], e["who"], e["bar"]) for e in ring.story() if e["kind"] == "cue"] == [
+        ("c0.1", "one", None), ("c1", "two", 9), ("c1-applied", "two", 12)]
+
+
+def test_a_carried_cue_with_no_clock_has_no_bar_either():
+    rows = song(9, band_bar=None, cues={8: landed("busier")})
+    ring = story.Ring(max_rows=4)
+    ring.add_cue({**cue_line("busier", 3, None, "cli"), "sender": "one"})
+    for row in rows:
+        ring.add_row(row)
+    assert [(e["id"], e["bar"], e["detail"]) for e in ring.story() if e["kind"] == "cue"] == [
+        ("c0", None, None), ("c0-applied", 8, None)]
+
+
+def test_a_loop_cue_answered_before_the_oldest_row_is_left_out_of_a_cut_list():
+    rows = song(12, band_bar=None)
+    cues = [{**cue_line("make a loop", 2, rows[1]["t_s"] + 1.0), "at": "now", "ttl_bars": 0,
+             "loop": {"op": "record", "ok": True}}]
+    assert [e["state"] for e in story.story(rows[1:], cues, partial=True)] == ["answered"]
+    assert story.story(rows[6:], cues, partial=True) == []
+
+
+def test_too_many_cue_rows_shorten_the_rows_and_drop_no_waiting_cue():
+    rows = song(40, band_bar=None, cues={b: landed("busier") for b in range(4, 40, 4)})
+    ring = story.Ring(max_rows=32, max_cues=3)
+    for row in rows:
+        if row["bar"] % 4 == 1:
+            ring.add_cue(cue_line("busier", row["bar"], row["t_s"] - 1.0, "cli"))
+        ring.add_row(row)
+    assert len(ring.cues) <= 3 and 1 <= len(ring.rows) < 32
+    waiting = cue_line("next section", 39, rows[39]["t_s"] + 1.0)
+    for _ in range(5):
+        ring.add_cue(waiting)
+    assert len(ring.cues) >= 5 and len(ring.rows) == 1, "a waiting cue is never dropped"
+    assert ring.add_cue("not a cue row") is None and ring.add_cue(waiting) == 15
+
+
+def test_a_change_only_the_bar_before_could_prove_is_not_told_on_the_oldest_row():
+    """At the density limit the row before says whether anyone heard a change."""
+    rows = song(12, band_bar=None, cues={7: {"density": 0.5}, 8: {
+        "applied": "busier", "density": 1.0,
+        "effects": ["cue 'busier' (texture:busier): density x1.00 -> x1.43"]}})
+    cues = [cue_line("busier", 8, rows[7]["t_s"] + 1.0, "gui")]
+    whole = next(e for e in story.story(rows, cues) if e["state"] == "applied")
+    assert whole["sentence"] == "Busier, from bar 8."
+    cut = next(e for e in story.story(rows[8:], cues, partial=True) if e["state"] == "applied")
+    assert (cut["sentence"], cut["outcome"], cut["detail"]) == (
+        "Busier reached the band at bar 8.", None, None)
+
+
+def _long_take(rng) -> dict:
+    """A take longer than its ring, with few words and few senders, so cues collide."""
+    words = ("busier", "faster", "stop", "next section", "purple monkey dishwasher")
+    notes = {"busier": "cue 'busier' (texture:busier): density x1.00 -> x1.43",
+             "faster": "cue 'faster' (tempo:faster): tempo x1.00 -> x1.08"}
+    bars = rng.randint(30, 70)
+    waiting, marks, cues = [], {}, []
+    for bar in range(bars):
+        for _ in range(rng.choice((0, 0, 0, 1, 1, 2))):
+            word = rng.choice(words)
+            cue = cue_line(word, bar, None, rng.choice(("gui", "cli", "agent")))
+            cue["bar_asked"] = bar
+            if rng.random() < 0.6:
+                cue["sender"] = rng.choice(("Claude", "helper"))
+            cues.append(cue)
+            waiting.append((bar, word))
+        if bar % 4 == 0 or rng.random() < 0.1:
+            due = [w for w in waiting if w[0] < bar]
+            rng.shuffle(due)
+            cut = rng.randint(0, len(due))
+            applied = [w for _, w in sorted(due[:cut], key=waiting.index)]
+            dropped = [w for b, w in sorted(due[cut:], key=waiting.index) if bar - b > 12]
+            took = applied + dropped
+            for word in took:           # the form takes the oldest cue with those words
+                waiting.remove(next(w for w in waiting if w[1] == word))
+            if took:
+                marks[bar] = {"applied": "; ".join(applied) or None,
+                              "dropped": "; ".join(dropped) or None,
+                              "effects": [notes[w] for w in applied if w in notes]}
+    rows = song(bars, band_bar=rng.choice((None, 4)), cues=marks)
+    for cue in cues:
+        cue["t_s"] = rows[cue.pop("bar_asked")]["t_s"] + rng.uniform(0.1, 2.0)
+    return {"rows": rows, "cues": cues, "ending": None, "live": True}
+
+
+def test_a_ring_tells_what_the_whole_take_tells_about_the_rows_it_holds():
+    """The ring is checked against the uncut take, at every bar of 30 random takes."""
+    import random
+    rng = random.Random(20261127)
+    carried = crediting = 0
+    for _ in range(30):
+        fx = _long_take(rng)
+        ring = story.Ring(max_rows=rng.choice((4, 9, 16)), max_cues=rng.choice((3, 8, 64)))
+        cues = [{**c, "seq": n} for n, c in enumerate(fx["cues"])]
+        left = list(fx["cues"])
+        for j, row in enumerate(fx["rows"]):
+            while left and left[0]["bar"] <= row["bar"]:
+                ring.add_cue(left.pop(0))
+            ring.add_row(row)
+            whole = {"rows": fx["rows"][:j + 1], "cues": cues[:len(cues) - len(left)]}
+            cut = {"rows": ring.rows, "cues": ring.cues, "ending": None, "live": True,
+                   "partial": ring.partial, "whole": whole}
+            events = ring.story()
+            check_facts(events, cut)
+            assert len({e["id"] for e in events}) == len(events)
+            # every result the whole take tells of a held row is told here, the same
+            told = {e["id"]: e for e in events}
+            first = ring.rows[0]["bar"]
+            for e in story.story(whole["rows"], whole["cues"]):
+                at = _row_of(e, whole["rows"])
+                if at is None or at[0] < first:
+                    continue
+                mine = told[e["id"]]
+                assert (mine["who"], mine["sender"], mine["state"], mine["name"]) == (
+                    e["who"], e["sender"], e["state"], e["name"]), e["id"]
+                if at[0] > first:           # the oldest row has no bar before it
+                    assert (mine["sentence"], mine["outcome"]) == (e["sentence"], e["outcome"])
+                crediting += e["cue"] is not None
+            carried += sum(1 for e in events if e["settled"] is False and e["bar"] is None)
+            # and the same lists read with no ring never credit the wrong cue
+            check_facts(story.story(ring.rows, ring.cues, partial=ring.partial), cut)
+    assert carried > 20 and crediting > 500, (carried, crediting)
+
+
 # --------------------------------------------------- reaching is not changing
 
 def test_a_cue_that_reached_the_band_and_changed_nothing_says_so():
@@ -347,6 +667,20 @@ def test_a_cue_that_reached_the_band_and_changed_nothing_says_so():
     result = next(e for e in events if e["state"] == "applied")
     assert result["outcome"] == "nothing"
     assert result["sentence"] == "Busier reached the band at bar 8 and changed nothing."
+
+
+def test_an_end_cue_whose_line_another_cue_took_ends_one_bar_later():
+    rows = song(10, band_bar=None, cues={8: {"applied": "stop; busier", "action": "hold"},
+                                         9: {"action": "end"}})
+    cues = [cue_line("stop", 5, rows[4]["t_s"] + 1.0, "gui")]
+    fx = {"rows": rows, "cues": cues, "ending": None, "live": True}
+    events = tell(fx)
+    check_facts(events, fx)
+    result = next(e for e in events if e["id"] == "c0-applied")
+    assert (result["sentence"], result["outcome"]) == ("Ending, one bar after bar 8.", "ended")
+    assert {"in": "rows", "index": 9, "field": "form.action"} in result["facts"]
+    fx["rows"][8]["form"]["action"] = "end"
+    assert next(e for e in tell(fx) if e["id"] == "c0-applied")["sentence"] == "Ending, from bar 8."
 
 
 def test_a_running_take_does_not_say_what_a_tempo_cue_did_before_the_next_bar():
@@ -470,6 +804,14 @@ def test_a_sender_name_is_trimmed_printable_and_at_most_24_characters(claimed, s
     assert story.clean_sender(claimed) == shown
     if shown is not None:
         assert len(shown) <= story.MAX_SENDER_CHARS and shown.isprintable()
+
+
+def test_a_claimed_name_is_used_whichever_door_the_cue_came_through():
+    rows = song(6, band_bar=None)
+    for source in ("gui", "voice", "cli", "agent", "root"):
+        cue = {**cue_line("busier", 3, rows[2]["t_s"] + 0.5, source), "sender": "Claude"}
+        event = next(e for e in story.story(rows, [cue]) if e["kind"] == "cue")
+        assert (event["sentence"], event["who"]) == ("Claude asked for busier.", "Claude")
 
 
 # ------------------------------------------------------------- junk and purity

@@ -21,6 +21,10 @@ already trusts.  This module pairs each of its cue events with a fact and adds a
 short sentence.  A cue's own words are shown only when they are exactly a cue
 plume knows (:func:`plume.record.cue_name`).
 
+A running take holds only its newest rows.  :class:`Ring` is the one way to cut
+the two lists, because a cue row and the row that took it have to leave together:
+see ``Ring`` and the spec's "How the two lists age out".
+
 Pure.  No file, no audio, no device, no network, no clock.
 """
 from __future__ import annotations
@@ -84,7 +88,10 @@ def clean_sender(value) -> str | None:
 
 
 def _who(doc: dict, cue: dict) -> tuple[str, str | None]:
-    """(the word for who sent this, the claimed name if there is one)."""
+    """(the word for who sent this, the claimed name if there is one).
+
+    A claimed name is used whichever door the cue came through.
+    """
     sender = clean_sender(doc.get("sender"))
     return sender or record._who(cue["source"]), sender
 
@@ -97,8 +104,8 @@ def _seqs(docs: list) -> list[int]:
     return own if fine and len(set(own)) == len(own) else list(range(len(docs)))
 
 
-def _clean_cues(cues) -> tuple[list, list[dict], list[int]]:
-    """(cue rows, the parts record reads from them, which row each part came from).
+def _clean_cues(cues) -> tuple[list, list[dict], list[tuple[int, int]]]:
+    """(cue rows, the parts record reads from them, each part's (row, place in it)).
 
     A cue log past record's limits reads as no cue log there, so it does here too.
     """
@@ -106,12 +113,53 @@ def _clean_cues(cues) -> tuple[list, list[dict], list[int]]:
     clean = record._clean_cue_log(docs)
     if clean is None:
         return [], [], []
-    origin: list[int] = []
+    origin: list[tuple[int, int]] = []
     for i, doc in enumerate(docs):
-        origin += [i] * len(record._clean_cue_log([doc]) or ())
+        origin += [(i, n) for n in range(len(record._clean_cue_log([doc]) or ()))]
     if len(origin) != len(clean):       # cannot happen; never guess whose cue it is
         return [], [], []
     return docs, clean, origin
+
+
+def _before_rows(rows: list[dict], clock, cue: dict) -> bool:
+    """Was this cue logged before the oldest row held?"""
+    if not rows:
+        return False
+    if cue["t_s"] is not None:
+        return record._sounding_bar(clock, cue) is None
+    return cue["bar"] is None or cue["bar"] < rows[0]["bar"]
+
+
+def _takes(text: str, bar: int, cue: dict) -> bool:
+    """May a row at ``bar`` that names ``text`` be naming this cue?  The test
+    ``record.translate`` uses."""
+    return cue["text"] == text and (cue["bar"] is None or cue["bar"] <= bar)
+
+
+def _held(rows: list[dict], clock, docs: list, clean: list[dict], origin: list,
+          spent: set | None) -> tuple[list, list[dict], list, set[int]] | None:
+    """The cue parts a cut take may still speak of, or None to keep them all.
+
+    Returns (cue rows for ``record.translate``, parts, each part's origin, the parts
+    logged before the oldest row held).  ``spent`` is from :class:`Ring`: the parts
+    a row that has left already took, and they are dropped.
+    """
+    keep, early = [], set()
+    for k, cue in enumerate(clean):
+        before = _before_rows(rows, clock, cue)
+        if origin[k] in (spent or ()):
+            continue
+        if before:
+            early.add(len(keep))
+        keep.append(k)
+    if len(keep) == len(clean) and not early:
+        return None
+    told = [docs[origin[k][0]] if "loop" in clean[k]
+            else {**docs[origin[k][0]], "text": clean[k]["text"]} for k in keep]
+    parts = [clean[k] for k in keep]
+    if record._clean_cue_log(told) != parts:    # cannot happen; never guess whose cue it is
+        return [], [], [], set()
+    return told, parts, [origin[k] for k in keep], early
 
 
 def _claims(rows: list[dict], clean: list[dict]) -> list[tuple[int, str, int, str, int | None]]:
@@ -126,7 +174,7 @@ def _claims(rows: list[dict], clean: list[dict]) -> list[tuple[int, str, int, st
 
     def claim(text: str, bar: int) -> int | None:
         for k, cue in enumerate(clean):
-            if k not in used and cue["text"] == text and (cue["bar"] is None or cue["bar"] <= bar):
+            if k not in used and _takes(text, bar, cue):
                 used.add(k)
                 return k
         return None
@@ -256,13 +304,36 @@ def story(rows, cues=None, ending: dict | None = None, *, live: bool = True,
     - ``facts``: where in the input each claim stands.
 
     A sentence never holds a cue's raw words, a key, a chord or a style it guessed.
+
+    ``partial`` on lists cut by hand is the safe reading and the lesser one.  A cue
+    row logged before the oldest row may have had its result in a row that has
+    left, and nothing here can say.  So it gets no event, the row that takes its
+    words speaks with no sender, and a later cue with the same words loses its
+    ``intent``.  :class:`Ring` cuts the lists so that none of this is lost.
     """
+    return _story(rows, cues, ending, live=live, partial=partial, route=route, spent=None)
+
+
+def _story(rows, cues, ending, *, live: bool, partial: bool, route: str,
+           spent: set | None) -> list[dict]:
     live = bool(live) and not isinstance(ending, dict)
+    partial = bool(partial)
     rows = [r for r in (rows if isinstance(rows, (list, tuple)) else ()) if record._is_row(r)]
     docs, clean, origin = _clean_cues(cues)
     seqs = _seqs(docs)
     clock = record._row_clock(rows)
-    told = record.translate(rows, ending, docs, live=live, route=route)
+    parts_of: dict[int, int] = {}
+    for i, _ in origin:
+        parts_of[i] = parts_of.get(i, 0) + 1
+    told_docs, early = docs, set()
+    held = _held(rows, clock, docs, clean, origin, spent) if partial else None
+    if held is not None:
+        told_docs, clean, origin, early = held
+    # With no ring, a cue logged before the oldest row is only a place in the queue:
+    # it takes the first row that names its words, and nothing is said about it.
+    ghosts = early if spent is None else set()
+    ghost_words = {clean[k]["text"] for k in ghosts}
+    told = record.translate(rows, ending, told_docs, live=live, route=route)
     claims = _claims(rows, clean)
     over = ({"in": "ending", "field": "reason"} if isinstance(ending, dict)
             else {"in": "call", "field": "live"})
@@ -282,22 +353,23 @@ def story(rows, cues=None, ending: dict | None = None, *, live: bool = True,
         return event
 
     # ---- every cue the socket took, the moment it took it
-    parts_of = [origin.count(i) for i in range(len(docs))]
-    part_no: dict[int, int] = {}
     receipts: dict[int, dict] = {}
     floors: dict[int, tuple] = {}
     for k, cue in enumerate(clean):
-        i = origin[k]
-        n = part_no[i] = part_no.get(i, -1) + 1
+        if k in ghosts:
+            continue
+        i, n = origin[k]
         ident = f"c{seqs[i]}" if parts_of[i] == 1 else f"c{seqs[i]}.{n}"
         who, sender = _who(docs[i], cue)
-        bar = record._sounding_bar(clock, cue)
+        # The bar a cue was asked at has left with the rows before the oldest one.
+        bar = None if k in early else record._sounding_bar(clock, cue)
         t = cue["t_s"]
         key = floors[k] = (-1 if bar is None else bar, float("inf") if t is None else t)
         if "loop" in cue:
             state, sentence = _answer(who, cue["loop"])
             receipts[k] = add(key, ident, "cue", sentence, bar=bar, state=state, settled=True,
-                              detail=record._loop_sentence(cue, record._asked_at(bar)),
+                              detail=(None if k in early
+                                      else record._loop_sentence(cue, record._asked_at(bar))),
                               who=who, sender=sender, cue=i,
                               facts=[{"in": "cues", "index": i, "field": "loop"}])
             continue
@@ -313,7 +385,8 @@ def story(rows, cues=None, ending: dict | None = None, *, live: bool = True,
         # back as a wish: the result, if one comes, says what the band made of them.
         sentence = (f"{who} sent a cue." if not name
                     else f"{who} asked to end." if kind == "end" else f"{who} asked for {name}.")
-        intent = _INTENT.get(cue["at"])
+        # Behind a cue nobody can place, where this one waits is not known either.
+        intent = None if cue["text"] in ghost_words else _INTENT.get(cue["at"])
         receipts[k] = add(key, ident, "cue", sentence, bar=bar, state="received", intent=intent,
                           settled=False, who=who, sender=sender, name=name, cue=i,
                           facts=[fact] + ([{"in": "cues", "index": i, "field": "at"}]
@@ -328,23 +401,27 @@ def story(rows, cues=None, ending: dict | None = None, *, live: bool = True,
         name = record.cue_name(text)
         facts = [{"in": "rows", "index": j, "field": f"form.{field}", "part": n}]
         who = sender = None
-        if k is not None:
-            facts.append({"in": "cues", "index": origin[k], "field": "text"})
-            who, sender = _who(docs[origin[k]], clean[k])
+        known = k is not None and k not in ghosts
+        if known:
+            facts.append({"in": "cues", "index": origin[k][0], "field": "text",
+                          "part": origin[k][1]})
+            who, sender = _who(docs[origin[k][0]], clean[k])
             receipts[k]["settled"] = True
-        ident = (f"{receipts[k]['id']}-{field[:-4]}" if k is not None
+        ident = (f"{receipts[k]['id']}-{field[:-4]}" if known
                  else f"b{row['bar']}-{field[:-4]}{n}")
         key = (row["bar"], float(row["t_s"]))
+        # The take page's sentence says when the cue was asked.  For a cue asked
+        # before the oldest row held, it would say "before the first bar".
         shared = dict(who=who, sender=sender, name=name, floor=floors.get(k),
-                      cue=origin[k] if k is not None else None,
-                      detail=event["sentence"] if event else None)
+                      cue=origin[k][0] if known else None,
+                      detail=event["sentence"] if event and k not in early else None)
         if field == "dropped_cue":
             said = name.capitalize() if name else "A cue"
             add(key, ident, "cue", f"{said} ran out of time at bar {row['bar']}.",
                 bar=row["bar"], state="dropped", facts=facts, **shared)
         elif parse_cue(text).get("kind") == "unknown":
             # Its receipt already says so.  With no receipt, this row is all there is.
-            if k is None:
+            if not known:
                 add(key, ident, "cue",
                     f"A cue I did not understand reached the band at bar {row['bar']}. "
                     "Nothing acted on it.", bar=row["bar"], state="not_understood",
@@ -354,11 +431,38 @@ def story(rows, cues=None, ending: dict | None = None, *, live: bool = True,
                 bar=row["bar"], state="applied", facts=facts, **shared)
         else:
             outcome = event["cue_outcome"]
+            # translate tells both endings as one outcome.  The row says which: when
+            # another cue on the line took its action, the next row carries the end.
+            if outcome == "ended" and record._form(row).get("action") != "end":
+                outcome = "ended_next"
+            # The same words twice on one row share their notes, as they share
+            # translate's events: either note is about either cue.
+            effect = record._effects_for(row, [text])[0]
+            step = record._DENSITY_NOTE_RE.search(effect) if effect else None
+            if (partial and j == 0 and outcome == "nothing" and step
+                    and step.group(1) != step.group(2)):
+                # The row logs a change, and only the bar before it could say whether
+                # anyone heard one.  That bar has left, so neither is said.
+                shared["detail"] = None
+                add(key, ident, "cue",
+                    f"{name.capitalize() if name else 'A cue'} reached the band at bar "
+                    f"{row['bar']}.", bar=row["bar"], state="applied", facts=facts, **shared)
+                continue
             if event["bar"] != row["bar"]:
                 sounding = rows[j + 1]
                 key = (sounding["bar"], float(sounding["t_s"]))
                 facts.append({"in": "rows", "index": j + 1, "field": "bar"})
-            if outcome == "ended_next":
+            # The fact that says the music changed, beside the one that names the cue.
+            if outcome == "landed":
+                if effect is not None:
+                    facts.append({"in": "rows", "index": j, "field": "cue_effects",
+                                  "part": row["cue_effects"].index(effect)})
+                else:
+                    facts += [{"in": "rows", "index": j, "field": "form.action"},
+                              {"in": "rows", "index": j, "field": "form.reason"}]
+            elif outcome == "ended":
+                facts.append({"in": "rows", "index": j, "field": "form.action"})
+            elif outcome == "ended_next":
                 facts.append({"in": "rows", "index": j + 1, "field": "form.action"})
             add(key, ident, "cue", _applied_sentence(outcome, name, event["bar"], row["bar"]),
                 bar=event["bar"], state="applied",
@@ -367,7 +471,7 @@ def story(rows, cues=None, ending: dict | None = None, *, live: bool = True,
     # ---- a cue no row ever took, once the take is over
     last = (rows[-1]["bar"], float("inf")) if rows else None
     for k, cue in enumerate(clean):
-        if live or not rows or "loop" in cue or receipts[k]["settled"]:
+        if live or not rows or "loop" in cue or k in ghosts or receipts[k]["settled"]:
             continue
         name = record.cue_name(cue["text"])
         asked = {"who": record._who(cue["source"]), "bar": record._sounding_bar(clock, cue),
@@ -384,9 +488,11 @@ def story(rows, cues=None, ending: dict | None = None, *, live: bool = True,
         receipts[k]["settled"] = True
         add(last, f"{receipts[k]['id']}-unused", "cue",
             f"{name.capitalize() if name else 'A cue'} was not used. The take ended first.",
-            bar=rows[-1]["bar"], state="received", detail=told[found]["sentence"],
-            who=receipts[k]["who"], sender=receipts[k]["sender"], name=name, cue=origin[k],
-            facts=[{"in": "cues", "index": origin[k], "field": "text"}, over])
+            bar=rows[-1]["bar"], state="received",
+            detail=None if k in early else told[found]["sentence"],
+            who=receipts[k]["who"], sender=receipts[k]["sender"], name=name, cue=origin[k][0],
+            facts=[{"in": "cues", "index": origin[k][0], "field": "text", "part": origin[k][1]},
+                   over])
 
     # ---- what the band did, and how the take ended
     first_at: dict[int, int] = {}
@@ -417,3 +523,89 @@ def story(rows, cues=None, ending: dict | None = None, *, live: bool = True,
         del event["_key"]
         event["seq"] = n
     return events
+
+
+class Ring:
+    """The newest rows and cue rows of a running take, cut so the story stays true.
+
+    A row that names a cue is paired with its cue row by the cue's words, oldest
+    first.  That holds only while a cue row and the row that took it are both here
+    or both gone.  So the ring cuts by one rule: a cue row leaves with the row that
+    took it, and never before.  A cue still waiting stays, however old.  A cue the
+    looper or a sound answered leaves once the rows of its bar have left.
+
+    At most ``max_rows`` rows are held.  When more than ``max_cues`` cue rows are
+    held, the oldest rows leave early, down to one row, taking their cue rows with
+    them.  A waiting cue row is never dropped, so the number of cues that can wait
+    at once is for the socket to bound.
+
+    Pure: lists in memory.  Not locked; the take guards it.
+    """
+
+    def __init__(self, max_rows: int = 256, max_cues: int = 64):
+        self.max_rows = max(1, int(max_rows))
+        self.max_cues = max(1, int(max_cues))
+        self.rows: list[dict] = []
+        self.cues: list[dict] = []
+        #: True once a row has left: ``rows`` no longer start at the take's first bar.
+        self.partial = False
+        self._count = 0
+        self._spent: set[tuple[int, int]] = set()      # (cue seq, part) a gone row took
+        self._blind = False
+
+    def add_cue(self, doc) -> int | None:
+        """Hold a cue row the socket took.  Returns its ``seq``, counted from the
+        take's first cue, or None if it is not a cue row."""
+        if not isinstance(doc, dict) or not isinstance(doc.get("text"), str):
+            return None
+        seq, self._count = self._count, self._count + 1
+        if not self._blind:
+            self.cues.append({**doc, "seq": seq})
+            self._cut()
+        return seq
+
+    def add_row(self, row) -> None:
+        """Hold a decision row, in the order rows are made."""
+        if record._is_row(row):
+            self.rows.append(row)
+            self._cut()
+
+    def story(self, *, live: bool = True, route: str = "unknown") -> list[dict]:
+        """The events of what is held.  See :func:`story`."""
+        at = {doc["seq"]: i for i, doc in enumerate(self.cues)}
+        spent = {(at[seq], n) for seq, n in self._spent if seq in at}
+        return _story(self.rows, self.cues, None, live=live, partial=self.partial,
+                      route=route, spent=spent)
+
+    def _cut(self) -> None:
+        while len(self.rows) > self.max_rows or (len(self.cues) > self.max_cues
+                                                 and len(self.rows) > 1):
+            self._drop_oldest_row()
+
+    def _drop_oldest_row(self) -> None:
+        row = self.rows.pop(0)
+        self.partial = True
+        docs, clean, origin = _clean_cues(self.cues)
+        if self.cues and not docs:
+            # Too many cue rows to read.  Nothing can say which row took which from
+            # here on, so the rest of the take names no sender.
+            self.cues, self._spent, self._blind = [], set(), True
+            return
+        keys = [(docs[i]["seq"], n) for i, n in origin]
+        form = record._form(row)
+        for field in ("applied_cue", "dropped_cue"):       # the walk _claims makes
+            for text in record._cue_texts(form.get(field)):
+                for k, cue in enumerate(clean):
+                    if keys[k] not in self._spent and _takes(text, row["bar"], cue):
+                        self._spent.add(keys[k])
+                        break
+        clock = record._row_clock(self.rows)
+        gone = set()
+        for i, doc in enumerate(docs):
+            parts = [k for k, (at, _) in enumerate(origin) if at == i]
+            if all(keys[k] in self._spent for k in parts) or any(
+                    "loop" in clean[k] and _before_rows(self.rows, clock, clean[k])
+                    for k in parts):
+                gone.add(doc["seq"])
+        self.cues = [doc for doc in docs if doc["seq"] not in gone]
+        self._spent = {key for key in self._spent if key[0] not in gone}

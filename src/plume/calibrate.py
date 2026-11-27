@@ -6,7 +6,7 @@ audio callback's sample counter: an input sample at index N was captured at the
 mic INPUT-LATENCY earlier, and an output sample at index N leaves the speaker
 OUTPUT-LATENCY later.  So a bar placed exactly on the human's stream-time
 downbeat sounds, in the room, input + output latency AFTER the human's beat —
-measured on the development MacBook: 112 ms, over a fifth of a beat at 120 bpm,
+measured on the development laptop: 112 ms, over a fifth of a beat at 120 bpm,
 and dead stable (four clicks within 0.2 ms of each other).  The self-masker
 already compensates this round trip for HEARING (so the tracker cannot lock to
 the machine's own output); nothing compensated it for PLAYING.
@@ -62,7 +62,7 @@ SEARCH_S = 0.45
 #: the room) and is skipped rather than reported as a garbage lag.
 DETECT_FRAC = 0.02
 #: Placement compensation ceiling for a number somebody MEASURED or asked for.
-#: A laptop mic with AirPods output measured 317 ms by tapping along (2026-11-02),
+#: A laptop mic with Bluetooth earbuds measured 317 ms by tapping along (2026-11-02),
 #: so a quarter second silently left every bar 67 ms late.  0.4 s still stops a
 #: broken measurement moving a bar inside jam's revision window (one beat before
 #: the downbeat) at anything up to 150 bpm; a 317 ms pair is only safe to about

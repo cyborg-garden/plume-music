@@ -39,7 +39,7 @@ def test_click_train_shape_and_determinism():
 
 def test_measure_offsets_recovers_exact_lag():
     out, click, marks = cal.click_train(SR)
-    lag = int(0.1124 * SR)  # the development MacBook's real number
+    lag = int(0.1124 * SR)  # the development laptop's real number
     rec = _echo(out, click, marks, lag)
     lags = cal.measure_offsets(rec, click, marks, SR)
     assert lags == [lag] * len(marks)

@@ -137,7 +137,7 @@ plume stop                             # end it (finishes the bar, flushes the t
 plume stop --all                       # end every live session
 plume stop --pid 4212                  # end that one
 plume gui                              # a page with one Start: it starts nothing until you click
-plume gui --take takes6/               # read a take: what plume did, a roast, Keep, Show files
+plume gui --take takes1/               # read a take: what plume did, a roast, Keep, Show files
 plume gui url                          # a new link to the running page
 plume jam --max-minutes 20             # or lead: self-stops after 20 minutes
 plume lead "..." --max-minutes 0       # no cap (an interactive human opting out)

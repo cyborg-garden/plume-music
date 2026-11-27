@@ -1,0 +1,156 @@
+name: pkg-spike
+
+# Spike, on a throwaway branch: does a frozen Plume build and start a simulated
+# take on each OS?  Never merged.
+#
+# No runner has an audio device, nothing opens a stream and PLUME_ALLOW_AUDIO is
+# never set.  The take is `plume simlead` on a WAV the bundle renders itself.
+
+on:
+  push:
+    branches: [dev/juniperbevensee/v1-pkg-spike]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pkg-spike-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  freeze:
+    name: freeze / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest, macos-15-intel]
+    env:
+      PYTHONUNBUFFERED: "1"
+      PYTHONUTF8: "1"
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+        with:
+          python-version: "3.12"
+
+      - name: System libraries (Linux, build machine only)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libportaudio2 libsndfile1
+
+      - name: Machine
+        run: |
+          python -c "import platform, sys; print(platform.platform(), platform.machine(), sys.version)"
+
+      # Wheels only: a package with no wheel for this machine must say so here, not
+      # start a compiler.
+      - name: Install (wheels only)
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --only-binary=:all: numpy scipy soundfile sounddevice mido python-rtmidi \
+            "onnxruntime>=1.17" "imageio-ffmpeg>=0.6.0,<0.7" "pyinstaller==6.22.3"
+          python -m pip install --no-deps -e .
+          python -m pip list
+
+      - name: Build with ffmpeg
+        run: |
+          python -m PyInstaller packaging/spike/plume.spec --noconfirm --distpath dist/ffmpeg --workpath build/ffmpeg 2>&1 | tee build-ffmpeg.log | grep -E "WARNING|ERROR|spike:|Build complete" || true
+          tail -3 build-ffmpeg.log
+
+      - name: Build without ffmpeg
+        env:
+          PLUME_SPIKE_FFMPEG: "0"
+        run: |
+          python -m PyInstaller packaging/spike/plume.spec --noconfirm --distpath dist/noffmpeg --workpath build/noffmpeg 2>&1 | tee build-noffmpeg.log | grep -E "WARNING|ERROR|spike:|Build complete" || true
+          tail -3 build-noffmpeg.log
+
+      - name: Where the program is
+        run: |
+          if [ "$RUNNER_OS" = "macOS" ]; then rel="Plume.app/Contents/MacOS/plume"; top="Plume.app"
+          elif [ "$RUNNER_OS" = "Windows" ]; then rel="Plume/plume.exe"; top="Plume"
+          else rel="Plume/plume"; top="Plume"; fi
+          echo "REL=$rel" >> "$GITHUB_ENV"
+          echo "TOP=$top" >> "$GITHUB_ENV"
+
+      # Hardened runtime with an ad-hoc signature, so only the identity changes when a
+      # certificate lands.  First with the microphone entitlement alone, to record
+      # whether that is enough.
+      - name: Sign (macOS) with the microphone entitlement only
+        if: runner.os == 'macOS'
+        run: |
+          cp -R dist/ffmpeg/Plume.app Plume-mic-only.app
+          codesign --force --deep --options runtime --entitlements packaging/spike/entitlements.plist -s - Plume-mic-only.app
+          codesign --verify --deep --strict Plume-mic-only.app && echo "signature verifies"
+          if Plume-mic-only.app/Contents/MacOS/plume styles --json > /dev/null 2> mic-only.err; then
+            echo "RESULT mic-only entitlement: starts"
+          else
+            echo "RESULT mic-only entitlement: does not start"; head -c 600 mic-only.err; echo
+          fi
+          rm -rf Plume-mic-only.app
+
+      - name: Sign (macOS) with hardened runtime, ad-hoc
+        if: runner.os == 'macOS'
+        run: |
+          for v in ffmpeg noffmpeg; do
+            codesign --force --deep --options runtime --entitlements packaging/spike/entitlements-nolibval.plist -s - dist/$v/Plume.app
+            codesign --verify --deep --strict dist/$v/Plume.app && echo "$v: signature verifies"
+            codesign -dv dist/$v/Plume.app 2>&1 | grep -E "flags|Signature|Identifier"
+          done
+          codesign -d --entitlements - dist/ffmpeg/Plume.app
+
+      - name: Size
+        run: |
+          python packaging/spike/measure.py "dist/ffmpeg/$TOP"
+          python packaging/spike/measure.py "dist/noffmpeg/$TOP"
+
+      - name: Cold start of a command (three runs each)
+        run: |
+          for v in ffmpeg noffmpeg; do
+            for i in 1 2 3; do
+              python -c "import subprocess, sys, time; t = time.perf_counter(); r = subprocess.run([sys.argv[1], 'styles', '--json'], capture_output=True); print('RESULT start', sys.argv[2], sys.argv[3], round(time.perf_counter() - t, 2), 's exit', r.returncode)" "dist/$v/$REL" "$v" "$i"
+            done
+          done
+
+      # The build machine's own PortAudio and libsndfile go, so the bundle is shown to
+      # carry what it needs.
+      - name: Remove the system libraries (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get remove -y libportaudio2 libsndfile1
+          ldconfig -p | grep -E "portaudio|sndfile" || echo "no system PortAudio or libsndfile left"
+
+      - name: A simulated take, by hand, from the bundle
+        run: |
+          unset PLUME_ALLOW_AUDIO
+          exe="$PWD/dist/ffmpeg/$REL"
+          work="$RUNNER_TEMP/take"; mkdir -p "$work"; cd "$work"
+          "$exe" make "slow folk at 90" --session s.plume.json --json > make.json
+          "$exe" render --session s.plume.json --out human.wav --bars 0 8 --json > render.json
+          "$exe" simlead human.wav --prompt "chill trap at 90" --bars 8 --out mix.wav --json > simlead.json
+          "$exe" analyze mix.wav --json > analyze.json
+          head -c 400 analyze.json; echo
+          ls -l
+          echo "RESULT simulated take by hand: pass"
+
+      - name: Self-test inside the bundle (with ffmpeg)
+        run: |
+          unset PLUME_ALLOW_AUDIO
+          "dist/ffmpeg/$REL" --spike-selftest --ci --expect-ffmpeg=1
+
+      - name: Self-test inside the bundle (without ffmpeg)
+        if: always()
+        run: |
+          unset PLUME_ALLOW_AUDIO
+          "dist/noffmpeg/$REL" --spike-selftest --ci --expect-ffmpeg=0
+
+      - name: doctor, from the bundle
+        if: always()
+        run: |
+          "dist/ffmpeg/$REL" doctor || true

@@ -20,7 +20,7 @@ import time
 import traceback
 from pathlib import Path
 
-RESULT: dict = {"checks": {}, "requests": []}
+RESULT: dict = {"checks": {}, "requests": [], "responses": []}
 
 
 def _make_take(folder: Path) -> None:
@@ -75,21 +75,26 @@ PAGE_SCRIPT = r"""
                                            new Blob([new Uint8Array(4096)]), 'application/octet-stream'));
       out.upload.file_input = box ? { type: box.type, accept: box.accept } : null;
       await post('/api/video/cancel', JSON.stringify({ take: id })).catch(() => null);
-      const a = new Audio('/api/take/' + where + '/audio/together?k=' + key());
-      a.muted = true; a.volume = 0; a.preload = 'auto';
-      out.audio = await Promise.race([
-        new Promise((done) => {
-          a.addEventListener('canplay', () => done({ duration: a.duration, ready: a.readyState }));
-          a.addEventListener('error', () => done({ error: a.error && a.error.code }));
-          a.load();
-        }),
-        sleep(20000).then(() => ({ error: 'timed out' }))]);
-      try {
-        await a.play();
-        await sleep(1200);
-        out.audio.moved_s = a.currentTime;
-        a.pause();
-      } catch (e) { out.audio.play_refused = String(e); }
+      out.audio = {};
+      for (const track of ['together', 'human']) {
+        const a = new Audio('/api/take/' + where + '/audio/' + track + '?k=' + key());
+        a.muted = true; a.volume = 0; a.preload = 'auto';
+        const got = await Promise.race([
+          new Promise((done) => {
+            a.addEventListener('canplay', () => done({ duration: a.duration, ready: a.readyState }));
+            a.addEventListener('error', () => done({ error: a.error && a.error.code,
+                                                     message: a.error && a.error.message }));
+            a.load();
+          }),
+          sleep(20000).then(() => ({ error: 'timed out' }))]);
+        try {
+          await a.play();
+          await sleep(1200);
+          got.moved_s = a.currentTime;
+          a.pause();
+        } catch (e) { got.play_refused = String(e); }
+        out.audio[track] = got;
+      }
     }
     out.bridge = { pywebview: typeof window.pywebview,
                    api_names: window.pywebview && window.pywebview.api ? Object.keys(window.pywebview.api) : null };
@@ -125,10 +130,15 @@ def _judge(out: dict, folder: Path, revealed: list) -> None:
         "note": "the bytes reach the server from inside the window; the file chooser itself "
                 "was not opened, which needs a hand"}
     audio = out.get("audio") or {}
+
+    def plays(got) -> bool:
+        return (isinstance(got, dict) and isinstance(got.get("duration"), (int, float)) and got["duration"] > 0
+                and isinstance(got.get("moved_s"), (int, float)) and got["moved_s"] > 0)
+
     checks["audio playback (muted)"] = {
         **audio,
-        "pass": isinstance(audio.get("duration"), (int, float)) and audio["duration"] > 0
-                and isinstance(audio.get("moved_s"), (int, float)) and audio["moved_s"] > 0,
+        "audio_requests": [r for r in RESULT["responses"] if "/audio/" in r["path"]],
+        "pass": bool(audio) and all(plays(got) for got in audio.values()),
         "note": "play() here has no click behind it; in the app a person clicks Listen"}
     bridge = out.get("bridge") or {}
     checks["no JS bridge"] = {**bridge, "pass": bool(bridge) and not bridge.get("api_names"),
@@ -213,6 +223,18 @@ def run() -> int:
                 raise
 
         gui._Handler._check_common = recorded  # noqa: SLF001
+        sent = gui._Handler.send_response  # noqa: SLF001
+
+        def send_response(self, code, message=None):
+            path = self.path.split("?", 1)[0]
+            RESULT["responses"].append({
+                "method": self.command, "path": "/".join(p if len(p) < 24 else "{id}" for p in path.split("/")),
+                "status": code, "cookie": bool(self.headers.get("Cookie")),
+                "page_key_in_query": "k=" in self.path, "range": self.headers.get("Range"),
+                "site": self.headers.get("Sec-Fetch-Site"), "dest": self.headers.get("Sec-Fetch-Dest")})
+            return sent(self, code, message)
+
+        gui._Handler.send_response = send_response  # noqa: SLF001
         gui._STATIC_DIR = _static_with_script(tmp)  # noqa: SLF001
         gui.STATIC_FILES["spike.js"] = "text/javascript; charset=utf-8"
         server = gui.GuiServer(roots=[tmp / "library"], write_state=False, log=lambda line: None,
@@ -227,13 +249,17 @@ def run() -> int:
             watchdog.daemon = True
             watchdog.start()
             began = time.perf_counter()
-            webview.start(_checks, (window, folder, revealed))
+            # PLUME_SPIKE_PRIVATE=0: a window whose cookies and storage are kept on disk.
+            private = os.environ.get("PLUME_SPIKE_PRIVATE", "1") != "0"
+            RESULT["private_mode"] = private
+            webview.start(_checks, (window, folder, revealed), private_mode=private,
+                          storage_path=None if private else str(tmp / "webview-storage"))
             RESULT["window_seconds"] = round(time.perf_counter() - began, 2)
         finally:
             server.close()
     checks = RESULT["checks"]
     RESULT["ok"] = bool(checks) and all(c.get("pass") for c in checks.values()) and "error" not in RESULT
-    RESULT["requests"] = RESULT["requests"][:80]
+    del RESULT["requests"], RESULT["responses"]
     print(json.dumps(RESULT, indent=1, default=str))
     return 0 if RESULT["ok"] else 1
 

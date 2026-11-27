@@ -25,7 +25,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest, macos-15-intel]
+        # Mac (both chips) and Windows ran green at 230f8b2 and c9e864e.  While the window check is
+        # being worked on, only Linux runs here: the Mac runners are shared and scarce.
+        os: [ubuntu-latest]
     env:
       PYTHONUNBUFFERED: "1"
       PYTHONUTF8: "1"
@@ -135,6 +137,19 @@ jobs:
         run: |
           sudo apt-get remove -y libportaudio2 libsndfile1
           ldconfig -p | grep -E "portaudio|sndfile" || echo "no system PortAudio or libsndfile left"
+          "dist/ffmpeg/$REL" inputs --json > inputs-bare.json || true
+          echo "RESULT frozen, no system PortAudio, no sound server: $(head -c 300 inputs-bare.json)"
+
+      # This PortAudio talks to PulseAudio and will not start without a sound server,
+      # frozen or not.  So the self-tests run with one: a null sink, which is no device
+      # and makes no sound.
+      - name: A sound server with a null sink (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get install -y --no-install-recommends pulseaudio
+          ldconfig -p | grep -E "portaudio" || echo "still no system PortAudio"
+          pulseaudio --start --exit-idle-time=-1 --load="module-null-sink" || true
+          sleep 2
 
       - name: A simulated take, by hand, from the bundle
         run: |
@@ -159,18 +174,6 @@ jobs:
         run: |
           unset PLUME_ALLOW_AUDIO
           "dist/noffmpeg/$REL" --spike-selftest --ci --expect-ffmpeg=0
-
-      # The same self-test with a sound server running: PulseAudio with a null sink,
-      # which is no device and makes no sound.
-      - name: Self-test with a sound server (Linux)
-        if: always() && runner.os == 'Linux'
-        run: |
-          unset PLUME_ALLOW_AUDIO
-          sudo apt-get install -y --no-install-recommends pulseaudio
-          ldconfig -p | grep -E "portaudio" || echo "still no system PortAudio"
-          pulseaudio --start --exit-idle-time=-1 --load="module-null-sink" || true
-          sleep 2
-          "dist/ffmpeg/$REL" --spike-selftest --ci --expect-ffmpeg=1
 
       - name: doctor, from the bundle
         if: always()
@@ -206,6 +209,14 @@ jobs:
           python -m pip list | grep -i -E "webview|pyobjc|bottle|proxy"
 
       - name: Window check, not frozen
+        run: |
+          unset PLUME_ALLOW_AUDIO
+          python packaging/spike/spike_webview.py
+
+      - name: Window check, not frozen, with storage kept on disk
+        if: always()
+        env:
+          PLUME_SPIKE_PRIVATE: "0"
         run: |
           unset PLUME_ALLOW_AUDIO
           python packaging/spike/spike_webview.py

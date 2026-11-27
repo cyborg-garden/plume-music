@@ -1,0 +1,162 @@
+name: install-smoke
+
+# The install line a tester is given in docs/dev/hardware-test.md, run on a clean
+# Linux, Windows and macOS runner the way the tester runs it: uv from its own
+# installer, a Python that uv fetches, plume from this repository over git.  It
+# ends in `plume doctor`.
+#
+# No runner has an audio device.  Nothing here opens a stream or makes a sound:
+# `plume doctor` and `plume inputs` only ask the system which devices exist, and
+# PLUME_ALLOW_AUDIO is never set.
+#
+# The second job says which newer Pythons the same line would work on.  It only
+# resolves: a tester has no compiler, so a package with no ready-made wheel is a
+# failed install for them.  It never fails the run.  Its answer is in the job
+# summary.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - pyproject.toml
+      - .github/workflows/install-smoke.yml
+  schedule:
+    - cron: '23 7 * * 2'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: install-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # The commit under test.  A tester's line has no commit and takes the newest
+  # main; here it is named, so a pull request tests its own code.
+  PLUME_REPO: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+  PLUME_REF: ${{ github.event.pull_request.head.sha || github.sha }}
+  # A tester's machine has no Python of its own to borrow.
+  UV_PYTHON_PREFERENCE: only-managed
+  PYTHONUNBUFFERED: "1"
+
+jobs:
+  smoke:
+    name: ${{ matrix.os }} / py${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python: ["3.12"]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      # The one system library the tester script asks a Linux tester to install.
+      # macOS and Windows wheels bring their own.
+      - name: PortAudio (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libportaudio2
+
+      - name: uv (Linux, macOS)
+        if: runner.os != 'Windows'
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: uv (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          irm https://astral.sh/uv/install.ps1 | iex
+          "$env:USERPROFILE\.local\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Install plume
+        env:
+          PY: ${{ matrix.python }}
+        run: |
+          uv --version
+          uv tool install --python "$PY" "plume-music[play,midi,notes] @ git+https://github.com/${PLUME_REPO}@${PLUME_REF}"
+
+      # Each extra in the line has to import, not only install.  A missing system
+      # library shows here.  Importing opens no device and no MIDI port.
+      - name: The extras import
+        run: |
+          dir="$(uv tool dir)/plume-music"
+          py="$dir/bin/python"
+          [ -x "$py" ] || py="$dir/Scripts/python.exe"
+          "$py" -c "import sounddevice, mido, rtmidi, onnxruntime; print('play, midi and notes import')"
+
+      # The tester's first command.  A runner has no devices, so an empty list or
+      # a plain error is expected here and does not fail the job.
+      - name: plume inputs (informational)
+        continue-on-error: true
+        run: |
+          unset PLUME_ALLOW_AUDIO
+          plume inputs
+
+      # doctor exits 1 on any error line.  A missing audio part is only a warning
+      # there, so it is checked by name: the play extra is what a tester needs.
+      - name: plume doctor
+        run: |
+          unset PLUME_ALLOW_AUDIO
+          plume doctor | tee doctor.txt
+          grep -Eq '^ok +sounddevice ' doctor.txt
+
+  wheels:
+    name: wheels / ${{ matrix.os }} / py${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    # A report, not a gate: v1 tells testers to use Python 3.12.
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python: ["3.13", "3.14"]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: uv (Linux, macOS)
+        if: runner.os != 'Windows'
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: uv (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          irm https://astral.sh/uv/install.ps1 | iex
+          "$env:USERPROFILE\.local\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      # plume itself is built from source, as it is for a tester.  Everything it
+      # depends on has to come as a wheel.
+      - name: Resolve from wheels only
+        env:
+          PY: ${{ matrix.python }}
+          OS: ${{ matrix.os }}
+        run: |
+          uv python install "$PY"
+          spec="plume-music[play,midi,notes] @ git+https://github.com/${PLUME_REPO}@${PLUME_REF}"
+          if echo "$spec" | uv pip compile - --python "$PY" --no-header --no-annotate \
+               --only-binary :all: --no-binary plume-music > resolved.txt 2> why.txt; then
+            echo "- ${OS}, Python ${PY}: every dependency has a wheel." >> "$GITHUB_STEP_SUMMARY"
+            cat resolved.txt
+          else
+            {
+              echo "- ${OS}, Python ${PY}: a dependency has no wheel."
+              echo
+              echo '```'
+              cat why.txt
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            cat why.txt
+            exit 1
+          fi

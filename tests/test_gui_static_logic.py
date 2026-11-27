@@ -5,6 +5,7 @@ Skipped where Node is missing, since plume itself has no JavaScript toolchain.
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -248,30 +249,54 @@ def test_a_stale_key_is_told_why_and_how_to_get_one(tmp_path):
 
 #: The live screen's lost-touch hint names a command, and that line is not this test's to judge.
 LIVE_LOST_HINT = "'Lost touch with plume gui. If it has closed, plume stop still ends the take.'"
+#: Settings links to the guide page for playing from a terminal.  The link names that page and
+#: asks nothing of the player, so its label, its id and the page's name are let through.
+TERMINAL_GUIDE_LINK = (">Play from a terminal or a coding agent<", "settings-terminal", "goGuide('terminal')")
+PAGE_COMMANDS = re.compile(r"plume gui|plume stop|\b(?:terminal|command|pip)\b", re.IGNORECASE)
 
 
-def page_script_commands(text):
-    """The command-line steps a page script's words hand the player."""
-    text = text.replace(LIVE_LOST_HINT, "")
-    return [phrase for phrase in ("plume gui", "plume stop", "in a terminal", "your terminal", "pip install")
-            if phrase in text]
+def page_commands(text):
+    """The command-line steps the page's words hand the player, comments aside."""
+    text = re.sub(r"/\*.*?\*/|<!--.*?-->", "", text, flags=re.DOTALL)
+    for allowed in (LIVE_LOST_HINT, *TERMINAL_GUIDE_LINK):
+        text = text.replace(allowed, "")
+    return sorted({found.lower() for found in PAGE_COMMANDS.findall(text)})
 
 
-def test_no_page_script_sends_the_player_to_a_terminal():
-    """The page's own words give a next step inside the app."""
+def test_no_page_text_sends_the_player_to_a_terminal():
+    """The page's own words, in its scripts and its markup, give a next step inside the app."""
     static = Path(gui.__file__).with_name("gui_static")
-    for path in sorted(static.glob("*.js")):
-        assert page_script_commands(path.read_text(encoding="utf-8")) == [], path.name
+    pages = sorted([*static.glob("*.js"), *static.glob("*.html")])
+    assert "index.html" in {path.name for path in pages}
+    for path in pages:
+        assert page_commands(path.read_text(encoding="utf-8")) == [], path.name
 
 
 @pytest.mark.parametrize("line", [
     "note = 'That did not reach plume gui. Run plume stop to end the take.';",
     "note = 'Is plume gui still running?';",
     "note = 'Open a new link from your terminal.';",
-    "note = 'Lost touch with plume gui. Run plume stop.';"])
+    "note = 'Open a Terminal and try again.';",
+    "note = 'Type this at the command line.';",
+    "note = 'Open a command prompt.';",
+    "note = 'Use pip to add the audio part.';",
+    "note = 'Lost touch with plume gui. Run plume stop.';",
+    "<p>Run pip install in your terminal.</p>",
+    "<p>Open one with plume gui --take.</p>",
+    "<button id=\"settings-terminal\">Open a terminal</button>"])
 def test_the_terminal_check_sees_a_command_however_it_is_spelled(line):
-    assert page_script_commands(line) != []
-    assert page_script_commands("hint = " + LIVE_LOST_HINT + ";") == []
+    assert page_commands(line) != []
+
+
+@pytest.mark.parametrize("line", [
+    "hint = " + LIVE_LOST_HINT + ";",
+    "/* A terminal's take is the only thing that takes Start's place. */",
+    "<!-- the terminal page -->",
+    "<button id=\"settings-terminal\" class=\"textlink\">Play from a terminal or a coding agent</button>",
+    "$('settings-terminal').addEventListener('click', function () { goGuide('terminal'); });",
+    "note = 'That did not reach Plume. If it has closed, open it again.';"])
+def test_the_terminal_check_lets_through_what_asks_nothing_of_the_player(line):
+    assert page_commands(line) == []
 
 
 def test_only_day_and_night_are_offered():

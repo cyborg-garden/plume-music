@@ -83,8 +83,7 @@ from .theory import key_name, parse_key
 DEVICE_MISSING = "Plume could not find that device. Check it is plugged in."
 NO_INPUT = "Plume could not find a microphone or an audio interface."
 NO_INPUT_NEXT = NO_INPUT + " Plug one in, then try again."
-OPEN_FAILED = ("Plume could not open the device. Set it to 48000 Hz in this computer's "
-               "sound settings, or choose another device.")
+OPEN_FAILED = "Plume could not open the device. Set it to 48000 Hz, or choose another device."
 AUDIO_PART_MISSING = ("Plume needs its audio part, and this copy does not have it. "
                       "Install Plume with its audio part, then open it again.")
 NO_LISTING = "Plume could not ask this computer for its audio devices."
@@ -105,7 +104,7 @@ FLAT_CHANNEL = "Nothing on channel {channel}. Press Stop, then try another chann
 FLAT_CHANNEL_HOME = "Nothing came in on channel {channel}. Try another channel."
 #: Where each system keeps the switch that lets a program use the microphone.
 _MIC_HOWTOS = {
-    "darwin": "To allow the microphone on a Mac, open System Settings, then Privacy & Security, then Microphone.",
+    "darwin": "To allow the microphone on a Mac, open the system settings, then the privacy section, then Microphone.",
     "win32": "To allow the microphone on Windows, open Settings, then the privacy section, then Microphone.",
 }
 _MIC_HOWTO_OTHER = "To check the microphone, open this computer's sound settings and look at the input."

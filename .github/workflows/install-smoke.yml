@@ -11,8 +11,8 @@ name: install-smoke
 #
 # The second job says which newer Pythons the same line would work on.  It only
 # resolves: a tester has no compiler, so a package with no ready-made wheel is a
-# failed install for them.  It never fails the run.  Its answer is in the job
-# summary.
+# failed install for them.  A missing wheel is an answer, not a failure: the job
+# stays green, says so in a warning, and writes the detail in the job summary.
 
 on:
   push:
@@ -149,14 +149,21 @@ jobs:
                --only-binary :all: --no-binary plume-music > resolved.txt 2> why.txt; then
             echo "- ${OS}, Python ${PY}: every dependency has a wheel." >> "$GITHUB_STEP_SUMMARY"
             cat resolved.txt
-          else
+          elif grep -qi 'wheel' why.txt; then
             {
               echo "- ${OS}, Python ${PY}: a dependency has no wheel."
               echo
               echo '```'
               cat why.txt
+              # uv ends its message without a newline.
+              echo
               echo '```'
             } >> "$GITHUB_STEP_SUMMARY"
+            cat why.txt
+            echo
+            echo "::warning title=No wheel on Python ${PY}::${OS}: a dependency has no wheel. See the job summary."
+          else
+            # Anything else, such as a network error, is not an answer.
             cat why.txt
             exit 1
           fi

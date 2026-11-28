@@ -31,8 +31,8 @@ says less.
   "intent": null,
   "settled": null,
   "detail": "Bar 33. Someone asked for busier at bar 30. It landed 6.1 seconds later.",
-  "who": "Claude",
-  "sender": "Claude",
+  "who": "Agent",
+  "sender": "Agent",
   "name": "busier",
   "cue": 3,
   "facts": [
@@ -111,7 +111,7 @@ change, beside the field that names the cue.
 
 A received cue has two sentences, in two fields.
 
-- `sentence`: "Claude asked for busier." This is the fact that the cue arrived.
+- `sentence`: "Agent asked for busier." This is the fact that the cue arrived.
 - `intent`: "Queued for the next phrase." This is where the cue waits. It comes
   from the cue row's `at`, and it promises nothing.
 
@@ -151,11 +151,11 @@ cue name or a sender.
 
 | When | Sentence |
 |---|---|
-| Cue received | "Claude asked for busier." |
-| Cue received, end cue | "Claude asked to end." |
-| Cue received, words that are not exactly a cue | "Claude sent a cue." |
+| Cue received | "Agent asked for busier." |
+| Cue received, end cue | "Agent asked to end." |
+| Cue received, words that are not exactly a cue | "Agent sent a cue." |
 | Intent | "Queued for the next phrase." / "Queued for the next section." / "Queued for the next bar." |
-| Not understood | "Claude sent a cue I did not understand." |
+| Not understood | "Agent sent a cue I did not understand." |
 | Landed | "Busier, from bar 33." |
 | Landed, words that are not exactly a cue | "A cue landed at bar 33." |
 | Ended | "Ending, from bar 40." |
@@ -298,7 +298,7 @@ A sender names itself. Nothing checks the name.
 The page renders the name with `textContent`, never as markup.
 
 The name is a claim. Any program on the machine can send a cue with any name.
-The page says "Claude asked" the way a guest book says who signed. It is useful
+The page says "Agent asked" the way a guest book says who signed. It is useful
 for following a take. It is not proof of who sent a cue.
 
 Names:
@@ -425,7 +425,7 @@ the form planner itself and checks the same rule.
 2. Placement: one line under the headline, or the story line as the headline.
 3. The fifth state, `answered`, for loop and sound cues. The other choice is to
    leave those cues out of the story line and keep them in Details.
-4. "Claude asked to end." for an end cue, or the cue's own word ("Claude asked
+4. "Agent asked to end." for an end cue, or the cue's own word ("Agent asked
    for stop.").
 5. A claimed name on a cue from the page or the mic. The feed shows the name.
    The other choice is that those two doors always read "You".

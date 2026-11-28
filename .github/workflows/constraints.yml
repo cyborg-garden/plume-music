@@ -1,0 +1,124 @@
+# It proves packaging/constraints.txt installs on each OS.
+# The install and check steps use a fresh venv, so the packages a runner's own
+# Python comes with are out of view.
+# It imports the eight direct libraries and plume, sounddevice included, as
+# tests.yml does on runners.
+# It opens no stream: PortAudio lists no devices on a runner.
+# The wheels job asks PyPI whether every pin has a wheel for every system and
+# Python the file says it covers, runners or not.
+name: constraints
+
+on:
+  pull_request:
+    paths: ["packaging/constraints.txt", "packaging/check_wheels.py", "pyproject.toml", ".github/workflows/constraints.yml"]
+  push:
+    branches: [main]
+    paths: ["packaging/constraints.txt", "packaging/check_wheels.py", "pyproject.toml", ".github/workflows/constraints.yml"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: constraints-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  wheels:
+    name: wheels for every covered system
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+        with:
+          python-version: "3.12"
+      - run: python packaging/check_wheels.py
+
+  install:
+    name: ${{ matrix.os }} / py${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    # bash on every OS, so a failed command fails its own step.
+    defaults:
+      run:
+        shell: bash
+    strategy:
+      fail-fast: false
+      matrix:
+        # macos-latest is Apple Silicon; macos-15-intel installs the Intel Mac pins.
+        os: [ubuntu-latest, windows-latest, macos-latest, macos-15-intel]
+        python: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+        with:
+          python-version: ${{ matrix.python }}
+      # A Linux desktop always runs a sound server, and the runner's PortAudio
+      # fails to start without one, so importing sounddevice fails.  A PulseAudio
+      # server with only a null sink stands in for it and plays nothing.
+      - name: System libraries and a sound server (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libportaudio2 libsndfile1 pulseaudio
+          pulseaudio --start --exit-idle-time=-1 -n \
+            --load=module-native-protocol-unix \
+            --load=module-null-sink \
+            --load=module-always-sink
+          pactl info
+      # A runner's Python can come with packages of its own.  A venv leaves them behind.
+      - name: Fresh venv
+        run: |
+          python -m venv .venv
+          py=.venv/bin/python
+          [ -x "$py" ] || py=.venv/Scripts/python.exe
+          "$py" -c "import sys; print(sys.version)"
+          echo "VENV_PY=$py" >> "$GITHUB_ENV"
+      # Wheels only: a pin that would need a compiler fails here, not on a player's machine.
+      - name: Install with the pins
+        run: |
+          "$VENV_PY" -m pip install --upgrade pip
+          "$VENV_PY" -m pip install --only-binary :all: -c packaging/constraints.txt numpy scipy soundfile sounddevice mido python-rtmidi onnxruntime "imageio-ffmpeg>=0.6.0,<0.7"
+          "$VENV_PY" -m pip install --no-deps -e .
+      - name: Pins and installed packages agree
+        run: |
+          "$VENV_PY" -m pip check
+          "$VENV_PY" - <<'PY'
+          import sys
+
+          # The check means nothing if it can see the runner's own packages.
+          if sys.prefix == sys.base_prefix:
+              sys.exit("not in a venv: run this check with the venv's Python")
+          if "include-system-site-packages = false" not in open(f"{sys.prefix}/pyvenv.cfg", encoding="utf-8").read():
+              sys.exit("the venv can see the runner's own packages")
+
+          from importlib.metadata import distributions
+          from packaging.requirements import Requirement
+          from packaging.utils import canonicalize_name
+
+          # Installed, and not this file's business: the installer and Plume itself.
+          UNPINNED_OK = {"pip", "setuptools", "wheel", "plume-music"}
+
+          installed = {canonicalize_name(d.metadata["Name"]): d.version for d in distributions()}
+          pinned = set()
+          bad = []
+          for line in open("packaging/constraints.txt", encoding="utf-8"):
+              line = line.split("#")[0].strip()
+              if not line:
+                  continue
+              req = Requirement(line)
+              if req.marker and not req.marker.evaluate():
+                  continue
+              name = canonicalize_name(req.name)
+              pinned.add(name)
+              have = installed.get(name)
+              if have is None:
+                  bad.append(f"{name}: pinned {req.specifier}, not installed")
+              elif not req.specifier.contains(have):
+                  bad.append(f"{name}: pinned {req.specifier}, installed {have}")
+          for name in sorted(set(installed) - pinned - UNPINNED_OK):
+              bad.append(f"{name}: installed {installed[name]}, no pin")
+          print("\n".join(bad) or "pins and installed packages agree")
+          sys.exit(1 if bad else 0)
+          PY
+          "$VENV_PY" -c "import numpy, scipy, soundfile, sounddevice, mido, rtmidi, onnxruntime, imageio_ffmpeg, plume"

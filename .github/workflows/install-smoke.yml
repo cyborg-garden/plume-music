@@ -57,11 +57,20 @@ jobs:
     steps:
       # The one system library the tester script asks a Linux tester to install.
       # macOS and Windows wheels bring their own.
-      - name: PortAudio (Linux)
+      #
+      # A Linux desktop always runs a sound server, and the runner's PortAudio
+      # fails to start without one.  A PulseAudio server with only a null sink
+      # stands in for it: it has no hardware behind it and plays nothing.
+      - name: PortAudio and a sound server (Linux)
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libportaudio2
+          sudo apt-get install -y --no-install-recommends libportaudio2 pulseaudio
+          pulseaudio --start --exit-idle-time=-1 -n \
+            --load=module-native-protocol-unix \
+            --load=module-null-sink \
+            --load=module-always-sink
+          pactl info
 
       - name: uv (Linux, macOS)
         if: runner.os != 'Windows'

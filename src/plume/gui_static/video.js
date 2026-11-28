@@ -21,7 +21,7 @@ const FAILED = {
   no_room: 'There isn\'t enough room on this disk for the video.',
   busy: 'Plume is still working on a video for this take.',
   no_tool: 'Adding a video needs ffmpeg, and plume couldn\'t find it. Install ffmpeg, then open plume again.',
-  lost: 'This page\'s link has stopped working. Run plume gui url in a terminal and open the new link.'
+  lost: 'This page\'s link has stopped working. Close this tab and open Plume again.'
 };
 const ELSEWHERE = 'Plume is still bringing in your other video. Add this one when it\'s done.';
 const FAILED_PLAINLY = 'That didn\'t work, and your take is untouched. Try again?';

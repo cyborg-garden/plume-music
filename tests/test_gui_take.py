@@ -10,6 +10,7 @@ from __future__ import annotations
 import ast
 import json
 import os
+import re
 import signal
 import stat
 import subprocess
@@ -978,6 +979,77 @@ def test_a_crash_with_audio_still_lands_on_the_record(rig, runner):
     doc = runner.live()
     assert doc["state"] == "done" and doc["note"] == guitake.ENDED_EARLY
     assert "Traceback" not in json.dumps(doc) and "/secret" not in json.dumps(doc)
+
+
+def guitake_words(source):
+    """Every string guitake could say, wherever it is written: constants and inline text alike."""
+    tree = ast.parse(source)
+    docstrings = {id(node.body[0].value) for node in ast.walk(tree)
+                  if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
+                  and node.body and isinstance(node.body[0], ast.Expr)
+                  and isinstance(node.body[0].value, ast.Constant)}
+    return [(node.lineno, node.value) for node in ast.walk(tree)
+            if isinstance(node, ast.Constant) and isinstance(node.value, str) and id(node) not in docstrings]
+
+
+def terminal_steps(words):
+    """The (line, phrase) pairs where a string sends the player to a terminal or to pip."""
+    return [(line, found.lower()) for line, value in words if value != guitake.TERMINAL_TAKE
+            for found in re.findall(r"\bpip\b|terminal|command|plume gui url|48 khz", value, re.IGNORECASE)]
+
+
+def test_the_pages_words_never_send_the_player_to_a_terminal():
+    """Each message gives a next step inside the app.  TERMINAL_TAKE names where a take runs."""
+    words = guitake_words(Path(guitake.__file__).read_text(encoding="utf-8"))
+    said = {value for _, value in words}
+    assert guitake.WEDGED in said and guitake.MIDI_NO_PORT in said
+    assert terminal_steps(words) == []
+
+
+@pytest.mark.parametrize("source", [
+    'WEDGED = "Still stopping. Run plume stop in a terminal."',
+    'PART = "Plume needs its audio part: pip install with the play extra."',
+    'def stop(self):\n    raise Refused(409, "Plume is closing. Use pip in a terminal.")',
+    'def lost():\n    return "Run plume gui url and open the new link."',
+    'OPEN_FAILED = "Check it is set to 48 kHz."'])
+def test_the_terminal_check_reads_inline_text_as_well_as_constants(source):
+    assert terminal_steps(guitake_words(source)) != []
+
+
+def test_the_terminal_check_leaves_docstrings_and_the_named_exception_alone():
+    quiet = ('"""Run from a terminal."""\n'
+             f'TERMINAL_TAKE = {guitake.TERMINAL_TAKE!r}\n'
+             'def f():\n    """Typed in a terminal."""\n    return "Open Plume again."')
+    assert terminal_steps(guitake_words(quiet)) == []
+
+
+def test_a_device_that_will_not_open_names_no_place_it_cannot_be_sure_of():
+    """Where the rate is set differs by system, so the line says what to set and not where."""
+    low = guitake.OPEN_FAILED.lower()
+    assert "48000 hz" in low and "another device" in low
+    assert "sound settings" not in low and "system" not in low
+
+
+def test_sound_turned_off_does_not_promise_that_reopening_fixes_it():
+    """The setting comes from where Plume was started, so opening it again there changes nothing."""
+    low = guitake.SOUND_OFF.lower()
+    assert "sound turned off" in low and "open it again" not in low and "quit" not in low
+
+
+def test_a_blocked_microphone_gets_one_line_for_each_system():
+    mac, windows, linux = (guitake.mic_howto(name) for name in ("darwin", "win32", "linux"))
+    assert "Mac" in mac and "Windows" in windows
+    # No pane is named by a title that one version of a system has and another lacks.
+    for line in (mac, windows):
+        assert "System Settings" not in line and "Privacy & Security" not in line
+    # Any other system gets a line that names none, since it may not be the one guessed.
+    assert not any(name in linux for name in ("Linux", "Mac", "Windows"))
+    assert guitake.mic_howto("freebsd14") == linux
+    assert len({mac, windows, linux}) == 3
+    for line in (mac, windows, linux):
+        assert "\n" not in line and line.count(".") == 1 and line.endswith(".")
+    for words in (guitake.FLAT_MIC, guitake.FLAT_MIC_HOME, guitake.NOTHING_ROOM):
+        assert words.endswith(guitake.mic_howto())
 
 
 @pytest.mark.parametrize("stderr,message", [

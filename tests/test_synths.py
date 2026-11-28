@@ -6,6 +6,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from conftest import needs_laptop_speed
 from scipy.signal import resample_poly
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -227,7 +228,9 @@ _OLD_PALETTE = {
 }
 
 
-def _bar_seconds(style, voices, bars, bpm=115.0):
+def _bar_job(style, voices, bars, bpm=115.0):
+    """A no-argument call that renders ``bars`` of ``style``, on ``voices`` in
+    place of the style's own when given.  The setup is done here, outside it."""
     import copy
 
     from plume.duet import DuetEngine
@@ -241,21 +244,90 @@ def _bar_seconds(style, voices, bars, bpm=115.0):
         eng._style.pop("voice_variants", None)
     roles = {r: 1.0 for r in eng._style["voices"] if r not in ("sub", "tick", "foot")}
     iv = 60.0 / bpm
-    # This thread's CPU time, not the wall clock: a shared runner that takes the
-    # CPU away mid-render stretches the wall clock of one palette and not the
-    # other, but cannot add work to this thread.
-    t0 = time.thread_time()
-    for b in bars:
-        plan = BarPlan(bar=b, state="comping", roles=roles, gain_db=0.0,
-                       density=0.7, register_ceiling_midi=None, reason="cost")
-        beat = BeatState(t_s=0.0, bpm=bpm, confidence=0.9, locked=True, bar=b,
-                         beat_in_bar=0, phase_beats=0.0, next_beat_t_s=iv,
-                         next_downbeat_t_s=4 * iv, beat_interval_s=iv)
-        harm = HarmonyState(t_s=0.0, key="C major", key_conf=0.8,
-                            chord=["C", "Am", "F", "G"][b % 4], chord_conf=0.9,
-                            register_low_midi=None, register_high_midi=None)
-        eng.render_bar(plan, beat, harm)
-    return time.thread_time() - t0
+
+    def run():
+        for b in bars:
+            plan = BarPlan(bar=b, state="comping", roles=roles, gain_db=0.0,
+                           density=0.7, register_ceiling_midi=None, reason="cost")
+            beat = BeatState(t_s=0.0, bpm=bpm, confidence=0.9, locked=True, bar=b,
+                             beat_in_bar=0, phase_beats=0.0, next_beat_t_s=iv,
+                             next_downbeat_t_s=4 * iv, beat_interval_s=iv)
+            harm = HarmonyState(t_s=0.0, key="C major", key_conf=0.8,
+                                chord=["C", "Am", "F", "G"][b % 4], chord_conf=0.9,
+                                register_low_midi=None, register_high_midi=None)
+            eng.render_bar(plan, beat, harm)
+    return run
+
+
+#: What one line of Python costs, in array samples.  A fit to this thread's CPU
+#: time over every preset gives 32 to 35 on Python 3.11 and 3.12 on macOS.  The
+#: fit belongs to the machine as a clock does: Python 3.14 gives about 60 there,
+#: and a Linux container gives under 5.  So the weight is a fixed convention.
+#: The palette prices below hold their bound for any weight from 20 to 100.  The
+#: weight matters: counting samples alone, synthwave prices over the bound.
+_LINE_SAMPLES = 32
+
+
+def _work(run) -> float:
+    """The work ``run`` does, counted and not timed: the array samples it makes,
+    plus _LINE_SAMPLES for each line of Python it runs.
+
+    A clock prices two palettes by what each one's arithmetic costs on the CPU
+    under it, and that differs from one machine to the next.  A count leaves
+    the CPU out.  On one Python and numpy build a palette price repeats to
+    about 0.001.  It still belongs to the build: Python 3.11 and 3.12 on macOS
+    and Linux agree to about 0.003, and on Python 3.14 a style prices up to 0.2
+    away from that.  It is not measured on Windows.
+    numpy is not pinned, so a numpy release can move it too.
+
+    The samples are the bytes numpy allocates (tracemalloc sees them), summed
+    line by line as the growth to each line's peak; the lines price what a
+    voice does in a Python loop, where it allocates little.  The lines are this
+    thread's.  The bytes are the whole process's, so a thread that allocates
+    while ``run`` is counted adds to the count."""
+    import tracemalloc
+    lines = grown = 0
+    started = not tracemalloc.is_tracing()
+    if started:
+        tracemalloc.start()
+    read, reset = tracemalloc.get_traced_memory, tracemalloc.reset_peak
+    reset()
+    base = read()[0]
+
+    def trace(frame, event, arg):
+        nonlocal lines, grown, base
+        now, peak = read()
+        grown += peak - base
+        base = now
+        reset()
+        lines += event == "line"
+        return trace
+    was = sys.gettrace()
+    sys.settrace(trace)
+    try:
+        run()
+    finally:
+        sys.settrace(was)
+        grown += read()[1] - base
+        if started:
+            tracemalloc.stop()
+    return grown / 8.0 + _LINE_SAMPLES * lines
+
+
+def _palette_bars(style):
+    every = int(load_style(style).get("variant_bars", 16))
+    return [k * every + 1 for k in range(3)]      # one bar of each variant
+
+
+def _palette_price(style):
+    """The work of a style's bars on its voices, over the same bars on its old
+    ones.  Each is rendered once first, so nothing built on first use is counted."""
+    bars = _palette_bars(style)
+    work = {}
+    for which, voices in (("new", None), ("old", _OLD_PALETTE[style])):
+        _bar_job(style, voices, bars)()
+        work[which] = _work(_bar_job(style, voices, bars))
+    return work["new"] / work["old"]
 
 
 @pytest.mark.parametrize("style", sorted(_OLD_PALETTE))
@@ -263,21 +335,52 @@ def test_the_new_palette_costs_the_planner_about_what_the_old_one_did(style):
     """A live take at a 12x fake playhead fell behind by whole bars when these
     voices cost twice the old ones: the "darker" live test heard silence where
     the band should have been.  So the price is relative, not absolute: a
-    style's bars, every voice variant included, must render within 1.4x the
-    same bars on its old voices, priced in the same process.  Timed by this
-    thread's CPU time, so a runner that is preempted mid-render does not charge
-    the wait to one palette; interleaved, order swapped each round, best of
-    seven, so a slow CPU slows both alike.  A Windows runner hit 1.45 with
-    wall-clock timing on code that passed there the run before."""
-    every = int(load_style(style).get("variant_bars", 16))
-    bars = [k * every + 1 for k in range(3)]      # one bar of each variant
+    style's bars, every voice variant included, must take within 1.4x the work
+    of the same bars on its old voices.  The work is counted (_work), so the
+    price does not move with the CPU or its load; it moves a little with the
+    Python and numpy build.  Timing it, even by this thread's CPU time, best of
+    seven, gave one Windows runner 1.65 three times running on code that passed
+    there the run before.  A count is blind to a voice whose arithmetic gets
+    dearer at the same size: the timed test below sees that, on a laptop."""
+    price = _palette_price(style)
+    assert price < 1.4, (style, round(price, 2))
+
+
+def test_a_palette_twice_the_cost_is_over_the_price(monkeypatch):
+    """The price above has teeth: make every new voice render twice and a style
+    that sat under the bound is over it.  Not for every style: hiphop and house
+    stay under the bound when doubled, since their new voices are a small share
+    of the bar or far cheaper than the old ones."""
+    once = synths.render
+
+    def twice(*a, **k):
+        once(*a, **k)
+        return once(*a, **k)
+    assert _palette_price("rnb") < 1.4
+    monkeypatch.setattr(synths, "render", twice)
+    assert _palette_price("rnb") > 1.4
+
+
+@needs_laptop_speed
+@pytest.mark.parametrize("style", sorted(_OLD_PALETTE))
+def test_the_new_palette_is_timed_against_the_old_one_on_a_laptop(style):
+    """The same price by the clock, for a laptop: it sees a voice whose
+    arithmetic got dearer at the same size, which a count cannot.  This thread's
+    CPU time, interleaved, order swapped each round, best of seven, so a slow
+    CPU slows both alike.  Not for a shared runner, where the ratio is the
+    runner's as much as the code's."""
+    def seconds(voices):
+        run = _bar_job(style, voices, _palette_bars(style))
+        t0 = time.thread_time()
+        run()
+        return time.thread_time() - t0
     new, old = 1e9, 1e9
     for k in range(7):
         if k % 2:
-            old = min(old, _bar_seconds(style, _OLD_PALETTE[style], bars))
-        new = min(new, _bar_seconds(style, None, bars))
+            old = min(old, seconds(_OLD_PALETTE[style]))
+        new = min(new, seconds(None))
         if not k % 2:
-            old = min(old, _bar_seconds(style, _OLD_PALETTE[style], bars))
+            old = min(old, seconds(_OLD_PALETTE[style]))
     assert new < 1.4 * old, (style, round(new / old, 2))
 
 

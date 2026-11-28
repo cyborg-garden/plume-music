@@ -5,35 +5,75 @@ name: tests
 # No runner has an audio device, and no test may open one: live paths run on the
 # fake device in tests/conftest.py, and PLUME_ALLOW_AUDIO is never set here.
 #
-# The suite takes hours on one core, so each OS and Python runs it as eight
-# shards (PLUME_TEST_SHARD, see tests/conftest.py).  Together the eight run every
-# test once; none is a subset.  Eight, not six, because six left the slowest
-# Windows shards at 50 to 59 minutes of the hour below; the hour stays as it is, so
-# it still catches a test that hangs.
+# The suite takes hours on one core, so each OS and Python runs it as shards
+# (PLUME_TEST_SHARD, see tests/conftest.py).  Together the shards of one OS and
+# Python run every test once; none is a subset.  Linux and macOS take eight.
+# Windows takes twelve, because eight left its slowest shards at 45 to 56 minutes
+# of the hour below; the hour stays as it is, so it still catches a test that hangs.
+#
+# Two tiers, both the whole suite (the plan job picks one):
+#   pull request   Linux on both Pythons, macOS and Windows on 3.12.
+#   main           every OS on both Pythons: each push to main, once a day, and
+#                  on request.
+# macOS on one Python is the pull request saving: macOS jobs wait for a free
+# runner, the others rarely do.  No path is skipped, docs included: tests read
+# README.md and docs/.
+#
+# tests-ok is the one check to require.  It always runs, and passes only when
+# every job of the tier passed, so the shard and Python names can change freely.
 
 on:
   pull_request:
   push:
     branches: [main]
+  schedule:
+    - cron: "17 14 * * *"
+  workflow_dispatch:
 
 permissions:
   contents: read
 
+# A new push to a pull request replaces its run.  A run on main is never cut
+# short.  One more can wait behind it; a newer push replaces the waiting one, so
+# the running run finishes and the newest goes next.
 concurrency:
-  group: tests-${{ github.ref }}
-  cancel-in-progress: true
+  group: tests-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  plan:
+    name: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - id: plan
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json, os
+          shards = {"ubuntu-latest": 8, "macos-latest": 8, "windows-latest": 12}
+          both = ["3.11", "3.12"]
+          pythons = dict.fromkeys(shards, both)
+          if os.environ["EVENT"] == "pull_request":
+              pythons = {"ubuntu-latest": both, "macos-latest": ["3.12"],
+                         "windows-latest": ["3.12"]}
+          jobs = [{"os": o, "python": p, "shard": f"{k}/{n}"}
+                  for o, n in shards.items() for p in pythons[o]
+                  for k in range(1, n + 1)]
+          print("matrix=" + json.dumps({"include": jobs}))
+          PY
+
   test:
     name: ${{ matrix.os }} / py${{ matrix.python }} / ${{ matrix.shard }}
+    needs: plan
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     strategy:
       fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
-        python: ["3.11", "3.12"]
-        shard: ["1/8", "2/8", "3/8", "4/8", "5/8", "6/8", "7/8", "8/8"]
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
     env:
       PLUME_TEST_SHARD: ${{ matrix.shard }}
       # A handful of tests prove the planner keeps up with a 12x fake playhead,
@@ -83,3 +123,19 @@ jobs:
           # tests are never rerun (NEVER_RERUN_FILES in tests/conftest.py).
           # --durations: the slowest tests of each shard, so what makes a shard slow is visible.
           python -m pytest -p no:cacheprovider -q -rfEsR --reruns 2 --reruns-delay 2 --durations=25
+
+  # The one required check.  "always()" so a failed or cancelled shard fails this
+  # job and never skips it: a skipped required check counts as passed.
+  tests-ok:
+    name: tests-ok
+    needs: [plan, test]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - env:
+          PLAN: ${{ needs.plan.result }}
+          TEST: ${{ needs.test.result }}
+        run: |
+          echo "plan: $PLAN, test: $TEST"
+          test "$PLAN" = success && test "$TEST" = success

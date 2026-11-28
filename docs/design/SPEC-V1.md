@@ -1,5 +1,7 @@
 # SPEC — plume v1 "the sideman" (live mode)
 
+> Historical build contract, not current behaviour. For what Plume does today, read the README and `docs/PLAYING.md`.
+
 v1 adds listening. One pipeline, two transports: **sim** (offline: stream a WAV
 through the identical code path, deterministic, faster-than-real-time — the
 test/verification surface) and **jam** (real-time duplex mic/speaker). v0 code

@@ -1,5 +1,7 @@
 # SPEC — plume v2 "who's holding time" (lead mode & role negotiation)
 
+> Historical build contract, not current behaviour. For what Plume does today, read the README and `docs/PLAYING.md`.
+
 v0 = plume composes. v1 = plume follows. **v2 = plume can lead, and the two of
 you can trade who's leading, mid-song, without stopping.**
 

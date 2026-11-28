@@ -9,8 +9,7 @@ document. This is the long one.
 
 To hear what this sounds like, listen to
 [`examples/first-keeper.m4a`](examples/first-keeper.m4a): one take on a guitar in
-FACGCE tuning at 53 bpm, recorded by a laptop mic across the room from a projector's
-speakers.
+FACGCE tuning at 53 bpm, recorded by a laptop mic across the room from the speakers.
 
 ## Your first take
 
@@ -359,13 +358,14 @@ Loops live in memory and end with the take. Only `--record` writes audio, into t
 
 | Setup | Delay measured | Hears you clearly? | Good for |
 |---|---|---|---|
-| Laptop mic in, projector or wired speakers out | 359 ms (projector over HDMI) | Over drums only | Filming: the room hears everything |
-| Laptop mic in, AirPods out | about 317 ms | Yes, almost nothing leaks into the mic | Clean takes and late nights |
-| AirPods mic in | | No | Don't use it |
+| Laptop mic in, speakers out | 359 ms (a screen's speakers, over a video cable) | Over drums only | Filming: the room hears everything |
+| Laptop mic in, Bluetooth earbuds out | about 317 ms | Yes, almost nothing leaks into the mic | Clean takes and late nights |
+| Bluetooth earbuds' mic in | | No | Don't use it |
 | Instrument plugged in, headphones on the same interface | Not yet measured | Should be best | See below |
 
-Measure your own setup, because reported numbers are wrong. macOS reported 141 ms for the
-projector against a real 359, and 548 ms for the AirPods pair against a real 317.
+Measure your own setup, because reported numbers are wrong. On the setup measured, the
+system reported 141 ms for the screen's speakers against a real 359, and 548 ms for the
+earbuds against a real 317.
 
 **Speakers:** run `plume calibrate`. It plays clicks and listens for them, and saves the
 result per device pair. If your clicks disagree by more than a few milliseconds, the room
@@ -377,10 +377,9 @@ Plume falls back on the system's guess, capped at 250 ms. You will be playing to
 hear rather than to your own knocks, so this affects where the drums first land more than
 how the take feels.
 
-**Never use the AirPods mic.** Opening it switches them to a phone-call codec: audio cuts
+**Never use the earbuds' mic.** Opening it switches them to a phone-call codec: audio cuts
 off at 12 kHz, a clap takes 50 ms to rise when it should take 1 to 3, and the output is
-likely to stutter. Set your input to the laptop mic first. On a Mac that is System Settings,
-or `SwitchAudioSource -t input -s "MacBook Pro Microphone"`.
+likely to stutter. Set your input to the laptop mic first, in your system's sound settings.
 
 ### Plug the instrument in if you can
 
@@ -619,7 +618,7 @@ two files to work with:
   part of `human.wav` by your measured delay. A take from a direct input has Together under its picture on the page, which lines them up by the delay the device reported and mixes them as it plays.
 
 To swap audio into a phone video, line it up on your count, since knocks are easy to see
-in a waveform. On headphones, turn phone Bluetooth off so the AirPods stay with the Mac.
+in a waveform. On headphones, turn phone Bluetooth off so the earbuds stay with the computer.
 Phone videos can carry your location, so strip the metadata before posting one:
 `ffmpeg -i in.mov -map_metadata -1 -c copy out.mov`.
 
@@ -758,7 +757,7 @@ The choice belongs to one input, and with more than one interface plugged in set
 
 ## Reading a take
 
-`plume gui --take takes6/` opens The Record in your browser: a strip of what plume did and
+`plume gui --take takes1/` opens The Record in your browser: a strip of what plume did and
 when, a plain sentence for each moment, and a roast. It opens no device by itself, and it
 plays a recording only when you press Play. `plume gui --takes DIR` shows a shelf of take
 folders, each with its own carved stone.
@@ -851,4 +850,4 @@ Every cue that reaches a session goes in `cues.ndjson`, including what the loope
 | `live MIDI needs mido` | The `midi` extra isn't installed | `pip install -e '.[midi]'` |
 | `more than one MIDI port` | `--midi auto` won't guess | Run `plume midi` and name one |
 | Band sticks to the wrong tempo over MIDI | `--midi-clock` is on and your gear's clock isn't what you're playing | Drop `--midi-clock` |
-| No sound from the projector | HDMI audio dropped or output changed | Check the output device, or use a speaker and calibrate |
+| No sound from a screen or TV | Its audio dropped or the output changed | Check the output device, or use a speaker and calibrate |

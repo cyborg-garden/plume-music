@@ -54,7 +54,7 @@ style file (``style["fades"]``), not from code:
 4. **Announce gestures.**  When ``plan.announce`` is set, the announcing bar
    carries a quiet gesture on the believed harmony, shaped to start and end
    at exactly zero inside the bar, sitting in the last ``announce_beats`` of
-   it.  That is the reciprocal cue RESEARCH.md asks for: the human hears the
+   it.  That is the reciprocal cue docs/design/RESEARCH.md asks for: the human hears the
    change coming and can make room for it.  Two kinds are voiced, and they
    are deliberately different gestures because they answer different
    questions:

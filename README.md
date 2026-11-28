@@ -137,7 +137,7 @@ plume stop                             # end it (finishes the bar, flushes the t
 plume stop --all                       # end every live session
 plume stop --pid 4212                  # end that one
 plume gui                              # a page with one Start: it starts nothing until you click
-plume gui --take takes6/               # read a take: what plume did, a roast, Keep, Show files
+plume gui --take takes1/               # read a take: what plume did, a roast, Keep, Show files
 plume gui url                          # a new link to the running page
 plume jam --max-minutes 20             # or lead: self-stops after 20 minutes
 plume lead "..." --max-minutes 0       # no cap (an interactive human opting out)
@@ -170,10 +170,10 @@ None of these rules is a convention anyone has to remember:
 ## The papers behind the play
 
 - **[DREAM.md](DREAM.md):** why this exists, and the sideman ethic
-- **[RESEARCH.md](RESEARCH.md):** the evidence base (entrainment science, 40 years of
+- **[RESEARCH.md](docs/design/RESEARCH.md):** the evidence base (entrainment science, 40 years of
   interactive music systems, groove microtiming, LLM-tool failure modes), distilled
   from a 10-agent research sweep
-- **[SPEC.md](SPEC.md):** architecture, score model, notation grammar, API
+- **[SPEC.md](docs/design/SPEC.md):** architecture, score model, notation grammar, API
 
 ## Roadmap
 

@@ -12,7 +12,7 @@ dials, each a float in [0, 1]:
 ``clock_authority``
     Who owns *time*.  0.0 = the human's beat is truth and the machine
     phase-corrects hard toward it (v1).  1.0 = the machine free-runs and never
-    phase-corrects — Band-in-a-Box's virtue, and RESEARCH.md's "an unshakeable
+    phase-corrects — Band-in-a-Box's virtue, and docs/design/RESEARCH.md's "an unshakeable
     clock is a feature": a player can lean on it.  In between is **mutual
     entrainment**, which is what human bands actually do.
 
@@ -36,7 +36,7 @@ MEASURED, and this is what settled it: v2.0 in lead mode met a human sitting
 30 ms in front and ended a 48-bar take **2.5 beats ahead of them**, with a
 decision log that read as a tidy concession and a settled tempo the whole way
 down (``test_a_partner_who_cannot_bend_is_the_case_that_hunts``).  Conceding to
-a partner who cannot bend is divergent by construction.  RESEARCH.md said so
+a partner who cannot bend is divergent by construction.  docs/design/RESEARCH.md said so
 before any of this was built: *"an unshakeable clock is a feature, not a
 limitation; musicians adapt to a trustworthy machine."*
 
@@ -1336,7 +1336,7 @@ class RoleNegotiator:
         if moving and abs(mean) > self._push_bound_ms:
             # v2.1: where this law ends and ``_negotiate_drift`` begins.
             #
-            # An expressive push is tens of milliseconds (RESEARCH.md); a fifth
+            # An expressive push is tens of milliseconds (docs/design/RESEARCH.md); a fifth
             # of a beat is already the outside of it.  A phase further out than
             # that WHILE STILL MOVING is two clocks coming apart, and answering
             # it with the push law is how the loop overshot — MEASURED on

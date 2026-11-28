@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security problem
+    url: https://github.com/cyborg-garden/plume-music/security/policy
+    about: Read how to report a security problem in private. Please keep the details out of public issues.

@@ -1,0 +1,99 @@
+name: Something went wrong
+description: Plume crashed, hung, or did something it should not.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for trying plume. This issue is public, so please leave out real names,
+        home paths and recordings. A device class ("laptop mic", "audio interface") is
+        enough; you do not need to name the product.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what plume did.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: How to make it happen again
+      description: The command you ran, or what you pressed on the page.
+      render: shell
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - macOS (Apple Silicon)
+        - macOS (Intel)
+        - Windows
+        - Linux
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: os_version
+    attributes:
+      label: OS version
+      placeholder: "for example 15.1, 11 24H2, Ubuntu 24.04"
+  - type: input
+    id: plume_version
+    attributes:
+      label: Plume version and how you installed it
+      placeholder: "for example 0.1.0 from pip install, or a git checkout at <commit>"
+    validations:
+      required: true
+  - type: dropdown
+    id: started
+    attributes:
+      label: How you started plume
+      options:
+        - The local page (plume gui)
+        - The command line
+        - A coding agent
+        - A DAW over MIDI
+    validations:
+      required: true
+  - type: dropdown
+    id: input
+    attributes:
+      label: What plume listens to
+      options:
+        - Built-in or laptop mic
+        - Instrument plugged into an audio interface
+        - Mic plugged into an audio interface
+        - USB mic
+        - MIDI instrument
+        - Nothing (a simulated take, or no live sound)
+        - Other
+    validations:
+      required: true
+  - type: dropdown
+    id: output
+    attributes:
+      label: Where the band plays
+      options:
+        - Built-in speakers
+        - Wired headphones
+        - Headphones on an audio interface
+        - Speakers on an audio interface
+        - Bluetooth headphones or speaker
+        - A screen or TV over a video cable
+        - A DAW over MIDI
+        - Nothing (no live sound)
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: gear
+    attributes:
+      label: Anything else about your gear
+      description: Instrument, sample rate, channel count, or anything unusual about the setup.
+  - type: textarea
+    id: logs
+    attributes:
+      label: Error text
+      description: Paste the error or the last lines plume printed. Check it for home paths first.
+      render: text

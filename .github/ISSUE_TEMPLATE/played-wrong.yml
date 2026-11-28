@@ -1,0 +1,87 @@
+name: The band played it wrong
+description: Plume ran, but the music was off. Wrong tempo, wrong key, late, too loud, would not stop.
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This issue is public. Please describe the take in words and leave the recording
+        out. Leave out real names and home paths too.
+  - type: textarea
+    id: what
+    attributes:
+      label: What you played and what the band did
+      description: Style, rough tempo, key or tuning if you know it, and the moment it went wrong.
+    validations:
+      required: true
+  - type: textarea
+    id: wanted
+    attributes:
+      label: What a good bandmate would have done
+    validations:
+      required: true
+  - type: input
+    id: command
+    attributes:
+      label: How you started the take
+      placeholder: "for example Start on the page with style folk, or the plume lead command you ran"
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - macOS (Apple Silicon)
+        - macOS (Intel)
+        - Windows
+        - Linux
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: plume_version
+    attributes:
+      label: Plume version and how you installed it
+    validations:
+      required: true
+  - type: input
+    id: instrument
+    attributes:
+      label: Instrument
+      placeholder: "for example acoustic guitar, electric bass, keys, voice"
+    validations:
+      required: true
+  - type: dropdown
+    id: input
+    attributes:
+      label: What plume listens to
+      options:
+        - Built-in or laptop mic
+        - Instrument plugged into an audio interface
+        - Mic plugged into an audio interface
+        - USB mic
+        - MIDI instrument
+        - Other
+    validations:
+      required: true
+  - type: dropdown
+    id: output
+    attributes:
+      label: Where the band plays
+      options:
+        - Built-in speakers
+        - Wired headphones
+        - Headphones on an audio interface
+        - Speakers on an audio interface
+        - Bluetooth headphones or speaker
+        - A screen or TV over a video cable
+        - A DAW over MIDI
+        - Other
+    validations:
+      required: true
+  - type: dropdown
+    id: calibrated
+    attributes:
+      label: Did you run plume calibrate for this pair of devices
+      options:
+        - "Yes"
+        - "No"
+        - Not sure

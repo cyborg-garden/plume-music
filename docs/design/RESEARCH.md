@@ -1,5 +1,7 @@
 # Research Synthesis
 
+> Historical research notes and build decisions, not current behaviour. For what Plume does today, read the README and `docs/PLAYING.md`.
+
 Ten parallel research agents, 2026-08-13. This file is the distilled version: what
 we learned and what we decided because of it. The raw findings are not published.
 
@@ -47,17 +49,20 @@ that keeps it true: zero per-sample Python loops — recursive filters via
 
 ## Decisions (with the losing side noted)
 
+The Winner column is what was built. Where the first plan lost to something
+simpler, the first plan sits in the Over column.
+
 | Decision | Winner | Over | Why |
 |---|---|---|---|
-| Engine | Pure NumPy/scipy block DSP, 48kHz, 256-sample blocks, float32 | SuperCollider scsynth + Supriya | 47× measured headroom; one codebase for offline & live; no server process to supervise; MIT-clean. scsynth remains the swap-in behind `Engine` interface if we outgrow it. |
+| Engine | Pure NumPy/scipy block DSP, 48kHz, 256-sample blocks, float32 | SuperCollider scsynth + Supriya | 47× measured headroom; one codebase for offline & live; no server process to supervise. scsynth remains the swap-in behind `Engine` interface if we outgrow it. |
 | Language | Python 3.11+ | TypeScript | The whole MIR ecosystem (BeatNet, PESTO, librosa) is Python; DSP benchmark confirms perf. |
-| API shape | CLI + session-as-JSON-file on disk (v0); local JSON-RPC daemon when live mode lands (v1); MCP facade later | Daemon-first | Stateless CLI over a declarative score file is the most LLM-legible surface and needs no process management for prompted mode. |
+| API shape | CLI + session-as-JSON-file on disk. A live take adds a local cue socket and one-line-per-event log files (`decisions.ndjson`, `cues.ndjson`) | Daemon-first; a JSON-RPC daemon and an MCP facade (first plan, not built) | Stateless CLI over a declarative score file is the most LLM-legible surface and needs no process management for prompted mode. A socket that takes plain-word cues and a log an agent can tail cover live mode. |
 | Patterns | Strudel-ish mini-notation subset (`bd ~ [hh hh] sd`, `*n`, `<a b>`, `@n`, `,`) | JSON note arrays | LLMs one-shot mini-notation; note arrays invite off-by-one bugs. |
-| Sounds | 808 family + subtractive/FM synth voices, from the canonical recipes (research has exact envelope/filter numbers) | MIDI to plugin hosts | Zero external deps; deterministic renders. MIDI-out (mido/rtmidi) stays on the roadmap as an output backend. |
-| Live beat tracking (v1) | BeatNet (pip, CC-BY-4.0; beat+downbeat+meter, ~46ms frames) behind a `BeatTracker` interface; BeatNet+ weights for sparse/non-percussive input; count-in affordance to hard-set bar phase | madmom (NC-licensed models, broken on py≥3.10), Essentia (AGPL, offline), librosa (offline-only → verification path) | Only pip-installable tracker with real-time bar phase. |
-| Live pitch/key (v1) | PESTO streaming (<10ms, singing-voice-trained) for melody; hand-rolled chroma → 24-triad HMM + decaying Krumhansl histogram for chords/key (~200 lines, no off-the-shelf option is real-time) | CREPE (heavy, dominated), chordino/autochord/crema (batch-only) | |
-| Audio I/O (v1) | sounddevice duplex 48kHz/256, dumb callback + ring buffers, 4-thread model (callback / render-ahead / analysis / control); rtmixer escape hatch | — | GIL never touches the audio thread. |
-| Mic bleed (v1) | Schedule-aware self-masking (we know what we played + chirp-calibrated output latency) > speech-tuned AEC; headphones recommended in v1 | WebRTC/speex AEC alone | AEC is speech-tuned, underperforms on music. |
+| Sounds | 808 family + subtractive/FM synth voices, from the canonical recipes (research has exact envelope/filter numbers), plus a small set of recorded samples from open libraries. MIDI out (mido/rtmidi) is a second output for the live band | MIDI to plugin hosts as the only sound | No outside program needed; deterministic renders. |
+| Live beat tracking (v1) | Hand-rolled causal tracker in NumPy behind a `BeatTracker` interface: tempo from autocorrelation of the onset envelope, a predicted next beat with partial phase correction, downbeat from accents and harmonic change; a count-in sets bar phase | BeatNet (first plan, not used), madmom (NC-licensed models, broken on py≥3.10), Essentia (AGPL, offline), librosa (offline-only) | Runs on NumPy alone with no model to download, and every threshold is exposed. |
+| Live pitch/key (v1) | Hand-rolled chroma → 24-triad HMM + decaying Krumhansl histogram for chords/key (no off-the-shelf option is real-time). The optional `notes` extra adds the basic-pitch note model as a second reading of the key | PESTO streaming for melody (first plan, not used), CREPE (heavy, dominated), chordino/autochord/crema (batch-only) | |
+| Audio I/O (v1) | sounddevice duplex 48kHz/256, dumb callback + ring buffers, 4-thread model (callback / planner / analysis / cues) | rtmixer (not needed) | The callback only copies buffers; planning and listening run on their own threads. |
+| Mic bleed (v1) | Schedule-aware self-masking (we know what we played + the round trip `plume calibrate` measures with clicks) > speech-tuned AEC; headphones or a plugged-in instrument recommended | WebRTC/speex AEC alone | AEC is speech-tuned, underperforms on music. |
 | License | AGPL-3.0-or-later (Juniper's call 2026-08-13) | MIT (the day-one default) | Copyleft, network-clause protected. Side benefit: GPLv3 tools (pedalboard, DawDreamer, surge) are now license-compatible for direct integration; only madmom's CC-NC models stay off-limits. |
 
 ## The interaction spec (live mode, encoded from the jazz research)

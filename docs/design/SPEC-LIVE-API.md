@@ -1,5 +1,7 @@
 # SPEC — the third chair, live (puppeting plume while a human plays)
 
+> Historical build contract, not current behaviour. For what Plume does today, read the README and `docs/PLAYING.md`.
+
 > "it should be like a cli/api or something that you can just puppet master
 > live haha ai layered programs and on demand responsive UI is the future"
 > — Juniper, 2026-08-15

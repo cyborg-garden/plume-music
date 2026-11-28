@@ -1,4 +1,4 @@
-"""Mini-notation parser (Strudel subset). SPEC.md section 2.
+"""Mini-notation parser (Strudel subset). docs/design/SPEC.md section 2.
 
 One pattern string = one bar = one cycle.
 

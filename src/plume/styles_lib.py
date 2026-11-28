@@ -1,4 +1,4 @@
-"""Style data loader. SPEC.md section 5.
+"""Style data loader. docs/design/SPEC.md section 5.
 
 Style files live in ``src/plume/styles/*.json`` (shipped as package data).
 Each file is a declarative description of a genre: bpm range, swing,

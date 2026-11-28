@@ -558,14 +558,40 @@ class TestLive:
         assert sd.stream.sounded() is (verb == "lead")
 
     def test_a_locked_jam_sends_its_bars_and_lets_go_at_the_end(self, plume_registry):
+        """Stopped once the sideman has sent its notes, not by the clock: a shared runner
+        that holds the fake device for a late ear (conftest) leaves a take of a few wall
+        seconds no time to lock, and that read as a sideman that never sends a bar."""
         sd, mido = fake_audio(clicks(120.0, 60.0), rate_x=12.0), FakeMidoOut()
-        with patched_module("sounddevice", sd), patched_module("mido", mido):
-            realtime.jam(style="lofi", seed=0, params=mind_mod.MindParams(),
-                         max_minutes=0.05, socket_path=short_socket_path("mo-jam"),
-                         midi_out="iac")
+        sock, notes, over, stopped = short_socket_path("mo-jam"), 4, threading.Event(), []
+
+        def stop_once_it_has_played():
+            while not over.wait(0.02):
+                sent = list(mido.ports[0].sent) if mido.ports else []
+                if sum(m[0] == "on" for _t, m in sent) < notes:
+                    continue
+                try:
+                    realtime.send_stop(socket_path=sock)
+                    stopped.append(True)
+                    return
+                except (OSError, realtime.RealtimeError):
+                    pass                 # between bars, or already ending
+
+        threading.Thread(target=stop_once_it_has_played, daemon=True).start()
+        # The cap is a starved runner's, far from how long it takes (seconds).
+        cap_min, t0 = 2.0, time.monotonic()
+        try:
+            with patched_module("sounddevice", sd), patched_module("mido", mido):
+                realtime.jam(style="lofi", seed=0, params=mind_mod.MindParams(),
+                             max_minutes=cap_min, socket_path=sock, midi_out="iac")
+        finally:
+            over.set()
         port = mido.ports[0]
         sent = [m for _t, m in port.sent]
-        assert sum(m[0] == "on" for m in sent) >= 4, "the sideman never sent a bar"
+        if not stopped and time.monotonic() - t0 >= 60.0 * cap_min:
+            pytest.fail(f"timed out: the jam ran {cap_min:g} min of wall time without "
+                        f"sending {notes} notes: the runner starved it, or the sideman "
+                        "never locks at all", pytrace=False)
+        assert sum(m[0] == "on" for m in sent) >= notes, "the sideman never sent a bar"
         assert paired([m for m in sent if m[0] != "cc"])
         assert port.closed and sent[-1][2] == 123
 

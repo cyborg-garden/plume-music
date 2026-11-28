@@ -924,7 +924,11 @@ def test_a_dead_ear_holds_the_fake_device_about_a_second_and_no_more(tmp_path, c
                                                                      monkeypatch):
     """The fake device stands still for the planner's wait only so long
     (conftest.PLANNER_WAIT_HOLD_S).  The wait gives up by the playhead, which a held
-    device does not move: with no limit, an ear that died would end the take with it."""
+    device does not move: with no limit, an ear that died would end the take with it.
+
+    Only the planner's wait: on a shared runner the device also waits for a late ear,
+    for longer (conftest.EAR_GONE_S, its own test below), and would hide this one."""
+    monkeypatch.setattr(conftest, "ear_behind", lambda: False)
     dead, waits = threading.Event(), []
     analyse, wait = realtime.analysis_step, realtime.wait_for_ear
     sock = short_socket_path("rec")
@@ -957,6 +961,41 @@ def test_a_dead_ear_holds_the_fake_device_about_a_second_and_no_more(tmp_path, c
     # About a second of hold, then half a bar at the device's own pace: seconds, with
     # room for a slow runner, and nowhere near a hold with no limit.
     assert max(waits) < 10.0
+
+
+def test_the_fake_device_waits_for_a_working_ear_and_not_a_finished_or_wedged_one(
+        monkeypatch):
+    """conftest.ear_behind: what keeps a fast fake playhead from running whole bars past
+    an ear a shared runner has left unscheduled.  A working ear is waited for well past
+    a second, as a starved runner can leave one that long; one whose thread has ended
+    (a take's tail plays on after the ear stops) is not waited for at all, and a wedged
+    one only for conftest.EAR_GONE_S."""
+    import weakref
+    conftest._watch_the_ear()
+    monkeypatch.setattr(conftest, "_EAR_RINGS", weakref.WeakSet())
+    ring = realtime.RingBuffer(SR * 8)
+    ring.write(np.zeros(int(SR * 2 * conftest.EAR_BEHIND_S), dtype=np.float32))
+    assert conftest.ear_behind(), "a ring no ear has read yet"
+    reading, done = threading.Event(), threading.Event()
+
+    def ear():
+        ring.read(256)
+        reading.set()
+        done.wait(10.0)                  # working on what it read, or wedged
+
+    reader = threading.Thread(target=ear, daemon=True)
+    reader.start()
+    assert reading.wait(5.0)
+    assert conftest.ear_behind()
+    ring._ear_read_at = time.perf_counter() - 1.5      # longer than a second ago
+    assert conftest.ear_behind(), "a working ear late by more than a second"
+    ring._ear_read_at = time.perf_counter() - conftest.EAR_GONE_S - 0.1
+    assert not conftest.ear_behind(), "a wedged ear holds the take"
+    ring._ear_read_at = time.perf_counter()
+    done.set()
+    reader.join(5.0)
+    assert not reader.is_alive()
+    assert not conftest.ear_behind(), "an ear that has finished holds the take"
 
 
 def _stop_quietly(sock):
